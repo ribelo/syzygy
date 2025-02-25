@@ -71,6 +71,26 @@ impl<M: Model> EffectsBus<M> {
     }
 }
 
+pub struct Dispatcher<M: Model> {
+    pub tx: EffectsTx<M>,
+}
+
+impl<M: Model> Dispatcher<M> {
+    #[must_use]
+    pub fn new(tx: EffectsTx<M>) -> Self {
+        Self { tx }
+    }
+}
+
+impl<M: Model> Context for Dispatcher<M> {
+    type Model = M;
+}
+
+impl<M: Model> DispatchEffect for Dispatcher<M> {
+    fn effects_tx(&self) -> &EffectsTx<Self::Model> {
+        &self.tx
+    }
+}
 
 pub trait DispatchEffect: Context {
     fn effects_tx(&self) -> &EffectsTx<Self::Model>;

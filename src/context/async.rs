@@ -26,7 +26,7 @@ impl<M: Model> Context for AsyncContext<M> {
 impl<M: Model> Clone for AsyncContext<M> {
     fn clone(&self) -> Self {
         Self {
-            model_snapshot: self.model_snapshot.clone(),
+            model_snapshot: Arc::clone(&self.model_snapshot),
             resources: self.resources.clone(),
             effects_tx: self.effects_tx.clone(),
         }

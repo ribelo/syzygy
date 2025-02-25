@@ -1,8 +1,10 @@
+use std::sync::Arc;
+
 use bon::Builder;
 
 use crate::{
     context::Context,
-    dispatch::{DispatchEffect, EffectsBus, EffectsTx},
+    dispatch::{DispatchEffect, Dispatcher, EffectsBus, EffectsTx},
     model::{Model, ModelAccess, ModelModify, ModelSnapshotCreate},
     resource::{ResourceAccess, ResourceModify, Resources},
 };
@@ -34,6 +36,9 @@ impl<M: Model> Syzygy<M> {
         while let Ok(effect) = self.effects_bus.rx.try_recv() {
             (effect)(self);
         }
+    }
+    pub fn dispatcher(&self) -> Dispatcher<M> {
+        Dispatcher::new(self.effects_bus.tx.clone())
     }
 }
 
