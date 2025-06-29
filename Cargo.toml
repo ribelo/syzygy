@@ -24,6 +24,12 @@ downcast-rs = "2.0.1"
 
 [dev-dependencies]
 cfg-if = "1.0.0"
+criterion = { version = "0.5", features = ["html_reports"] }
+futures = "0.3"
+
+[[bench]]
+name = "syzygy_benchmarks"
+harness = false
 
 [lints.clippy]
 all = { level = "warn", priority = -2 }
