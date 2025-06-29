@@ -22,63 +22,85 @@ impl Deref for Resources {
 impl Resources {
     pub fn insert<T>(&mut self, value: T)
     where
-        T: Send + Sync + Clone + 'static,
+        T: Send + Sync + 'static,
     {
         let ty = TypeId::of::<T>();
-        let boxed_value = Box::new(value);
+        let arc_value = Arc::new(value);
+        let boxed_value = Box::new(arc_value);
         let mut lock = self.write().expect("Failed to acquire write lock");
         lock.insert(ty, boxed_value);
     }
 
     #[must_use]
-    pub fn get<T>(&self) -> Option<T>
+    pub fn get<T>(&self) -> Option<Arc<T>>
     where
-        T: Clone + Send + Sync + 'static,
+        T: Send + Sync + 'static,
     {
         let ty = TypeId::of::<T>();
         let lock = self.read().expect("Failed to acquire read lock");
-        lock.get(&ty).map(|boxed_value|
-            // SAFETY: We verify the type matches via TypeId before insertion,
-            // so this downcast is guaranteed to succeed
-            unsafe { boxed_value.downcast_ref_unchecked::<T>().clone() })
+        lock.get(&ty).and_then(|boxed_value| {
+            boxed_value.downcast_ref::<Arc<T>>().cloned()
+        })
+    }
+
+    #[must_use]
+    pub fn get_cloned<T>(&self) -> Option<T>
+    where
+        T: Clone + Send + Sync + 'static,
+    {
+        self.get::<T>().map(|arc| (*arc).clone())
     }
 }
 
 pub trait ResourceAccess: Context {
     fn resources(&self) -> &Resources;
-    fn resource<T>(&self) -> T
+    fn resource<T>(&self) -> Arc<T>
     where
-        T: Clone + Send + Sync + 'static,
+        T: Send + Sync + 'static,
     {
         self.resources().get::<T>().unwrap()
     }
-    fn try_resource<T>(&self) -> Option<T>
+    fn resource_cloned<T>(&self) -> T
     where
         T: Clone + Send + Sync + 'static,
+    {
+        self.resources().get_cloned::<T>().unwrap()
+    }
+    fn try_resource<T>(&self) -> Option<Arc<T>>
+    where
+        T: Send + Sync + 'static,
     {
         self.resources().get::<T>()
     }
-    fn with_resource<T, F, R>(&self, f: F) -> R
+    fn try_resource_cloned<T>(&self) -> Option<T>
     where
         T: Clone + Send + Sync + 'static,
+    {
+        self.resources().get_cloned::<T>()
+    }
+    fn with_resource<T, F, R>(&self, f: F) -> R
+    where
+        T: Send + Sync + 'static,
         F: FnOnce(&T) -> R,
     {
-        f(&self.resource::<T>())
+        let arc = self.resource::<T>();
+        f(&*arc)
     }
 }
 
 pub trait ResourceModify: ResourceAccess {
     fn add_resource<T>(&self, value: T)
     where
-        T: Clone + Send + Sync + 'static,
+        T: Send + Sync + 'static,
     {
+        let arc_value = Arc::new(value);
         self.resources().write().expect("Failed to acquire write lock")
-            .insert(TypeId::of::<T>(), Box::new(value));
+            .insert(TypeId::of::<T>(), Box::new(arc_value));
     }
 
     fn remove_resource<T>(&self) -> Option<Box<dyn Any + Send + Sync>>
     where
-        T: Clone + Send + Sync + 'static,
+        T: Send + Sync + 'static,
     {
         self.resources().write().expect("Failed to acquire write lock")
             .remove(&TypeId::of::<T>())

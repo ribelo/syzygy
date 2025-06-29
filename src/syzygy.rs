@@ -1,5 +1,3 @@
-use std::sync::Arc;
-
 use bon::Builder;
 
 use crate::{
@@ -24,7 +22,7 @@ pub struct Syzygy<M: Model> {
 impl<M: Model, S: syzygy_builder::State> SyzygyBuilder<M, S> {
     pub fn resource<T>(mut self, resource: T) -> SyzygyBuilder<M, S>
     where
-        T: Clone + Send + Sync + 'static,
+        T: Send + Sync + 'static,
     {
         self.resources.insert(resource);
         self
@@ -181,6 +179,10 @@ mod tests {
         let test_resource = syzygy.try_resource::<TestResource>();
         assert!(test_resource.is_some());
         assert_eq!(test_resource.unwrap().name, "test_str");
+        
+        // Test cloned access
+        let cloned = syzygy.resource_cloned::<TestResource>();
+        assert_eq!(cloned.name, "test_str");
     }
 
     #[cfg(not(feature = "parallel"))]
@@ -217,22 +219,28 @@ mod tests {
         let model = TestModel { counter: 0 };
         let mut cx: Syzygy<TestModel> = Syzygy::builder().model(model).build();
 
-        cx.spawn(|cx| {
+        let (tx1, rx1) = tokio::sync::oneshot::channel();
+        let (tx2, rx2) = tokio::sync::oneshot::channel();
+
+        cx.spawn(move |cx| {
             println!("hello from thread task 1");
             cx.dispatch(increment);
+            let _ = tx1.send(());
         });
 
-        cx.spawn(|cx| {
+        cx.spawn(move |cx| {
             println!("hello from thread task 2");
             cx.dispatch(increment);
+            let _ = tx2.send(());
         });
 
         cx.handle_effects();
-        std::thread::sleep(std::time::Duration::from_millis(100));
-        cx.handle_effects();
-        std::thread::sleep(std::time::Duration::from_millis(100));
-        cx.handle_effects();
-        std::thread::sleep(std::time::Duration::from_millis(100));
+        
+        // Wait for both tasks to complete
+        let _ = rx1.await;
+        let _ = rx2.await;
+        
+        // Handle any effects dispatched by the tasks
         cx.handle_effects();
 
         assert_eq!(cx.model().counter, 2);
@@ -243,25 +251,31 @@ mod tests {
         let model = TestModel { counter: 0 };
         let mut syzygy: Syzygy<TestModel> = Syzygy::builder().model(model).build();
 
+        let (tx1, rx1) = tokio::sync::oneshot::channel();
+        let (tx2, rx2) = tokio::sync::oneshot::channel();
+
         // First async task
-        syzygy.task(|cx| async move {
-            println!("hello from thread task 1");
+        syzygy.task(move |cx| async move {
+            println!("hello from async task 1");
             cx.dispatch(increment);
+            let _ = tx1.send(());
         });
 
         // Second async task
-        syzygy.task(|cx| async move {
-            println!("hello from thread task 2");
+        syzygy.task(move |cx| async move {
+            println!("hello from async task 2");
             cx.dispatch(increment);
+            let _ = tx2.send(());
         });
 
-        // Handle effects with some delay to allow tasks to complete
+        // Handle effects to spawn the tasks
         syzygy.handle_effects();
-        std::thread::sleep(std::time::Duration::from_millis(100));
-        syzygy.handle_effects();
-        std::thread::sleep(std::time::Duration::from_millis(100));
-        syzygy.handle_effects();
-        std::thread::sleep(std::time::Duration::from_millis(100));
+        
+        // Wait for both tasks to complete
+        let _ = rx1.await;
+        let _ = rx2.await;
+        
+        // Handle any effects dispatched by the tasks
         syzygy.handle_effects();
 
         assert_eq!(syzygy.model().counter, 2);
