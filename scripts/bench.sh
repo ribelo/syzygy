@@ -12,10 +12,12 @@ if [ $? -eq 0 ]; then
     echo "✅ Benchmarks completed successfully"
     echo "Results saved to baseline: $TIMESTAMP"
     
-    # Save a copy of the HTML report
+    # Save a copy of the HTML reports
     if [ -d "target/criterion" ]; then
-        cp -r target/criterion benchmark_results/reports/$TIMESTAMP
+        mkdir -p "benchmark_results/reports/$TIMESTAMP"
+        cp -r target/criterion/* "benchmark_results/reports/$TIMESTAMP/"
         echo "HTML reports copied to benchmark_results/reports/$TIMESTAMP"
+        echo "View main report at: benchmark_results/reports/$TIMESTAMP/report/index.html"
     fi
 else
     echo "❌ Benchmarks failed"
