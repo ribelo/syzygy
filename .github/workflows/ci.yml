@@ -1,0 +1,171 @@
+name: CI
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    name: Test Suite
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        rust:
+          - stable
+          - beta
+          - nightly
+        features:
+          - default
+          - no-default-features
+          - async
+          - parallel
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Install Rust toolchain
+      uses: dtolnay/rust-toolchain@master
+      with:
+        toolchain: ${{ matrix.rust }}
+        components: rustfmt, clippy
+    
+    - name: Cache cargo build
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+          target
+        key: ${{ runner.os }}-cargo-${{ matrix.rust }}-${{ hashFiles('**/Cargo.lock') }}
+    
+    - name: Check formatting
+      run: cargo fmt --all -- --check
+      if: matrix.rust == 'stable'
+    
+    - name: Run clippy
+      run: cargo clippy --lib --tests --bins --all-features -- -D warnings
+      if: matrix.rust == 'stable'
+    
+    - name: Build (default features)
+      run: cargo build --verbose
+      if: matrix.features == 'default'
+    
+    - name: Build (no default features)
+      run: cargo build --no-default-features --verbose
+      if: matrix.features == 'no-default-features'
+    
+    - name: Build (async feature)
+      run: cargo build --features async --verbose
+      if: matrix.features == 'async'
+    
+    - name: Build (parallel feature)
+      run: cargo build --features parallel --verbose
+      if: matrix.features == 'parallel'
+    
+    - name: Run tests (default features)
+      run: cargo test --verbose
+      if: matrix.features == 'default'
+    
+    - name: Run tests (no default features)
+      run: cargo test --no-default-features --verbose
+      if: matrix.features == 'no-default-features'
+    
+    - name: Run tests (async feature)
+      run: cargo test --features async --verbose
+      if: matrix.features == 'async'
+    
+    - name: Run tests (parallel feature)
+      run: cargo test --features parallel --verbose
+      if: matrix.features == 'parallel'
+    
+    - name: Run integration tests
+      run: cargo test --test integration_basic --verbose
+      if: matrix.features == 'default' && matrix.rust == 'stable'
+
+  benchmark:
+    name: Performance Benchmarks
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Install Rust stable
+      uses: dtolnay/rust-toolchain@stable
+    
+    - name: Cache cargo build
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+          target
+        key: ${{ runner.os }}-cargo-bench-${{ hashFiles('**/Cargo.lock') }}
+    
+    - name: Run benchmarks
+      run: |
+        chmod +x scripts/bench.sh
+        ./scripts/bench.sh
+    
+    - name: Upload benchmark results
+      uses: actions/upload-artifact@v4
+      with:
+        name: benchmark-results
+        path: benchmark_results/
+        retention-days: 30
+
+  coverage:
+    name: Code Coverage
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Install Rust stable
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        components: llvm-tools-preview
+    
+    - name: Install cargo-llvm-cov
+      uses: taiki-e/install-action@cargo-llvm-cov
+    
+    - name: Generate code coverage
+      run: cargo llvm-cov --all-features --workspace --lcov --output-path lcov.info
+    
+    - name: Upload coverage to Codecov
+      uses: codecov/codecov-action@v4
+      with:
+        files: lcov.info
+        fail_ci_if_error: true
+
+  security:
+    name: Security Audit
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Install Rust stable
+      uses: dtolnay/rust-toolchain@stable
+    
+    - name: Install cargo-audit
+      run: cargo install cargo-audit
+    
+    - name: Run security audit
+      run: cargo audit
+
+  check-minimal-versions:
+    name: Check Minimal Versions
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Install Rust nightly
+      uses: dtolnay/rust-toolchain@nightly
+    
+    - name: Install cargo-minimal-versions
+      run: cargo install cargo-minimal-versions
+    
+    - name: Check minimal versions
+      run: cargo minimal-versions check
