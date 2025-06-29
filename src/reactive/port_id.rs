@@ -4,6 +4,7 @@ use std::any::TypeId;
 pub struct PortId(TypeId);
 
 impl PortId {
+    #[must_use]
     pub fn new<T: 'static>() -> Self {
         Self(TypeId::of::<T>())
     }

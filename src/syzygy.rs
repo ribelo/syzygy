@@ -13,9 +13,10 @@ pub struct Syzygy<M: Model> {
     pub resources: Resources,
     #[builder(field)]
     pub effects_bus: EffectsBus<M>,
-    #[cfg(feature = "parallel")]
-    #[builder(into)]
-    pub rayon_pool: RayonPool,
+    // Note: parallel features not implemented yet
+    // #[cfg(feature = "parallel")]
+    // #[builder(into)]
+    // pub rayon_pool: RayonPool,
     pub model: M,
 }
 
@@ -112,6 +113,7 @@ mod tests {
     use super::*;
 
     #[derive(Debug, Clone)]
+    #[allow(dead_code)]
     struct TestModel {
         counter: i32,
     }
@@ -124,15 +126,18 @@ mod tests {
     }
 
     #[derive(Debug, Clone)]
+    #[allow(dead_code)]
     struct TestResource {
         name: String,
     }
 
+    #[allow(dead_code)]
     fn increment(syzygy: &mut Syzygy<TestModel>) {
         syzygy.model_mut().counter += 1;
     }
 
     #[cfg(not(feature = "parallel"))]
+    #[cfg(feature = "async")]
     #[tokio::test]
     async fn test_model() {
         let model = TestModel { counter: 0 };
@@ -161,6 +166,7 @@ mod tests {
     }
 
     #[cfg(not(feature = "parallel"))]
+    #[cfg(feature = "async")]
     #[tokio::test]
     async fn test_resources() {
         let model = TestModel { counter: 0 };
@@ -179,13 +185,14 @@ mod tests {
         let test_resource = syzygy.try_resource::<TestResource>();
         assert!(test_resource.is_some());
         assert_eq!(test_resource.unwrap().name, "test_str");
-        
+
         // Test cloned access
         let cloned = syzygy.resource_cloned::<TestResource>();
         assert_eq!(cloned.name, "test_str");
     }
 
     #[cfg(not(feature = "parallel"))]
+    #[cfg(feature = "async")]
     #[tokio::test]
     async fn test_async_dispatch() {
         let model = TestModel { counter: 0 };
@@ -201,6 +208,7 @@ mod tests {
         assert_eq!(syzygy.model().counter, 5);
     }
     #[cfg(not(feature = "parallel"))]
+    #[cfg(feature = "async")]
     #[tokio::test]
     async fn test_sync_dispatch() {
         let model = TestModel { counter: 0 };
@@ -214,6 +222,7 @@ mod tests {
         assert_eq!(syzygy.model().counter, 1);
     }
     #[cfg(not(feature = "parallel"))]
+    #[cfg(feature = "async")]
     #[tokio::test(flavor = "multi_thread")]
     async fn test_thread_task() {
         let model = TestModel { counter: 0 };
@@ -235,17 +244,18 @@ mod tests {
         });
 
         cx.handle_effects();
-        
+
         // Wait for both tasks to complete
         let _ = rx1.await;
         let _ = rx2.await;
-        
+
         // Handle any effects dispatched by the tasks
         cx.handle_effects();
 
         assert_eq!(cx.model().counter, 2);
     }
     #[cfg(not(feature = "parallel"))]
+    #[cfg(feature = "async")]
     #[tokio::test(flavor = "multi_thread")]
     async fn test_async_task() {
         let model = TestModel { counter: 0 };
@@ -270,11 +280,11 @@ mod tests {
 
         // Handle effects to spawn the tasks
         syzygy.handle_effects();
-        
+
         // Wait for both tasks to complete
         let _ = rx1.await;
         let _ = rx2.await;
-        
+
         // Handle any effects dispatched by the tasks
         syzygy.handle_effects();
 
@@ -533,7 +543,8 @@ mod tests {
     // // }
 
     // // #[ignore]
-    // // #[tokio::test]
+    // // #[cfg(feature = "async")]
+    // #[tokio::test]
     // // #[cfg(feature = "async")]
     // // async fn test_tokio_integration() {
     // //     let model = TestModel { counter: 0 };
@@ -568,7 +579,8 @@ mod tests {
     // // }
 
     // // #[ignore]
-    // // #[tokio::test]
+    // // #[cfg(feature = "async")]
+    // #[tokio::test]
     // // #[cfg(feature = "async")]
     // // async fn test_app_context_async() {
     // //     use parking_lot::Mutex;
@@ -590,7 +602,8 @@ mod tests {
     // // }
 
     // // // #[ignore]
-    // // // #[tokio::test]
+    // // // #[cfg(feature = "async")]
+    // #[tokio::test]
     // // // #[cfg(feature = "async")]
     // // // async fn test_effect_builder() {
     // // //     let model = TestModel { counter: 0 };
@@ -677,23 +690,23 @@ mod tests {
     // //     handle.join().unwrap();
     // //     assert!(!cx.is_running());
     // // }
-    #[cfg(not(feature = "parallel"))]
+    #[cfg(all(not(feature = "parallel"), feature = "async"))]
     #[tokio::test]
     async fn test_increment_dispatch() {
         let model = TestModel { counter: 0 };
-        let mut syzygy = Syzygy::builder().model(model).build();
+        let mut syzygy: Syzygy<TestModel> = Syzygy::builder().model(model).build();
 
-        const ITERATIONS: usize = 1_000_000;
-
-        for _ in 0..ITERATIONS {
+        const NUM_DISPATCHES: usize = 1_000_000;
+        for _ in 0..NUM_DISPATCHES {
             syzygy.dispatch(increment);
         }
+
         syzygy.handle_effects();
 
-        assert_eq!(syzygy.model().counter, ITERATIONS as i32);
+        assert_eq!(syzygy.model().counter, NUM_DISPATCHES as i32);
     }
-    // #[ignore]
-    #[cfg(not(feature = "parallel"))]
+
+    #[cfg(all(not(feature = "parallel"), feature = "async"))]
     #[tokio::test]
     async fn test_dispatch_performance() {
         use std::time::Instant;
@@ -846,7 +859,9 @@ mod tests {
         println!("  Speed: {ops_real:.2} ops/sec");
         println!();
     }
+
     // #[cfg(not(feature = "parallel"))]
+    // #[cfg(feature = "async")]
     // #[tokio::test]
     // async fn test_task_performance() {
     //     use crate::dispatch::AsyncTask;
@@ -877,36 +892,32 @@ mod tests {
     //         "Task dispatch: {ITERATIONS} iterations in {best_dispatch:?} ({ops_dispatch:.2} ops/sec)"
     //     );
     // }
-    #[cfg(all(not(feature = "async"), not(feature = "parallel")))]
+    #[cfg(all(not(feature = "parallel"), feature = "async"))]
     #[tokio::test]
     async fn benchmark_direct_model_update() {
         use std::time::Instant;
 
         let model = TestModel { counter: 0 };
-        let mut syzygy: Syzygy<TestModel> = Syzygy::builder().model(model).build();
+        let mut syzygy = Syzygy::builder().model(model.clone()).build();
 
         const ITERATIONS: usize = 1_000_000;
         const RUNS: usize = 10;
 
         let mut best_duration = std::time::Duration::from_secs(u64::MAX);
-
         for _ in 0..RUNS {
             let start = Instant::now();
-
-            for _ in 0..ITERATIONS {
-                syzygy.update(|m| m.counter += 1);
+            for i in 0..ITERATIONS {
+                syzygy.update(|m| m.counter = i as i32);
             }
-
             let duration = start.elapsed();
             best_duration = best_duration.min(duration);
         }
 
         let ops_per_sec = ITERATIONS as f64 / best_duration.as_secs_f64();
-
-        println!(
-            "Direct model update benchmark:\n\
-             {ITERATIONS} iterations in {best_duration:?} (best of {RUNS} runs)\n\
-             {ops_per_sec:.2} ops/sec",
-        );
+        println!();
+        println!("Direct model update performance:");
+        println!("  Iterations: {ITERATIONS}");
+        println!("  Time: {best_duration:?}");
+        println!("  Speed: {ops_per_sec:.2} ops/sec");
     }
 }

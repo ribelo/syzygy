@@ -1,11 +1,8 @@
-use std::{any::TypeId, marker::PhantomData};
+use std::marker::PhantomData;
 
-use super::{
-    graph::{Graph, Node},
-    port_id::PortId,
-};
+use super::{graph::Graph, port_id::PortId};
 
-pub trait FromGraph: {
+pub trait FromGraph {
     fn from_graph(graph: &Graph) -> Self;
     fn deps_ids() -> Vec<PortId>;
 }
@@ -81,7 +78,7 @@ impl_handler!((T1, T2, T3, T4, T5, T6, T7, T8, T9, T10), F);
 impl_handler!((T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11), F);
 impl_handler!((T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12), F);
 
-pub trait Reactive: {
+pub trait Reactive {
     fn run(&self, graph: &Graph);
 }
 
@@ -111,9 +108,9 @@ where
 
 impl<T, H, R> Reactive for ReactiveWrapper<T, H, R>
 where
-    T:  'static,
-    H: ReactiveHandler<T, R>  + 'static,
-    R:  'static,
+    T: 'static,
+    H: ReactiveHandler<T, R> + 'static,
+    R: 'static,
 {
     fn run(&self, graph: &Graph) {
         let r = self.handler.call(graph);

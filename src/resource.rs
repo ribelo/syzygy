@@ -38,9 +38,8 @@ impl Resources {
     {
         let ty = TypeId::of::<T>();
         let lock = self.read().expect("Failed to acquire read lock");
-        lock.get(&ty).and_then(|boxed_value| {
-            boxed_value.downcast_ref::<Arc<T>>().cloned()
-        })
+        lock.get(&ty)
+            .and_then(|boxed_value| boxed_value.downcast_ref::<Arc<T>>().cloned())
     }
 
     #[must_use]
@@ -94,7 +93,9 @@ pub trait ResourceModify: ResourceAccess {
         T: Send + Sync + 'static,
     {
         let arc_value = Arc::new(value);
-        self.resources().write().expect("Failed to acquire write lock")
+        self.resources()
+            .write()
+            .expect("Failed to acquire write lock")
             .insert(TypeId::of::<T>(), Box::new(arc_value));
     }
 
@@ -102,7 +103,9 @@ pub trait ResourceModify: ResourceAccess {
     where
         T: Send + Sync + 'static,
     {
-        self.resources().write().expect("Failed to acquire write lock")
+        self.resources()
+            .write()
+            .expect("Failed to acquire write lock")
             .remove(&TypeId::of::<T>())
     }
 }

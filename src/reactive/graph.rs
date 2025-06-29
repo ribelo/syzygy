@@ -191,11 +191,10 @@ impl Graph {
         // Process nodes from the deepest level to the shallowest.
         for level_nodes in levels.into_iter().rev() {
             for id in level_nodes {
-                if let Some(node) = self.find_node(id) {
-                    if let Some(reactive) = node.reactive {
+                if let Some(node) = self.find_node(id)
+                    && let Some(reactive) = node.reactive {
                         reactive.run(self);
                     }
-                }
             }
         }
     }
@@ -329,23 +328,29 @@ impl Graph {
 mod tests {
     use super::*;
     #[test]
+    #[allow(clippy::dbg_macro, clippy::no_effect_underscore_binding)]
     fn test_handler_deps() {
         dbg!(PortId::new::<String>());
         dbg!(PortId::new::<Node<String>>());
         let a = |x: Node<String>| -> String { format!("x = {}", x.0) };
         dbg!(a.deps_ids());
-        let b = |x: Node<String>| -> String { format!("x = {}", x.0) };
+        let _b = |x: Node<String>| -> String { format!("x = {}", x.0) };
         dbg!(a.deps_ids());
         // dbg!(b.deps_ids());
     }
 
     #[test]
     #[ignore = "TODO: Fix PortIdExists error - tracked in roadmap"]
+    #[allow(unused_mut, clippy::dbg_macro)]
     fn test_source() {
         let mut graph = Graph::new();
         graph.reg_node(|| 2).unwrap();
-        graph.reg_node(|x: Node<i32>| -> String { format!("x = {}", x.0) }).unwrap();
-        graph.reg_node(|x: Node<String>| -> String { format!("foobarbaz: {}", x.0) }).unwrap();
+        graph
+            .reg_node(|x: Node<i32>| -> String { format!("x = {}", x.0) })
+            .unwrap();
+        graph
+            .reg_node(|x: Node<String>| -> String { format!("foobarbaz: {}", x.0) })
+            .unwrap();
         let x = graph.get_node::<i32>();
         let y = graph.get_node::<String>();
         let z = graph.get_node::<String>();

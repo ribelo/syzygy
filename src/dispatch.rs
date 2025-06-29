@@ -1,14 +1,21 @@
+#[cfg(feature = "async")]
 use std::future::Future;
 
 use derive_more::derive::{Deref, DerefMut};
+#[cfg(feature = "async")]
 use tokio::sync::oneshot;
 
-use crate::context::{Context, FromContext};
+use crate::context::Context;
+#[cfg(feature = "async")]
+use crate::context::FromContext;
 use crate::model::ModelModify;
-use crate::{model::Model, prelude::AsyncContext, syzygy::Syzygy};
+#[cfg(feature = "async")]
+use crate::prelude::AsyncContext;
+use crate::{model::Model, syzygy::Syzygy};
 
 pub trait EffectFn<M: Model>: FnOnce(&mut Syzygy<M>) + Send + Sync + 'static {}
 
+#[allow(dead_code)]
 pub struct DispatchContext<'a, M: Model> {
     syzygy: &'a mut Syzygy<M>,
 }
@@ -113,6 +120,7 @@ pub trait DispatchEffect: Context {
         self.send_effect(effect);
     }
 
+    #[cfg(feature = "async")]
     #[must_use]
     #[inline]
     fn dispatch_sync(&self, effect: impl EffectFn<Self::Model>) -> oneshot::Receiver<()> {
@@ -136,6 +144,7 @@ pub trait DispatchEffect: Context {
         self.send_effect(wrapped);
     }
 
+    #[cfg(feature = "async")]
     #[inline]
     fn spawn<F>(&self, f: F)
     where
@@ -148,6 +157,7 @@ pub trait DispatchEffect: Context {
         self.dispatch(wrapped);
     }
 
+    #[cfg(feature = "async")]
     #[inline]
     fn task<F, Fut>(&self, f: F)
     where

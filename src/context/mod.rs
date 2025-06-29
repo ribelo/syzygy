@@ -1,5 +1,6 @@
 use crate::model::Model;
 
+#[cfg(feature = "async")]
 pub mod r#async;
 
 pub trait Context: Sized {

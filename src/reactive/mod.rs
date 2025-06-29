@@ -1,10 +1,8 @@
-use downcast_rs::{impl_downcast, Downcast};
-use std::fmt::Debug;
+use downcast_rs::{Downcast, impl_downcast};
 
-pub mod handler;
 pub mod graph;
+pub mod handler;
 pub mod port_id;
-
 
 pub trait BoxableValue: Downcast {}
 impl_downcast!(BoxableValue);

@@ -4,8 +4,8 @@
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 echo "Running benchmarks with timestamp: $TIMESTAMP"
 
-# Run benchmarks and save baseline
-cargo bench --bench syzygy_benchmarks -- --save-baseline $TIMESTAMP
+# Run benchmarks and save baseline (with reduced timing for CI/quick runs)
+cargo bench --bench syzygy_benchmarks -- --warm-up-time 1 --measurement-time 2 --save-baseline $TIMESTAMP
 
 # Check if benchmarks succeeded
 if [ $? -eq 0 ]; then
