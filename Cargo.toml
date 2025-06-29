@@ -27,6 +27,10 @@ cfg-if = "1.0.0"
 criterion = { version = "0.5", features = ["html_reports"] }
 futures = "0.3"
 
+[[test]]
+name = "integration_basic"
+path = "tests/integration_basic.rs"
+
 [[bench]]
 name = "syzygy_benchmarks"
 harness = false
