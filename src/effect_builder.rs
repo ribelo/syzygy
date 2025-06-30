@@ -1,8 +1,8 @@
-//! EffectBuilder for composable effect wrapping
+//! `EffectBuilder` for composable effect wrapping
 //!
 //! Because composing functions is better than enterprise middleware bullshit.
 //!
-//! EffectBuilder lets users wrap effects with common functionality (timing, tracing, retry)
+//! `EffectBuilder` lets users wrap effects with common functionality (timing, tracing, retry)
 //! without polluting the core API or adding overhead to the fast path.
 
 use std::time::Instant;
@@ -59,7 +59,7 @@ pub struct EffectBuilder<M: Model> {
 }
 
 impl<M: Model> EffectBuilder<M> {
-    /// Create a new EffectBuilder wrapping the given effect
+    /// Create a new `EffectBuilder` wrapping the given effect
     pub fn new(effect: impl EffectFn<M> + 'static) -> Self {
         Self {
             effect: Box::new(effect),
@@ -73,15 +73,16 @@ impl<M: Model> EffectBuilder<M> {
     /// In debug builds, this logs the execution time.
     /// In release builds, this is optimized away.
     #[inline]
-    pub fn timed(self, name: &'static str) -> Self {
+    #[must_use]
+    pub fn timed(self, _name: &'static str) -> Self {
         Self {
             effect: Box::new(move |ctx| {
                 let start = Instant::now();
                 (self.effect)(ctx);
-                let elapsed = start.elapsed();
+                let _elapsed = start.elapsed();
                 
                 #[cfg(debug_assertions)]
-                log::debug!("Effect '{}' took {:?}", name, elapsed);
+                log::debug!("Effect '{}' took {:?}", _name, _elapsed);
                 
                 // Could also record to metrics here if metrics feature is enabled
                 // #[cfg(feature = "effect-metrics")]
@@ -98,7 +99,8 @@ impl<M: Model> EffectBuilder<M> {
     ///
     /// In debug builds, this logs effect start/completion.
     /// In release builds, this is optimized away.
-    #[inline] 
+    #[inline]
+    #[must_use]
     pub fn traced(self) -> Self {
         Self {
             effect: Box::new(move |ctx| {
@@ -121,11 +123,12 @@ impl<M: Model> EffectBuilder<M> {
     ///
     /// This is only stored in debug builds.
     #[inline]
-    pub fn named(mut self, name: &'static str) -> Self {
+    #[must_use]
+    pub fn named(mut self, _name: &'static str) -> Self {
         #[cfg(debug_assertions)]
         {
             let mut info = self.debug_info.unwrap_or_default();
-            info.name = Some(name);
+            info.name = Some(_name);
             self.debug_info = Some(info);
         }
         self
@@ -134,12 +137,13 @@ impl<M: Model> EffectBuilder<M> {
     /// Add source location information (called by macro)
     #[doc(hidden)]
     #[inline]
-    pub fn with_location(mut self, file: &'static str, line: u32) -> Self {
+    #[must_use]
+    pub fn with_location(mut self, _file: &'static str, _line: u32) -> Self {
         #[cfg(debug_assertions)]
         {
             let mut info = self.debug_info.unwrap_or_default();
-            info.file = file;
-            info.line = line;
+            info.file = _file;
+            info.line = _line;
             self.debug_info = Some(info);
         }
         self
@@ -148,6 +152,7 @@ impl<M: Model> EffectBuilder<M> {
     /// Build the final effect
     ///
     /// This consumes the builder and returns the wrapped effect.
+    #[must_use]
     pub fn build(self) -> impl EffectFn<M> {
         self.effect
     }
