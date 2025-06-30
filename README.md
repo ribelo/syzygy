@@ -55,11 +55,11 @@ println!("Counter: {}", syzygy.model().value);
 
 Syzygy is designed for performance:
 
-- Model reads: ~14ns
-- Model updates: ~16ns  
+- Model reads: ~7ns
+- Model updates: ~7ns
 - Resource access: ~15ns
 - Effect dispatch: ~51ns
-- Async task spawn: ~780ns
+- Async task spawn: ~900ns
 
 See `benchmark_results/` for detailed performance analysis.
 

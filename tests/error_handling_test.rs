@@ -66,8 +66,8 @@ async fn test_resource_cloned_error() {
         .model(TestModel::default())
         .build();
 
-    // Test get_resource_cloned with missing resource
-    let result = syzygy.get_resource_cloned::<TestResource>();
+    // Test get_resource with missing resource (cloning is now user's responsibility)
+    let result = syzygy.get_resource::<TestResource>();
     assert!(result.is_err());
     
     let err = result.unwrap_err();
@@ -82,11 +82,11 @@ async fn test_resource_cloned_success() {
         .resource(TestResource { value: 100 })
         .build();
 
-    // Test get_resource_cloned with existing resource
-    let result = syzygy.get_resource_cloned::<TestResource>();
+    // Test get_resource with existing resource (cloning is now user's responsibility)
+    let result = syzygy.get_resource::<TestResource>();
     assert!(result.is_ok());
     
-    let resource = result.unwrap();
+    let resource = (*result.unwrap()).clone();
     assert_eq!(resource.value, 100);
 }
 
@@ -99,8 +99,8 @@ async fn test_error_composability() {
 
     // Test that errors can be properly handled in functions
     fn try_get_resource(syzygy: &Syzygy<TestModel>) -> Result<TestResource, Box<dyn std::error::Error>> {
-        let resource = syzygy.get_resource_cloned::<TestResource>()?;
-        Ok(resource)
+        let resource = syzygy.get_resource::<TestResource>()?;
+        Ok((*resource).clone())
     }
 
     let result = try_get_resource(&syzygy);

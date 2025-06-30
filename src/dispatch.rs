@@ -8,28 +8,13 @@ use tokio::sync::oneshot;
 use crate::{context::Context, error::DispatchError};
 use crate::model::ModelModify;
 #[cfg(feature = "async")]
-use crate::prelude::AsyncContext;
+use crate::prelude::SnapshotContext;
 use crate::{model::Model, syzygy::Syzygy};
 
 /// Type alias for effects to make the API clearer
 pub type Effect<M> = Box<dyn FnOnce(&mut Syzygy<M>) + Send + Sync + 'static>;
 
 pub trait EffectFn<M: Model>: FnOnce(&mut Syzygy<M>) + Send + Sync + 'static {}
-
-#[allow(dead_code)]
-pub struct DispatchContext<'a, M: Model> {
-    syzygy: &'a mut Syzygy<M>,
-}
-
-// impl<M: Model> Context for DispatchContext<'_, M> {
-//     type Model = M;
-// }
-
-// impl<M: Model> FromContext<Syzygy<M>> for DispatchContext<'_, M> {
-//     fn from_context(syzygy: &mut Syzygy<M>) -> Self {
-//         Self { syzygy }
-//     }
-// }
 
 impl<M, F> EffectFn<M> for F
 where
@@ -169,10 +154,10 @@ pub trait DispatchEffect: Context {
     #[inline]
     fn spawn<F>(&self, f: F)
     where
-        F: FnOnce(AsyncContext<Self::Model>) + Send + Sync + 'static,
+        F: FnOnce(SnapshotContext<Self::Model>) + Send + Sync + 'static,
     {
         let wrapped = move |syzygy: &mut Syzygy<Self::Model>| {
-            let ctx = AsyncContext::from(syzygy);
+            let ctx = SnapshotContext::from(syzygy);
             tokio::task::spawn_blocking(move || f(ctx));
         };
         self.dispatch(wrapped);
@@ -182,11 +167,11 @@ pub trait DispatchEffect: Context {
     #[inline]
     fn task<F, Fut>(&self, f: F)
     where
-        F: FnOnce(AsyncContext<Self::Model>) -> Fut + Send + Sync + 'static,
+        F: FnOnce(SnapshotContext<Self::Model>) -> Fut + Send + Sync + 'static,
         Fut: Future<Output = ()> + Send + 'static,
     {
         let wrapped = move |syzygy: &mut Syzygy<Self::Model>| {
-            let ctx = AsyncContext::from(syzygy);
+            let ctx = SnapshotContext::from(syzygy);
             tokio::spawn(async move {
                 (f)(ctx).await;
             });

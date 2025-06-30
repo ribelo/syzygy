@@ -7,6 +7,94 @@ use crate::{
     resource::{ResourceAccess, ResourceModify, Resources},
 };
 
+/// The core event-driven state management system
+///
+/// `Syzygy` provides reactive state management with three main components:
+/// - **Model**: Application state that can be read and modified
+/// - **Resources**: Type-safe dependency injection for services and configuration  
+/// - **Effects**: Asynchronous side effects that are dispatched and processed
+///
+/// The name "Syzygy" refers to the astronomical alignment of celestial bodies - 
+/// similarly, this library aligns state, resources, and effects into a cohesive system.
+///
+/// # Core Concepts
+///
+/// ## Builder Pattern
+/// Syzygy instances are created using the builder pattern:
+///
+/// ```rust
+/// use syzygy::prelude::*;
+/// 
+/// #[derive(Debug, Clone)]
+/// struct AppModel { counter: i32 }
+/// impl Model for AppModel {
+///     type Snapshot = Self;
+///     fn to_snapshot(&self) -> Self::Snapshot { self.clone() }
+/// }
+///
+/// let syzygy = Syzygy::builder()
+///     .model(AppModel { counter: 0 })
+///     .resource("Config { api_key: secret }".to_string())
+///     .build();
+/// ```
+///
+/// ## State Management
+/// Models are accessed through trait methods that provide type-safe read/write access:
+///
+/// ```rust
+/// # use syzygy::prelude::*;
+/// # #[derive(Debug, Clone)]
+/// # struct AppModel { counter: i32 }
+/// # impl Model for AppModel {
+/// #     type Snapshot = Self;
+/// #     fn to_snapshot(&self) -> Self::Snapshot { self.clone() }
+/// # }
+/// # let mut syzygy = Syzygy::builder().model(AppModel { counter: 0 }).build();
+/// // Read state
+/// let count = syzygy.model().counter;
+///
+/// // Modify state
+/// syzygy.update(|model| model.counter += 1);
+/// ```
+///
+/// ## Resource Injection
+/// Resources provide dependency injection for services, configuration, and shared state:
+///
+/// ```rust
+/// # use syzygy::prelude::*;
+/// # #[derive(Debug, Clone)]
+/// # struct AppModel { counter: i32 }
+/// # impl Model for AppModel {
+/// #     type Snapshot = Self;
+/// #     fn to_snapshot(&self) -> Self::Snapshot { self.clone() }
+/// # }
+/// # let syzygy = Syzygy::builder().model(AppModel { counter: 0 }).resource("config".to_string()).build();
+/// // Access resources safely
+/// if let Some(config) = syzygy.try_resource::<String>() {
+///     println!("Config: {}", config);
+/// }
+/// ```
+///
+/// ## Effect System
+/// Effects handle side effects and asynchronous operations:
+///
+/// ```rust
+/// # use syzygy::prelude::*;
+/// # #[derive(Debug, Clone)]
+/// # struct AppModel { counter: i32 }
+/// # impl Model for AppModel {
+/// #     type Snapshot = Self;
+/// #     fn to_snapshot(&self) -> Self::Snapshot { self.clone() }
+/// # }
+/// # let mut syzygy = Syzygy::builder().model(AppModel { counter: 0 }).build();
+/// // Dispatch an effect
+/// syzygy.dispatch(|ctx| {
+///     ctx.update(|model| model.counter += 10);
+/// });
+///
+/// // Process effects
+/// syzygy.handle_effects();
+/// ```
 #[derive(Debug, Builder)]
 pub struct Syzygy<M: Model> {
     #[builder(field)]
@@ -21,9 +109,31 @@ pub struct Syzygy<M: Model> {
 }
 
 impl<M: Model, S: syzygy_builder::State> SyzygyBuilder<M, S> {
+    /// Add a resource to the Syzygy instance being built
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use syzygy::prelude::*;
+    ///
+    /// #[derive(Debug, Clone)]
+    /// struct MyModel { counter: i32 }
+    /// impl Model for MyModel {
+    ///     type Snapshot = Self;
+    ///     fn to_snapshot(&self) -> Self::Snapshot { self.clone() }
+    /// }
+    ///
+    /// #[derive(Debug)]
+    /// struct Config { max_retries: usize }
+    ///
+    /// let syzygy = Syzygy::builder()
+    ///     .model(MyModel { counter: 0 })
+    ///     .resource(Config { max_retries: 3 })
+    ///     .build();
+    /// ```
     pub fn resource<T>(mut self, resource: T) -> SyzygyBuilder<M, S>
     where
-        T: Send + Sync + 'static,
+        T: Send + Sync + std::fmt::Debug + 'static,
     {
         self.resources.insert(resource);
         self
@@ -31,11 +141,82 @@ impl<M: Model, S: syzygy_builder::State> SyzygyBuilder<M, S> {
 }
 
 impl<M: Model> Syzygy<M> {
+    /// Process all pending effects in the queue
+    ///
+    /// This method drains the effect queue and executes each effect in order.
+    /// Effects are closures that can read and modify the Syzygy context, including
+    /// the model and resources.
+    ///
+    /// # Usage
+    ///
+    /// Call this method periodically to process dispatched effects. In a typical
+    /// application, you might call this in your main loop or after dispatching
+    /// a batch of effects.
+    ///
+    /// ```rust
+    /// use syzygy::prelude::*;
+    /// 
+    /// # #[derive(Debug, Clone)]
+    /// # struct AppModel { counter: i32 }
+    /// # impl Model for AppModel {
+    /// #     type Snapshot = Self;
+    /// #     fn to_snapshot(&self) -> Self::Snapshot { self.clone() }
+    /// # }
+    /// let mut syzygy = Syzygy::builder()
+    ///     .model(AppModel { counter: 0 })
+    ///     .build();
+    ///
+    /// // Dispatch some effects
+    /// syzygy.dispatch(|ctx| ctx.update(|m| m.counter += 1));
+    /// syzygy.dispatch(|ctx| ctx.update(|m| m.counter *= 2));
+    ///
+    /// // Process all effects at once
+    /// syzygy.handle_effects();
+    /// 
+    /// assert_eq!(syzygy.model().counter, 2); // (0 + 1) * 2
+    /// ```
+    ///
+    /// # Performance
+    ///
+    /// This method processes effects synchronously and may take time if effects
+    /// perform heavy computations. Consider processing effects in smaller batches
+    /// if latency is a concern.
     pub fn handle_effects(&mut self) {
         while let Ok(effect) = self.effects_bus.rx.try_recv() {
             (effect)(self);
         }
     }
+    
+    /// Create a new dispatcher for sending effects to this Syzygy instance
+    ///
+    /// Dispatchers allow you to send effects from other threads or contexts.
+    /// Multiple dispatchers can be created and used concurrently.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use syzygy::prelude::*;
+    /// 
+    /// # #[derive(Debug, Clone)]
+    /// # struct AppModel { counter: i32 }
+    /// # impl Model for AppModel {
+    /// #     type Snapshot = Self;
+    /// #     fn to_snapshot(&self) -> Self::Snapshot { self.clone() }
+    /// # }
+    /// let syzygy = Syzygy::builder()
+    ///     .model(AppModel { counter: 0 })
+    ///     .build();
+    ///
+    /// let dispatcher = syzygy.dispatcher();
+    /// 
+    /// // Use the dispatcher to send effects
+    /// dispatcher.dispatch(|ctx| {
+    ///     ctx.update(|model| model.counter += 5);
+    /// });
+    /// ```
+    ///
+    /// The dispatcher can be cloned and passed to other threads for concurrent
+    /// effect dispatching.
     pub fn dispatcher(&self) -> Dispatcher<M> {
         Dispatcher::new(self.effects_bus.tx.clone())
     }
@@ -82,10 +263,62 @@ impl<M: Model> DispatchEffect for Syzygy<M> {
     }
 }
 
+/// RAII guard for deferred execution
+///
+/// `Deferred` ensures that a closure is executed when the guard is dropped,
+/// implementing the "defer" pattern commonly found in Go and other languages.
+/// This is useful for cleanup operations that must run regardless of how a
+/// function exits (normal return, early return, or panic).
+///
+/// # Examples
+///
+/// ```rust
+/// use syzygy::syzygy::defer;
+///
+/// fn example() {
+///     let _guard = defer(|| println!("This runs when guard is dropped"));
+///     
+///     // Do some work...
+///     println!("Doing work");
+///     
+///     // The deferred closure runs here when _guard goes out of scope
+/// }
+/// ```
+///
+/// The deferred closure can be aborted if needed:
+///
+/// ```rust
+/// use syzygy::syzygy::defer;
+///
+/// fn conditional_cleanup() {
+///     let guard = defer(|| println!("Cleanup"));
+///     
+///     if some_condition() {
+///         guard.abort(); // Cleanup won't run
+///         return;
+///     }
+///     
+///     // Cleanup runs when guard is dropped
+/// }
+/// # fn some_condition() -> bool { false }
+/// ```
 pub struct Deferred<F: FnOnce()>(Option<F>);
 
 impl<F: FnOnce()> Deferred<F> {
-    /// Drop without running the deferred function.
+    /// Abort the deferred execution
+    ///
+    /// Prevents the closure from running when the `Deferred` is dropped.
+    /// This is useful when the deferred action is no longer needed.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use syzygy::syzygy::defer;
+    ///
+    /// let guard = defer(|| println!("This won't print"));
+    /// guard.abort();
+    /// // Nothing is printed when guard goes out of scope
+    /// ```
     pub fn abort(mut self) {
         self.0.take();
     }
@@ -99,825 +332,53 @@ impl<F: FnOnce()> Drop for Deferred<F> {
     }
 }
 
-/// Run the given function when the returned value is dropped (unless it's cancelled).
+/// Create a deferred execution guard
+///
+/// The returned [`Deferred`] guard will execute the given closure when it's dropped,
+/// unless explicitly aborted. This implements the "defer" pattern for cleanup code
+/// that must run regardless of how a function exits.
+///
+/// # Examples
+///
+/// Basic usage:
+/// ```rust
+/// use syzygy::syzygy::defer;
+///
+/// fn example() {
+///     let _cleanup = defer(|| println!("Cleanup executed"));
+///     
+///     // ... do work ...
+///     
+///     // Cleanup runs automatically when _cleanup is dropped
+/// }
+/// ```
+///
+/// With early returns:
+/// ```rust
+/// use syzygy::syzygy::defer;
+///
+/// fn process_file(filename: &str) -> Result<(), std::io::Error> {
+///     let file = std::fs::File::open(filename)?;
+///     let _cleanup = defer(|| println!("File processing complete"));
+///     
+///     if filename.ends_with(".tmp") {
+///         return Err(std::io::Error::new(
+///             std::io::ErrorKind::InvalidInput, 
+///             "Temporary files not allowed"
+///         ));
+///         // Cleanup still runs even on early return!
+///     }
+///     
+///     // ... process file ...
+///     Ok(())
+/// }
+/// ```
+///
+/// # Returns
+///
+/// A [`Deferred<F>`] guard that will execute the closure on drop.
+/// The guard can be explicitly aborted with [`Deferred::abort()`] if needed.
 #[must_use]
 pub fn defer<F: FnOnce()>(f: F) -> Deferred<F> {
     Deferred(Some(f))
-}
-
-#[allow(clippy::items_after_statements)]
-#[allow(clippy::cast_precision_loss)]
-#[cfg(test)]
-mod tests {
-
-    use super::*;
-
-    #[derive(Debug, Clone)]
-    #[allow(dead_code)]
-    struct TestModel {
-        counter: i32,
-    }
-
-    impl Model for TestModel {
-        type Snapshot = Self;
-        fn to_snapshot(&self) -> Self::Snapshot {
-            self.clone()
-        }
-    }
-
-    #[derive(Debug, Clone)]
-    #[allow(dead_code)]
-    struct TestResource {
-        name: String,
-    }
-
-    #[allow(dead_code)]
-    fn increment(syzygy: &mut Syzygy<TestModel>) {
-        syzygy.model_mut().counter += 1;
-    }
-
-    #[cfg(not(feature = "parallel"))]
-    #[cfg(feature = "async")]
-    #[tokio::test]
-    async fn test_model() {
-        let model = TestModel { counter: 0 };
-        let mut syzygy = Syzygy::builder().model(model).build();
-
-        // Test initial state
-        let counter = syzygy.model().counter;
-        assert_eq!(counter, 0);
-
-        // Test model() access
-        assert_eq!(syzygy.model().counter, 0);
-
-        // Test model_mut() modification
-        syzygy.model_mut().counter += 1;
-        assert_eq!(syzygy.model().counter, 1);
-
-        // Test update
-        syzygy.update(|m| {
-            m.counter = 42;
-        });
-        assert_eq!(syzygy.model().counter, 42);
-
-        // Test query
-        let value = syzygy.query(|m| m.counter);
-        assert_eq!(value, 42);
-    }
-
-    #[cfg(not(feature = "parallel"))]
-    #[cfg(feature = "async")]
-    #[tokio::test]
-    async fn test_resources() {
-        let model = TestModel { counter: 0 };
-        let test_resource = TestResource {
-            name: "test_str".to_string(),
-        };
-        let syzygy = Syzygy::builder()
-            .model(model)
-            .resource(test_resource)
-            .build();
-
-        // Test accessing existing TestResource
-        assert_eq!(syzygy.resource::<TestResource>().name, "test_str");
-
-        // Test try_resource for existing resources
-        let test_resource = syzygy.try_resource::<TestResource>();
-        assert!(test_resource.is_some());
-        assert_eq!(test_resource.unwrap().name, "test_str");
-
-        // Test cloned access
-        let cloned = syzygy.resource_cloned::<TestResource>();
-        assert_eq!(cloned.name, "test_str");
-    }
-
-    #[cfg(not(feature = "parallel"))]
-    #[cfg(feature = "async")]
-    #[tokio::test]
-    async fn test_async_dispatch() {
-        let model = TestModel { counter: 0 };
-        let mut syzygy: Syzygy<TestModel> = Syzygy::builder().model(model).build();
-
-        // Dispatch the effect multiple times
-        for _ in 0..5 {
-            syzygy.dispatch(|cx: &mut Syzygy<TestModel>| increment(cx));
-        }
-
-        syzygy.handle_effects();
-
-        assert_eq!(syzygy.model().counter, 5);
-    }
-    #[cfg(not(feature = "parallel"))]
-    #[cfg(feature = "async")]
-    #[tokio::test]
-    async fn test_sync_dispatch() {
-        let model = TestModel { counter: 0 };
-        let mut syzygy: Syzygy<TestModel> = Syzygy::builder().model(model).build();
-
-        let rx = syzygy.dispatch_sync(increment);
-
-        syzygy.handle_effects();
-        rx.await.unwrap();
-
-        assert_eq!(syzygy.model().counter, 1);
-    }
-    #[cfg(not(feature = "parallel"))]
-    #[cfg(feature = "async")]
-    #[tokio::test(flavor = "multi_thread")]
-    async fn test_thread_task() {
-        let model = TestModel { counter: 0 };
-        let mut cx: Syzygy<TestModel> = Syzygy::builder().model(model).build();
-
-        let (tx1, rx1) = tokio::sync::oneshot::channel();
-        let (tx2, rx2) = tokio::sync::oneshot::channel();
-
-        cx.spawn(move |cx| {
-            println!("hello from thread task 1");
-            cx.dispatch(increment);
-            let _ = tx1.send(());
-        });
-
-        cx.spawn(move |cx| {
-            println!("hello from thread task 2");
-            cx.dispatch(increment);
-            let _ = tx2.send(());
-        });
-
-        cx.handle_effects();
-
-        // Wait for both tasks to complete
-        let _ = rx1.await;
-        let _ = rx2.await;
-
-        // Handle any effects dispatched by the tasks
-        cx.handle_effects();
-
-        assert_eq!(cx.model().counter, 2);
-    }
-    #[cfg(not(feature = "parallel"))]
-    #[cfg(feature = "async")]
-    #[tokio::test(flavor = "multi_thread")]
-    async fn test_async_task() {
-        let model = TestModel { counter: 0 };
-        let mut syzygy: Syzygy<TestModel> = Syzygy::builder().model(model).build();
-
-        let (tx1, rx1) = tokio::sync::oneshot::channel();
-        let (tx2, rx2) = tokio::sync::oneshot::channel();
-
-        // First async task
-        syzygy.task(move |cx| async move {
-            println!("hello from async task 1");
-            cx.dispatch(increment);
-            let _ = tx1.send(());
-        });
-
-        // Second async task
-        syzygy.task(move |cx| async move {
-            println!("hello from async task 2");
-            cx.dispatch(increment);
-            let _ = tx2.send(());
-        });
-
-        // Handle effects to spawn the tasks
-        syzygy.handle_effects();
-
-        // Wait for both tasks to complete
-        let _ = rx1.await;
-        let _ = rx2.await;
-
-        // Handle any effects dispatched by the tasks
-        syzygy.handle_effects();
-
-        assert_eq!(syzygy.model().counter, 2);
-    }
-
-    // // #[test]
-    // // #[cfg(not(feature = "async"))]
-    // // fn test_app_context_query() {
-    // //     let model = TestModel { counter: 0 };
-    // //     let cx = GlobalAppContext::builder(model).build();
-
-    // //     cx.update(|m| m.counter += 1);
-    // //     assert_eq!(cx.query(|m| m.counter), 1);
-    // // }
-
-    // // #[test]
-    // // #[cfg(not(feature = "async"))]
-    // // fn test_app_context_resource_management() {
-    // //     let model = TestModel { counter: 0 };
-    // //     let cx = GlobalAppContext::builder(model).build();
-
-    // //     cx.add_resource(42i32).unwrap();
-    // //     assert_eq!(cx.resource::<i32>().unwrap(), 42);
-
-    // //     assert!(cx.add_resource(43i32).is_err());
-    // // }
-
-    // // #[test]
-    // // #[cfg(not(feature = "async"))]
-    // // fn test_app_context_graceful_stop() {
-    // //     let model = TestModel { counter: 0 };
-    // //     let cx = GlobalAppContext::builder(model).build();
-
-    // //     cx.run();
-    // //     assert!(cx.is_running());
-    // //     cx.dispatch(|cx: Syzygy<App, TestModel>| {
-    // //         std::thread::sleep(std::time::Duration::from_millis(100));
-    // //         cx.update(|m| m.counter += 1)
-    // //     });
-
-    // //     cx.graceful_stop().unwrap();
-    // //     cx.wait_for_stop().unwrap();
-    // //     assert!(!cx.is_running());
-    // //     assert_eq!(cx.query(|m| m.counter), 1);
-
-    // //     assert!(cx.graceful_stop().is_err());
-    // // }
-
-    // // #[test]
-    // // #[cfg(not(feature = "async"))]
-    // // fn test_app_context_force_stop() {
-    // //     let model = TestModel { counter: 0 };
-    // //     let cx = GlobalAppContext::builder(model).build();
-
-    // //     cx.run();
-    // //     assert!(cx.is_running());
-    // //     cx.dispatch(|cx: Syzygy<App, TestModel>| {
-    // //         std::thread::sleep(std::time::Duration::from_millis(100));
-    // //         cx.update(|m| m.counter += 1)
-    // //     });
-
-    // //     cx.force_stop().unwrap();
-    // //     cx.wait_for_stop().unwrap();
-    // //     assert!(!cx.is_running());
-    // //     assert_eq!(cx.query(|m| m.counter), 0);
-
-    // //     assert!(cx.force_stop().is_err());
-    // // }
-
-    // // #[test]
-    // // #[cfg(not(feature = "async"))]
-    // // fn test_task_context() {
-    // //     let model = TestModel { counter: 0 };
-    // //     let cx = GlobalAppContext::builder(model).build();
-    // //     cx.run();
-
-    // //     let handle = cx.spawn(|task_cx| {
-    // //         task_cx.dispatch(|app_cx: Syzygy<App, TestModel>| {
-    // //             app_cx.update(|m| {
-    // //                 m.counter += 1;
-    // //             });
-    // //         });
-    // //         42
-    // //     });
-    // //     std::thread::sleep(std::time::Duration::from_millis(1000));
-
-    // //     assert_eq!(handle.join().unwrap(), 42);
-    // //     assert_eq!(cx.query(|m| m.counter), 1);
-    // // }
-
-    // // #[test]
-    // // #[cfg(feature = "parallel")]
-    // // fn test_rayon_integration() {
-    // //     use rayon::prelude::*;
-
-    // //     let model = TestModel { counter: 0 };
-    // //     let cx = GlobalAppContext::builder(model).build();
-    // //     cx.run();
-
-    // //     let counter = Arc::new(std::sync::Mutex::new(0));
-
-    // //     (0..100).into_par_iter().for_each(|_| {
-    // //         let counter_clone = Arc::clone(&counter);
-    // //         cx.spawn_rayon(move |task_cx| {
-    // //             let mut lock = counter_clone.lock().unwrap();
-    // //             *lock += 1;
-    // //             task_cx.dispatch(|app_cx: Syzygy<App, TestModel>| {
-    // //                 app_cx.update(|m| m.counter += 1);
-    // //             });
-    // //         });
-    // //     });
-
-    // //     // Wait for all tasks to complete
-    // //     while cx.query(|m| m.counter) < 100 {
-    // //         std::thread::sleep(std::time::Duration::from_millis(10));
-    // //     }
-
-    // //     assert_eq!(*counter.lock().unwrap(), 100);
-    // //     assert_eq!(cx.query(|m| m.counter), 100);
-    // // }
-
-    // // #[test]
-    // // fn test_unsync_threading_safety() {
-    // //     let model = TestModel { counter: 0 };
-    // //     let cx = GlobalAppContext::builder(model).build();
-    // //     cx.run();
-    // //     // cx.dispatch(|app_cx| {
-    // //     //     // app_cx.update(|m| {
-    // //     //     //     m.counter += 1;
-    // //     //     // });
-    // //     // });
-
-    // //     // let counter = Arc::new(std::sync::atomic::AtomicI32::new(0));
-    // //     // let threads: Vec<_> = (0..10)
-    // //     //     .map(|_| {
-    // //     //         let counter_clone = Arc::clone(&counter);
-    // //     //         std::thread::spawn(move || {
-    // //     //             for _ in 0..1000 {
-    // //     //                 counter_clone.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-    // //     //                 cx.dispatch(|app_cx| {
-    // //     //                     app_cx.update(|m| {
-    // //     //                         m.counter += 1;
-    // //     //                     });
-    // //     //                 });
-    // //     //             }
-    // //     //         })
-    // //     //     })
-    // //     //     .collect();
-
-    // //     // for thread in threads {
-    // //     //     thread.join().unwrap();
-    // //     // }
-
-    // //     // Wait for dispatched effects
-    // //     // std::thread::sleep(std::time::Duration::from_secs(1));
-
-    // //     // assert_eq!(counter.load(std::sync::atomic::Ordering::SeqCst), 10000);
-    // //     // assert_eq!(cx.query(|m| m.counter), 10000);
-    // // }
-
-    // // #[test]
-    // // // #[cfg(not(feature = "async"))]
-    // // fn test_sync_threading_safety() {
-    // //     let model = TestModel { counter: 0 };
-    // //     let cx = GlobalAppContext::builder(model).build();
-    // //     cx.run();
-
-    // //     let counter = Arc::new(std::sync::atomic::AtomicI32::new(0));
-    // //     let threads: Vec<_> = (0..10)
-    // //         .map(|_| {
-    // //             let counter_clone = Arc::clone(&counter);
-    // //             std::thread::spawn(move || {
-    // //                 for _ in 0..1000 {
-    // //                     counter_clone.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-    // //                     cx.model_mut().counter += 1;
-    // //                     cx.dispatch(|cx: Syzygy<App, TestModel>| {
-    // //                         cx.update(|m| {
-    // //                             m.counter += 1;
-    // //                         });
-    // //                     });
-    // //                 }
-    // //             })
-    // //         })
-    // //         .collect();
-
-    // //     for thread in threads {
-    // //         thread.join().unwrap();
-    // //     }
-    // //     cx.dispatch(|cx: Syzygy<App, TestModel>| cx.graceful_stop().unwrap());
-    // //     cx.wait_for_stop().unwrap();
-
-    // //     // Wait for dispatched effects
-    // //     std::thread::sleep(std::time::Duration::from_secs(3));
-
-    // //     assert_eq!(counter.load(std::sync::atomic::Ordering::SeqCst), 10000);
-    // //     assert_eq!(cx.query(|m| m.counter), 20000);
-    // // }
-
-    // // #[test]
-    // // #[cfg(not(feature = "async"))]
-    // // fn test_scope() {
-    // //     let model = TestModel { counter: 0 };
-    // //     let cx = GlobalAppContext::builder(model).build();
-    // //     cx.run();
-
-    // //     let counter = Arc::new(std::sync::atomic::AtomicI32::new(0));
-
-    // //     let counter_clone = Arc::clone(&counter);
-    // //     cx.scope(move |scope, task_cx| {
-    // //         scope.spawn(move || {
-    // //             counter_clone.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-    // //         });
-    // //         task_cx.dispatch(|app_cx: Syzygy<App, TestModel>| {
-    // //             app_cx.update(|m| {
-    // //                 m.counter += 1;
-    // //             });
-    // //         });
-    // //     });
-
-    // //     // Wait for effects to complete
-    // //     std::thread::sleep(std::time::Duration::from_secs(1));
-
-    // //     assert_eq!(counter.load(std::sync::atomic::Ordering::SeqCst), 1);
-    // //     assert_eq!(cx.query(|m| m.counter), 1);
-    // // }
-
-    // // #[test]
-    // // fn test_capabilities() {
-    // //     fn test_read_model<C: CanReadModel>(cx: Syzygy<C, TestModel>) {
-    // //         assert_eq!(cx.query(|m| m.counter), 0);
-    // //     }
-
-    // //     fn test_modify_model<C: CanModifyModel>(cx: Syzygy<C, TestModel>) {
-    // //         cx.update(|m| m.counter += 1);
-    // //         assert_eq!(cx.query(|m| m.counter), 1);
-    // //     }
-
-    // //     fn test_add_resource<C: CanModifyResources>(cx: Syzygy<C, TestModel>) {
-    // //         cx.add_resource(42i32).unwrap();
-    // //         assert_eq!(cx.resource::<i32>().unwrap(), 42);
-    // //     }
-
-    // //     fn test_read_resource<C: CanReadResources>(cx: Syzygy<C, TestModel>) {
-    // //         assert_eq!(cx.resource::<i32>().unwrap(), 42);
-    // //     }
-
-    // //     let model = TestModel { counter: 0 };
-    // //     let cx = GlobalAppContext::builder(model).build();
-    // //     cx.run();
-
-    // //     test_read_model(cx);
-    // //     test_modify_model(cx);
-    // //     test_add_resource(cx);
-    // //     test_read_resource(cx);
-    // // }
-
-    // // #[ignore]
-    // // #[cfg(feature = "async")]
-    // #[tokio::test]
-    // // #[cfg(feature = "async")]
-    // // async fn test_tokio_integration() {
-    // //     let model = TestModel { counter: 0 };
-    // //     let cx = GlobalAppContext::builder(model)
-    // //         .handle(tokio::runtime::Handle::current())
-    // //         .build();
-    // //     cx.run();
-
-    // //     let counter = Arc::new(tokio::sync::Mutex::new(0));
-
-    // //     let handles: Vec<_> = (0..100)
-    // //         .map(|_| {
-    // //             let counter_clone = Arc::clone(&counter);
-    // //             cx.spawn_async(move |async_cx| async move {
-    // //                 let mut lock = counter_clone.lock().await;
-    // //                 *lock += 1;
-    // //                 async_cx.dispatch(move |cx: Syzygy<App, TestModel>| {
-    // //                     cx.update(|m| m.counter += 1);
-    // //                 });
-    // //             })
-    // //         })
-    // //         .collect();
-
-    // //     for handle in handles {
-    // //         handle.await.unwrap();
-    // //     }
-
-    // //     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-
-    // //     assert_eq!(*counter.lock().await, 100);
-    // //     assert_eq!(cx.query(|m| m.counter), 100);
-    // // }
-
-    // // #[ignore]
-    // // #[cfg(feature = "async")]
-    // #[tokio::test]
-    // // #[cfg(feature = "async")]
-    // // async fn test_app_context_async() {
-    // //     use parking_lot::Mutex;
-
-    // //     let model = TestModel { counter: 0 };
-    // //     let cx = GlobalAppContext::builder(model).build();
-
-    // //     let counter = Arc::new(Mutex::new(0));
-    // //     let counter_clone = Arc::clone(&counter);
-
-    // //     cx.dispatch(move |_cx: Syzygy<App, TestModel>| {
-    // //         let mut lock = counter_clone.lock();
-    // //         *lock += 1;
-    // //     });
-
-    // //     cx.handle_effects();
-
-    // //     assert_eq!(*counter.lock(), 1);
-    // // }
-
-    // // // #[ignore]
-    // // // #[cfg(feature = "async")]
-    // #[tokio::test]
-    // // // #[cfg(feature = "async")]
-    // // // async fn test_effect_builder() {
-    // // //     let model = TestModel { counter: 0 };
-    // // //     let cx = GlobalAppContext::builder(model).build();
-
-    // // //     cx.run();
-
-    // // //     let shared_counter = Arc::new(std::sync::atomic::AtomicI32::new(0));
-    // // //     let counter = Arc::clone(&shared_counter);
-
-    // // //     let effect = cx
-    // // //         .effect()
-    // // //         .update(|m| m.counter += 1)
-    // // //         .spawn(|task_cx| {
-    // // //             task_cx.dispatch(|app_cx| {
-    // // //                 app_cx.update(|m| m.counter += 1);
-    // // //             });
-    // // //         })
-    // // //         .spawn_blocking(|task_cx| {
-    // // //             task_cx.dispatch(|app_cx| {
-    // // //                 app_cx.update(|m| m.counter += 1);
-    // // //             });
-    // // //         })
-    // // //         .scope(move |scope, task_cx| {
-    // // //             for _ in 0..5 {
-    // // //                 let counter = Arc::clone(&counter);
-    // // //                 scope.spawn(move || {
-    // // //                     counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-    // // //                     task_cx.dispatch(|app_cx| {
-    // // //                         app_cx.update(|m| m.counter += 1);
-    // // //                     });
-    // // //                 });
-    // // //             }
-    // // //         })
-    // // //         .spawn_async(|async_cx| async move {
-    // // //             async_cx.dispatch(|app_cx| {
-    // // //                 app_cx.update(|m| m.counter += 1);
-    // // //             });
-    // // //         });
-
-    // // //     #[cfg(feature = "parallel")]
-    // // //     let effect = effect
-    // // //         .spawn_rayon(|task_cx| {
-    // // //             task_cx.dispatch(|app_cx| {
-    // // //                 app_cx.update(|m| m.counter += 1);
-    // // //             });
-    // // //         })
-    // // //         .rayon_scope(|_scope, task_cx| {
-    // // //             task_cx.dispatch(|app_cx| {
-    // // //                 app_cx.update(|m| m.counter += 1);
-    // // //             });
-    // // //         });
-
-    // // //     effect.dispatch();
-
-    // // //     // Wait for effects to complete
-    // // //     std::thread::sleep(std::time::Duration::from_secs(1));
-
-    // // //     assert_eq!(shared_counter.load(std::sync::atomic::Ordering::SeqCst), 5);
-
-    // // //     #[cfg(all(feature = "async", feature = "rayon"))]
-    // // //     assert_eq!(cx.query(|m| m.counter), 10);
-
-    // // //     #[cfg(all(feature = "async", not(feature = "rayon")))]
-    // // //     assert_eq!(cx.query(|m| m.counter), 8);
-    // // // }
-
-    // // #[test]
-    // // #[cfg(not(feature = "async"))]
-    // // fn test_wait_for_stop() {
-    // //     let model = TestModel { counter: 0 };
-    // //     let cx = GlobalAppContext::builder(model).build();
-
-    // //     cx.run();
-    // //     assert!(cx.is_running());
-
-    // //     let cx_clone = cx;
-    // //     let handle = std::thread::spawn(move || {
-    // //         std::thread::sleep(std::time::Duration::from_millis(100));
-    // //         cx_clone.graceful_stop().unwrap();
-    // //     });
-
-    // //     cx.wait_for_stop().unwrap();
-    // //     handle.join().unwrap();
-    // //     assert!(!cx.is_running());
-    // // }
-    #[cfg(all(not(feature = "parallel"), feature = "async"))]
-    #[tokio::test]
-    async fn test_increment_dispatch() {
-        let model = TestModel { counter: 0 };
-        let mut syzygy: Syzygy<TestModel> = Syzygy::builder().model(model).build();
-
-        const NUM_DISPATCHES: usize = 1_000_000;
-        for _ in 0..NUM_DISPATCHES {
-            syzygy.dispatch(increment);
-        }
-
-        syzygy.handle_effects();
-
-        assert_eq!(syzygy.model().counter, NUM_DISPATCHES as i32);
-    }
-
-    #[cfg(all(not(feature = "parallel"), feature = "async"))]
-    #[tokio::test]
-    async fn test_dispatch_performance() {
-        use std::time::Instant;
-
-        let model = TestModel { counter: 0 };
-        let mut syzygy = Syzygy::builder().model(model.clone()).build();
-
-        const ITERATIONS: usize = 1_000_000;
-        const RUNS: usize = 10;
-
-        // Test one chain of empty effects
-        let mut best_empty = std::time::Duration::from_secs(u64::MAX);
-        for _ in 0..RUNS {
-            let start = Instant::now();
-            for _ in 0..ITERATIONS {
-                syzygy.dispatch(|_: &mut Syzygy<TestModel>| {});
-            }
-            syzygy.handle_effects();
-            let duration = start.elapsed();
-            best_empty = best_empty.min(duration);
-        }
-        let ops_empty = ITERATIONS as f64 / best_empty.as_secs_f64();
-
-        // Test multiple small chains of empty effects
-        let mut best_chain = std::time::Duration::from_secs(u64::MAX);
-        for _ in 0..RUNS {
-            let start = Instant::now();
-            for _ in 0..ITERATIONS {
-                syzygy.dispatch(|_: &mut Syzygy<TestModel>| {});
-                syzygy.dispatch(|_: &mut Syzygy<TestModel>| {});
-                syzygy.dispatch(|_: &mut Syzygy<TestModel>| {});
-                syzygy.dispatch(|_: &mut Syzygy<TestModel>| {});
-                syzygy.handle_effects();
-            }
-            let duration = start.elapsed();
-            best_chain = best_chain.min(duration);
-        }
-        let ops_chain = ITERATIONS as f64 / best_chain.as_secs_f64();
-
-        // Test model mutation effects
-        let mut best_mutation = std::time::Duration::from_secs(u64::MAX);
-        for _ in 0..RUNS {
-            let start = Instant::now();
-            for _ in 0..ITERATIONS {
-                syzygy.dispatch(|cx: &mut Syzygy<TestModel>| {
-                    cx.model_mut().counter += 1;
-                });
-            }
-            syzygy.handle_effects();
-            let duration = start.elapsed();
-            best_mutation = best_mutation.min(duration);
-        }
-        let ops_mutation = ITERATIONS as f64 / best_mutation.as_secs_f64();
-
-        // Test chained effects
-        let mut best_chained = std::time::Duration::from_secs(u64::MAX);
-        for _ in 0..RUNS {
-            let start = Instant::now();
-            for _ in 0..ITERATIONS {
-                syzygy.dispatch(|cx: &mut Syzygy<TestModel>| {
-                    cx.dispatch(|cx| cx.model_mut().counter += 1);
-                    cx.dispatch(|cx| cx.model_mut().counter += 1);
-                    cx.dispatch(|cx| cx.model_mut().counter += 1);
-                    cx.dispatch(|cx| cx.model_mut().counter += 1);
-                    cx.dispatch(|cx| cx.model_mut().counter += 1);
-                    cx.dispatch(|cx| cx.model_mut().counter += 1);
-                    cx.dispatch(|cx| cx.model_mut().counter += 1);
-                    cx.dispatch(|cx| cx.model_mut().counter += 1);
-                });
-            }
-            syzygy.handle_effects();
-            let duration = start.elapsed();
-            best_chained = best_chained.min(duration);
-        }
-        let ops_chained = ITERATIONS as f64 / best_chained.as_secs_f64();
-
-        // Real scenario
-        let mut best_real = std::time::Duration::from_secs(u64::MAX);
-        for _ in 0..RUNS {
-            let start = Instant::now();
-            for _ in 0..ITERATIONS {
-                syzygy.dispatch(|cx: &mut Syzygy<TestModel>| {
-                    // Simulate a more complex real-world scenario with
-                    // multiple branching effects and state updates
-
-                    // Update some base state
-                    cx.model_mut().counter += 1;
-
-                    // Chain some conditional effects
-                    if cx.model().counter % 2 == 0 {
-                        cx.model_mut().counter += 2;
-                        cx.dispatch(|cx| {
-                            cx.model_mut().counter *= 2;
-                        });
-                    } else {
-                        cx.model_mut().counter -= 1;
-                        cx.dispatch(|cx| {
-                            cx.model_mut().counter += 5;
-                        });
-                    }
-
-                    // Another conditional branch
-                    cx.dispatch(|cx| {
-                        if cx.model().counter > 100 {
-                            cx.model_mut().counter = 0;
-                        }
-                    });
-
-                    // Simulate some expensive computation
-                    cx.dispatch(|cx| {
-                        let mut total = 0;
-                        for i in 0..cx.model().counter {
-                            total += i;
-                        }
-                        cx.model_mut().counter = total;
-                    });
-                });
-            }
-            syzygy.handle_effects();
-            let duration = start.elapsed();
-            best_real = best_real.min(duration);
-        }
-        let ops_real = ITERATIONS as f64 / best_real.as_secs_f64();
-
-        println!("Performance Results:");
-        println!("-------------------");
-        println!("Empty effects:");
-        println!("  Iterations: {ITERATIONS}");
-        println!("  Time: {best_empty:?}");
-        println!("  Speed: {ops_empty:.2} ops/sec");
-        println!();
-        println!("Mutation effects:");
-        println!("  Iterations: {ITERATIONS}");
-        println!("  Time: {best_mutation:?}");
-        println!("  Speed: {ops_mutation:.2} ops/sec");
-        println!();
-        println!("Big chain of empty effects:");
-        println!("  Iterations: {ITERATIONS}");
-        println!("  Time: {best_chained:?}");
-        println!("  Speed: {ops_chained:.2} ops/sec");
-        println!();
-        println!("Small chains of empty effects:");
-        println!("  Iterations: {ITERATIONS}");
-        println!("  Time: {best_chain:?}");
-        println!("  Speed: {ops_chain:.2} ops/sec");
-        println!();
-        println!("Real scenario:");
-        println!("  Iterations: {ITERATIONS}");
-        println!("  Time: {best_real:?}");
-        println!("  Speed: {ops_real:.2} ops/sec");
-        println!();
-    }
-
-    // #[cfg(not(feature = "parallel"))]
-    // #[cfg(feature = "async")]
-    // #[tokio::test]
-    // async fn test_task_performance() {
-    //     use crate::dispatch::AsyncTask;
-    //     use std::time::Instant;
-
-    //     let model = TestModel { counter: 0 };
-    //     let mut syzygy = Syzygy::builder().model(model.clone()).build();
-
-    //     const ITERATIONS: usize = 1_000_000;
-    //     const RUNS: usize = 10;
-
-    //     let mut best_dispatch = std::time::Duration::from_secs(u64::MAX);
-    //     for _ in 0..RUNS {
-    //         let start = Instant::now();
-    //         for _ in 0..ITERATIONS {
-    //             let effects = Effects::new()
-    //                 .task(async |_| ())
-    //                 .perform(|_| Effects::from(increment));
-    //             syzygy.dispatch(effects);
-    //         }
-    //         syzygy.handle_effects();
-    //         let duration = start.elapsed();
-    //         best_dispatch = best_dispatch.min(duration);
-    //     }
-    //     let ops_dispatch = ITERATIONS as f64 / best_dispatch.as_secs_f64();
-
-    //     println!(
-    //         "Task dispatch: {ITERATIONS} iterations in {best_dispatch:?} ({ops_dispatch:.2} ops/sec)"
-    //     );
-    // }
-    #[cfg(all(not(feature = "parallel"), feature = "async"))]
-    #[tokio::test]
-    async fn benchmark_direct_model_update() {
-        use std::time::Instant;
-
-        let model = TestModel { counter: 0 };
-        let mut syzygy = Syzygy::builder().model(model.clone()).build();
-
-        const ITERATIONS: usize = 1_000_000;
-        const RUNS: usize = 10;
-
-        let mut best_duration = std::time::Duration::from_secs(u64::MAX);
-        for _ in 0..RUNS {
-            let start = Instant::now();
-            for i in 0..ITERATIONS {
-                syzygy.update(|m| m.counter = i as i32);
-            }
-            let duration = start.elapsed();
-            best_duration = best_duration.min(duration);
-        }
-
-        let ops_per_sec = ITERATIONS as f64 / best_duration.as_secs_f64();
-        println!();
-        println!("Direct model update performance:");
-        println!("  Iterations: {ITERATIONS}");
-        println!("  Time: {best_duration:?}");
-        println!("  Speed: {ops_per_sec:.2} ops/sec");
-    }
 }

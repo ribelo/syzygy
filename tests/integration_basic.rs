@@ -126,8 +126,8 @@ async fn test_resource_access() {
     let resource = syzygy.resource::<TestResource>();
     assert_eq!(resource.value, 42);
 
-    // Test cloned resource access
-    let cloned = syzygy.resource_cloned::<TestResource>();
+    // Test cloned resource access (now user's responsibility to clone the Arc)
+    let cloned = (*syzygy.resource::<TestResource>()).clone();
     assert_eq!(cloned.value, 42);
 
     // Test try_resource

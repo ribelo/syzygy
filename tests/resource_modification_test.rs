@@ -56,13 +56,12 @@ async fn test_update_resource() {
         .resource(TestResource { value: 42 })
         .build();
 
-    // Test update_resource - this just gives access to the resource
-    let result = syzygy.update_resource::<TestResource, _, _>(|resource| {
+    // Test resource access and computation - resources are now accessed as Arc<T>
+    let result = syzygy.with_resource::<TestResource, _, _>(|resource| {
         resource.value * 2
     });
     
-    assert!(result.is_some());
-    assert_eq!(result.unwrap(), 84);
+    assert_eq!(result, 84);
 
     // Original resource unchanged (immutable)
     let resource = syzygy.resource::<TestResource>();
@@ -76,13 +75,14 @@ async fn test_resource_replacement() {
         .model(TestModel::default())
         .build();
 
-    // Add a resource
-    syzygy.add_resource(TestResource { value: 10 });
+    // Set a resource (replaces add_resource)
+    let old = syzygy.set_resource(TestResource { value: 10 });
+    assert!(old.is_none()); // No previous resource
     let resource = syzygy.resource::<TestResource>();
     assert_eq!(resource.value, 10);
 
-    // Replace it
-    let old = syzygy.replace_resource(TestResource { value: 20 });
+    // Replace it (set_resource returns the old value)
+    let old = syzygy.set_resource(TestResource { value: 20 });
     assert!(old.is_some());
     assert_eq!(old.unwrap().value, 10);
 
@@ -100,13 +100,13 @@ async fn test_batch_resource_operations() {
         .resource(MutableResource::new())
         .build();
 
-    // Test batch operations through with_resources_mut
-    let result = syzygy.with_resources_mut(|resources| {
-        // Count resources
-        resources.len()
-    });
-
-    assert_eq!(result, 2); // TestResource + MutableResource
+    // Test that resources are accessible individually
+    // (Batch operations removed - resources should be accessed one at a time)
+    let test_resource = syzygy.try_resource::<TestResource>();
+    let mutable_resource = syzygy.try_resource::<MutableResource>();
+    
+    assert!(test_resource.is_some());
+    assert!(mutable_resource.is_some());
 }
 
 #[cfg(feature = "async")]
@@ -166,8 +166,8 @@ async fn test_expect_resource() {
     let resource = syzygy.expect_resource::<TestResource>("should exist");
     assert_eq!(resource.value, 42);
 
-    // Test expect_resource_cloned with existing resource
-    let cloned = syzygy.expect_resource_cloned::<TestResource>("should exist");
+    // Test expect_resource with cloning (now user's responsibility)
+    let cloned = (*syzygy.expect_resource::<TestResource>("should exist")).clone();
     assert_eq!(cloned.value, 42);
 }
 
