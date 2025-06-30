@@ -10,7 +10,7 @@ use crate::{
 
 use bon::Builder;
 
-use super::{Context, FromContext};
+use super::Context;
 
 #[derive(Debug, Builder)]
 pub struct AsyncContext<M: Model> {
@@ -33,8 +33,18 @@ impl<M: Model> Clone for AsyncContext<M> {
     }
 }
 
-impl<M: Model> FromContext<Syzygy<M>> for AsyncContext<M> {
-    fn from_context(context: &Syzygy<M>) -> Self {
+impl<M: Model> From<&Syzygy<M>> for AsyncContext<M> {
+    fn from(context: &Syzygy<M>) -> Self {
+        Self {
+            model_snapshot: Arc::new(context.model.to_snapshot()),
+            resources: context.resources().clone(),
+            effects_tx: context.effects_bus.tx.clone(),
+        }
+    }
+}
+
+impl<M: Model> From<&mut Syzygy<M>> for AsyncContext<M> {
+    fn from(context: &mut Syzygy<M>) -> Self {
         Self {
             model_snapshot: Arc::new(context.model.to_snapshot()),
             resources: context.resources().clone(),

@@ -7,10 +7,4 @@ pub trait Context: Sized {
     type Model: Model;
 }
 
-pub trait FromContext<T>: Context {
-    fn from_context(context: &T) -> Self;
-}
-
-pub trait IntoContext<T>: Context {
-    fn into_context(self) -> T;
-}
+// Removed FromContext and IntoContext traits in favor of standard From/Into traits

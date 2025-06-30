@@ -6,8 +6,6 @@ use derive_more::derive::{Deref, DerefMut};
 use tokio::sync::oneshot;
 
 use crate::context::Context;
-#[cfg(feature = "async")]
-use crate::context::FromContext;
 use crate::model::ModelModify;
 #[cfg(feature = "async")]
 use crate::prelude::AsyncContext;
@@ -151,7 +149,7 @@ pub trait DispatchEffect: Context {
         F: FnOnce(AsyncContext<Self::Model>) + Send + Sync + 'static,
     {
         let wrapped = move |syzygy: &mut Syzygy<Self::Model>| {
-            let ctx = AsyncContext::from_context(syzygy);
+            let ctx = AsyncContext::from(syzygy);
             tokio::task::spawn_blocking(move || f(ctx));
         };
         self.dispatch(wrapped);
@@ -165,7 +163,7 @@ pub trait DispatchEffect: Context {
         Fut: Future<Output = ()> + Send + 'static,
     {
         let wrapped = move |syzygy: &mut Syzygy<Self::Model>| {
-            let ctx = AsyncContext::from_context(syzygy);
+            let ctx = AsyncContext::from(syzygy);
             tokio::spawn(async move {
                 (f)(ctx).await;
             });
