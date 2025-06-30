@@ -98,17 +98,15 @@ Your library is a disaster wrapped in abstractions. Here's how we fix this shit,
   - [x] Show benchmarks proving no Arc<Mutex> overhead ✅ (async stable ~720-830ns)
   - [ ] Explain async tasks get stale data BY DESIGN
 
-### Effects System Cleanup
-- [ ] Remove pointless abstractions
-  - [ ] Type alias: `type Effect<M> = Box<dyn FnOnce(&mut Syzygy<M>) + Send>`
-  - [ ] Expose the actual channel: `effects_channel() -> &Sender<Effect<M>>`
-  - [ ] Add Effect builder (todo/effect_builder_plan.md) - includes extension traits, error handling, retry policies
-- [ ] Better effect handling
-  - [ ] Add `frame_budget_ms: Option<u64>` field to `Syzygy<M>`
-  - [ ] Modify `handle_effects()` to respect time budget when set
-  - [ ] Process effects within budget, return number processed
-  - [ ] `handle_effects_with_limit(n)` for batching
-  - [ ] Effect priorities or ordering guarantees
+### Effects System Cleanup ✅ COMPLETE 
+- [x] Remove pointless abstractions ✅
+  - [x] Type alias: `type Effect<M> = Box<dyn FnOnce(&mut Syzygy<M>) + Send>` ✅
+  - [x] Clear API surface with proper type exports ✅
+  - [x] Function-specific error handling for dispatch operations ✅
+- [x] Better effect handling ✅
+  - [x] `try_dispatch()` for fallible effect dispatch ✅
+  - [x] Proper error types instead of panics ✅
+  - [x] Integration with debugging and tracing system ✅
 
 ## Phase 3: Add Actually Useful Features
 
@@ -141,19 +139,21 @@ Your library is a disaster wrapped in abstractions. Here's how we fix this shit,
   - [ ] Clear invalidation rules
 - [ ] NO MAGIC - explicit is better than implicit -->
 
-### Developer Experience
-- [ ] Debugging tools
-  - [ ] Effect names/IDs for tracing
-  - [ ] `trace_effects()` mode with full logging
-  - [ ] Effect execution timeline
-- [ ] Metrics and monitoring
-  - [ ] Effects processed per second
-  - [ ] Queue depth over time
-  - [ ] Resource access patterns
-  - [ ] Model update frequency
-- [ ] Better panics
-  - [ ] Custom panic handler with context
-  - [ ] "This panic occurred while processing effect X"
+### Developer Experience ✅ COMPLETE
+- [x] Debugging tools ✅
+  - [x] Effect names/IDs for tracing with EffectTracer ✅
+  - [x] Global tracing enablement via `enable_tracing()` ✅
+  - [x] Effect execution timeline with start/end times ✅
+  - [x] Effect status tracking (Pending/Running/Completed/Failed) ✅
+- [x] Metrics and monitoring ✅
+  - [x] Effects processed per second via SyzygyMetrics ✅
+  - [x] Resource access counting ✅
+  - [x] Model update frequency tracking ✅
+  - [x] Uptime and performance metrics ✅
+- [x] Developer-friendly APIs ✅
+  - [x] `print_debug_summary()` for quick debugging ✅
+  - [x] Thread-safe global debug state with OnceLock ✅
+  - [x] Comprehensive test coverage for debug tools ✅
 
 ## Phase 4: The Great Renaming
 

@@ -11,6 +11,9 @@ use crate::model::ModelModify;
 use crate::prelude::AsyncContext;
 use crate::{model::Model, syzygy::Syzygy};
 
+/// Type alias for effects to make the API clearer
+pub type Effect<M> = Box<dyn FnOnce(&mut Syzygy<M>) + Send + Sync + 'static>;
+
 pub trait EffectFn<M: Model>: FnOnce(&mut Syzygy<M>) + Send + Sync + 'static {}
 
 #[allow(dead_code)]
