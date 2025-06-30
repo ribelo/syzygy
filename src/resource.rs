@@ -6,7 +6,7 @@ use std::{
 
 use rustc_hash::FxHashMap;
 
-use crate::context::Context;
+use crate::{context::Context, error::ResourceNotFoundError};
 
 #[derive(Default, Debug, Clone)]
 pub struct Resources(Arc<RwLock<FxHashMap<TypeId, Box<dyn Any + Send + Sync>>>>);
@@ -129,6 +129,24 @@ pub trait ResourceAccess: Context {
     {
         self.try_resource_cloned::<T>()
             .unwrap_or_else(|| panic!("Resource of type {} not found: {}", std::any::type_name::<T>(), msg))
+    }
+
+    /// Get a resource or return a ResourceNotFoundError
+    fn get_resource<T>(&self) -> Result<Arc<T>, ResourceNotFoundError>
+    where
+        T: Send + Sync + 'static,
+    {
+        self.try_resource::<T>()
+            .ok_or_else(|| ResourceNotFoundError::new::<T>())
+    }
+
+    /// Get a cloned resource or return a ResourceNotFoundError
+    fn get_resource_cloned<T>(&self) -> Result<T, ResourceNotFoundError>
+    where
+        T: Clone + Send + Sync + 'static,
+    {
+        self.try_resource_cloned::<T>()
+            .ok_or_else(|| ResourceNotFoundError::new::<T>())
     }
 }
 

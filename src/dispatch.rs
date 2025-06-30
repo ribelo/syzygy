@@ -5,7 +5,7 @@ use derive_more::derive::{Deref, DerefMut};
 #[cfg(feature = "async")]
 use tokio::sync::oneshot;
 
-use crate::context::Context;
+use crate::{context::Context, error::DispatchError};
 use crate::model::ModelModify;
 #[cfg(feature = "async")]
 use crate::prelude::AsyncContext;
@@ -110,12 +110,32 @@ pub trait DispatchEffect: Context {
             .expect("Effect receiver should be active");
     }
 
+    /// Try to send an effect, returning an error if the channel is closed
+    #[inline]
+    fn try_send_effect<F>(&self, effect: F) -> Result<(), DispatchError>
+    where
+        F: EffectFn<Self::Model> + Send + Sync + 'static,
+    {
+        self.effects_tx()
+            .send(Box::new(effect))
+            .map_err(|_| DispatchError::new("effect channel is closed"))
+    }
+
     #[inline]
     fn dispatch<F>(&self, effect: F)
     where
         F: EffectFn<Self::Model> + Send + Sync + 'static,
     {
         self.send_effect(effect);
+    }
+
+    /// Try to dispatch an effect, returning an error if it fails
+    #[inline]
+    fn try_dispatch<F>(&self, effect: F) -> Result<(), DispatchError>
+    where
+        F: EffectFn<Self::Model> + Send + Sync + 'static,
+    {
+        self.try_send_effect(effect)
     }
 
     #[cfg(feature = "async")]
