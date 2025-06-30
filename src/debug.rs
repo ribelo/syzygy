@@ -14,7 +14,7 @@ use std::{
 pub struct EffectId(u64);
 
 impl EffectId {
-    fn next() -> Self {
+    pub fn next() -> Self {
         static COUNTER: AtomicU64 = AtomicU64::new(1);
         Self(COUNTER.fetch_add(1, Ordering::SeqCst))
     }

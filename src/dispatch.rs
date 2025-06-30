@@ -193,4 +193,43 @@ pub trait DispatchEffect: Context {
         };
         self.send_effect(wrapped);
     }
+
+    /// Dispatch with builder pattern
+    #[inline]
+    fn dispatch_builder<F>(&self, f: F)
+    where
+        F: FnOnce() -> crate::effect_builder::EffectBuilder<Self::Model>,
+    {
+        self.dispatch(f().build());
+    }
+
+    /// Convenience method for timed effects
+    #[inline]
+    fn dispatch_timed<F>(&self, name: &'static str, effect: F)
+    where
+        F: EffectFn<Self::Model> + 'static,
+    {
+        use crate::effect_builder::EffectExt;
+        self.dispatch(effect.timed(name).build());
+    }
+
+    /// Convenience method for traced effects
+    #[inline]
+    fn dispatch_traced<F>(&self, effect: F)
+    where
+        F: EffectFn<Self::Model> + 'static,
+    {
+        use crate::effect_builder::EffectExt;
+        self.dispatch(effect.traced().build());
+    }
+
+    /// Convenience method for named effects
+    #[inline]
+    fn dispatch_named<F>(&self, name: &'static str, effect: F)
+    where
+        F: EffectFn<Self::Model> + 'static,
+    {
+        use crate::effect_builder::EffectExt;
+        self.dispatch(effect.named(name).build());
+    }
 }
