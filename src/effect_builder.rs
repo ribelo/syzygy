@@ -197,56 +197,6 @@ pub trait EffectExt<M: Model>: EffectFn<M> + Sized + 'static {
 /// Blanket implementation for all effect functions
 impl<M: Model, F: EffectFn<M> + 'static> EffectExt<M> for F {}
 
-/// Macro for creating effects with location information
-#[macro_export]
-macro_rules! effect {
-    // Plain effect
-    ($effect:expr) => {
-        $effect
-    };
-
-    // Named effect with automatic location
-    (named $name:literal => $effect:expr) => {
-        $crate::effect_builder::EffectBuilder::new($effect)
-            .named($name)
-            .with_location(file!(), line!())
-            .build()
-    };
-
-    // Timed effect
-    (timed $name:literal => $effect:expr) => {
-        $crate::effect_builder::EffectBuilder::new($effect)
-            .timed($name)
-            .with_location(file!(), line!())
-            .build()
-    };
-
-    // Traced effect
-    (traced => $effect:expr) => {
-        $crate::effect_builder::EffectBuilder::new($effect)
-            .traced()
-            .with_location(file!(), line!())
-            .build()
-    };
-
-    // Combined timed and traced
-    (timed $name:literal, traced => $effect:expr) => {
-        $crate::effect_builder::EffectBuilder::new($effect)
-            .timed($name)
-            .traced()
-            .with_location(file!(), line!())
-            .build()
-    };
-
-    // Combined named and traced
-    (named $name:literal, traced => $effect:expr) => {
-        $crate::effect_builder::EffectBuilder::new($effect)
-            .named($name)
-            .traced()
-            .with_location(file!(), line!())
-            .build()
-    };
-}
 
 #[cfg(test)]
 mod tests {
@@ -329,18 +279,18 @@ mod tests {
     }
 
     #[test]
-    fn test_effect_macro() {
-        let plain = effect!(|ctx: &mut Syzygy<TestModel>| {
+    fn test_effect_ext_api() {
+        let plain = |ctx: &mut Syzygy<TestModel>| {
             ctx.update(|m| m.counter += 1);
-        });
+        };
 
-        let timed = effect!(timed "macro_test" => |ctx: &mut Syzygy<TestModel>| {
+        let timed = (|ctx: &mut Syzygy<TestModel>| {
             ctx.update(|m| m.counter += 2);
-        });
+        }).timed("ext_test").build();
 
-        let traced = effect!(traced => |ctx: &mut Syzygy<TestModel>| {
+        let traced = (|ctx: &mut Syzygy<TestModel>| {
             ctx.update(|m| m.counter += 3);
-        });
+        }).traced().build();
 
         let mut syzygy = Syzygy::builder().model(TestModel { counter: 0 }).build();
 
@@ -355,32 +305,28 @@ mod tests {
     }
 
     #[test]
-    fn test_dispatch_integration() {
+    fn test_new_simplified_api() {
         let syzygy = Syzygy::builder().model(TestModel { counter: 0 }).build();
 
-        // Test dispatch_builder
-        syzygy.dispatch_builder(|| {
-            EffectBuilder::new(|ctx: &mut Syzygy<TestModel>| {
+        // The one true way: write a closure, chain builder methods, dispatch
+        syzygy.dispatch(
+            (|ctx: &mut Syzygy<TestModel>| {
                 ctx.update(|m| m.counter += 10);
-            }).timed("builder_test")
-        });
+            }).timed("builder_test").build()
+        );
 
-        // Test dispatch_timed
-        syzygy.dispatch_timed("timed_test", |ctx: &mut Syzygy<TestModel>| {
-            ctx.update(|m| m.counter += 20);
-        });
+        syzygy.dispatch(
+            (|ctx: &mut Syzygy<TestModel>| {
+                ctx.update(|m| m.counter += 20);
+            }).traced().build()
+        );
 
-        // Test dispatch_traced
-        syzygy.dispatch_traced(|ctx: &mut Syzygy<TestModel>| {
-            ctx.update(|m| m.counter += 30);
-        });
-
-        // Test dispatch_named
-        syzygy.dispatch_named("named_test", |ctx: &mut Syzygy<TestModel>| {
-            ctx.update(|m| m.counter += 40);
-        });
+        syzygy.dispatch(
+            (|ctx: &mut Syzygy<TestModel>| {
+                ctx.update(|m| m.counter += 30);
+            }).named("test_effect").build()
+        );
 
         // Just verify methods can be called - the actual effect processing is tested elsewhere
-        // In real usage, the effect processing would happen in a separate thread/task
     }
 }

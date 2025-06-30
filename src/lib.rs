@@ -14,6 +14,8 @@ pub mod prelude {
     pub use crate::context::snapshot::SnapshotContext;
     pub use crate::context::Context;
     pub use crate::dispatch::{DispatchEffect, Effect};
+    #[cfg(feature = "async")]
+    pub use crate::dispatch::AsyncDispatchExt;
     pub use crate::effect_builder::{EffectBuilder, EffectExt};
     pub use crate::model::{Model, ModelAccess, ModelModify, ModelSnapshotAccess};
     pub use crate::resource::{ResourceAccess, ResourceModify, Resources};
