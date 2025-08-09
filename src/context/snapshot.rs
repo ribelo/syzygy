@@ -36,12 +36,12 @@ use super::Context;
 /// # }
 /// # #[tokio::main]
 /// # async fn main() {
-/// let syzygy = Syzygy::builder()
+/// let syzygy: Syzygy<AppModel> = Syzygy::builder()
 ///     .model(AppModel { counter: 42 })
 ///     .build();
 ///
 /// // Create a snapshot context
-/// let snapshot_ctx = SnapshotContext::from(&syzygy);
+/// let snapshot_ctx: SnapshotContext<AppModel> = SnapshotContext::from(&syzygy);
 ///
 /// // Use in async operations
 /// tokio::spawn(async move {
@@ -51,17 +51,18 @@ use super::Context;
 /// # }
 /// ```
 #[derive(Debug, Builder)]
-pub struct SnapshotContext<M: Model> {
+pub struct SnapshotContext<M: Model, E = ()> {
     model_snapshot: Arc<M::Snapshot>,
     resources: Resources,
-    effects_tx: EffectsTx<M>,
+    effects_tx: EffectsTx<M, E>,
 }
 
-impl<M: Model> Context for SnapshotContext<M> {
+impl<M: Model, E> Context for SnapshotContext<M, E> {
     type Model = M;
+    type Event = E;
 }
 
-impl<M: Model> Clone for SnapshotContext<M> {
+impl<M: Model, E> Clone for SnapshotContext<M, E> {
     fn clone(&self) -> Self {
         Self {
             model_snapshot: Arc::clone(&self.model_snapshot),
@@ -71,8 +72,8 @@ impl<M: Model> Clone for SnapshotContext<M> {
     }
 }
 
-impl<M: Model> From<&Syzygy<M>> for SnapshotContext<M> {
-    fn from(context: &Syzygy<M>) -> Self {
+impl<M: Model, E> From<&Syzygy<M, E>> for SnapshotContext<M, E> {
+    fn from(context: &Syzygy<M, E>) -> Self {
         Self {
             model_snapshot: Arc::new(context.model.to_snapshot()),
             resources: context.resources().clone(),
@@ -81,8 +82,8 @@ impl<M: Model> From<&Syzygy<M>> for SnapshotContext<M> {
     }
 }
 
-impl<M: Model> From<&mut Syzygy<M>> for SnapshotContext<M> {
-    fn from(context: &mut Syzygy<M>) -> Self {
+impl<M: Model, E> From<&mut Syzygy<M, E>> for SnapshotContext<M, E> {
+    fn from(context: &mut Syzygy<M, E>) -> Self {
         Self {
             model_snapshot: Arc::new(context.model.to_snapshot()),
             resources: context.resources().clone(),
@@ -91,26 +92,39 @@ impl<M: Model> From<&mut Syzygy<M>> for SnapshotContext<M> {
     }
 }
 
-impl<M: Model> ModelSnapshotAccess for SnapshotContext<M> {
+impl<M: Model, E> ModelSnapshotAccess for SnapshotContext<M, E> {
     fn snapshot(&self) -> &<<Self as Context>::Model as Model>::Snapshot {
         &self.model_snapshot
     }
 }
 
-impl<M: Model> ModelSnapshotCreate for SnapshotContext<M> {
+impl<M: Model, E> ModelSnapshotCreate for SnapshotContext<M, E> {
     fn create_snapshot(&self) -> <M as Model>::Snapshot {
         (*self.model_snapshot).clone()
     }
 }
 
-impl<M: Model> ResourceAccess for SnapshotContext<M> {
+impl<M: Model, E> ResourceAccess for SnapshotContext<M, E> {
     fn resources(&self) -> &Resources {
         &self.resources
     }
 }
 
-impl<M: Model> DispatchEffect for SnapshotContext<M> {
-    fn effects_tx(&self) -> &EffectsTx<M> {
+impl<M: Model, E> DispatchEffect for SnapshotContext<M, E> {
+    fn effects_tx(&self) -> &EffectsTx<M, E> {
         &self.effects_tx
+    }
+}
+
+impl<M: Model, E> SnapshotContext<M, E> {
+
+    /// Dispatch a closure-based effect from snapshot context
+    pub fn dispatch_closure<F>(&self, f: F)
+    where
+        F: FnOnce(&mut crate::syzygy::Syzygy<M, E>) + Send + 'static,
+    {
+        use crate::event::Message;
+        self.effects_tx.send(Message::Closure(Box::new(f)))
+            .expect("Effect receiver should be active");
     }
 }

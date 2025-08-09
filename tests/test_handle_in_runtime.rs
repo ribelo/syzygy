@@ -20,14 +20,14 @@ async fn test_handle_effects_in_runtime() {
     }
     
     let flag = Arc::new(AtomicBool::new(false));
-    let mut syzygy = Syzygy::builder()
+    let mut syzygy: Syzygy<TestModel, ()> = Syzygy::builder()
         .model(TestModel { value: 0 })
         .build();
 
     let flag_clone = flag.clone();
     
     // Dispatch a regular effect that spawns a task
-    syzygy.dispatch(move |ctx| {
+    syzygy.dispatch_closure(move |ctx: &mut Syzygy<TestModel, ()>| {
         println!("Effect running, spawning task...");
         let tracker = ctx.task_tracker.clone();
         tracker.spawn(async move {

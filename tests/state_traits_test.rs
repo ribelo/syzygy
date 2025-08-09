@@ -37,7 +37,7 @@ struct AnotherResource {
 #[cfg(feature = "async")]
 #[tokio::test]
 async fn test_state_access_trait() {
-    let syzygy = Syzygy::builder()
+    let syzygy: Syzygy<TestModel, ()> = Syzygy::builder()
         .model(TestModel::default())
         .resource(TestResource { value: 42 })
         .resource(AnotherResource {
@@ -62,7 +62,7 @@ async fn test_state_access_trait() {
 #[cfg(feature = "async")]
 #[tokio::test]
 async fn test_state_modify_trait() {
-    let mut syzygy = Syzygy::builder()
+    let mut syzygy: Syzygy<TestModel, ()> = Syzygy::builder()
         .model(TestModel::default())
         .resource(TestResource { value: 10 })
         .build();
@@ -96,7 +96,7 @@ async fn test_state_modify_trait() {
 #[cfg(feature = "async")]
 #[tokio::test]
 async fn test_state_traits_integration() {
-    let mut syzygy = Syzygy::builder()
+    let mut syzygy: Syzygy<TestModel, ()> = Syzygy::builder()
         .model(TestModel::default())
         .resource(TestResource { value: 5 })
         .resource(AnotherResource {

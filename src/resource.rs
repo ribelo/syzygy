@@ -8,29 +8,8 @@ use rustc_hash::FxHashMap;
 
 use crate::{context::Context, error::ResourceNotFoundError};
 
-/// Trait for cloneable type-erased resources
-pub trait CloneableAny: Any + Send + Sync + std::fmt::Debug {
-    fn clone_box(&self) -> Box<dyn CloneableAny>;
-    fn as_any(&self) -> &dyn Any;
-}
 
-impl<T: Clone + Send + Sync + std::fmt::Debug + 'static> CloneableAny for T {
-    fn clone_box(&self) -> Box<dyn CloneableAny> {
-        Box::new(self.clone())
-    }
-
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-}
-
-impl Clone for Box<dyn CloneableAny> {
-    fn clone(&self) -> Box<dyn CloneableAny> {
-        self.clone_box()
-    }
-}
-
-/// Copy-on-write resource storage with lock-free reads
+/// Copy-on-write resource storage with lock-minimal reads
 ///
 /// This structure uses a double-Arc pattern for superior performance:
 /// - Outer Arc allows cheap cloning of the Resources struct
@@ -48,7 +27,7 @@ impl Clone for Box<dyn CloneableAny> {
 /// 2. Arc::make_mut() ensures unique HashMap access (COW)
 /// 3. Modify HashMap and release write lock
 #[derive(Debug, Clone)]
-pub struct Resources(Arc<RwLock<Arc<FxHashMap<TypeId, Box<dyn CloneableAny>>>>>);
+pub struct Resources(Arc<RwLock<Arc<FxHashMap<TypeId, Arc<dyn Any + Send + Sync>>>>>);
 
 impl Default for Resources {
     fn default() -> Self {
@@ -57,7 +36,7 @@ impl Default for Resources {
 }
 
 impl Deref for Resources {
-    type Target = RwLock<Arc<FxHashMap<TypeId, Box<dyn CloneableAny>>>>;
+    type Target = RwLock<Arc<FxHashMap<TypeId, Arc<dyn Any + Send + Sync>>>>;
 
     fn deref(&self) -> &Self::Target {
         &self.0
@@ -73,18 +52,17 @@ impl Resources {
     /// 3. Inserts the resource and releases the lock
     pub fn insert<T>(&self, value: T)
     where
-        T: Send + Sync + std::fmt::Debug + 'static,
+        T: Send + Sync + 'static,
     {
         let ty = TypeId::of::<T>();
-        let arc_value = Arc::new(value);
-        let boxed_value = Box::new(arc_value);
+        let arc_value: Arc<dyn Any + Send + Sync> = Arc::new(value);
 
         let mut write_guard = self.write().expect("Failed to acquire write lock");
         let map = Arc::make_mut(&mut write_guard);
-        map.insert(ty, boxed_value);
+        map.insert(ty, arc_value);
     }
 
-    /// Get a resource using lock-free read semantics
+    /// Get a resource using lock-minimal read semantics
     ///
     /// This operation:
     /// 1. Acquires a read lock (fast, shared with other readers)
@@ -94,7 +72,7 @@ impl Resources {
     #[must_use]
     pub fn get<T>(&self) -> Option<Arc<T>>
     where
-        T: Send + Sync + std::fmt::Debug + 'static,
+        T: Send + Sync + 'static,
     {
         let ty = TypeId::of::<T>();
 
@@ -107,8 +85,34 @@ impl Resources {
 
         // Step 4: Perform lookup with zero contention
         map.get(&ty)
-            .and_then(|boxed_value| boxed_value.as_any().downcast_ref::<Arc<T>>())
-            .cloned()
+            .and_then(|arc_any| Arc::clone(arc_any).downcast::<T>().ok())
+    }
+
+    /// Check if a resource of type T exists without allocating
+    #[must_use]
+    pub fn contains<T>(&self) -> bool
+    where
+        T: Send + Sync + 'static,
+    {
+        let ty = TypeId::of::<T>();
+        let map = {
+            let read_guard = self.read().expect("Failed to acquire read lock");
+            Arc::clone(&read_guard)
+        };
+        map.contains_key(&ty)
+    }
+
+    /// Insert a resource from an existing Arc to avoid extra allocation
+    pub fn insert_arc<T>(&self, arc_value: Arc<T>)
+    where
+        T: Send + Sync + 'static,
+    {
+        let ty = TypeId::of::<T>();
+        let arc_any: Arc<dyn Any + Send + Sync> = arc_value;
+
+        let mut write_guard = self.write().expect("Failed to acquire write lock");
+        let map = Arc::make_mut(&mut write_guard);
+        map.insert(ty, arc_any);
     }
 }
 
@@ -116,7 +120,7 @@ pub trait ResourceAccess: Context {
     fn resources(&self) -> &Resources;
     fn resource<T>(&self) -> Arc<T>
     where
-        T: Send + Sync + std::fmt::Debug + 'static,
+        T: Send + Sync + 'static,
     {
         self.resources()
             .get::<T>()
@@ -124,13 +128,13 @@ pub trait ResourceAccess: Context {
     }
     fn try_resource<T>(&self) -> Option<Arc<T>>
     where
-        T: Send + Sync + std::fmt::Debug + 'static,
+        T: Send + Sync + 'static,
     {
         self.resources().get::<T>()
     }
     fn with_resource<T, F, R>(&self, f: F) -> R
     where
-        T: Send + Sync + std::fmt::Debug + 'static,
+        T: Send + Sync + 'static,
         F: FnOnce(&T) -> R,
     {
         let arc = self.resource::<T>();
@@ -140,7 +144,7 @@ pub trait ResourceAccess: Context {
     /// Get a resource or panic with a descriptive error message
     fn expect_resource<T>(&self, msg: &str) -> Arc<T>
     where
-        T: Send + Sync + std::fmt::Debug + 'static,
+        T: Send + Sync + 'static,
     {
         self.try_resource::<T>().unwrap_or_else(|| {
             panic!(
@@ -154,10 +158,18 @@ pub trait ResourceAccess: Context {
     /// Get a resource or return a ResourceNotFoundError
     fn get_resource<T>(&self) -> Result<Arc<T>, ResourceNotFoundError>
     where
-        T: Send + Sync + std::fmt::Debug + 'static,
+        T: Send + Sync + 'static,
     {
         self.try_resource::<T>()
             .ok_or_else(|| ResourceNotFoundError::new::<T>())
+    }
+
+    /// Check if a resource of type T exists
+    fn contains_resource<T>(&self) -> bool
+    where
+        T: Send + Sync + 'static,
+    {
+        self.resources().contains::<T>()
     }
 }
 
@@ -178,7 +190,7 @@ pub trait ResourceModify: ResourceAccess {
     /// #     type Snapshot = Self;
     /// #     fn to_snapshot(&self) -> Self::Snapshot { self.clone() }
     /// # }
-    /// let mut syzygy = Syzygy::builder()
+    /// let mut syzygy: Syzygy<AppModel> = Syzygy::builder()
     ///     .model(AppModel { counter: 0 })
     ///     .build();
     ///
@@ -192,24 +204,23 @@ pub trait ResourceModify: ResourceAccess {
     /// ```
     fn set_resource<T>(&self, value: T) -> Option<Arc<T>>
     where
-        T: Send + Sync + std::fmt::Debug + 'static,
+        T: Send + Sync + 'static,
     {
-        let arc_value = Arc::new(value);
-        let boxed_value = Box::new(arc_value.clone());
+        let arc_value: Arc<dyn Any + Send + Sync> = Arc::new(value);
 
         let mut write_guard = self
             .resources()
             .write()
             .expect("Failed to acquire write lock");
         let map = Arc::make_mut(&mut write_guard);
-        let old_boxed = map.insert(TypeId::of::<T>(), boxed_value);
+        let old_arc = map.insert(TypeId::of::<T>(), arc_value);
 
-        old_boxed.and_then(|old| old.as_any().downcast_ref::<Arc<T>>().cloned())
+        old_arc.and_then(|old| old.downcast::<T>().ok())
     }
 
     fn remove_resource<T>(&self) -> Option<Arc<T>>
     where
-        T: Send + Sync + std::fmt::Debug + 'static,
+        T: Send + Sync + 'static,
     {
         let mut write_guard = self
             .resources()
@@ -218,6 +229,6 @@ pub trait ResourceModify: ResourceAccess {
         let map = Arc::make_mut(&mut write_guard);
         let removed = map.remove(&TypeId::of::<T>());
 
-        removed.and_then(|boxed| boxed.as_any().downcast_ref::<Arc<T>>().cloned())
+        removed.and_then(|arc| arc.downcast::<T>().ok())
     }
 }

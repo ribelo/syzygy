@@ -12,7 +12,7 @@ impl Model for TestModel {
     }
 }
 
-fn increment(cx: &mut Syzygy<TestModel>) {
+fn increment(cx: &mut Syzygy<TestModel, ()>) {
     cx.update(|m| {
         m.counter += 1;
     });
@@ -23,11 +23,11 @@ fn increment(cx: &mut Syzygy<TestModel>) {
 #[tokio::test]
 async fn test_async_dispatch() {
     let model = TestModel { counter: 0 };
-    let mut syzygy: Syzygy<TestModel> = Syzygy::builder().model(model).build();
+    let mut syzygy: Syzygy<TestModel, ()> = Syzygy::builder().model(model).build();
 
     // Dispatch the effect multiple times
     for _ in 0..5 {
-        syzygy.dispatch(|cx: &mut Syzygy<TestModel>| increment(cx));
+        syzygy.dispatch_closure(|cx: &mut Syzygy<TestModel, ()>| increment(cx));
     }
 
     syzygy.handle_effects();
@@ -40,7 +40,7 @@ async fn test_async_dispatch() {
 #[tokio::test]
 async fn test_sync_dispatch() {
     let model = TestModel { counter: 0 };
-    let mut syzygy: Syzygy<TestModel> = Syzygy::builder().model(model).build();
+    let mut syzygy: Syzygy<TestModel, ()> = Syzygy::builder().model(model).build();
 
     let rx = syzygy.dispatch_sync(increment);
 

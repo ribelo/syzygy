@@ -51,7 +51,7 @@ impl MutableResource {
 #[cfg(feature = "async")]
 #[tokio::test]
 async fn test_update_resource() {
-    let syzygy = Syzygy::builder()
+    let syzygy: Syzygy<TestModel, ()> = Syzygy::builder()
         .model(TestModel::default())
         .resource(TestResource { value: 42 })
         .build();
@@ -69,7 +69,7 @@ async fn test_update_resource() {
 #[cfg(feature = "async")]
 #[tokio::test]
 async fn test_resource_replacement() {
-    let syzygy = Syzygy::builder().model(TestModel::default()).build();
+    let syzygy: Syzygy<TestModel, ()> = Syzygy::builder().model(TestModel::default()).build();
 
     // Set a resource (replaces add_resource)
     let old = syzygy.set_resource(TestResource { value: 10 });
@@ -90,7 +90,7 @@ async fn test_resource_replacement() {
 #[cfg(feature = "async")]
 #[tokio::test]
 async fn test_batch_resource_operations() {
-    let syzygy = Syzygy::builder()
+    let syzygy: Syzygy<TestModel, ()> = Syzygy::builder()
         .model(TestModel::default())
         .resource(TestResource { value: 1 })
         .resource(MutableResource::new())
@@ -108,7 +108,7 @@ async fn test_batch_resource_operations() {
 #[cfg(feature = "async")]
 #[tokio::test]
 async fn test_resource_removal() {
-    let syzygy = Syzygy::builder()
+    let syzygy: Syzygy<TestModel, ()> = Syzygy::builder()
         .model(TestModel::default())
         .resource(TestResource { value: 42 })
         .build();
@@ -130,7 +130,7 @@ async fn test_resource_removal() {
 #[cfg(feature = "async")]
 #[tokio::test]
 async fn test_mutable_resource_pattern() {
-    let syzygy = Syzygy::builder()
+    let syzygy: Syzygy<TestModel, ()> = Syzygy::builder()
         .model(TestModel::default())
         .resource(MutableResource::new())
         .build();
@@ -153,7 +153,7 @@ async fn test_mutable_resource_pattern() {
 #[cfg(feature = "async")]
 #[tokio::test]
 async fn test_expect_resource() {
-    let syzygy = Syzygy::builder()
+    let syzygy: Syzygy<TestModel, ()> = Syzygy::builder()
         .model(TestModel::default())
         .resource(TestResource { value: 42 })
         .build();
@@ -171,7 +171,7 @@ async fn test_expect_resource() {
 #[tokio::test]
 #[should_panic(expected = "Resource of type resource_modification_test::TestResource not found")]
 async fn test_resource_panic_with_better_message() {
-    let syzygy = Syzygy::builder().model(TestModel::default()).build();
+    let syzygy: Syzygy<TestModel, ()> = Syzygy::builder().model(TestModel::default()).build();
 
     // This should panic with a descriptive error message
     let _resource = syzygy.resource::<TestResource>();
@@ -183,7 +183,7 @@ async fn test_resource_panic_with_better_message() {
     expected = "Resource of type resource_modification_test::TestResource not found: custom error message"
 )]
 async fn test_expect_resource_panic_with_custom_message() {
-    let syzygy = Syzygy::builder().model(TestModel::default()).build();
+    let syzygy: Syzygy<TestModel, ()> = Syzygy::builder().model(TestModel::default()).build();
 
     // This should panic with a custom error message
     let _resource = syzygy.expect_resource::<TestResource>("custom error message");

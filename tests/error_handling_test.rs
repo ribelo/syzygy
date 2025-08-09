@@ -28,7 +28,7 @@ struct TestResource {
 #[cfg(feature = "async")]
 #[tokio::test]
 async fn test_resource_not_found_error() {
-    let syzygy = Syzygy::builder().model(TestModel::default()).build();
+    let syzygy: Syzygy<TestModel, ()> = Syzygy::builder().model(TestModel::default()).build();
 
     // Test get_resource with missing resource
     let result = syzygy.get_resource::<TestResource>();
@@ -44,11 +44,11 @@ async fn test_resource_not_found_error() {
 #[cfg(feature = "async")]
 #[tokio::test]
 async fn test_resource_found_success() {
-    let syzygy = Syzygy::builder()
+    let syzygy: Syzygy<TestModel, ()> = Syzygy::builder()
         .model(TestModel::default())
         .resource(TestResource { value: 42 })
         .build();
-
+    
     // Test get_resource with existing resource
     let result = syzygy.get_resource::<TestResource>();
     assert!(result.is_ok());
@@ -60,7 +60,7 @@ async fn test_resource_found_success() {
 #[cfg(feature = "async")]
 #[tokio::test]
 async fn test_resource_cloned_error() {
-    let syzygy = Syzygy::builder().model(TestModel::default()).build();
+    let syzygy: Syzygy<TestModel, ()> = Syzygy::builder().model(TestModel::default()).build();
 
     // Test get_resource with missing resource (cloning is now user's responsibility)
     let result = syzygy.get_resource::<TestResource>();
@@ -73,7 +73,7 @@ async fn test_resource_cloned_error() {
 #[cfg(feature = "async")]
 #[tokio::test]
 async fn test_resource_cloned_success() {
-    let syzygy = Syzygy::builder()
+    let syzygy: Syzygy<TestModel, ()> = Syzygy::builder()
         .model(TestModel::default())
         .resource(TestResource { value: 100 })
         .build();
@@ -89,7 +89,7 @@ async fn test_resource_cloned_success() {
 #[cfg(feature = "async")]
 #[tokio::test]
 async fn test_error_composability() {
-    let syzygy = Syzygy::builder().model(TestModel::default()).build();
+    let syzygy: Syzygy<TestModel, ()> = Syzygy::builder().model(TestModel::default()).build();
 
     // Test that errors can be properly handled in functions
     fn try_get_resource(
@@ -110,7 +110,7 @@ async fn test_error_composability() {
 #[cfg(feature = "async")]
 #[tokio::test]
 async fn test_error_vs_option_apis() {
-    let syzygy = Syzygy::builder().model(TestModel::default()).build();
+    let syzygy: Syzygy<TestModel, ()> = Syzygy::builder().model(TestModel::default()).build();
 
     // Option API (try_resource) returns None
     let option_result = syzygy.try_resource::<TestResource>();

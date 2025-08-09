@@ -64,7 +64,7 @@ impl GlobalCounter {
 #[cfg(feature = "async")]
 #[tokio::test]
 async fn test_builder_pattern() {
-    let syzygy = Syzygy::builder()
+    let syzygy: Syzygy<TestModel, ()> = Syzygy::builder()
         .model(TestModel {
             counter: 5,
             name: "builder_test".to_string(),
@@ -87,11 +87,11 @@ async fn test_builder_pattern() {
     assert_eq!(counter.get(), 0);
 }
 
-fn increment_counter(syzygy: &mut Syzygy<TestModel>) {
+fn increment_counter(syzygy: &mut Syzygy<TestModel, ()>) {
     syzygy.model_mut().counter += 1;
 }
 
-fn use_resources(syzygy: &mut Syzygy<TestModel>) {
+fn use_resources(syzygy: &mut Syzygy<TestModel, ()>) {
     let test_res = syzygy.resource::<TestResource>();
     let counter = syzygy.resource::<GlobalCounter>();
 
@@ -102,12 +102,12 @@ fn use_resources(syzygy: &mut Syzygy<TestModel>) {
 #[cfg(feature = "async")]
 #[tokio::test]
 async fn test_basic_effects() {
-    let mut syzygy = Syzygy::builder()
+    let mut syzygy: Syzygy<TestModel, ()> = Syzygy::builder()
         .model(TestModel::default())
         .resource(TestResource { value: 42 })
         .build();
 
-    syzygy.dispatch(increment_counter);
+    syzygy.dispatch_closure(increment_counter);
     syzygy.handle_effects();
 
     assert_eq!(syzygy.model().counter, 1);
@@ -116,7 +116,7 @@ async fn test_basic_effects() {
 #[cfg(feature = "async")]
 #[tokio::test]
 async fn test_resource_access() {
-    let syzygy = Syzygy::builder()
+    let syzygy: Syzygy<TestModel, ()> = Syzygy::builder()
         .model(TestModel::default())
         .resource(TestResource { value: 42 })
         .resource(GlobalCounter::new())
@@ -139,7 +139,7 @@ async fn test_resource_access() {
 #[cfg(feature = "async")]
 #[tokio::test]
 async fn test_model_operations() {
-    let mut syzygy = Syzygy::builder().model(TestModel::default()).build();
+    let mut syzygy: Syzygy<TestModel, ()> = Syzygy::builder().model(TestModel::default()).build();
 
     // Test query
     let initial_counter = syzygy.query(|model| model.counter);
@@ -158,7 +158,7 @@ async fn test_model_operations() {
 #[cfg(feature = "async")]
 #[tokio::test]
 async fn test_basic_async_task() {
-    let mut syzygy = Syzygy::builder()
+    let mut syzygy: Syzygy<TestModel, ()> = Syzygy::builder()
         .model(TestModel::default())
         .resource(GlobalCounter::new())
         .build();
@@ -170,7 +170,7 @@ async fn test_basic_async_task() {
         counter.increment();
 
         // Dispatch effect to update model
-        async_ctx.dispatch(|s: &mut Syzygy<TestModel>| {
+        async_ctx.dispatch_closure(|s: &mut Syzygy<TestModel, ()>| {
             s.model_mut().counter = 100;
         });
     });
@@ -190,7 +190,7 @@ async fn test_basic_async_task() {
 #[cfg(feature = "async")]
 #[tokio::test]
 async fn test_multiple_resources() {
-    let syzygy = Syzygy::builder()
+    let syzygy: Syzygy<TestModel, ()> = Syzygy::builder()
         .model(TestModel::default())
         .resource(TestResource { value: 1 })
         .resource(GlobalCounter::new())
@@ -204,7 +204,7 @@ async fn test_multiple_resources() {
     assert_eq!(counter.get(), 0);
 
     let mut syzygy = syzygy;
-    syzygy.dispatch(use_resources);
+    syzygy.dispatch_closure(use_resources);
     syzygy.handle_effects();
 
     assert_eq!(syzygy.model().counter, 1);
@@ -216,7 +216,7 @@ async fn test_multiple_resources() {
 #[tokio::test]
 async fn test_concurrent_access() {
     let syzygy = Arc::new(
-        Syzygy::builder()
+        Syzygy::<TestModel, ()>::builder()
             .model(TestModel::default())
             .resource(GlobalCounter::new())
             .build(),
@@ -247,7 +247,7 @@ async fn test_concurrent_access() {
 #[cfg(feature = "async")]
 #[tokio::test]
 async fn test_snapshot_consistency() {
-    let mut syzygy = Syzygy::builder().model(TestModel::default()).build();
+    let mut syzygy: Syzygy<TestModel, ()> = Syzygy::builder().model(TestModel::default()).build();
 
     // Get initial snapshot
     let snapshot1 = syzygy.model().to_snapshot();

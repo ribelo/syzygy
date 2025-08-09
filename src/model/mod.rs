@@ -160,7 +160,7 @@ pub trait ModelAccess: Context {
     /// #     type Snapshot = Self;
     /// #     fn to_snapshot(&self) -> Self::Snapshot { self.clone() }
     /// # }
-    /// # let syzygy = Syzygy::builder().model(AppModel { value: 42 }).build();
+    /// # let syzygy: Syzygy<AppModel> = Syzygy::builder().model(AppModel { value: 42 }).build();
     /// let current_value = syzygy.model().value;
     /// assert_eq!(current_value, 42);
     /// ```
@@ -184,7 +184,7 @@ pub trait ModelAccess: Context {
     /// #     type Snapshot = Self;
     /// #     fn to_snapshot(&self) -> Self::Snapshot { self.clone() }
     /// # }
-    /// # let syzygy = Syzygy::builder().model(AppModel { items: vec!["a".to_string(), "b".to_string()] }).build();
+    /// # let syzygy: Syzygy<AppModel> = Syzygy::builder().model(AppModel { items: vec!["a".to_string(), "b".to_string()] }).build();
     /// let item_count = syzygy.query(|model| model.items.len());
     /// let has_items = syzygy.query(|model| !model.items.is_empty());
     /// ```

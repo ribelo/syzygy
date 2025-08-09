@@ -25,7 +25,7 @@ async fn test_resources() {
     let test_resource = TestResource {
         name: "test_str".to_string(),
     };
-    let syzygy = Syzygy::builder()
+    let syzygy: Syzygy<TestModel, ()> = Syzygy::builder()
         .model(model)
         .resource(test_resource)
         .build();

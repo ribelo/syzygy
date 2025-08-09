@@ -3,6 +3,7 @@ pub mod debug;
 pub mod dispatch;
 pub mod effect_builder;
 pub mod error;
+pub mod event;
 pub mod model;
 pub mod reactive;
 pub mod resource;
@@ -20,6 +21,7 @@ pub mod prelude {
     #[cfg(feature = "async")]
     pub use crate::dispatch::AsyncDispatchExt;
     pub use crate::dispatch::{DispatchEffect, Effect};
+    pub use crate::event::Event;
     pub use crate::effect_builder::{EffectBuilder, EffectExt};
     pub use crate::error::{
         ContextCreationError, DispatchError, LockAcquisitionError, ResourceNotFoundError,

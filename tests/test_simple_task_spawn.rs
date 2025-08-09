@@ -21,7 +21,7 @@ mod simple_task_tests {
     #[tokio::test]
     async fn test_basic_task_spawn() {
         let flag = Arc::new(AtomicBool::new(false));
-        let mut syzygy = Syzygy::builder()
+        let mut syzygy: Syzygy<TestModel, ()> = Syzygy::builder()
             .model(TestModel { value: 0 })
             .build();
 

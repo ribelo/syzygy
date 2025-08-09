@@ -321,7 +321,7 @@ mod tests {
         let syzygy = Syzygy::builder().model(TestModel { counter: 0 }).build();
 
         // The one true way: write a closure, chain builder methods, dispatch
-        syzygy.dispatch(
+        syzygy.dispatch_closure(
             (|ctx: &mut Syzygy<TestModel>| {
                 ctx.update(|m| m.counter += 10);
             })
@@ -329,7 +329,7 @@ mod tests {
             .build(),
         );
 
-        syzygy.dispatch(
+        syzygy.dispatch_closure(
             (|ctx: &mut Syzygy<TestModel>| {
                 ctx.update(|m| m.counter += 20);
             })
@@ -337,7 +337,7 @@ mod tests {
             .build(),
         );
 
-        syzygy.dispatch(
+        syzygy.dispatch_closure(
             (|ctx: &mut Syzygy<TestModel>| {
                 ctx.update(|m| m.counter += 30);
             })

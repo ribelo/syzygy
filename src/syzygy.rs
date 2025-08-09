@@ -1,8 +1,11 @@
+// use bon::Builder;
+
 use bon::Builder;
 
 use crate::{
     context::Context,
     dispatch::{DispatchEffect, Dispatcher, EffectsBus, EffectsTx},
+    event::{Event, Message},
     model::{Model, ModelAccess, ModelModify, ModelSnapshotCreate},
     resource::{ResourceAccess, ResourceModify, Resources},
 };
@@ -11,7 +14,7 @@ use crate::{
 ///
 /// `Syzygy` provides reactive state management with three main components:
 /// - **Model**: Application state that can be read and modified
-/// - **Resources**: Type-safe dependency injection for services and configuration  
+/// - **Resources**: Type-safe dependency injection for services and configuration
 /// - **Effects**: Asynchronous side effects that are dispatched and processed
 ///
 /// The name "Syzygy" refers to the astronomical alignment of celestial bodies -
@@ -32,7 +35,7 @@ use crate::{
 ///     fn to_snapshot(&self) -> Self::Snapshot { self.clone() }
 /// }
 ///
-/// let syzygy = Syzygy::builder()
+/// let syzygy: Syzygy<AppModel> = Syzygy::builder()
 ///     .model(AppModel { counter: 0 })
 ///     .resource("Config { api_key: secret }".to_string())
 ///     .build();
@@ -49,7 +52,7 @@ use crate::{
 /// #     type Snapshot = Self;
 /// #     fn to_snapshot(&self) -> Self::Snapshot { self.clone() }
 /// # }
-/// # let mut syzygy = Syzygy::builder().model(AppModel { counter: 0 }).build();
+/// # let mut syzygy: Syzygy<AppModel> = Syzygy::builder().model(AppModel { counter: 0 }).build();
 /// // Read state
 /// let count = syzygy.model().counter;
 ///
@@ -68,7 +71,7 @@ use crate::{
 /// #     type Snapshot = Self;
 /// #     fn to_snapshot(&self) -> Self::Snapshot { self.clone() }
 /// # }
-/// # let syzygy = Syzygy::builder().model(AppModel { counter: 0 }).resource("config".to_string()).build();
+/// # let syzygy: Syzygy<AppModel> = Syzygy::builder().model(AppModel { counter: 0 }).resource("config".to_string()).build();
 /// // Access resources safely
 /// if let Some(config) = syzygy.try_resource::<String>() {
 ///     println!("Config: {}", config);
@@ -76,7 +79,7 @@ use crate::{
 /// ```
 ///
 /// ## Effect System
-/// Effects handle side effects and asynchronous operations:
+/// Effects handle side effects and asynchronous operations through typed events or closures:
 ///
 /// ```rust
 /// # use syzygy::prelude::*;
@@ -86,32 +89,35 @@ use crate::{
 /// #     type Snapshot = Self;
 /// #     fn to_snapshot(&self) -> Self::Snapshot { self.clone() }
 /// # }
-/// # let mut syzygy = Syzygy::builder().model(AppModel { counter: 0 }).build();
-/// // Dispatch an effect
-/// syzygy.dispatch(|ctx| {
+/// # let mut syzygy: Syzygy<AppModel> = Syzygy::builder().model(AppModel { counter: 0 }).build();
+/// // Dispatch a closure-based effect
+/// syzygy.dispatch_closure(|ctx| {
 ///     ctx.update(|model| model.counter += 10);
 /// });
+///
+/// // Or dispatch typed events via the DispatchEffect trait
+/// use syzygy::dispatch::DispatchEffect;
+/// // syzygy.dispatch(MyEvent { amount: 5 }); // for typed events
 ///
 /// // Process effects
 /// syzygy.handle_effects();
 /// ```
 #[derive(Debug, Builder)]
-pub struct Syzygy<M: Model> {
+pub struct Syzygy<M: Model, E = ()> {
     #[builder(field)]
     pub resources: Resources,
-    #[builder(field)]
-    pub effects_bus: EffectsBus<M>,
+    #[builder(default)]
+    pub effects_bus: EffectsBus<M, E>,
     #[cfg(feature = "async")]
     #[builder(default)]
-    pub task_tracker: crate::dispatch::TaskTracker,
+    pub task_tracker: tokio_util::task::TaskTracker,
     // Note: parallel features not implemented yet
     // #[cfg(feature = "parallel")]
-    // #[builder(into)]
     // pub rayon_pool: RayonPool,
     pub model: M,
 }
 
-impl<M: Model, S: syzygy_builder::State> SyzygyBuilder<M, S> {
+impl<M: Model, E, S: syzygy_builder::State> SyzygyBuilder<M, E, S> {
     /// Add a resource to the Syzygy instance being built
     ///
     /// # Examples
@@ -129,21 +135,21 @@ impl<M: Model, S: syzygy_builder::State> SyzygyBuilder<M, S> {
     /// #[derive(Debug)]
     /// struct Config { max_retries: usize }
     ///
-    /// let syzygy = Syzygy::builder()
+    /// let syzygy: Syzygy<MyModel> = Syzygy::builder()
     ///     .model(MyModel { counter: 0 })
     ///     .resource(Config { max_retries: 3 })
     ///     .build();
     /// ```
-    pub fn resource<T>(self, resource: T) -> SyzygyBuilder<M, S>
+    pub fn resource<T>(self, resource: T) -> SyzygyBuilder<M, E, S>
     where
-        T: Send + Sync + std::fmt::Debug + 'static,
+        T: Send + Sync + 'static,
     {
         self.resources.insert(resource);
         self
     }
 }
 
-impl<M: Model> Syzygy<M> {
+impl<M: Model, E> Syzygy<M, E> {
     /// Process all pending effects in the queue
     ///
     /// This method drains the effect queue and executes each effect in order.
@@ -165,13 +171,13 @@ impl<M: Model> Syzygy<M> {
     /// #     type Snapshot = Self;
     /// #     fn to_snapshot(&self) -> Self::Snapshot { self.clone() }
     /// # }
-    /// let mut syzygy = Syzygy::builder()
+    /// let mut syzygy: Syzygy<AppModel> = Syzygy::builder()
     ///     .model(AppModel { counter: 0 })
     ///     .build();
     ///
-    /// // Dispatch some effects
-    /// syzygy.dispatch(|ctx| ctx.update(|m| m.counter += 1));
-    /// syzygy.dispatch(|ctx| ctx.update(|m| m.counter *= 2));
+    /// // Dispatch some closure-based effects
+    /// syzygy.dispatch_closure(|ctx| ctx.update(|m| m.counter += 1));
+    /// syzygy.dispatch_closure(|ctx| ctx.update(|m| m.counter *= 2));
     ///
     /// // Process all effects at once
     /// syzygy.handle_effects();
@@ -184,28 +190,59 @@ impl<M: Model> Syzygy<M> {
     /// This method processes effects synchronously and may take time if effects
     /// perform heavy computations. Consider processing effects in smaller batches
     /// if latency is a concern.
-    pub fn handle_effects(&mut self) {
-        while let Ok(effect) = self.effects_bus.rx.try_recv() {
-            (effect)(self);
+    #[inline]
+    pub fn handle_effects(&mut self)
+    where
+        E: Event<M>,
+    {
+        #[cfg(feature = "tracing")]
+        let span = tracing::span!(
+            tracing::Level::DEBUG,
+            "handle_effects",
+            model_type = std::any::type_name::<M>(),
+            event_type = std::any::type_name::<E>()
+        );
+        #[cfg(feature = "tracing")]
+        let _enter = span.enter();
+
+        while let Ok(message) = self.effects_bus.rx.try_recv() {
+            #[cfg(feature = "tracing")]
+            let effect_span = match &message {
+                Message::Event(_) => {
+                    tracing::span!(tracing::Level::TRACE, "effect", kind = "event")
+                }
+                Message::Closure(_) => {
+                    tracing::span!(tracing::Level::TRACE, "effect", kind = "closure")
+                }
+            };
+            
+            #[cfg(feature = "tracing")]
+            let _effect_enter = effect_span.enter();
+
+            match message {
+                Message::Event(event) => event.apply(self),
+                Message::Closure(f) => f(self),
+            }
         }
     }
 
     /// Gracefully shutdown all spawned tasks
     ///
     /// Signals all tasks to stop and waits for them to complete
-    /// up to the specified timeout. After timeout, tasks are aborted.
+    /// up to the specified timeout.
     #[cfg(feature = "async")]
     pub async fn shutdown(&self, timeout: std::time::Duration) {
-        self.task_tracker.wait_for_shutdown(timeout).await;
+        self.task_tracker.close();
+        let _ = tokio::time::timeout(timeout, self.task_tracker.wait()).await;
     }
 
-    /// Abort all spawned tasks immediately
+    /// Close the task tracker to prevent new tasks from being spawned
     ///
-    /// Forces all running tasks to stop without waiting for completion.
-    /// This is more aggressive than `shutdown` but ensures immediate cleanup.
+    /// This prevents new tasks from being spawned but doesn't abort existing ones.
+    /// Use `shutdown()` to wait for existing tasks to complete.
     #[cfg(feature = "async")]
-    pub fn abort_all_tasks(&self) {
-        self.task_tracker.abort_all();
+    pub fn close_task_tracker(&self) {
+        self.task_tracker.close();
     }
 
     /// Create a new dispatcher for sending effects to this Syzygy instance
@@ -224,63 +261,158 @@ impl<M: Model> Syzygy<M> {
     /// #     type Snapshot = Self;
     /// #     fn to_snapshot(&self) -> Self::Snapshot { self.clone() }
     /// # }
-    /// let syzygy = Syzygy::builder()
+    /// let syzygy: Syzygy<AppModel> = Syzygy::builder()
     ///     .model(AppModel { counter: 0 })
     ///     .build();
     ///
     /// let dispatcher = syzygy.dispatcher();
     ///
-    /// // Use the dispatcher to send effects
-    /// dispatcher.dispatch(|ctx| {
+    /// // Use the dispatcher to send closure-based effects
+    /// dispatcher.dispatch_closure(|ctx| {
     ///     ctx.update(|model| model.counter += 5);
     /// });
     /// ```
     ///
     /// The dispatcher can be cloned and passed to other threads for concurrent
     /// effect dispatching.
-    pub fn dispatcher(&self) -> Dispatcher<M> {
+    #[inline]
+    pub fn dispatcher(&self) -> Dispatcher<M, E> {
         Dispatcher::new(self.effects_bus.tx.clone())
     }
 }
 
-impl<M: Model> Context for Syzygy<M> {
+impl<M: Model, E> Context for Syzygy<M, E> {
     type Model = M;
+    type Event = E;
 }
 
-impl<M: Model> ModelAccess for Syzygy<M> {
+impl<M: Model, E> ModelAccess for Syzygy<M, E> {
     #[inline]
     fn model(&self) -> &M {
         &self.model
     }
 }
 
-impl<M: Model> ModelModify for Syzygy<M> {
+impl<M: Model, E> ModelModify for Syzygy<M, E> {
     #[inline]
     fn model_mut(&mut self) -> &mut M {
         &mut self.model
     }
 }
 
-impl<M: Model> ModelSnapshotCreate for Syzygy<M> {
+impl<M: Model, E> ModelSnapshotCreate for Syzygy<M, E> {
     #[inline]
     fn create_snapshot(&self) -> <<Self as Context>::Model as Model>::Snapshot {
         self.model.to_snapshot()
     }
 }
 
-impl<M: Model> ResourceAccess for Syzygy<M> {
+impl<M: Model, E> ResourceAccess for Syzygy<M, E> {
     #[inline]
     fn resources(&self) -> &Resources {
         &self.resources
     }
 }
 
-impl<M: Model> ResourceModify for Syzygy<M> {}
+impl<M: Model, E> ResourceModify for Syzygy<M, E> {}
 
-impl<M: Model> DispatchEffect for Syzygy<M> {
+impl<M: Model, E> DispatchEffect for Syzygy<M, E> {
     #[inline]
-    fn effects_tx(&self) -> &EffectsTx<M> {
+    fn effects_tx(&self) -> &EffectsTx<M, E> {
         &self.effects_bus.tx
+    }
+
+    /// Optimized task spawning that creates snapshot immediately
+    ///
+    /// This is more efficient than the trait default implementation
+    /// because it creates the snapshot immediately rather than deferring
+    /// it until the effect is processed.
+    #[cfg(feature = "async")]
+    #[inline]
+    fn task<F, Fut>(&self, f: F)
+    where
+        F: FnOnce(crate::context::snapshot::SnapshotContext<M, E>) -> Fut + Send + 'static,
+        Fut: std::future::Future<Output = ()> + Send + 'static,
+        E: Send + 'static,
+    {
+        self.task_internal(None, f)
+    }
+
+    /// Optimized named task spawning that creates snapshot immediately
+    ///
+    /// This is more efficient than the trait default implementation
+    /// because it creates the snapshot immediately rather than deferring
+    /// it until the effect is processed.
+    #[cfg(feature = "async")]
+    #[inline]
+    fn task_named<F, Fut>(&self, name: &'static str, f: F)
+    where
+        F: FnOnce(crate::context::snapshot::SnapshotContext<M, E>) -> Fut + Send + 'static,
+        Fut: std::future::Future<Output = ()> + Send + 'static,
+        E: Send + 'static,
+    {
+        self.task_internal(Some(name), f)
+    }
+
+    /// Internal task spawning with immediate snapshot creation
+    #[doc(hidden)]
+    #[cfg(feature = "async")]
+    fn task_internal<F, Fut>(&self, name: Option<&'static str>, f: F)
+    where
+        F: FnOnce(crate::context::snapshot::SnapshotContext<M, E>) -> Fut + Send + 'static,
+        Fut: std::future::Future<Output = ()> + Send + 'static,
+        E: Send + 'static,
+    {
+        let snapshot = crate::context::snapshot::SnapshotContext::from(self);
+        
+        // With tracing feature, add spans
+        #[cfg(feature = "tracing")]
+        {
+            let future = f(snapshot);
+            let future = if let Some(name) = name {
+                let span = tracing::span!(
+                    tracing::Level::INFO,
+                    "task",
+                    task.name = name,
+                );
+                use tracing::Instrument;
+                Box::pin(future.instrument(span))
+            } else {
+                let span = tracing::span!(
+                    tracing::Level::DEBUG,
+                    "task",
+                    task.anonymous = true
+                );
+                use tracing::Instrument;
+                Box::pin(future.instrument(span))
+            };
+            self.task_tracker.spawn(future);
+        }
+        
+        // Without tracing but in debug mode, add logging
+        #[cfg(all(debug_assertions, not(feature = "tracing")))]
+        {
+            if let Some(name) = name {
+                let name = name.to_string();
+                let fut = f(snapshot);
+                let future = async move {
+                    log::debug!("[task:{}] started", name);
+                    let start = std::time::Instant::now();
+                    fut.await;
+                    log::debug!("[task:{}] completed in {:?}", name, start.elapsed());
+                };
+                self.task_tracker.spawn(future);
+            } else {
+                self.task_tracker.spawn(f(snapshot));
+            }
+        }
+        
+        // In release without tracing, just spawn normally
+        #[cfg(all(not(debug_assertions), not(feature = "tracing")))]
+        {
+            let _ = name; // Avoid unused variable warning
+            self.task_tracker.spawn(f(snapshot));
+        }
     }
 }
 
@@ -298,10 +430,10 @@ impl<M: Model> DispatchEffect for Syzygy<M> {
 ///
 /// fn example() {
 ///     let _guard = defer(|| println!("This runs when guard is dropped"));
-///     
+///
 ///     // Do some work...
 ///     println!("Doing work");
-///     
+///
 ///     // The deferred closure runs here when _guard goes out of scope
 /// }
 /// ```
@@ -313,12 +445,12 @@ impl<M: Model> DispatchEffect for Syzygy<M> {
 ///
 /// fn conditional_cleanup() {
 ///     let guard = defer(|| println!("Cleanup"));
-///     
+///
 ///     if some_condition() {
 ///         guard.abort(); // Cleanup won't run
 ///         return;
 ///     }
-///     
+///
 ///     // Cleanup runs when guard is dropped
 /// }
 /// # fn some_condition() -> bool { false }
@@ -354,10 +486,10 @@ impl<F: FnOnce()> Drop for Deferred<F> {
 }
 
 #[cfg(feature = "async")]
-impl<M: Model> Drop for Syzygy<M> {
+impl<M: Model, E> Drop for Syzygy<M, E> {
     fn drop(&mut self) {
-        // Abort all running tasks
-        self.task_tracker.abort_all();
+        // Close to prevent new tasks (existing tasks continue running)
+        self.task_tracker.close();
     }
 }
 
@@ -375,9 +507,9 @@ impl<M: Model> Drop for Syzygy<M> {
 ///
 /// fn example() {
 ///     let _cleanup = defer(|| println!("Cleanup executed"));
-///     
+///
 ///     // ... do work ...
-///     
+///
 ///     // Cleanup runs automatically when _cleanup is dropped
 /// }
 /// ```
@@ -389,7 +521,7 @@ impl<M: Model> Drop for Syzygy<M> {
 /// fn process_file(filename: &str) -> Result<(), std::io::Error> {
 ///     let file = std::fs::File::open(filename)?;
 ///     let _cleanup = defer(|| println!("File processing complete"));
-///     
+///
 ///     if filename.ends_with(".tmp") {
 ///         return Err(std::io::Error::new(
 ///             std::io::ErrorKind::InvalidInput,
@@ -397,7 +529,7 @@ impl<M: Model> Drop for Syzygy<M> {
 ///         ));
 ///         // Cleanup still runs even on early return!
 ///     }
-///     
+///
 ///     // ... process file ...
 ///     Ok(())
 /// }
