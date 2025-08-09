@@ -9,20 +9,24 @@ use std::future::Future;
 #[cfg(feature = "async")]
 use tokio::sync::oneshot;
 
-use crate::{context::Context, error::DispatchError, syzygy::Syzygy};
 #[cfg(feature = "async")]
 use crate::context::snapshot::SnapshotContext;
+use crate::{context::Context, error::DispatchError, syzygy::Syzygy};
 
-mod effect;
 mod bus;
 mod dispatcher;
+mod effect;
+#[cfg(feature = "async")]
+mod task_tracker;
 
-pub use effect::{Effect, EffectFn};
-pub use bus::{EffectsBus, EffectsTx, EffectsRx};
+pub use bus::{EffectsBus, EffectsRx, EffectsTx};
+#[cfg(feature = "async")]
+pub use task_tracker::TaskTracker;
 pub use dispatcher::Dispatcher;
+pub use effect::{Effect, EffectFn};
 
 /// Core trait for dispatching effects
-/// 
+///
 /// This trait provides the fundamental `dispatch` method for sending effects.
 /// It follows the principle: "There should be one—and preferably only one—obvious way to do it."
 pub trait DispatchEffect: Context {
@@ -30,7 +34,7 @@ pub trait DispatchEffect: Context {
     fn effects_tx(&self) -> &EffectsTx<Self::Model>;
 
     /// The primary method for dispatching effects
-    /// 
+    ///
     /// This is the one true way to send an effect. A closed channel is considered
     /// a fatal application error, so this method will panic if the receiver is dropped.
     #[inline]
@@ -44,7 +48,7 @@ pub trait DispatchEffect: Context {
     }
 
     /// Try to dispatch an effect, returning an error if the channel is closed
-    /// 
+    ///
     /// This method is for advanced use cases where channel failure is recoverable.
     /// Most applications should use `dispatch` instead.
     #[inline]
@@ -80,8 +84,9 @@ pub trait DispatchEffect: Context {
         Fut: Future<Output = ()> + Send + 'static,
     {
         let wrapped = move |syzygy: &mut Syzygy<Self::Model>| {
+            let tracker = syzygy.task_tracker.clone();
             let ctx = SnapshotContext::from(syzygy);
-            tokio::spawn(async move {
+            tracker.spawn(async move {
                 (f)(ctx).await;
             });
         };
@@ -90,23 +95,23 @@ pub trait DispatchEffect: Context {
 }
 
 /// Extension trait for async-specific dispatch functionality
-/// 
+///
 /// This trait is separate to keep the core `DispatchEffect` trait clean and focused.
 /// It contains specialized methods for bridging sync effects with async code.
 #[cfg(feature = "async")]
 pub trait AsyncDispatchExt: DispatchEffect {
     /// Dispatch an effect synchronously from async context
-    /// 
+    ///
     /// Returns a receiver that will be notified when the effect completes.
     /// This is primarily useful for testing or bridging sync effects with async code.
-    /// 
+    ///
     /// # Example
-    /// 
+    ///
     /// ```rust,ignore
     /// let completion = syzygy.dispatch_sync(|ctx| {
     ///     ctx.update(|model| model.counter += 1);
     /// });
-    /// 
+    ///
     /// // In async context
     /// completion.await.unwrap();
     /// ```

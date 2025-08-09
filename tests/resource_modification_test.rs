@@ -57,10 +57,8 @@ async fn test_update_resource() {
         .build();
 
     // Test resource access and computation - resources are now accessed as Arc<T>
-    let result = syzygy.with_resource::<TestResource, _, _>(|resource| {
-        resource.value * 2
-    });
-    
+    let result = syzygy.with_resource::<TestResource, _, _>(|resource| resource.value * 2);
+
     assert_eq!(result, 84);
 
     // Original resource unchanged (immutable)
@@ -71,9 +69,7 @@ async fn test_update_resource() {
 #[cfg(feature = "async")]
 #[tokio::test]
 async fn test_resource_replacement() {
-    let syzygy = Syzygy::builder()
-        .model(TestModel::default())
-        .build();
+    let syzygy = Syzygy::builder().model(TestModel::default()).build();
 
     // Set a resource (replaces add_resource)
     let old = syzygy.set_resource(TestResource { value: 10 });
@@ -104,7 +100,7 @@ async fn test_batch_resource_operations() {
     // (Batch operations removed - resources should be accessed one at a time)
     let test_resource = syzygy.try_resource::<TestResource>();
     let mutable_resource = syzygy.try_resource::<MutableResource>();
-    
+
     assert!(test_resource.is_some());
     assert!(mutable_resource.is_some());
 }
@@ -141,7 +137,7 @@ async fn test_mutable_resource_pattern() {
 
     // Access mutable resource (using interior mutability pattern)
     let mutable_res = syzygy.resource::<MutableResource>();
-    
+
     // Verify initial state
     let initial_items = mutable_res.get_items();
     assert_eq!(initial_items, vec!["initial"]);
@@ -175,9 +171,7 @@ async fn test_expect_resource() {
 #[tokio::test]
 #[should_panic(expected = "Resource of type resource_modification_test::TestResource not found")]
 async fn test_resource_panic_with_better_message() {
-    let syzygy = Syzygy::builder()
-        .model(TestModel::default())
-        .build();
+    let syzygy = Syzygy::builder().model(TestModel::default()).build();
 
     // This should panic with a descriptive error message
     let _resource = syzygy.resource::<TestResource>();
@@ -185,11 +179,11 @@ async fn test_resource_panic_with_better_message() {
 
 #[cfg(feature = "async")]
 #[tokio::test]
-#[should_panic(expected = "Resource of type resource_modification_test::TestResource not found: custom error message")]
+#[should_panic(
+    expected = "Resource of type resource_modification_test::TestResource not found: custom error message"
+)]
 async fn test_expect_resource_panic_with_custom_message() {
-    let syzygy = Syzygy::builder()
-        .model(TestModel::default())
-        .build();
+    let syzygy = Syzygy::builder().model(TestModel::default()).build();
 
     // This should panic with a custom error message
     let _resource = syzygy.expect_resource::<TestResource>("custom error message");

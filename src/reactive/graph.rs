@@ -192,9 +192,10 @@ impl Graph {
         for level_nodes in levels.into_iter().rev() {
             for id in level_nodes {
                 if let Some(node) = self.find_node(id)
-                    && let Some(reactive) = node.reactive {
-                        reactive.run(self);
-                    }
+                    && let Some(reactive) = node.reactive
+                {
+                    reactive.run(self);
+                }
             }
         }
     }

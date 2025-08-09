@@ -5,8 +5,8 @@
 //! `EffectBuilder` lets users wrap effects with common functionality (timing, tracing, retry)
 //! without polluting the core API or adding overhead to the fast path.
 
+use crate::{dispatch::EffectFn, model::Model};
 use std::time::Instant;
-use crate::{model::Model, dispatch::EffectFn};
 
 /// Configuration for effect wrapping behaviors
 #[derive(Debug, Clone, Default)]
@@ -104,7 +104,10 @@ impl<M: Model> EffectBuilder<M> {
     /// This consumes the builder and returns the wrapped effect.
     #[must_use]
     pub fn build(self) -> impl EffectFn<M> {
-        let EffectBuilder { base_effect, config } = self;
+        let EffectBuilder {
+            base_effect,
+            config,
+        } = self;
 
         // Start with the base effect
         let mut effect: Box<dyn EffectFn<M>> = base_effect;
@@ -197,11 +200,14 @@ pub trait EffectExt<M: Model>: EffectFn<M> + Sized + 'static {
 /// Blanket implementation for all effect functions
 impl<M: Model, F: EffectFn<M> + 'static> EffectExt<M> for F {}
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{model::{Model, ModelAccess, ModelModify}, syzygy::Syzygy, dispatch::DispatchEffect};
+    use crate::{
+        dispatch::DispatchEffect,
+        model::{Model, ModelAccess, ModelModify},
+        syzygy::Syzygy,
+    };
 
     #[derive(Debug, Clone)]
     struct TestModel {
@@ -219,7 +225,8 @@ mod tests {
     fn test_basic_builder() {
         let effect = EffectBuilder::new(|ctx: &mut Syzygy<TestModel>| {
             ctx.update(|m| m.counter += 1);
-        }).build();
+        })
+        .build();
 
         let mut syzygy = Syzygy::builder().model(TestModel { counter: 0 }).build();
         (effect)(&mut syzygy);
@@ -271,7 +278,8 @@ mod tests {
     fn test_extension_trait() {
         let effect = (|ctx: &mut Syzygy<TestModel>| {
             ctx.update(|m| m.counter += 42);
-        }).timed("extension_test");
+        })
+        .timed("extension_test");
 
         let mut syzygy = Syzygy::builder().model(TestModel { counter: 0 }).build();
         (effect.build())(&mut syzygy);
@@ -286,11 +294,15 @@ mod tests {
 
         let timed = (|ctx: &mut Syzygy<TestModel>| {
             ctx.update(|m| m.counter += 2);
-        }).timed("ext_test").build();
+        })
+        .timed("ext_test")
+        .build();
 
         let traced = (|ctx: &mut Syzygy<TestModel>| {
             ctx.update(|m| m.counter += 3);
-        }).traced().build();
+        })
+        .traced()
+        .build();
 
         let mut syzygy = Syzygy::builder().model(TestModel { counter: 0 }).build();
 
@@ -312,19 +324,25 @@ mod tests {
         syzygy.dispatch(
             (|ctx: &mut Syzygy<TestModel>| {
                 ctx.update(|m| m.counter += 10);
-            }).timed("builder_test").build()
+            })
+            .timed("builder_test")
+            .build(),
         );
 
         syzygy.dispatch(
             (|ctx: &mut Syzygy<TestModel>| {
                 ctx.update(|m| m.counter += 20);
-            }).traced().build()
+            })
+            .traced()
+            .build(),
         );
 
         syzygy.dispatch(
             (|ctx: &mut Syzygy<TestModel>| {
                 ctx.update(|m| m.counter += 30);
-            }).named("test_effect").build()
+            })
+            .named("test_effect")
+            .build(),
         );
 
         // Just verify methods can be called - the actual effect processing is tested elsewhere

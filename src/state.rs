@@ -1,5 +1,5 @@
 //! Unified state access traits that combine model and resource operations
-//! 
+//!
 //! This module provides consolidated traits that combine model and resource
 //! access patterns for a simpler API surface.
 
@@ -57,4 +57,7 @@ pub trait StateModify: StateAccess + ModelModify + ResourceModify {
 
 // Blanket implementations for types that already implement the component traits
 impl<T> StateAccess for T where T: Context + ModelAccess + ResourceAccess {}
-impl<T> StateModify for T where T: Context + ModelAccess + ResourceAccess + ModelModify + ResourceModify {}
+impl<T> StateModify for T where
+    T: Context + ModelAccess + ResourceAccess + ModelModify + ResourceModify
+{
+}

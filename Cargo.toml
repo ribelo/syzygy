@@ -9,7 +9,7 @@ path = "src/lib.rs"
 
 [features]
 default = ["async"]
-async = ["dep:tokio"]
+async = ["dep:tokio", "dep:tokio-util"]
 parallel = ["dep:rayon"]
 
 [dependencies]
@@ -17,6 +17,7 @@ thiserror = "2.0"
 rustc-hash = "2"
 rayon = { version = "1.10", optional = true }
 tokio = { version = "1.4", features = ["full"], optional = true }
+tokio-util = { version = "0.7", optional = true }
 log = "0.4"
 bon = "3.3"
 derive_more = { version = "2.0", features = ["full"] }

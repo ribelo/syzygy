@@ -1,7 +1,7 @@
 //! Stand-alone dispatcher
 
+use super::{DispatchEffect, EffectsTx};
 use crate::{context::Context, model::Model};
-use super::{EffectsTx, DispatchEffect};
 
 /// Stand-alone dispatcher that can send effects to a Syzygy instance
 pub struct Dispatcher<M: Model> {

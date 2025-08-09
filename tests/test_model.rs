@@ -88,7 +88,10 @@ async fn test_dispatch_performance() {
 
     // Performance assertions - very generous to avoid flaky tests
     assert!(total_duration.as_millis() < 100, "Dispatch should be fast");
-    assert!(process_duration.as_millis() < 50, "Effect processing should be fast");
+    assert!(
+        process_duration.as_millis() < 50,
+        "Effect processing should be fast"
+    );
 }
 
 // Benchmark: direct model update vs effect dispatch overhead
@@ -118,8 +121,14 @@ async fn test_benchmark_direct_model_update() {
     syzygy.handle_effects();
     let dispatch_duration = start.elapsed();
 
-    println!("Direct update time for 1000 operations: {:?}", direct_duration);
-    println!("Effect dispatch time for 1000 operations: {:?}", dispatch_duration);
+    println!(
+        "Direct update time for 1000 operations: {:?}",
+        direct_duration
+    );
+    println!(
+        "Effect dispatch time for 1000 operations: {:?}",
+        dispatch_duration
+    );
 
     assert_eq!(syzygy.model().counter, 1000);
 
@@ -129,5 +138,8 @@ async fn test_benchmark_direct_model_update() {
     println!("Overhead ratio: {:.2}x", overhead_ratio);
 
     // Very generous ratio to avoid flaky tests
-    assert!(overhead_ratio < 100.0, "Effect dispatch shouldn't be more than 100x slower than direct updates");
+    assert!(
+        overhead_ratio < 100.0,
+        "Effect dispatch shouldn't be more than 100x slower than direct updates"
+    );
 }

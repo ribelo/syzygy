@@ -10,18 +10,24 @@ pub mod state;
 pub mod syzygy;
 
 pub mod prelude {
+    pub use crate::context::Context;
     #[cfg(feature = "async")]
     pub use crate::context::snapshot::SnapshotContext;
-    pub use crate::context::Context;
-    pub use crate::dispatch::{DispatchEffect, Effect};
+    pub use crate::debug::{
+        EffectTracer, SyzygyMetrics, disable_tracing, enable_metrics, enable_tracing, metrics,
+        print_debug_summary, with_tracer,
+    };
     #[cfg(feature = "async")]
     pub use crate::dispatch::AsyncDispatchExt;
+    pub use crate::dispatch::{DispatchEffect, Effect};
     pub use crate::effect_builder::{EffectBuilder, EffectExt};
+    pub use crate::error::{
+        ContextCreationError, DispatchError, LockAcquisitionError, ResourceNotFoundError,
+        ResourceReplaceError,
+    };
     pub use crate::model::{Model, ModelAccess, ModelModify, ModelSnapshotAccess};
     pub use crate::resource::{ResourceAccess, ResourceModify, Resources};
     pub use crate::state::{StateAccess, StateModify};
-    pub use crate::error::{ResourceNotFoundError, DispatchError, ContextCreationError, LockAcquisitionError, ResourceReplaceError};
-    pub use crate::debug::{EffectTracer, SyzygyMetrics, enable_tracing, disable_tracing, enable_metrics, print_debug_summary, with_tracer, metrics};
     // Note: parallel features not implemented yet
     // #[cfg(feature = "parallel")]
     // pub use crate::spawn::{RayonPool, SpawnParallel};

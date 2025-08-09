@@ -2,8 +2,8 @@
 
 use derive_more::derive::{Deref, DerefMut};
 
-use crate::model::Model;
 use super::effect::EffectFn;
+use crate::model::Model;
 
 /// Sender for effects
 #[derive(Debug, Deref)]

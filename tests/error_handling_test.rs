@@ -28,14 +28,12 @@ struct TestResource {
 #[cfg(feature = "async")]
 #[tokio::test]
 async fn test_resource_not_found_error() {
-    let syzygy = Syzygy::builder()
-        .model(TestModel::default())
-        .build();
+    let syzygy = Syzygy::builder().model(TestModel::default()).build();
 
     // Test get_resource with missing resource
     let result = syzygy.get_resource::<TestResource>();
     assert!(result.is_err());
-    
+
     let err = result.unwrap_err();
     assert_eq!(err.type_name, std::any::type_name::<TestResource>());
     assert_eq!(err.type_id, std::any::TypeId::of::<TestResource>());
@@ -54,7 +52,7 @@ async fn test_resource_found_success() {
     // Test get_resource with existing resource
     let result = syzygy.get_resource::<TestResource>();
     assert!(result.is_ok());
-    
+
     let resource = result.unwrap();
     assert_eq!(resource.value, 42);
 }
@@ -62,14 +60,12 @@ async fn test_resource_found_success() {
 #[cfg(feature = "async")]
 #[tokio::test]
 async fn test_resource_cloned_error() {
-    let syzygy = Syzygy::builder()
-        .model(TestModel::default())
-        .build();
+    let syzygy = Syzygy::builder().model(TestModel::default()).build();
 
     // Test get_resource with missing resource (cloning is now user's responsibility)
     let result = syzygy.get_resource::<TestResource>();
     assert!(result.is_err());
-    
+
     let err = result.unwrap_err();
     assert!(err.to_string().contains("TestResource"));
 }
@@ -85,7 +81,7 @@ async fn test_resource_cloned_success() {
     // Test get_resource with existing resource (cloning is now user's responsibility)
     let result = syzygy.get_resource::<TestResource>();
     assert!(result.is_ok());
-    
+
     let resource = (*result.unwrap()).clone();
     assert_eq!(resource.value, 100);
 }
@@ -93,19 +89,19 @@ async fn test_resource_cloned_success() {
 #[cfg(feature = "async")]
 #[tokio::test]
 async fn test_error_composability() {
-    let syzygy = Syzygy::builder()
-        .model(TestModel::default())
-        .build();
+    let syzygy = Syzygy::builder().model(TestModel::default()).build();
 
     // Test that errors can be properly handled in functions
-    fn try_get_resource(syzygy: &Syzygy<TestModel>) -> Result<TestResource, Box<dyn std::error::Error>> {
+    fn try_get_resource(
+        syzygy: &Syzygy<TestModel>,
+    ) -> Result<TestResource, Box<dyn std::error::Error>> {
         let resource = syzygy.get_resource::<TestResource>()?;
         Ok((*resource).clone())
     }
 
     let result = try_get_resource(&syzygy);
     assert!(result.is_err());
-    
+
     // Verify the error can be downcasted to the specific type
     let err = result.unwrap_err();
     assert!(err.downcast_ref::<ResourceNotFoundError>().is_some());
@@ -114,9 +110,7 @@ async fn test_error_composability() {
 #[cfg(feature = "async")]
 #[tokio::test]
 async fn test_error_vs_option_apis() {
-    let syzygy = Syzygy::builder()
-        .model(TestModel::default())
-        .build();
+    let syzygy = Syzygy::builder().model(TestModel::default()).build();
 
     // Option API (try_resource) returns None
     let option_result = syzygy.try_resource::<TestResource>();

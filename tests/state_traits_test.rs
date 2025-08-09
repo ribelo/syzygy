@@ -68,13 +68,11 @@ async fn test_state_modify_trait() {
         .build();
 
     // Test replace_resource_and_update
-    let old_value = syzygy.replace_resource_and_update(
-        TestResource { value: 100 },
-        |model, old_resource| {
+    let old_value =
+        syzygy.replace_resource_and_update(TestResource { value: 100 }, |model, old_resource| {
             model.counter = old_resource.as_ref().map(|r| r.value).unwrap_or(0);
             old_resource.map(|r| r.value)
-        },
-    );
+        });
 
     assert_eq!(old_value, Some(10));
     assert_eq!(syzygy.model().counter, 10);

@@ -18,7 +18,7 @@ impl<T: Clone + Send + Sync + std::fmt::Debug + 'static> CloneableAny for T {
     fn clone_box(&self) -> Box<dyn CloneableAny> {
         Box::new(self.clone())
     }
-    
+
     fn as_any(&self) -> &dyn Any {
         self
     }
@@ -66,7 +66,7 @@ impl Deref for Resources {
 
 impl Resources {
     /// Insert a resource using copy-on-write semantics
-    /// 
+    ///
     /// This operation:
     /// 1. Acquires a write lock on the outer RwLock
     /// 2. Uses Arc::make_mut to get unique access to the HashMap (COW)
@@ -78,14 +78,14 @@ impl Resources {
         let ty = TypeId::of::<T>();
         let arc_value = Arc::new(value);
         let boxed_value = Box::new(arc_value);
-        
+
         let mut write_guard = self.write().expect("Failed to acquire write lock");
         let map = Arc::make_mut(&mut write_guard);
         map.insert(ty, boxed_value);
     }
 
     /// Get a resource using lock-free read semantics
-    /// 
+    ///
     /// This operation:
     /// 1. Acquires a read lock (fast, shared with other readers)
     /// 2. Clones the inner Arc<HashMap> (cheap atomic ref increment)
@@ -97,21 +97,19 @@ impl Resources {
         T: Send + Sync + std::fmt::Debug + 'static,
     {
         let ty = TypeId::of::<T>();
-        
+
         // Step 1 & 2: Acquire read lock and clone the map Arc (lock held briefly)
         let map = {
             let read_guard = self.read().expect("Failed to acquire read lock");
             Arc::clone(&read_guard)
         };
         // Step 3: Read lock is now released
-        
+
         // Step 4: Perform lookup with zero contention
         map.get(&ty)
             .and_then(|boxed_value| boxed_value.as_any().downcast_ref::<Arc<T>>())
             .cloned()
     }
-
-
 }
 
 pub trait ResourceAccess: Context {
@@ -153,7 +151,6 @@ pub trait ResourceAccess: Context {
         })
     }
 
-
     /// Get a resource or return a ResourceNotFoundError
     fn get_resource<T>(&self) -> Result<Arc<T>, ResourceNotFoundError>
     where
@@ -162,7 +159,6 @@ pub trait ResourceAccess: Context {
         self.try_resource::<T>()
             .ok_or_else(|| ResourceNotFoundError::new::<T>())
     }
-
 }
 
 pub trait ResourceModify: ResourceAccess {
@@ -200,8 +196,9 @@ pub trait ResourceModify: ResourceAccess {
     {
         let arc_value = Arc::new(value);
         let boxed_value = Box::new(arc_value.clone());
-        
-        let mut write_guard = self.resources()
+
+        let mut write_guard = self
+            .resources()
             .write()
             .expect("Failed to acquire write lock");
         let map = Arc::make_mut(&mut write_guard);
@@ -223,6 +220,4 @@ pub trait ResourceModify: ResourceAccess {
 
         removed.and_then(|boxed| boxed.as_any().downcast_ref::<Arc<T>>().cloned())
     }
-
-
 }

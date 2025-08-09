@@ -83,7 +83,7 @@ pub trait Model: fmt::Debug + Send + Sync + 'static {
     /// either a full clone of the model data or shared references to
     /// immutable data.
     type Snapshot: Clone + Send + Sync + 'static;
-    
+
     /// Create a snapshot of the current model state
     ///
     /// This method should efficiently capture the current state in a form
@@ -166,7 +166,7 @@ pub trait ModelAccess: Context {
     /// ```
     #[must_use]
     fn model(&self) -> &Self::Model;
-    
+
     /// Query the model with a function
     ///
     /// This is a convenience method for functional-style model access.

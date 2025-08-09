@@ -14,7 +14,7 @@ use crate::{
 /// - **Resources**: Type-safe dependency injection for services and configuration  
 /// - **Effects**: Asynchronous side effects that are dispatched and processed
 ///
-/// The name "Syzygy" refers to the astronomical alignment of celestial bodies - 
+/// The name "Syzygy" refers to the astronomical alignment of celestial bodies -
 /// similarly, this library aligns state, resources, and effects into a cohesive system.
 ///
 /// # Core Concepts
@@ -24,7 +24,7 @@ use crate::{
 ///
 /// ```rust
 /// use syzygy::prelude::*;
-/// 
+///
 /// #[derive(Debug, Clone)]
 /// struct AppModel { counter: i32 }
 /// impl Model for AppModel {
@@ -101,6 +101,9 @@ pub struct Syzygy<M: Model> {
     pub resources: Resources,
     #[builder(field)]
     pub effects_bus: EffectsBus<M>,
+    #[cfg(feature = "async")]
+    #[builder(default)]
+    pub task_tracker: crate::dispatch::TaskTracker,
     // Note: parallel features not implemented yet
     // #[cfg(feature = "parallel")]
     // #[builder(into)]
@@ -131,7 +134,7 @@ impl<M: Model, S: syzygy_builder::State> SyzygyBuilder<M, S> {
     ///     .resource(Config { max_retries: 3 })
     ///     .build();
     /// ```
-    pub fn resource<T>(mut self, resource: T) -> SyzygyBuilder<M, S>
+    pub fn resource<T>(self, resource: T) -> SyzygyBuilder<M, S>
     where
         T: Send + Sync + std::fmt::Debug + 'static,
     {
@@ -155,7 +158,7 @@ impl<M: Model> Syzygy<M> {
     ///
     /// ```rust
     /// use syzygy::prelude::*;
-    /// 
+    ///
     /// # #[derive(Debug, Clone)]
     /// # struct AppModel { counter: i32 }
     /// # impl Model for AppModel {
@@ -172,7 +175,7 @@ impl<M: Model> Syzygy<M> {
     ///
     /// // Process all effects at once
     /// syzygy.handle_effects();
-    /// 
+    ///
     /// assert_eq!(syzygy.model().counter, 2); // (0 + 1) * 2
     /// ```
     ///
@@ -186,7 +189,25 @@ impl<M: Model> Syzygy<M> {
             (effect)(self);
         }
     }
-    
+
+    /// Gracefully shutdown all spawned tasks
+    ///
+    /// Signals all tasks to stop and waits for them to complete
+    /// up to the specified timeout. After timeout, tasks are aborted.
+    #[cfg(feature = "async")]
+    pub async fn shutdown(&self, timeout: std::time::Duration) {
+        self.task_tracker.wait_for_shutdown(timeout).await;
+    }
+
+    /// Abort all spawned tasks immediately
+    ///
+    /// Forces all running tasks to stop without waiting for completion.
+    /// This is more aggressive than `shutdown` but ensures immediate cleanup.
+    #[cfg(feature = "async")]
+    pub fn abort_all_tasks(&self) {
+        self.task_tracker.abort_all();
+    }
+
     /// Create a new dispatcher for sending effects to this Syzygy instance
     ///
     /// Dispatchers allow you to send effects from other threads or contexts.
@@ -196,7 +217,7 @@ impl<M: Model> Syzygy<M> {
     ///
     /// ```rust
     /// use syzygy::prelude::*;
-    /// 
+    ///
     /// # #[derive(Debug, Clone)]
     /// # struct AppModel { counter: i32 }
     /// # impl Model for AppModel {
@@ -208,7 +229,7 @@ impl<M: Model> Syzygy<M> {
     ///     .build();
     ///
     /// let dispatcher = syzygy.dispatcher();
-    /// 
+    ///
     /// // Use the dispatcher to send effects
     /// dispatcher.dispatch(|ctx| {
     ///     ctx.update(|model| model.counter += 5);
@@ -332,6 +353,14 @@ impl<F: FnOnce()> Drop for Deferred<F> {
     }
 }
 
+#[cfg(feature = "async")]
+impl<M: Model> Drop for Syzygy<M> {
+    fn drop(&mut self) {
+        // Abort all running tasks
+        self.task_tracker.abort_all();
+    }
+}
+
 /// Create a deferred execution guard
 ///
 /// The returned [`Deferred`] guard will execute the given closure when it's dropped,
@@ -363,7 +392,7 @@ impl<F: FnOnce()> Drop for Deferred<F> {
 ///     
 ///     if filename.ends_with(".tmp") {
 ///         return Err(std::io::Error::new(
-///             std::io::ErrorKind::InvalidInput, 
+///             std::io::ErrorKind::InvalidInput,
 ///             "Temporary files not allowed"
 ///         ));
 ///         // Cleanup still runs even on early return!

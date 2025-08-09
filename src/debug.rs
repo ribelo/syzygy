@@ -5,7 +5,10 @@
 
 use std::{
     collections::VecDeque,
-    sync::{Arc, Mutex, OnceLock, atomic::{AtomicU64, Ordering}},
+    sync::{
+        Arc, Mutex, OnceLock,
+        atomic::{AtomicU64, Ordering},
+    },
     time::{Duration, Instant},
 };
 
@@ -117,7 +120,7 @@ impl EffectTracer {
         }
 
         let trace = EffectTrace::new(name);
-        
+
         if let Ok(mut traces) = self.traces.lock() {
             if traces.len() >= self.max_traces {
                 traces.pop_front();
@@ -164,16 +167,18 @@ impl EffectTracer {
 
     pub fn print_summary(&self) {
         let traces = self.get_all_traces();
-        
+
         println!("Effect Execution Summary:");
         println!("========================");
         println!("Total effects: {}", traces.len());
-        
-        let completed: Vec<_> = traces.iter()
+
+        let completed: Vec<_> = traces
+            .iter()
             .filter(|t| matches!(t.status, EffectStatus::Completed))
             .collect();
-        
-        let failed: Vec<_> = traces.iter()
+
+        let failed: Vec<_> = traces
+            .iter()
             .filter(|t| matches!(t.status, EffectStatus::Failed(_)))
             .collect();
 
@@ -181,22 +186,23 @@ impl EffectTracer {
         println!("Failed: {}", failed.len());
 
         if !completed.is_empty() {
-            let total_duration: Duration = completed.iter()
-                .filter_map(|t| t.duration())
-                .sum();
-            
+            let total_duration: Duration = completed.iter().filter_map(|t| t.duration()).sum();
+
             let avg_duration = total_duration / completed.len() as u32;
             println!("Average duration: {:?}", avg_duration);
         }
 
         println!("\nRecent effects:");
         for trace in traces.iter().rev().take(10) {
-            let duration = trace.duration()
+            let duration = trace
+                .duration()
                 .map(|d| format!("{:?}", d))
                 .unwrap_or_else(|| "running".to_string());
-            
-            println!("  {} [{}]: {:?} ({})", 
-                trace.id, trace.name, trace.status, duration);
+
+            println!(
+                "  {} [{}]: {:?} ({})",
+                trace.id, trace.name, trace.status, duration
+            );
         }
     }
 }
@@ -269,11 +275,26 @@ impl SyzygyMetrics {
         println!("Syzygy Metrics:");
         println!("==============");
         println!("Uptime: {:?}", uptime);
-        println!("Effects dispatched: {}", self.effects_dispatched.load(Ordering::SeqCst));
-        println!("Effects processed: {}", self.effects_processed.load(Ordering::SeqCst));
-        println!("Effects failed: {}", self.effects_failed.load(Ordering::SeqCst));
-        println!("Resource accesses: {}", self.resource_accesses.load(Ordering::SeqCst));
-        println!("Model updates: {}", self.model_updates.load(Ordering::SeqCst));
+        println!(
+            "Effects dispatched: {}",
+            self.effects_dispatched.load(Ordering::SeqCst)
+        );
+        println!(
+            "Effects processed: {}",
+            self.effects_processed.load(Ordering::SeqCst)
+        );
+        println!(
+            "Effects failed: {}",
+            self.effects_failed.load(Ordering::SeqCst)
+        );
+        println!(
+            "Resource accesses: {}",
+            self.resource_accesses.load(Ordering::SeqCst)
+        );
+        println!(
+            "Model updates: {}",
+            self.model_updates.load(Ordering::SeqCst)
+        );
         println!("Effects per second: {:.2}", self.effects_per_second());
     }
 
@@ -312,7 +333,8 @@ pub fn with_tracer<F, R>(f: F) -> Option<R>
 where
     F: FnOnce(&EffectTracer) -> R,
 {
-    DEBUG_TRACER.get()
+    DEBUG_TRACER
+        .get()
         .and_then(|tracer| tracer.lock().ok())
         .map(|tracer| f(&*tracer))
 }
@@ -331,7 +353,7 @@ pub fn metrics() -> Option<&'static SyzygyMetrics> {
 pub fn print_debug_summary() {
     println!("Syzygy Debug Summary");
     println!("===================");
-    
+
     if let Some(has_tracer) = with_tracer(|tracer| {
         if tracer.is_enabled() {
             tracer.print_summary();
@@ -398,14 +420,14 @@ mod tests {
         assert_eq!(tracer.get_all_traces().len(), 0);
     }
 
-    #[test] 
+    #[test]
     fn test_metrics() {
         let metrics = SyzygyMetrics::new();
-        
+
         metrics.effect_dispatched();
         metrics.effect_processed();
         metrics.resource_accessed();
-        
+
         assert_eq!(metrics.effects_dispatched.load(Ordering::SeqCst), 1);
         assert_eq!(metrics.effects_processed.load(Ordering::SeqCst), 1);
         assert_eq!(metrics.resource_accesses.load(Ordering::SeqCst), 1);
