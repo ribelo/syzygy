@@ -279,57 +279,30 @@ impl<M: Model, E> Syzygy<M, E> {
     pub fn dispatcher(&self) -> Dispatcher<M, E> {
         Dispatcher::new(self.effects_bus.tx.clone())
     }
-}
 
-impl<M: Model, E> Context for Syzygy<M, E> {
-    type Model = M;
-    type Event = E;
-}
-
-impl<M: Model, E> ModelAccess for Syzygy<M, E> {
-    #[inline]
-    fn model(&self) -> &M {
-        &self.model
-    }
-}
-
-impl<M: Model, E> ModelModify for Syzygy<M, E> {
-    #[inline]
-    fn model_mut(&mut self) -> &mut M {
-        &mut self.model
-    }
-}
-
-impl<M: Model, E> ModelSnapshotCreate for Syzygy<M, E> {
-    #[inline]
-    fn create_snapshot(&self) -> <<Self as Context>::Model as Model>::Snapshot {
-        self.model.to_snapshot()
-    }
-}
-
-impl<M: Model, E> ResourceAccess for Syzygy<M, E> {
-    #[inline]
-    fn resources(&self) -> &Resources {
-        &self.resources
-    }
-}
-
-impl<M: Model, E> ResourceModify for Syzygy<M, E> {}
-
-impl<M: Model, E> DispatchEffect for Syzygy<M, E> {
-    #[inline]
-    fn effects_tx(&self) -> &EffectsTx<M, E> {
-        &self.effects_bus.tx
-    }
-
-    /// Optimized task spawning that creates snapshot immediately
+    /// Spawn an async task with snapshot context
     ///
-    /// This is more efficient than the trait default implementation
-    /// because it creates the snapshot immediately rather than deferring
-    /// it until the effect is processed.
+    /// Tasks are the only way to perform async operations in Syzygy.
+    /// They receive a snapshot of the current state and can dispatch events back.
+    /// 
+    /// **Important:** Only Syzygy can spawn tasks. Tasks cannot spawn other tasks,
+    /// they can only dispatch events back to the system. This enforces the principle
+    /// that "events control flow, tasks execute work".
+    ///
+    /// # Examples
+    ///
+    /// ```rust,ignore
+    /// syzygy.task(|ctx| async move {
+    ///     // Perform async operations
+    ///     let data = fetch_data().await;
+    ///     
+    ///     // Dispatch events back (cannot spawn more tasks)
+    ///     ctx.dispatch(DataFetched(data));
+    /// });
+    /// ```
     #[cfg(feature = "async")]
     #[inline]
-    fn task<F, Fut>(&self, f: F)
+    pub fn task<F, Fut>(&mut self, f: F)
     where
         F: FnOnce(crate::context::snapshot::SnapshotContext<M, E>) -> Fut + Send + 'static,
         Fut: std::future::Future<Output = ()> + Send + 'static,
@@ -338,14 +311,25 @@ impl<M: Model, E> DispatchEffect for Syzygy<M, E> {
         self.task_internal(None, f)
     }
 
-    /// Optimized named task spawning that creates snapshot immediately
+    /// Spawn a named async task with snapshot context
     ///
-    /// This is more efficient than the trait default implementation
-    /// because it creates the snapshot immediately rather than deferring
-    /// it until the effect is processed.
+    /// Like `task()` but with a name for debugging. The name should follow
+    /// the pattern "module:action" (e.g., "auth:refresh_token", "data:fetch_user").
+    /// 
+    /// With tracing enabled, this creates a span for the task lifecycle.
+    /// In debug builds without tracing, this logs task lifecycle events.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,ignore
+    /// syzygy.task_named("auth:login", |ctx| async move {
+    ///     let result = login_user().await;
+    ///     ctx.dispatch(LoginComplete(result));
+    /// });
+    /// ```
     #[cfg(feature = "async")]
     #[inline]
-    fn task_named<F, Fut>(&self, name: &'static str, f: F)
+    pub fn task_named<F, Fut>(&mut self, name: &'static str, f: F)
     where
         F: FnOnce(crate::context::snapshot::SnapshotContext<M, E>) -> Fut + Send + 'static,
         Fut: std::future::Future<Output = ()> + Send + 'static,
@@ -354,16 +338,65 @@ impl<M: Model, E> DispatchEffect for Syzygy<M, E> {
         self.task_internal(Some(name), f)
     }
 
+    /// Spawn a blocking task with snapshot context
+    ///
+    /// This wraps the blocking operation in `tokio::task::spawn_blocking`.
+    /// Use this for CPU-intensive or blocking I/O operations.
+    /// 
+    /// Like async tasks, blocking tasks can only dispatch events back,
+    /// they cannot spawn other tasks.
+    #[cfg(feature = "async")]
+    #[inline]
+    pub fn spawn_blocking<F>(&mut self, f: F)
+    where
+        F: FnOnce(crate::context::snapshot::SnapshotContext<M, E>) + Send + 'static,
+        E: Send + 'static,
+    {
+        let ctx = crate::context::snapshot::SnapshotContext::from(&*self);
+        tokio::task::spawn_blocking(move || f(ctx));
+    }
+
+    /// Spawn a named blocking task with snapshot context
+    ///
+    /// Like `spawn_blocking()` but with a name for debugging.
+    #[cfg(feature = "async")]
+    #[inline]
+    pub fn spawn_blocking_named<F>(&mut self, name: &'static str, f: F)
+    where
+        F: FnOnce(crate::context::snapshot::SnapshotContext<M, E>) + Send + 'static,
+        E: Send + 'static,
+    {
+        let ctx = crate::context::snapshot::SnapshotContext::from(&*self);
+        
+        #[cfg(debug_assertions)]
+        {
+            log::debug!("[blocking:{}] spawning", name);
+            let name = name.to_string();
+            tokio::task::spawn_blocking(move || {
+                log::debug!("[blocking:{}] started", name);
+                let start = std::time::Instant::now();
+                f(ctx);
+                log::debug!("[blocking:{}] completed in {:?}", name, start.elapsed());
+            });
+        }
+        
+        #[cfg(not(debug_assertions))]
+        {
+            let _ = name; // Avoid unused variable warning
+            tokio::task::spawn_blocking(move || f(ctx));
+        }
+    }
+
     /// Internal task spawning with immediate snapshot creation
     #[doc(hidden)]
     #[cfg(feature = "async")]
-    fn task_internal<F, Fut>(&self, name: Option<&'static str>, f: F)
+    fn task_internal<F, Fut>(&mut self, name: Option<&'static str>, f: F)
     where
         F: FnOnce(crate::context::snapshot::SnapshotContext<M, E>) -> Fut + Send + 'static,
         Fut: std::future::Future<Output = ()> + Send + 'static,
         E: Send + 'static,
     {
-        let snapshot = crate::context::snapshot::SnapshotContext::from(self);
+        let snapshot = crate::context::snapshot::SnapshotContext::from(&*self);
         
         // With tracing feature, add spans
         #[cfg(feature = "tracing")]
@@ -413,6 +446,48 @@ impl<M: Model, E> DispatchEffect for Syzygy<M, E> {
             let _ = name; // Avoid unused variable warning
             self.task_tracker.spawn(f(snapshot));
         }
+    }
+}
+
+impl<M: Model, E> Context for Syzygy<M, E> {
+    type Model = M;
+    type Event = E;
+}
+
+impl<M: Model, E> ModelAccess for Syzygy<M, E> {
+    #[inline]
+    fn model(&self) -> &M {
+        &self.model
+    }
+}
+
+impl<M: Model, E> ModelModify for Syzygy<M, E> {
+    #[inline]
+    fn model_mut(&mut self) -> &mut M {
+        &mut self.model
+    }
+}
+
+impl<M: Model, E> ModelSnapshotCreate for Syzygy<M, E> {
+    #[inline]
+    fn create_snapshot(&self) -> <<Self as Context>::Model as Model>::Snapshot {
+        self.model.to_snapshot()
+    }
+}
+
+impl<M: Model, E> ResourceAccess for Syzygy<M, E> {
+    #[inline]
+    fn resources(&self) -> &Resources {
+        &self.resources
+    }
+}
+
+impl<M: Model, E> ResourceModify for Syzygy<M, E> {}
+
+impl<M: Model, E> DispatchEffect for Syzygy<M, E> {
+    #[inline]
+    fn effects_tx(&self) -> &EffectsTx<M, E> {
+        &self.effects_bus.tx
     }
 }
 
