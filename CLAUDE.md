@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Syzygy is an event-driven state management library written in Rust. It provides a reactive programming model with context management, resource storage, and effect dispatching capabilities.
+Syzygy is an event-driven state management library written in Rust. It provides state management with context management, resource storage, and effect dispatching capabilities.
 
 ## Key Commands
 
@@ -60,13 +60,12 @@ cargo bench --bench syzygy_benchmarks -- --warm-up-time 1 --measurement-time 2
 3. **Resources** (`src/resource.rs`) - Type-erased resource storage system
 4. **Dispatch** (`src/dispatch.rs`) - Effect dispatching and execution system
 5. **Context** (`src/context/`) - Context management with async support
-6. **Reactive** (`src/reactive/`) - Reactive graph system with ports and handlers
 
 ### Key Design Patterns
 
 - **Builder Pattern**: `Syzygy::builder()` for configuration
 - **Type Erasure**: Resources stored as `Any` types with downcasting
-- **Effect System**: Effects are boxed closures dispatched through channels
+- **Event System**: Effects are typed events dispatched through channels
 - **Async Support**: AsyncContext provides snapshot-based async operations
 
 ### Important Traits
@@ -108,7 +107,7 @@ cargo bench --bench syzygy_benchmarks -- dispatch
 ## Common Development Tasks
 
 When working on effects system:
-- Effects are `Box<dyn FnOnce(&mut Syzygy<M>) + Send>`
+- Effects are typed events implementing the `Event<M>` trait
 - Check `src/dispatch.rs` for the dispatch implementation
 - Benchmarks in `benches/syzygy_benchmarks.rs` cover effect throughput
 
@@ -116,8 +115,3 @@ When working on resources:
 - Resources stored as `Arc<T>` internally in `FxHashMap<TypeId, Box<dyn Any + Send + Sync>>`
 - `resource<T>()` returns `Arc<T>`, `resource_cloned<T>()` returns `T`
 - See `src/resource.rs` for implementation
-
-When working on reactive system:
-- Graph-based reactive system in `src/reactive/`
-- Ports and handlers for data flow
-- Still experimental and under development

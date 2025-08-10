@@ -4,7 +4,6 @@ pub mod dispatch;
 pub mod error;
 pub mod event;
 pub mod model;
-pub mod reactive;
 pub mod resource;
 pub mod state;
 pub mod syzygy;
