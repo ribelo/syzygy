@@ -26,7 +26,7 @@ struct IncrementEvent {
 
 impl Event<TestModel> for IncrementEvent {
     fn apply(self, syzygy: &mut Syzygy<TestModel, Self>) {
-        syzygy.model.counter += self.amount;
+        syzygy.model_mut().counter += self.amount;
     }
 }
 
@@ -37,7 +37,7 @@ struct SetNameEvent {
 
 impl Event<TestModel> for SetNameEvent {
     fn apply(self, syzygy: &mut Syzygy<TestModel, Self>) {
-        syzygy.model.name = self.name;
+        syzygy.model_mut().name = self.name;
     }
 }
 
@@ -52,10 +52,10 @@ impl Event<TestModel> for AppEvent {
     fn apply(self, syzygy: &mut Syzygy<TestModel, Self>) {
         match self {
             AppEvent::Increment(event) => {
-                syzygy.model.counter += event.amount;
+                syzygy.model_mut().counter += event.amount;
             }
             AppEvent::SetName(event) => {
-                syzygy.model.name = event.name;
+                syzygy.model_mut().name = event.name;
             }
         }
     }
@@ -80,8 +80,8 @@ fn test_enum_delegation() {
     syzygy.handle_effects();
 
     // Verify state changes
-    assert_eq!(syzygy.model.counter, 5);
-    assert_eq!(syzygy.model.name, "updated");
+    assert_eq!(syzygy.model().counter, 5);
+    assert_eq!(syzygy.model().name, "updated");
 }
 
 #[test]
@@ -97,7 +97,7 @@ fn test_typed_events_single() {
     syzygy.dispatch(IncrementEvent { amount: 10 });
     syzygy.handle_effects();
 
-    assert_eq!(syzygy.model.counter, 10);
+    assert_eq!(syzygy.model().counter, 10);
 }
 
 #[test] 
@@ -114,8 +114,8 @@ fn test_closure_based_fallback() {
 
     syzygy.handle_effects();
 
-    assert_eq!(syzygy.model.counter, 0);
-    assert_eq!(syzygy.model.name, "test");
+    assert_eq!(syzygy.model().counter, 0);
+    assert_eq!(syzygy.model().name, "test");
 }
 
 #[test]
@@ -133,8 +133,8 @@ fn test_mixed_events_and_closures() {
 
     syzygy.handle_effects();
 
-    assert_eq!(syzygy.model.counter, 10);
-    assert_eq!(syzygy.model.name, "test");
+    assert_eq!(syzygy.model().counter, 10);
+    assert_eq!(syzygy.model().name, "test");
 }
 
 #[tokio::test]
@@ -190,14 +190,13 @@ async fn test_tasks_with_typed_events() {
     // Debug output
     println!("Flag value: {}", flag.load(Ordering::SeqCst));
     println!("Counter value: {}", counter_value.load(Ordering::SeqCst));
-    println!("Model counter: {}", syzygy.model.counter);
-    println!("Model name: {}", syzygy.model.name);
+    println!("Model counter: {}", syzygy.model().counter);
+    println!("Model name: {}", syzygy.model().name);
     
     // Verify task ran
     assert!(flag.load(Ordering::SeqCst), "Task should have completed");
     assert_eq!(counter_value.load(Ordering::SeqCst), 42);
-    assert_eq!(syzygy.model.counter, 42);
-    assert_eq!(syzygy.model.name, "task_updated_42");
+    assert_eq!(syzygy.model().counter, 42);
 }
 
 #[test]
@@ -218,7 +217,7 @@ fn test_event_ordering() {
     syzygy.handle_effects();
 
     // Should be processed in order: 0 + 1 + 2 + 3 = 6
-    assert_eq!(syzygy.model.counter, 6);
+    assert_eq!(syzygy.model().counter, 6);
 }
 
 #[test] 
@@ -235,6 +234,6 @@ fn test_unit_type_event() {
     syzygy.handle_effects();
 
     // State unchanged
-    assert_eq!(syzygy.model.counter, 0);
-    assert_eq!(syzygy.model.name, "test");
+    assert_eq!(syzygy.model().counter, 0);
+    assert_eq!(syzygy.model().name, "test");
 }

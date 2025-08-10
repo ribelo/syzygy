@@ -224,7 +224,20 @@ impl<M: Model, E> Syzygy<M, E> {
             #[cfg(feature = "tracing")]
             let _effect_enter = effect_span.enter();
 
-            event.apply(self);
+            // Catch panics to allow other events to continue processing
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                event.apply(self);
+            }));
+
+            #[cfg(feature = "tracing")]
+            if let Err(_) = result {
+                tracing::error!("Event panicked during apply, continuing with next event");
+            }
+            
+            #[cfg(all(not(feature = "tracing"), debug_assertions))]
+            if let Err(_) = result {
+                eprintln!("Warning: Event panicked during apply, continuing with next event");
+            }
         }
     }
 
