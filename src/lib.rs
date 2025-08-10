@@ -1,7 +1,6 @@
 pub mod context;
 pub mod debug;
 pub mod dispatch;
-pub mod effect_builder;
 pub mod error;
 pub mod event;
 pub mod model;
@@ -18,11 +17,8 @@ pub mod prelude {
         EffectTracer, SyzygyMetrics, disable_tracing, enable_metrics, enable_tracing, metrics,
         print_debug_summary, with_tracer,
     };
-    #[cfg(feature = "async")]
-    pub use crate::dispatch::AsyncDispatchExt;
-    pub use crate::dispatch::{DispatchEffect, Effect};
+    pub use crate::dispatch::DispatchEffect;
     pub use crate::event::Event;
-    pub use crate::effect_builder::{EffectBuilder, EffectExt};
     pub use crate::error::{
         ContextCreationError, DispatchError, LockAcquisitionError, ResourceNotFoundError,
         ResourceReplaceError,

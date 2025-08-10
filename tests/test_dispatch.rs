@@ -12,10 +12,15 @@ impl Model for TestModel {
     }
 }
 
-fn increment(cx: &mut Syzygy<TestModel, ()>) {
-    cx.update(|m| {
-        m.counter += 1;
-    });
+#[derive(Debug)]
+struct IncrementEvent;
+
+impl Event<TestModel> for IncrementEvent {
+    fn apply(self, cx: &mut Syzygy<TestModel, Self>) {
+        cx.update(|m| {
+            m.counter += 1;
+        });
+    }
 }
 
 #[cfg(not(feature = "parallel"))]
@@ -23,11 +28,11 @@ fn increment(cx: &mut Syzygy<TestModel, ()>) {
 #[tokio::test]
 async fn test_async_dispatch() {
     let model = TestModel { counter: 0 };
-    let mut syzygy: Syzygy<TestModel, ()> = Syzygy::builder().model(model).build();
+    let mut syzygy: Syzygy<TestModel, IncrementEvent> = Syzygy::builder().model(model).build();
 
     // Dispatch the effect multiple times
     for _ in 0..5 {
-        syzygy.dispatch_closure(|cx: &mut Syzygy<TestModel, ()>| increment(cx));
+        syzygy.dispatch(IncrementEvent);
     }
 
     syzygy.handle_effects();
@@ -38,14 +43,12 @@ async fn test_async_dispatch() {
 #[cfg(not(feature = "parallel"))]
 #[cfg(feature = "async")]
 #[tokio::test]
-async fn test_sync_dispatch() {
+async fn test_event_dispatch() {
     let model = TestModel { counter: 0 };
-    let mut syzygy: Syzygy<TestModel, ()> = Syzygy::builder().model(model).build();
+    let mut syzygy: Syzygy<TestModel, IncrementEvent> = Syzygy::builder().model(model).build();
 
-    let rx = syzygy.dispatch_sync(increment);
-
+    syzygy.dispatch(IncrementEvent);
     syzygy.handle_effects();
-    rx.await.unwrap();
 
     assert_eq!(syzygy.model().counter, 1);
 }

@@ -3,18 +3,13 @@
 //! This module contains all the machinery for creating, sending, and receiving effects.
 //! Effects are the primary way to perform side effects and state mutations in Syzygy.
 
-#[cfg(feature = "async")]
-use tokio::sync::oneshot;
-
-use crate::{context::Context, error::DispatchError, event::Message, syzygy::Syzygy};
+use crate::{context::Context, error::DispatchError};
 
 mod bus;
 mod dispatcher;
-mod effect;
 
 pub use bus::{EffectsBus, EffectsRx, EffectsTx};
 pub use dispatcher::Dispatcher;
-pub use effect::{Effect, EffectFn};
 
 /// Core trait for dispatching effects
 ///
@@ -34,23 +29,10 @@ pub trait DispatchEffect: Context {
         Self::Event: crate::event::Event<Self::Model>,
     {
         self.effects_tx()
-            .send(Message::Event(event))
+            .send(event)
             .expect("Effect receiver should be active");
     }
 
-    /// Dispatch a closure-based effect
-    ///
-    /// This method dispatches closure-based effects.
-    /// A closed channel is considered a fatal application error, so this method will panic if the receiver is dropped.
-    #[inline]
-    fn dispatch_closure<F>(&self, effect: F)
-    where
-        F: EffectFn<Self::Model, Self::Event> + Send + 'static,
-    {
-        self.effects_tx()
-            .send(Message::Closure(Box::new(effect)))
-            .expect("Effect receiver should be active");
-    }
 
     /// Try to dispatch a typed event, returning an error if the channel is closed
     ///
@@ -62,59 +44,9 @@ pub trait DispatchEffect: Context {
         Self::Event: crate::event::Event<Self::Model>,
     {
         self.effects_tx()
-            .send(Message::Event(event))
-            .map_err(|_| DispatchError::new("effect channel is closed"))
-    }
-
-    /// Try to dispatch a closure effect, returning an error if the channel is closed
-    ///
-    /// This method is for advanced use cases where channel failure is recoverable.
-    /// Most applications should use `dispatch_closure` instead.
-    #[inline]
-    fn try_dispatch_closure<F>(&self, effect: F) -> Result<(), DispatchError>
-    where
-        F: EffectFn<Self::Model, Self::Event> + Send + 'static,
-    {
-        self.effects_tx()
-            .send(Message::Closure(Box::new(effect)))
+            .send(event)
             .map_err(|_| DispatchError::new("effect channel is closed"))
     }
 
 }
 
-/// Extension trait for async-specific dispatch functionality
-///
-/// This trait is separate to keep the core `DispatchEffect` trait clean and focused.
-/// It contains specialized methods for bridging sync effects with async code.
-#[cfg(feature = "async")]
-pub trait AsyncDispatchExt: DispatchEffect {
-    /// Dispatch an effect synchronously from async context
-    ///
-    /// Returns a receiver that will be notified when the effect completes.
-    /// This is primarily useful for testing or bridging sync effects with async code.
-    ///
-    /// # Example
-    ///
-    /// ```rust,ignore
-    /// let completion = syzygy.dispatch_sync(|ctx| {
-    ///     ctx.update(|model| model.counter += 1);
-    /// });
-    ///
-    /// // In async context
-    /// completion.await.unwrap();
-    /// ```
-    #[must_use]
-    #[inline]
-    fn dispatch_sync(&self, effect: impl EffectFn<Self::Model, Self::Event>) -> oneshot::Receiver<()> {
-        let (tx, rx) = oneshot::channel();
-        let wrapped_effect = move |ctx: &mut Syzygy<Self::Model, Self::Event>| {
-            (effect)(ctx);
-            let _ = tx.send(());
-        };
-        self.dispatch_closure(wrapped_effect);
-        rx
-    }
-}
-
-#[cfg(feature = "async")]
-impl<T: DispatchEffect> AsyncDispatchExt for T {}

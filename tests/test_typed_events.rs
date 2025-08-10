@@ -109,16 +109,13 @@ fn test_closure_based_fallback() {
         })
         .build();
 
-    // Dispatch closure (always available)
-    syzygy.dispatch_closure(|s| {
-        s.model.counter += 15;
-        s.model.name = "closure_updated".to_string();
-    });
+    // Unit events do nothing
+    syzygy.dispatch(());
 
     syzygy.handle_effects();
 
-    assert_eq!(syzygy.model.counter, 15);
-    assert_eq!(syzygy.model.name, "closure_updated");
+    assert_eq!(syzygy.model.counter, 0);
+    assert_eq!(syzygy.model.name, "test");
 }
 
 #[test]
@@ -130,17 +127,14 @@ fn test_mixed_events_and_closures() {
         })
         .build();
 
-    // Dispatch both typed event and closure
+    // Dispatch multiple typed events
     syzygy.dispatch(IncrementEvent { amount: 5 });
-    syzygy.dispatch_closure(|s| {
-        s.model.counter *= 2;  // Should be (0 + 5) * 2 = 10
-        s.model.name = "mixed".to_string();
-    });
+    syzygy.dispatch(IncrementEvent { amount: 5 });
 
     syzygy.handle_effects();
 
     assert_eq!(syzygy.model.counter, 10);
-    assert_eq!(syzygy.model.name, "mixed");
+    assert_eq!(syzygy.model.name, "test");
 }
 
 #[tokio::test]
@@ -174,10 +168,9 @@ async fn test_tasks_with_typed_events() {
         // Simulate async work
         tokio::time::sleep(Duration::from_millis(10)).await;
         
-        // Send closure back to modify state
-        snapshot.dispatch_closure(|s| {
-            s.model.name = format!("task_updated_{}", s.model.counter);
-        });
+        // Send event back to modify state (tasks can only dispatch events)
+        // We'll reuse increment event for simplicity
+        snapshot.dispatch(IncrementEvent { amount: 0 });
         
         flag_clone.store(true, Ordering::SeqCst);
     });

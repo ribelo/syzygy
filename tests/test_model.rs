@@ -12,10 +12,15 @@ impl Model for TestModel {
     }
 }
 
-fn increment(cx: &mut Syzygy<TestModel, ()>) {
-    cx.update(|m| {
-        m.counter += 1;
-    });
+#[derive(Debug)]
+struct IncrementEvent;
+
+impl Event<TestModel> for IncrementEvent {
+    fn apply(self, cx: &mut Syzygy<TestModel, Self>) {
+        cx.update(|m| {
+            m.counter += 1;
+        });
+    }
 }
 
 #[cfg(feature = "async")]
@@ -50,10 +55,10 @@ async fn test_model() {
 #[tokio::test]
 async fn test_increment_dispatch() {
     let model = TestModel { counter: 0 };
-    let mut syzygy: Syzygy<TestModel, ()> = Syzygy::builder().model(model).build();
+    let mut syzygy: Syzygy<TestModel, IncrementEvent> = Syzygy::builder().model(model).build();
 
     for _i in 0..5 {
-        syzygy.dispatch_closure(increment);
+        syzygy.dispatch(IncrementEvent);
         syzygy.handle_effects();
     }
 
@@ -64,14 +69,14 @@ async fn test_increment_dispatch() {
 #[tokio::test]
 async fn test_dispatch_performance() {
     let model = TestModel { counter: 0 };
-    let mut syzygy: Syzygy<TestModel, ()> = Syzygy::builder().model(model).build();
+    let mut syzygy: Syzygy<TestModel, IncrementEvent> = Syzygy::builder().model(model).build();
 
     use std::time::Instant;
 
     // Measure time to process 1000 dispatches
     let start = Instant::now();
     for _i in 0..1000 {
-        syzygy.dispatch_closure(increment);
+        syzygy.dispatch(IncrementEvent);
     }
 
     // Process all effects
@@ -99,7 +104,7 @@ async fn test_dispatch_performance() {
 #[tokio::test]
 async fn test_benchmark_direct_model_update() {
     let model = TestModel { counter: 0 };
-    let mut syzygy: Syzygy<TestModel, ()> = Syzygy::builder().model(model).build();
+    let mut syzygy: Syzygy<TestModel, IncrementEvent> = Syzygy::builder().model(model).build();
 
     use std::time::Instant;
 
@@ -116,7 +121,7 @@ async fn test_benchmark_direct_model_update() {
     // Benchmark effect dispatch
     let start = Instant::now();
     for _i in 0..1000 {
-        syzygy.dispatch_closure(increment);
+        syzygy.dispatch(IncrementEvent);
     }
     syzygy.handle_effects();
     let dispatch_duration = start.elapsed();

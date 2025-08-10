@@ -129,16 +129,3 @@ impl<M: Model, E> DispatchEffect for SnapshotContext<M, E> {
         &self.effects_tx
     }
 }
-
-impl<M: Model, E> SnapshotContext<M, E> {
-
-    /// Dispatch a closure-based effect from snapshot context
-    pub fn dispatch_closure<F>(&self, f: F)
-    where
-        F: FnOnce(&mut crate::syzygy::Syzygy<M, E>) + Send + 'static,
-    {
-        use crate::event::Message;
-        self.effects_tx.send(Message::Closure(Box::new(f)))
-            .expect("Effect receiver should be active");
-    }
-}

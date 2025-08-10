@@ -24,6 +24,15 @@ mod tracing_tests {
             self.clone()
         }
     }
+    
+    #[derive(Debug)]
+    struct AddEvent { amount: i32 }
+    
+    impl Event<TestModel> for AddEvent {
+        fn apply(self, ctx: &mut Syzygy<TestModel, Self>) {
+            ctx.update(|model| model.value += self.amount);
+        }
+    }
 
     #[tokio::test]
     async fn test_tracing_compiles() {
@@ -56,15 +65,13 @@ mod tracing_tests {
 
     #[tokio::test]
     async fn test_multiple_effects_with_tracing() {
-        let mut syzygy: Syzygy<TestModel, ()> = Syzygy::builder()
+        let mut syzygy: Syzygy<TestModel, AddEvent> = Syzygy::builder()
             .model(TestModel { value: 0 })
             .build();
 
         // Dispatch multiple effects - each should get a span
         for i in 0..5 {
-            syzygy.dispatch_closure(move |ctx| {
-                ctx.update(|model| model.value += i);
-            });
+            syzygy.dispatch(AddEvent { amount: i });
         }
 
         // Handle all effects - should create handle_effects span
@@ -94,6 +101,15 @@ mod without_tracing {
         type Snapshot = Self;
         fn to_snapshot(&self) -> Self::Snapshot {
             self.clone()
+        }
+    }
+    
+    #[derive(Debug)]
+    struct AddEvent { amount: i32 }
+    
+    impl Event<TestModel> for AddEvent {
+        fn apply(self, ctx: &mut Syzygy<TestModel, Self>) {
+            ctx.update(|model| model.value += self.amount);
         }
     }
 

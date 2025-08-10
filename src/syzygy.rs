@@ -5,7 +5,7 @@ use bon::Builder;
 use crate::{
     context::Context,
     dispatch::{DispatchEffect, Dispatcher, EffectsBus, EffectsTx},
-    event::{Event, Message},
+    event::Event,
     model::{Model, ModelAccess, ModelModify, ModelSnapshotCreate},
     resource::{ResourceAccess, ResourceModify, Resources},
 };
@@ -79,7 +79,7 @@ use crate::{
 /// ```
 ///
 /// ## Effect System
-/// Effects handle side effects and asynchronous operations through typed events or closures:
+/// Effects handle side effects and asynchronous operations through typed events:
 ///
 /// ```rust
 /// # use syzygy::prelude::*;
@@ -89,15 +89,17 @@ use crate::{
 /// #     type Snapshot = Self;
 /// #     fn to_snapshot(&self) -> Self::Snapshot { self.clone() }
 /// # }
-/// # let mut syzygy: Syzygy<AppModel> = Syzygy::builder().model(AppModel { counter: 0 }).build();
-/// // Dispatch a closure-based effect
-/// syzygy.dispatch_closure(|ctx| {
-///     ctx.update(|model| model.counter += 10);
-/// });
-///
-/// // Or dispatch typed events via the DispatchEffect trait
+/// # #[derive(Debug)]
+/// # struct MyEvent { amount: i32 }
+/// # impl Event<AppModel> for MyEvent {
+/// #     fn apply(self, ctx: &mut Syzygy<AppModel, Self>) {
+/// #         ctx.update(|model| model.counter += self.amount);
+/// #     }
+/// # }
+/// # let mut syzygy: Syzygy<AppModel, MyEvent> = Syzygy::builder().model(AppModel { counter: 0 }).build();
+/// // Dispatch typed events via the DispatchEffect trait
 /// use syzygy::dispatch::DispatchEffect;
-/// // syzygy.dispatch(MyEvent { amount: 5 }); // for typed events
+/// syzygy.dispatch(MyEvent { amount: 5 });
 ///
 /// // Process effects
 /// syzygy.handle_effects();
@@ -152,8 +154,8 @@ impl<M: Model, E, S: syzygy_builder::State> SyzygyBuilder<M, E, S> {
 impl<M: Model, E> Syzygy<M, E> {
     /// Process all pending effects in the queue
     ///
-    /// This method drains the effect queue and executes each effect in order.
-    /// Effects are closures that can read and modify the Syzygy context, including
+    /// This method drains the effect queue and executes each event in order.
+    /// Events are typed messages that can read and modify the Syzygy context, including
     /// the model and resources.
     ///
     /// # Usage
@@ -175,14 +177,24 @@ impl<M: Model, E> Syzygy<M, E> {
     ///     .model(AppModel { counter: 0 })
     ///     .build();
     ///
-    /// // Dispatch some closure-based effects
-    /// syzygy.dispatch_closure(|ctx| ctx.update(|m| m.counter += 1));
-    /// syzygy.dispatch_closure(|ctx| ctx.update(|m| m.counter *= 2));
+    /// # #[derive(Debug)]
+    /// # struct Increment { amount: i32 }
+    /// # impl Event<AppModel> for Increment {
+    /// #     fn apply(self, ctx: &mut Syzygy<AppModel, Self>) {
+    /// #         ctx.update(|m| m.counter += self.amount);
+    /// #     }
+    /// # }
+    /// # let mut syzygy: Syzygy<AppModel, Increment> = Syzygy::builder()
+    /// #     .model(AppModel { counter: 0 })
+    /// #     .build();
+    /// // Dispatch some events
+    /// syzygy.dispatch(Increment { amount: 1 });
+    /// syzygy.dispatch(Increment { amount: 2 });
     ///
-    /// // Process all effects at once
+    /// // Process all events at once
     /// syzygy.handle_effects();
     ///
-    /// assert_eq!(syzygy.model().counter, 2); // (0 + 1) * 2
+    /// assert_eq!(syzygy.model().counter, 3); // 0 + 1 + 2
     /// ```
     ///
     /// # Performance
@@ -205,24 +217,14 @@ impl<M: Model, E> Syzygy<M, E> {
         #[cfg(feature = "tracing")]
         let _enter = span.enter();
 
-        while let Ok(message) = self.effects_bus.rx.try_recv() {
+        while let Ok(event) = self.effects_bus.rx.try_recv() {
             #[cfg(feature = "tracing")]
-            let effect_span = match &message {
-                Message::Event(_) => {
-                    tracing::span!(tracing::Level::TRACE, "effect", kind = "event")
-                }
-                Message::Closure(_) => {
-                    tracing::span!(tracing::Level::TRACE, "effect", kind = "closure")
-                }
-            };
+            let effect_span = tracing::span!(tracing::Level::TRACE, "effect", kind = "event");
             
             #[cfg(feature = "tracing")]
             let _effect_enter = effect_span.enter();
 
-            match message {
-                Message::Event(event) => event.apply(self),
-                Message::Closure(f) => f(self),
-            }
+            event.apply(self);
         }
     }
 
@@ -265,12 +267,20 @@ impl<M: Model, E> Syzygy<M, E> {
     ///     .model(AppModel { counter: 0 })
     ///     .build();
     ///
+    /// # #[derive(Debug)]
+    /// # struct AddEvent { value: i32 }
+    /// # impl Event<AppModel> for AddEvent {
+    /// #     fn apply(self, ctx: &mut Syzygy<AppModel, Self>) {
+    /// #         ctx.update(|model| model.counter += self.value);
+    /// #     }
+    /// # }
+    /// # let syzygy: Syzygy<AppModel, AddEvent> = Syzygy::builder()
+    /// #     .model(AppModel { counter: 0 })
+    /// #     .build();
     /// let dispatcher = syzygy.dispatcher();
     ///
-    /// // Use the dispatcher to send closure-based effects
-    /// dispatcher.dispatch_closure(|ctx| {
-    ///     ctx.update(|model| model.counter += 5);
-    /// });
+    /// // Use the dispatcher to send events
+    /// dispatcher.dispatch(AddEvent { value: 5 });
     /// ```
     ///
     /// The dispatcher can be cloned and passed to other threads for concurrent

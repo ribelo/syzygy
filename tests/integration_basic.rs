@@ -64,7 +64,7 @@ impl GlobalCounter {
 #[cfg(feature = "async")]
 #[tokio::test]
 async fn test_builder_pattern() {
-    let syzygy: Syzygy<TestModel, ()> = Syzygy::builder()
+    let syzygy: Syzygy<TestModel, IncrementEvent> = Syzygy::builder()
         .model(TestModel {
             counter: 5,
             name: "builder_test".to_string(),
@@ -87,27 +87,37 @@ async fn test_builder_pattern() {
     assert_eq!(counter.get(), 0);
 }
 
-fn increment_counter(syzygy: &mut Syzygy<TestModel, ()>) {
-    syzygy.model_mut().counter += 1;
+#[derive(Debug)]
+struct IncrementEvent;
+
+impl Event<TestModel> for IncrementEvent {
+    fn apply(self, syzygy: &mut Syzygy<TestModel, Self>) {
+        syzygy.model_mut().counter += 1;
+    }
 }
 
-fn use_resources(syzygy: &mut Syzygy<TestModel, ()>) {
-    let test_res = syzygy.resource::<TestResource>();
-    let counter = syzygy.resource::<GlobalCounter>();
+#[derive(Debug)]
+struct UseResourcesEvent;
 
-    syzygy.model_mut().counter = test_res.value;
-    counter.increment();
+impl Event<TestModel> for UseResourcesEvent {
+    fn apply(self, syzygy: &mut Syzygy<TestModel, Self>) {
+        let test_res = syzygy.resource::<TestResource>();
+        let counter = syzygy.resource::<GlobalCounter>();
+
+        syzygy.model_mut().counter = test_res.value;
+        counter.increment();
+    }
 }
 
 #[cfg(feature = "async")]
 #[tokio::test]
 async fn test_basic_effects() {
-    let mut syzygy: Syzygy<TestModel, ()> = Syzygy::builder()
+    let mut syzygy: Syzygy<TestModel, IncrementEvent> = Syzygy::builder()
         .model(TestModel::default())
         .resource(TestResource { value: 42 })
         .build();
 
-    syzygy.dispatch_closure(increment_counter);
+    syzygy.dispatch(IncrementEvent);
     syzygy.handle_effects();
 
     assert_eq!(syzygy.model().counter, 1);
@@ -116,7 +126,7 @@ async fn test_basic_effects() {
 #[cfg(feature = "async")]
 #[tokio::test]
 async fn test_resource_access() {
-    let syzygy: Syzygy<TestModel, ()> = Syzygy::builder()
+    let syzygy: Syzygy<TestModel, IncrementEvent> = Syzygy::builder()
         .model(TestModel::default())
         .resource(TestResource { value: 42 })
         .resource(GlobalCounter::new())
@@ -139,7 +149,7 @@ async fn test_resource_access() {
 #[cfg(feature = "async")]
 #[tokio::test]
 async fn test_model_operations() {
-    let mut syzygy: Syzygy<TestModel, ()> = Syzygy::builder().model(TestModel::default()).build();
+    let mut syzygy: Syzygy<TestModel, IncrementEvent> = Syzygy::builder().model(TestModel::default()).build();
 
     // Test query
     let initial_counter = syzygy.query(|model| model.counter);
@@ -155,10 +165,19 @@ async fn test_model_operations() {
     assert_eq!(syzygy.model().name, "updated");
 }
 
+#[derive(Debug)]
+struct SetCounterEvent { value: i32 }
+
+impl Event<TestModel> for SetCounterEvent {
+    fn apply(self, s: &mut Syzygy<TestModel, Self>) {
+        s.model_mut().counter = self.value;
+    }
+}
+
 #[cfg(feature = "async")]
 #[tokio::test]
 async fn test_basic_async_task() {
-    let mut syzygy: Syzygy<TestModel, ()> = Syzygy::builder()
+    let mut syzygy: Syzygy<TestModel, SetCounterEvent> = Syzygy::builder()
         .model(TestModel::default())
         .resource(GlobalCounter::new())
         .build();
@@ -169,10 +188,8 @@ async fn test_basic_async_task() {
         let counter = async_ctx.resource::<GlobalCounter>();
         counter.increment();
 
-        // Dispatch effect to update model
-        async_ctx.dispatch_closure(|s: &mut Syzygy<TestModel, ()>| {
-            s.model_mut().counter = 100;
-        });
+        // Dispatch event to update model
+        async_ctx.dispatch(SetCounterEvent { value: 100 });
     });
 
     // Wait for async task and process effects multiple times
@@ -190,7 +207,7 @@ async fn test_basic_async_task() {
 #[cfg(feature = "async")]
 #[tokio::test]
 async fn test_multiple_resources() {
-    let syzygy: Syzygy<TestModel, ()> = Syzygy::builder()
+    let syzygy: Syzygy<TestModel, UseResourcesEvent> = Syzygy::builder()
         .model(TestModel::default())
         .resource(TestResource { value: 1 })
         .resource(GlobalCounter::new())
@@ -204,7 +221,7 @@ async fn test_multiple_resources() {
     assert_eq!(counter.get(), 0);
 
     let mut syzygy = syzygy;
-    syzygy.dispatch_closure(use_resources);
+    syzygy.dispatch(UseResourcesEvent);
     syzygy.handle_effects();
 
     assert_eq!(syzygy.model().counter, 1);
@@ -216,7 +233,7 @@ async fn test_multiple_resources() {
 #[tokio::test]
 async fn test_concurrent_access() {
     let syzygy = Arc::new(
-        Syzygy::<TestModel, ()>::builder()
+        Syzygy::<TestModel, IncrementEvent>::builder()
             .model(TestModel::default())
             .resource(GlobalCounter::new())
             .build(),
