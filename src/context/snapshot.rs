@@ -68,7 +68,7 @@ use super::Context;
 pub struct SnapshotContext<M: Model, E = ()> {
     model_snapshot: Arc<M::Snapshot>,
     resources: Resources,
-    effects_tx: EffectsTx<M, E>,
+    effects_tx: EffectsTx<E>,
 }
 
 impl<M: Model, E> Context for SnapshotContext<M, E> {
@@ -125,7 +125,7 @@ impl<M: Model, E> ResourceAccess for SnapshotContext<M, E> {
 }
 
 impl<M: Model, E> DispatchEffect for SnapshotContext<M, E> {
-    fn effects_tx(&self) -> &EffectsTx<M, E> {
+    fn effects_tx(&self) -> &EffectsTx<E> {
         &self.effects_tx
     }
 }

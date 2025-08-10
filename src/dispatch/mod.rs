@@ -17,7 +17,7 @@ pub use dispatcher::Dispatcher;
 /// It follows the principle: "There should be one—and preferably only one—obvious way to do it."
 pub trait DispatchEffect: Context {
     /// Get the effects transmitter
-    fn effects_tx(&self) -> &EffectsTx<Self::Model, Self::Event>;
+    fn effects_tx(&self) -> &EffectsTx<Self::Event>;
 
     /// Dispatch a typed event
     ///

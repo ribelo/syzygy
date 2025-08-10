@@ -109,7 +109,7 @@ pub struct Syzygy<M: Model, E = ()> {
     #[builder(field)]
     pub resources: Resources,
     #[builder(default)]
-    pub effects_bus: EffectsBus<M, E>,
+    pub effects_bus: EffectsBus<E>,
     #[cfg(feature = "async")]
     #[builder(default)]
     pub task_tracker: tokio_util::task::TaskTracker,
@@ -496,7 +496,7 @@ impl<M: Model, E> ResourceModify for Syzygy<M, E> {}
 
 impl<M: Model, E> DispatchEffect for Syzygy<M, E> {
     #[inline]
-    fn effects_tx(&self) -> &EffectsTx<M, E> {
+    fn effects_tx(&self) -> &EffectsTx<E> {
         &self.effects_bus.tx
     }
 }

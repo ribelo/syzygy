@@ -1,42 +1,33 @@
 //! Effect communication channels
 
-use std::marker::PhantomData;
-
-use crate::model::Model;
-
 /// Sender for effects
 #[derive(Debug)]
-pub struct EffectsTx<M: Model, E> {
-    #[allow(dead_code)]
+pub struct EffectsTx<E> {
     inner: crossbeam_channel::Sender<E>,
-    _phantom: PhantomData<M>,
 }
 
-impl<M: Model, E> EffectsTx<M, E> {
+impl<E> EffectsTx<E> {
     /// Send an event through the channel
     pub fn send(&self, event: E) -> Result<(), crossbeam_channel::SendError<E>> {
         self.inner.send(event)
     }
 }
 
-impl<M: Model, E> Clone for EffectsTx<M, E> {
+impl<E> Clone for EffectsTx<E> {
     fn clone(&self) -> Self {
         Self {
             inner: self.inner.clone(),
-            _phantom: PhantomData,
         }
     }
 }
 
 /// Receiver for effects
 #[derive(Debug)]
-pub struct EffectsRx<M: Model, E> {
-    #[allow(dead_code)]
+pub struct EffectsRx<E> {
     inner: crossbeam_channel::Receiver<E>,
-    _phantom: PhantomData<M>,
 }
 
-impl<M: Model, E> EffectsRx<M, E> {
+impl<E> EffectsRx<E> {
     /// Try to receive an event from the channel
     pub fn try_recv(&self) -> Result<E, crossbeam_channel::TryRecvError> {
         self.inner.try_recv()
@@ -45,25 +36,25 @@ impl<M: Model, E> EffectsRx<M, E> {
 
 /// Communication bus for effects
 #[derive(Debug)]
-pub struct EffectsBus<M: Model, E> {
-    pub(crate) tx: EffectsTx<M, E>,
-    pub(crate) rx: EffectsRx<M, E>,
+pub struct EffectsBus<E> {
+    pub(crate) tx: EffectsTx<E>,
+    pub(crate) rx: EffectsRx<E>,
 }
 
-impl<M: Model, E> Default for EffectsBus<M, E> {
+impl<E> Default for EffectsBus<E> {
     fn default() -> Self {
         let (tx, rx) = crossbeam_channel::unbounded();
         Self {
-            tx: EffectsTx { inner: tx, _phantom: PhantomData },
-            rx: EffectsRx { inner: rx, _phantom: PhantomData },
+            tx: EffectsTx { inner: tx },
+            rx: EffectsRx { inner: rx },
         }
     }
 }
 
-impl<M: Model, E> EffectsBus<M, E> {
+impl<E> EffectsBus<E> {
     /// Split the bus into sender and receiver
     #[must_use]
-    pub fn split(self) -> (EffectsTx<M, E>, EffectsRx<M, E>) {
+    pub fn split(self) -> (EffectsTx<E>, EffectsRx<E>) {
         (self.tx, self.rx)
     }
 }
