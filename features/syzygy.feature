@@ -14,7 +14,6 @@ Feature: Syzygy Event-Driven State Management
     Then I should be able to configure state and event handlers
     And the builder should provide a fluent interface
 
-
   @SYZ-004
   Scenario: Non-Blocking Event Dispatch
     Given a Syzygy system is running
@@ -36,7 +35,7 @@ Feature: Syzygy Event-Driven State Management
     Given an event is being processed
     When the event handler is called
     Then it should be a pure function
-    And it should return new events and tasks
+    And it should return new events and commands
     And it should not perform side effects directly
 
   @SYZ-007
@@ -100,7 +99,7 @@ Feature: Syzygy Event-Driven State Management
     Given event processing encounters errors
     When the error occurs
     Then events should either recover gracefully
-    Or emit new error events rather than failing
+    And emit new error events rather than failing
     And the event processing pipeline should continue
 
   @SYZ-016
@@ -174,7 +173,6 @@ Feature: Syzygy Event-Driven State Management
     Then they should act as external clients
     And they should send events through the main event channel
     And they should not modify state directly
-
 
   @SYZ-026
   Scenario: Errors as Events

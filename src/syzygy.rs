@@ -24,25 +24,27 @@ use tracing::{debug, trace, warn};
 /// - M: Model (application state)
 /// - E: Event enum (all possible events)
 /// - C: Command enum (all possible side effects)
-pub struct Syzygy<M, E, C>
+/// - R: Resources (shared state and services)
+pub struct Syzygy<M, E, C, R = Resources>
 where
     E: Clone,
 {
     pub(crate) model: M,
-    pub(crate) resources: Resources,
+    pub(crate) resources: R,
     pub(crate) event_rx: Receiver<E>,
     pub(crate) event_tx: Sender<E>,
     pub(crate) command_tx: Sender<C>,
     pub(crate) event_handler: fn(E, &mut M) -> Dispatch<E, C>,
-    pub(crate) command_handler: Option<fn(CommandContext<E, Resources>, C) -> Pin<Box<dyn Future<Output = ()> + Send + 'static>>>,
+    pub(crate) command_handler: Option<fn(CommandContext<E, R>, C) -> Pin<Box<dyn Future<Output = ()> + Send + 'static>>>,
     // Monitoring fields
     pub(crate) processed_events_count: u64,
 }
 
-impl<M, E, C> std::fmt::Debug for Syzygy<M, E, C>
+impl<M, E, C, R> std::fmt::Debug for Syzygy<M, E, C, R>
 where
     E: Clone,
     M: std::fmt::Debug,
+    R: std::fmt::Debug,
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Syzygy")
@@ -62,18 +64,18 @@ where
     }
 }
 
-impl<E, C> Syzygy<(), E, C>
+impl<E, C> Syzygy<(), E, C, Resources>
 where
     E: Send + Clone + 'static,
     C: Send + Clone + 'static,
 {
     /// Create a new builder for Syzygy
-    pub fn builder() -> crate::builder::SyzygyBuilder<(), E, C, crate::builder::InitialStage> {
+    pub fn builder() -> crate::builder::SyzygyBuilder<(), E, C, Resources, crate::builder::InitialStage> {
         crate::builder::SyzygyBuilder::new()
     }
 }
 
-impl<M, E, C> Syzygy<M, E, C>
+impl<M, E, C, R> Syzygy<M, E, C, R>
 where
     E: Clone,
 {
@@ -88,7 +90,7 @@ where
     }
 
     /// Get a reference to the resources
-    pub fn resources(&self) -> &Resources {
+    pub fn resources(&self) -> &R {
         &self.resources
     }
 
@@ -125,7 +127,7 @@ where
     }
 }
 
-impl<M, E, C> Syzygy<M, E, C>
+impl<M, E, C, R> Syzygy<M, E, C, R>
 where
     E: Send + Clone,
     C: Send + Clone,

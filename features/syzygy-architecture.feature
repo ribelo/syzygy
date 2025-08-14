@@ -24,7 +24,6 @@ Feature: Syzygy Architecture Patterns
     When workers execute and communicate back through events
     Then external systems should communicate via event dispatch
 
-
   @SYZ-026
   Scenario: Errors as Events
     Given a Syzygy system with worker support

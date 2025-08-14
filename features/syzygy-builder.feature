@@ -9,4 +9,3 @@ Feature: Syzygy Builder Pattern
     Given I want to create a new Syzygy system
     When I use the builder pattern API
     Then I should be able to configure state and event handlers
-

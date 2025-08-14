@@ -1,31 +1,31 @@
 use crossbeam_channel::Sender;
 use crate::error::SyzygyError;
 
-/// Handle for dispatching commands to a Syzygy instance
+/// Handle for dispatching events to a Syzygy instance
 ///
 /// This handle can be cloned and shared across threads to send
-/// commands to the Syzygy event processor.
+/// events to the Syzygy event processor.
 #[derive(Debug)]
-pub struct SyzygyHandle<C> {
-    command_tx: Sender<C>,
+pub struct SyzygyHandle<E> {
+    event_tx: Sender<E>,
 }
 
-impl<C> Clone for SyzygyHandle<C> {
+impl<E> Clone for SyzygyHandle<E> {
     fn clone(&self) -> Self {
         Self {
-            command_tx: self.command_tx.clone(),
+            event_tx: self.event_tx.clone(),
         }
     }
 }
 
-impl<C> SyzygyHandle<C> {
-    pub(crate) fn new(command_tx: Sender<C>) -> Self {
-        Self { command_tx }
+impl<E> SyzygyHandle<E> {
+    pub(crate) fn new(event_tx: Sender<E>) -> Self {
+        Self { event_tx }
     }
 
-    /// Dispatch a command to be processed
+    /// Dispatch an event to be processed
     ///
-    /// Commands are queued and will be processed when `process_commands`
+    /// Events are queued and will be processed when `process_events`
     /// or similar methods are called on the Syzygy instance.
     ///
     /// Returns an error if the channel is closed (system is shutting down).
@@ -34,23 +34,23 @@ impl<C> SyzygyHandle<C> {
     ///
     /// ```rust,ignore
     /// # use syzygy::prelude::*;
-    /// # struct MyCommand;
-    /// # let handle: SyzygyHandle<MyCommand> = todo!();
-    /// handle.dispatch(MyCommand)?;
+    /// # struct MyEvent;
+    /// # let handle: SyzygyHandle<MyEvent> = todo!();
+    /// handle.dispatch(MyEvent)?;
     /// ```
-    pub fn dispatch(&self, command: C) -> Result<(), SyzygyError> {
-        self.command_tx.send(command).map_err(|_| SyzygyError::ChannelClosed)
+    pub fn dispatch(&self, event: E) -> Result<(), SyzygyError> {
+        self.event_tx.send(event).map_err(|_| SyzygyError::ChannelClosed)
     }
     
-    /// Try to dispatch a command without blocking
+    /// Try to dispatch an event without blocking
     ///
     /// Returns an error if the channel is full or closed.
-    pub fn try_dispatch(&self, command: C) -> Result<(), SyzygyError> {
-        self.command_tx.try_send(command).map_err(|e| e.into())
+    pub fn try_dispatch(&self, event: E) -> Result<(), SyzygyError> {
+        self.event_tx.try_send(event).map_err(|e| e.into())
     }
 
-    /// Get the command sender
-    pub fn command_sender(&self) -> &Sender<C> {
-        &self.command_tx
+    /// Get the event sender
+    pub fn event_sender(&self) -> &Sender<E> {
+        &self.event_tx
     }
 }
