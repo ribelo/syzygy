@@ -6,14 +6,13 @@ use std::{
 
 use rustc_hash::FxHashMap;
 
-use crate::{context::Context, error::ResourceNotFoundError};
-
+use crate::error::ResourceNotFoundError;
 
 /// Copy-on-write resource storage with lock-minimal reads
 ///
 /// This structure uses a double-Arc pattern for superior performance:
 /// - Outer Arc allows cheap cloning of the Resources struct
-/// - RwLock protects access to the inner Arc pointer  
+/// - RwLock protects access to the inner Arc pointer
 /// - Inner Arc<HashMap> enables lock-free reads after acquiring the map reference
 ///
 /// Read operations:
@@ -67,7 +66,7 @@ impl Resources {
     /// This operation:
     /// 1. Acquires a read lock (fast, shared with other readers)
     /// 2. Clones the inner Arc<HashMap> (cheap atomic ref increment)
-    /// 3. Releases the read lock immediately  
+    /// 3. Releases the read lock immediately
     /// 4. Performs HashMap lookup with zero contention
     #[must_use]
     pub fn get<T>(&self) -> Option<Arc<T>>
@@ -116,7 +115,7 @@ impl Resources {
     }
 }
 
-pub trait ResourceAccess: Context {
+pub trait ResourceAccess {
     fn resources(&self) -> &Resources;
     fn resource<T>(&self) -> Arc<T>
     where

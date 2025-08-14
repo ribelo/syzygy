@@ -1,53 +1,56 @@
 # Syzygy
 
-Fast, type-safe state management library for Rust with effects and async support.
+A hybrid compile-time/runtime state management system for Rust following functional core/imperative shell architecture.
 
-## What this library does
+## Features
 
-Syzygy provides a simple, composable way to manage application state with effects. It's built around three core concepts:
-
-1. **State Management** - Store and update your application state safely
-2. **Effect System** - Dispatch asynchronous operations without blocking
-3. **Resource Storage** - Type-safe dependency injection for shared resources
+- 🚀 **Zero-overhead model access** via compile-time type chains
+- 🔧 **Compile-time command routing** with type-safe handler chains
+- 🌊 **Async effect system** for I/O operations
+- 🎯 **Type safety** - accessing non-existent models won't compile
+- 📦 **Small and fast** - uses SmallVec to avoid allocations
 
 ## Quick Start
 
 ```rust
 use syzygy::prelude::*;
 
-// 1. Define your state model
-#[derive(Debug, Clone)]
-struct CounterModel {
-    value: i32,
+// Define your model
+#[derive(Default, Clone)]
+struct AppModel {
+    counter: i32,
 }
 
-impl Model for CounterModel {
-    type Snapshot = Self;
-    fn to_snapshot(&self) -> Self::Snapshot {
-        self.clone()
+// Define commands
+#[derive(Clone)]
+struct Increment(i32);
+
+// Define effects (for I/O)
+#[derive(Clone)]
+enum AppEffect {
+    Log(String),
+}
+
+impl Effect<Increment> for AppEffect {
+    async fn execute(&self, _ctx: EffectContext<Increment>) {
+        match self {
+            AppEffect::Log(msg) => println!("{}", msg),
+        }
     }
 }
 
-// 2. Create the state container
-let syzygy = Syzygy::builder()
-    .model(CounterModel { value: 0 })
+// Build the system
+let (mut syzygy, handle, _effects) = SimpleBuilder::new(AppModel::default())
+    .command(|cmd: Increment| {
+        vec![AppEffect::Log(format!("Incrementing by {}", cmd.0))].into()
+    })
     .build();
 
-// 3. Dispatch effects to modify state
-syzygy.dispatch(|ctx| {
-    ctx.update(|model| model.value += 1);
-});
+// Send commands
+handle.dispatch(Increment(5))?;
 
-// 4. Access state safely
-println!("Counter: {}", syzygy.model().value);
-```
-
-## Features
-
-- **Zero-copy resource access** - ~15ns resource lookup via `Arc<T>`
-- **Fast effect dispatch** - ~51ns per effect
-- **Async support** - Built-in async task spawning with snapshots
-- **Composable effects** - Chain timing, tracing, and debugging
+// Process them
+syzygy.process_commands();
 - **Thread-safe** - Use across multiple threads safely
 - **Type-safe** - Compile-time guarantees for state and resources
 

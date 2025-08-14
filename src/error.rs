@@ -1,128 +1,110 @@
-//! Function-specific error types for Syzygy operations
+//! Error types for Syzygy operations
 //!
-//! Each function defines its own error type that represents only the failures
-//! that specific function can produce. This follows the principle that each
-//! function should own its error handling completely.
+//! This module provides comprehensive error handling for different failure modes
+//! that can occur during Syzygy operations.
 
-use std::any::TypeId;
+use std::fmt;
 
-/// Error for resource lookup operations
-#[derive(Debug, thiserror::Error)]
-#[error("Resource of type {type_name} not found")]
+/// Comprehensive error type for Syzygy operations
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SyzygyError {
+    /// Command channel is closed (system is shutting down)
+    ChannelClosed,
+    
+    /// Command panicked during execution
+    CommandPanic(String),
+    
+    /// Effect execution failed
+    EffectFailed(String),
+    
+    /// Channel is full (for bounded channels)
+    ChannelFull,
+    
+    /// Invalid state transition attempted
+    InvalidStateTransition(String),
+    
+    /// Task tracker is closed (no new tasks can be spawned)
+    TaskTrackerClosed,
+    
+    /// Resource was not found
+    ResourceNotFound(String),
+}
+
+impl fmt::Display for SyzygyError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            SyzygyError::ChannelClosed => {
+                write!(f, "Channel is closed - system may be shutting down")
+            }
+            SyzygyError::CommandPanic(msg) => {
+                write!(f, "Command panicked: {}", msg)
+            }
+            SyzygyError::EffectFailed(msg) => {
+                write!(f, "Effect execution failed: {}", msg)
+            }
+            SyzygyError::ChannelFull => {
+                write!(f, "Channel is full - system may be overloaded")
+            }
+            SyzygyError::InvalidStateTransition(msg) => {
+                write!(f, "Invalid state transition: {}", msg)
+            }
+            SyzygyError::TaskTrackerClosed => {
+                write!(f, "Task tracker is closed - no new tasks can be spawned")
+            }
+            SyzygyError::ResourceNotFound(msg) => {
+                write!(f, "Resource not found: {}", msg)
+            }
+        }
+    }
+}
+
+impl std::error::Error for SyzygyError {}
+
+/// Legacy alias for channel closed error
+/// 
+/// This maintains compatibility while providing a path to the more comprehensive
+/// error system.
+pub type ChannelClosed = SyzygyError;
+
+/// Specific error type for resource operations
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResourceNotFoundError {
-    pub type_name: &'static str,
-    pub type_id: TypeId,
+    pub type_name: String,
 }
 
 impl ResourceNotFoundError {
-    pub fn new<T: 'static>() -> Self {
+    pub fn new<T>() -> Self {
         Self {
-            type_name: std::any::type_name::<T>(),
-            type_id: TypeId::of::<T>(),
+            type_name: std::any::type_name::<T>().to_string(),
         }
     }
 }
 
-/// Error for effect dispatch operations
-#[derive(Debug, thiserror::Error)]
-#[error("Failed to dispatch effect: {reason}")]
-pub struct DispatchError {
-    pub reason: String,
+impl fmt::Display for ResourceNotFoundError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "Resource of type '{}' was not found", self.type_name)
+    }
 }
 
-impl DispatchError {
-    pub fn new(reason: impl Into<String>) -> Self {
-        Self {
-            reason: reason.into(),
+impl std::error::Error for ResourceNotFoundError {}
+
+impl From<ResourceNotFoundError> for SyzygyError {
+    fn from(err: ResourceNotFoundError) -> Self {
+        SyzygyError::ResourceNotFound(err.type_name)
+    }
+}
+
+impl<T> From<crossbeam_channel::SendError<T>> for SyzygyError {
+    fn from(_: crossbeam_channel::SendError<T>) -> Self {
+        SyzygyError::ChannelClosed
+    }
+}
+
+impl<T> From<crossbeam_channel::TrySendError<T>> for SyzygyError {
+    fn from(err: crossbeam_channel::TrySendError<T>) -> Self {
+        match err {
+            crossbeam_channel::TrySendError::Full(_) => SyzygyError::ChannelFull,
+            crossbeam_channel::TrySendError::Disconnected(_) => SyzygyError::ChannelClosed,
         }
-    }
-}
-
-/// Error for context creation operations  
-#[derive(Debug, thiserror::Error)]
-#[error("Failed to create context: {reason}")]
-pub struct ContextCreationError {
-    pub reason: String,
-}
-
-impl ContextCreationError {
-    pub fn new(reason: impl Into<String>) -> Self {
-        Self {
-            reason: reason.into(),
-        }
-    }
-}
-
-/// Error for lock acquisition operations
-#[derive(Debug, thiserror::Error)]
-#[error("Failed to acquire {lock_type} lock: {reason}")]
-pub struct LockAcquisitionError {
-    pub lock_type: String,
-    pub reason: String,
-}
-
-impl LockAcquisitionError {
-    pub fn new(lock_type: impl Into<String>, reason: impl Into<String>) -> Self {
-        Self {
-            lock_type: lock_type.into(),
-            reason: reason.into(),
-        }
-    }
-}
-
-/// Error for resource replacement operations
-#[derive(Debug, thiserror::Error)]
-#[error("Failed to replace resource of type {type_name}: {reason}")]
-pub struct ResourceReplaceError {
-    pub type_name: &'static str,
-    pub reason: String,
-}
-
-impl ResourceReplaceError {
-    pub fn new<T: 'static>(reason: impl Into<String>) -> Self {
-        Self {
-            type_name: std::any::type_name::<T>(),
-            reason: reason.into(),
-        }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_resource_not_found_error() {
-        let err = ResourceNotFoundError::new::<String>();
-        assert_eq!(err.type_name, std::any::type_name::<String>());
-        assert_eq!(err.type_id, TypeId::of::<String>());
-        assert!(err.to_string().contains("alloc::string::String"));
-    }
-
-    #[test]
-    fn test_dispatch_error() {
-        let err = DispatchError::new("channel closed");
-        assert_eq!(err.reason, "channel closed");
-        assert!(err.to_string().contains("channel closed"));
-    }
-
-    #[test]
-    fn test_context_creation_error() {
-        let err = ContextCreationError::new("model snapshot failed");
-        assert!(err.to_string().contains("model snapshot failed"));
-    }
-
-    #[test]
-    fn test_lock_acquisition_error() {
-        let err = LockAcquisitionError::new("read", "poisoned");
-        assert!(err.to_string().contains("read"));
-        assert!(err.to_string().contains("poisoned"));
-    }
-
-    #[test]
-    fn test_resource_replace_error() {
-        let err = ResourceReplaceError::new::<i32>("type mismatch");
-        assert_eq!(err.type_name, std::any::type_name::<i32>());
-        assert!(err.to_string().contains("type mismatch"));
     }
 }
