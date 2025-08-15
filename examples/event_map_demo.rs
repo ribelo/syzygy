@@ -4,7 +4,6 @@
 //! for efficient event dispatch using array indexing.
 
 use syzygy::prelude::*;
-use std::any::TypeId;
 
 // Define event data types - each must be unique
 #[derive(Debug, Clone)]
@@ -63,7 +62,7 @@ struct AppModel {
 }
 
 // Handler functions for each event type
-fn handle_user_created(data: &UserCreated, model: &mut AppModel) -> Dispatch<AppEvent, AppCommand> {
+fn handle_user_created(data: UserCreated, model: &mut AppModel) -> Dispatch<AppEvent, AppCommand> {
     println!("Handling UserCreated: {:?}", data);
     model.users.push((data.id, data.name.clone()));
     model.active_users += 1;
@@ -80,7 +79,7 @@ fn handle_user_created(data: &UserCreated, model: &mut AppModel) -> Dispatch<App
     )
 }
 
-fn handle_user_updated(data: &UserUpdated, model: &mut AppModel) -> Dispatch<AppEvent, AppCommand> {
+fn handle_user_updated(data: UserUpdated, model: &mut AppModel) -> Dispatch<AppEvent, AppCommand> {
     println!("Handling UserUpdated: {:?}", data);
     
     if let Some(user) = model.users.iter_mut().find(|(id, _)| *id == data.id) {
@@ -90,7 +89,7 @@ fn handle_user_updated(data: &UserUpdated, model: &mut AppModel) -> Dispatch<App
     Dispatch::command(AppCommand::UpdateCache { user_id: data.id })
 }
 
-fn handle_user_deleted(data: &UserDeleted, model: &mut AppModel) -> Dispatch<AppEvent, AppCommand> {
+fn handle_user_deleted(data: UserDeleted, model: &mut AppModel) -> Dispatch<AppEvent, AppCommand> {
     println!("Handling UserDeleted: {:?}", data);
     
     model.users.retain(|(id, _)| *id != data.id);
@@ -101,7 +100,7 @@ fn handle_user_deleted(data: &UserDeleted, model: &mut AppModel) -> Dispatch<App
     })
 }
 
-fn handle_system_started(data: &SystemStarted, model: &mut AppModel) -> Dispatch<AppEvent, AppCommand> {
+fn handle_system_started(data: SystemStarted, model: &mut AppModel) -> Dispatch<AppEvent, AppCommand> {
     println!("Handling SystemStarted: {:?}", data);
     model.system_running = true;
     
@@ -110,7 +109,7 @@ fn handle_system_started(data: &SystemStarted, model: &mut AppModel) -> Dispatch
     })
 }
 
-fn handle_system_stopped(data: &SystemStopped, model: &mut AppModel) -> Dispatch<AppEvent, AppCommand> {
+fn handle_system_stopped(data: SystemStopped, model: &mut AppModel) -> Dispatch<AppEvent, AppCommand> {
     println!("Handling SystemStopped: {:?}", data);
     model.system_running = false;
     
@@ -127,12 +126,12 @@ fn main() {
     println!("EventMap Demo - Zero-overhead event dispatch\n");
     
     // Create the EventMap and register handlers
-    let mut event_map = EventMapBuilder::<AppEvent, AppCommand, AppModel>::new()
-        .on::<UserCreated>(0, handle_user_created)
-        .on::<UserUpdated>(1, handle_user_updated)
-        .on::<UserDeleted>(2, handle_user_deleted)
-        .on::<SystemStarted>(3, handle_system_started)
-        .on::<SystemStopped>(4, handle_system_stopped)
+    let event_map = EventMapBuilder::<AppEvent, AppModel, AppCommand>::new()
+        .on(handle_user_created)
+        .on(handle_user_updated)
+        .on(handle_user_deleted)
+        .on(handle_system_started)
+        .on(handle_system_stopped)
         .build();
     
     // Create model
@@ -165,8 +164,8 @@ fn main() {
     
     // Process events
     println!("Processing events...\n");
-    for event in &events {
-        let result = event_map.dispatch(event, &mut model);
+    for event in events {
+        let result = unsafe { event_map.dispatch(event, &mut model) };
         
         // Display any commands that were generated
         for cmd in result.commands {

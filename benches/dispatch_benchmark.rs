@@ -4,8 +4,7 @@
 //! 1. Single big match function (baseline - static dispatch)
 //! 2. HashMap<TypeId, fn> with function pointers
 //! 3. EnumMap for array-based dispatch
-//! 4. EventMap with Event derive macro
-//! 5. UnsafeEventMap with maximum performance
+//! 4. EventMap with zero-overhead dispatch
 //!
 //! All approaches:
 //! - Use the same SyzygyEvent enum and Event types
@@ -13,7 +12,7 @@
 //! - Use fair iteration patterns (references for most, cloning only where required)
 //! - No unfair allocation overhead
 //!
-//! UnsafeEventMap legitimately requires owned values for zero-copy dispatch,
+//! EventMap legitimately requires owned values for zero-copy dispatch,
 //! so it uses .iter().cloned() which shows the real usage cost/benefit tradeoff.
 
 use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
@@ -23,8 +22,7 @@ use std::any::{Any, TypeId};
 use std::marker::PhantomData;
 use syzygy::dispatch::Dispatch;
 use syzygy::event_map::EventMapBuilder;
-use syzygy::unsafe_event_map::UnsafeEventMapBuilder;
-use syzygy_macros::Event as EventDerive;
+use syzygy_macros::Event;
 
 // ============================================================================
 // Common Types and Model - Syzygy Style
@@ -63,7 +61,7 @@ struct Event5 {
 }
 
 // Main event enum for match-based dispatch
-#[derive(Clone, Debug, EventDerive)]
+#[derive(Clone, Debug, Event)]
 enum SyzygyEvent {
     Event1(Event1),
     Event2(Event2),
@@ -71,6 +69,7 @@ enum SyzygyEvent {
     Event4(Event4),
     Event5(Event5),
 }
+
 
 // We use Syzygy's Dispatch directly - no custom result type needed
 
@@ -299,7 +298,7 @@ fn handle_map_event5(
     Dispatch::none()
 }
 
-// Handler functions for UnsafeEventMap (take owned values - the key difference!)
+// Handler functions for EventMap (take owned values - the key difference!)
 fn handle_unsafe_event1(
     data: Event1,
     model: &mut UnifiedModel,
@@ -807,12 +806,12 @@ fn benchmark_dispatch_methods(c: &mut Criterion) {
         );
 
         // --- EventMap with automatic variant indexing ---
-        let event_map = EventMapBuilder::<SyzygyEvent, SyzygyCommand, UnifiedModel>::new()
-            .on(handle_map_event1) // Variant index automatically determined
-            .on(handle_map_event2)
-            .on(handle_map_event3)
-            .on(handle_map_event4)
-            .on(handle_map_event5)
+        let event_map = EventMapBuilder::<SyzygyEvent, UnifiedModel, SyzygyCommand>::new()
+            .on::<Event1>(handle_map_event1) // Variant index automatically determined
+            .on::<Event2>(handle_map_event2)
+            .on::<Event3>(handle_map_event3)
+            .on::<Event4>(handle_map_event4)
+            .on::<Event5>(handle_map_event5)
             .build();
 
         group.bench_with_input(
@@ -823,17 +822,17 @@ fn benchmark_dispatch_methods(c: &mut Criterion) {
                     let mut model = UnifiedModel::default();
                     for event in evts.iter().cloned() {
                         // EventMap now takes owned events
-                        event_map.dispatch(black_box(event), black_box(&mut model));
+                        unsafe { event_map.dispatch(black_box(event), black_box(&mut model)) };
                     }
                     black_box(model);
                 });
             },
         );
 
-        // --- UnsafeEventMap with maximum performance ---
-        // Note: UnsafeEventMap requires owned values, so we must clone events for fair comparison
+        // --- EventMap with maximum performance ---
+        // Note: EventMap requires owned values, so we must clone events for fair comparison
         let unsafe_event_map =
-            UnsafeEventMapBuilder::<SyzygyEvent, UnifiedModel, SyzygyCommand>::new()
+            EventMapBuilder::<SyzygyEvent, UnifiedModel, SyzygyCommand>::new()
                 .on::<Event1>(handle_unsafe_event1)
                 .on::<Event2>(handle_unsafe_event2)
                 .on::<Event3>(handle_unsafe_event3)
@@ -848,7 +847,7 @@ fn benchmark_dispatch_methods(c: &mut Criterion) {
                 b.iter(|| {
                     let mut model = UnifiedModel::default();
                     for event in evts.iter().cloned() {
-                        // UnsafeEventMap consumes the event - shows real usage cost
+                        // EventMap consumes the event - shows real usage cost
                         unsafe {
                             unsafe_event_map.dispatch(black_box(event), black_box(&mut model));
                         }

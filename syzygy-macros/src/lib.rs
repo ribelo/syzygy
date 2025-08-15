@@ -320,12 +320,28 @@ pub fn derive_event(input: TokenStream) -> TokenStream {
         }
     });
     
-    // Generate call_handler_with_data match arms
+    // Generate call_handler_with_data match arms (for backward compatibility)
     let call_handler_arms = variant_names.iter().zip(&inner_types).map(|(name, ty)| {
         quote! {
             #enum_name::#name(data) => {
                 type HandlerType<M, C> = fn(#ty, &mut M) -> syzygy::dispatch::Dispatch<#enum_name, C>;
-                let handler = std::mem::transmute::<*const (), HandlerType<M, C>>(handler_ptr);
+                let handler = unsafe { std::mem::transmute::<*const (), HandlerType<M, C>>(handler_ptr) };
+                handler(data, model)
+            }
+        }
+    });
+
+    // Generate optimized dispatch_with_handlers match arms (zero-overhead jump table)
+    let dispatch_with_handlers_arms = variant_names.iter().enumerate().zip(&inner_types).map(|((i, name), ty)| {
+        quote! {
+            #enum_name::#name(data) => {
+                // Use get_unchecked since variant indices are compile-time known and verified
+                let handler_ptr = unsafe { *handlers.get_unchecked(#i) };
+                if handler_ptr.is_null() {
+                    return syzygy::dispatch::Dispatch::none();
+                }
+                type HandlerType<M, C> = fn(#ty, &mut M) -> syzygy::dispatch::Dispatch<#enum_name, C>;
+                let handler = unsafe { std::mem::transmute::<*const (), HandlerType<M, C>>(handler_ptr) };
                 handler(data, model)
             }
         }
@@ -362,6 +378,17 @@ pub fn derive_event(input: TokenStream) -> TokenStream {
             ) -> syzygy::dispatch::Dispatch<Self, C> {
                 match self {
                     #(#call_handler_arms,)*
+                }
+            }
+
+            #[inline(always)]
+            unsafe fn dispatch_with_handlers<M, C>(
+                self,
+                handlers: &[*const ()],
+                model: &mut M,
+            ) -> syzygy::dispatch::Dispatch<Self, C> {
+                match self {
+                    #(#dispatch_with_handlers_arms,)*
                 }
             }
         }

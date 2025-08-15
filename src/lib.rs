@@ -14,7 +14,6 @@ pub mod replay;
 pub mod resource;
 pub mod syzygy;
 pub mod test_utils;
-pub mod unsafe_event_map;
 
 #[cfg(feature = "async")]
 pub mod executor;
@@ -41,10 +40,7 @@ pub mod prelude {
     pub use crate::magic_handler::{MagicHandler, MagicHandlerExt, EventMagicHandler};
 
     // EventMap for zero-overhead dispatch
-    pub use crate::event_map::{Event, EventMap, EventMapBuilder, EventHandler as EventMapHandler};
-    
-    // UnsafeEventMap for maximum performance dispatch
-    pub use crate::unsafe_event_map::{UnsafeEventMap, UnsafeEventMapBuilder};
+    pub use crate::event_map::{Event, EventMap, EventMapBuilder, EventVariant};
 
     // Re-export the derive macros
     pub use syzygy_macros::{Event, ModelExtractors, ResourceExtractors};

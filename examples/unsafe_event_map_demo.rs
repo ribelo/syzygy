@@ -1,6 +1,6 @@
-//! UnsafeEventMap demonstration with maximum performance dispatch
+//! EventMap demonstration with maximum performance dispatch
 //!
-//! This example shows how to use the UnsafeEventMap with Event derive macro
+//! This example shows how to use the EventMap with Event derive macro
 //! for the fastest possible event dispatch using raw function pointers.
 
 use syzygy::prelude::*;
@@ -136,18 +136,16 @@ fn handle_system_stopped(data: SystemStopped, model: &mut AppModel) -> Dispatch<
 }
 
 fn main() {
-    println!("🚀 UnsafeEventMap Demo - Maximum Performance Event Dispatch\n");
+    println!("🚀 EventMap Demo - Maximum Performance Event Dispatch\n");
     
-    // Build the unsafe event map - note the unsafe blocks
-    let event_map = unsafe {
-        UnsafeEventMapBuilder::<AppEvent, AppModel, AppCommand>::new()
-            .on::<UserCreated>(0, handle_user_created)       // Variant index 0
-            .on::<UserUpdated>(1, handle_user_updated)       // Variant index 1
-            .on::<UserDeleted>(2, handle_user_deleted)       // Variant index 2
-            .on::<SystemStarted>(3, handle_system_started)   // Variant index 3
-            .on::<SystemStopped>(4, handle_system_stopped)   // Variant index 4
-            .build()
-    };
+    // Build the event map - automatic variant indexing
+    let event_map = EventMapBuilder::<AppEvent, AppModel, AppCommand>::new()
+        .on::<UserCreated>(handle_user_created)
+        .on::<UserUpdated>(handle_user_updated)
+        .on::<UserDeleted>(handle_user_deleted)
+        .on::<SystemStarted>(handle_system_started)
+        .on::<SystemStopped>(handle_system_stopped)
+        .build();
     
     let mut model = AppModel::default();
     
