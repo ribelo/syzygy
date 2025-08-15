@@ -15,6 +15,8 @@
 //! EventMap legitimately requires owned values for zero-copy dispatch,
 //! so it uses .iter().cloned() which shows the real usage cost/benefit tradeoff.
 
+#![feature(downcast_unchecked)]
+
 use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
 use enum_map::{Enum, EnumMap};
 use rustc_hash::FxHashMap;
@@ -117,9 +119,7 @@ fn handle_event1(
     model: &mut UnifiedModel,
 ) -> Dispatch<SyzygyEvent, SyzygyCommand> {
     model.processed_events += 1;
-    if let Some(e) = event.downcast_ref::<Event1>() {
-        model.counter += e.id as u64;
-    }
+    let e = unsafe { event.downcast_ref_unchecked::<Event1>() }; model.counter += e.id as u64;
     Dispatch::none()
 }
 
@@ -128,9 +128,7 @@ fn handle_event2(
     model: &mut UnifiedModel,
 ) -> Dispatch<SyzygyEvent, SyzygyCommand> {
     model.processed_events += 1;
-    if let Some(e) = event.downcast_ref::<Event2>() {
-        model.counter += e.value;
-    }
+    let e = unsafe { event.downcast_ref_unchecked::<Event2>() }; model.counter += e.value;
     Dispatch::none()
 }
 
@@ -139,9 +137,7 @@ fn handle_event3(
     model: &mut UnifiedModel,
 ) -> Dispatch<SyzygyEvent, SyzygyCommand> {
     model.processed_events += 1;
-    if let Some(_e) = event.downcast_ref::<Event3>() {
-        model.counter += 3;
-    }
+    let _e = unsafe { event.downcast_ref_unchecked::<Event3>() }; model.counter += 3;
     Dispatch::none()
 }
 
@@ -150,9 +146,7 @@ fn handle_event4(
     model: &mut UnifiedModel,
 ) -> Dispatch<SyzygyEvent, SyzygyCommand> {
     model.processed_events += 1;
-    if let Some(e) = event.downcast_ref::<Event4>() {
-        model.counter += e.count as u64;
-    }
+    let e = unsafe { event.downcast_ref_unchecked::<Event4>() }; model.counter += e.count as u64;
     Dispatch::none()
 }
 
@@ -161,9 +155,7 @@ fn handle_event5(
     model: &mut UnifiedModel,
 ) -> Dispatch<SyzygyEvent, SyzygyCommand> {
     model.processed_events += 1;
-    if let Some(e) = event.downcast_ref::<Event5>() {
-        model.counter += e.index as u64;
-    }
+    let e = unsafe { event.downcast_ref_unchecked::<Event5>() }; model.counter += e.index as u64;
     Dispatch::none()
 }
 
@@ -581,9 +573,7 @@ fn handle_syzygy_e1_typeid(
     m: &mut UnifiedModel,
 ) -> Dispatch<SyzygyEvent, SyzygyCommand> {
     m.processed_events += 1;
-    if let Some(v) = d.downcast_ref::<Event1>() {
-        m.counter += v.id as u64;
-    }
+    let v = unsafe { d.downcast_ref_unchecked::<Event1>() }; m.counter += v.id as u64;
     Dispatch::none()
 }
 
@@ -592,9 +582,7 @@ fn handle_syzygy_e2_typeid(
     m: &mut UnifiedModel,
 ) -> Dispatch<SyzygyEvent, SyzygyCommand> {
     m.processed_events += 1;
-    if let Some(v) = d.downcast_ref::<Event2>() {
-        m.counter += v.value;
-    }
+    let v = unsafe { d.downcast_ref_unchecked::<Event2>() }; m.counter += v.value;
     Dispatch::none()
 }
 
@@ -612,9 +600,7 @@ fn handle_syzygy_e4_typeid(
     m: &mut UnifiedModel,
 ) -> Dispatch<SyzygyEvent, SyzygyCommand> {
     m.processed_events += 1;
-    if let Some(v) = d.downcast_ref::<Event4>() {
-        m.counter += v.count as u64;
-    }
+    let v = unsafe { d.downcast_ref_unchecked::<Event4>() }; m.counter += v.count as u64;
     Dispatch::none()
 }
 
@@ -623,9 +609,7 @@ fn handle_syzygy_e5_typeid(
     m: &mut UnifiedModel,
 ) -> Dispatch<SyzygyEvent, SyzygyCommand> {
     m.processed_events += 1;
-    if let Some(v) = d.downcast_ref::<Event5>() {
-        m.counter += v.index as u64;
-    }
+    let v = unsafe { d.downcast_ref_unchecked::<Event5>() }; m.counter += v.index as u64;
     Dispatch::none()
 }
 
@@ -635,9 +619,7 @@ fn handle_gooddx_e1_typeid(
     m: &mut UnifiedModel,
 ) -> Dispatch<SyzygyEvent, SyzygyCommand> {
     m.processed_events += 1;
-    if let Some(v) = d.downcast_ref::<Event1>() {
-        m.counter += v.id as u64;
-    }
+    let v = unsafe { d.downcast_ref_unchecked::<Event1>() }; m.counter += v.id as u64;
     Dispatch::none()
 }
 
@@ -646,9 +628,7 @@ fn handle_gooddx_e2_typeid(
     m: &mut UnifiedModel,
 ) -> Dispatch<SyzygyEvent, SyzygyCommand> {
     m.processed_events += 1;
-    if let Some(v) = d.downcast_ref::<Event2>() {
-        m.counter += v.value;
-    }
+    let v = unsafe { d.downcast_ref_unchecked::<Event2>() }; m.counter += v.value;
     Dispatch::none()
 }
 
@@ -666,9 +646,7 @@ fn handle_gooddx_e4_typeid(
     m: &mut UnifiedModel,
 ) -> Dispatch<SyzygyEvent, SyzygyCommand> {
     m.processed_events += 1;
-    if let Some(v) = d.downcast_ref::<Event4>() {
-        m.counter += v.count as u64;
-    }
+    let v = unsafe { d.downcast_ref_unchecked::<Event4>() }; m.counter += v.count as u64;
     Dispatch::none()
 }
 
@@ -677,9 +655,7 @@ fn handle_gooddx_e5_typeid(
     m: &mut UnifiedModel,
 ) -> Dispatch<SyzygyEvent, SyzygyCommand> {
     m.processed_events += 1;
-    if let Some(v) = d.downcast_ref::<Event5>() {
-        m.counter += v.index as u64;
-    }
+    let v = unsafe { d.downcast_ref_unchecked::<Event5>() }; m.counter += v.index as u64;
     Dispatch::none()
 }
 

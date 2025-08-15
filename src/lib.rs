@@ -7,8 +7,10 @@ pub mod event_map;
 pub mod extract;
 pub mod handle;
 pub mod handler;
+pub mod indexed_map;
 pub mod magic_handler;
 pub mod model;
+pub mod model_map;
 pub mod recorder;
 pub mod replay;
 pub mod resource;
@@ -41,6 +43,12 @@ pub mod prelude {
 
     // EventMap for zero-overhead dispatch
     pub use crate::event_map::{Event, EventMap, EventMapBuilder, EventVariant};
+
+    // IndexedMap for generic zero-overhead storage
+    pub use crate::indexed_map::{IndexedMap, Indexable, IndexArray};
+
+    // ModelMap for multiple model support
+    pub use crate::model_map::{ModelMap, ModelMapBuilder, ModelType};
 
     // Re-export the derive macros
     pub use syzygy_macros::{Event, ModelExtractors, ResourceExtractors};

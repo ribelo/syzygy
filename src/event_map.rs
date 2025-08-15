@@ -5,8 +5,8 @@
 
 use std::any::Any;
 use std::marker::PhantomData;
-use std::mem::MaybeUninit;
 use crate::dispatch::Dispatch;
+use crate::indexed_map::{IndexedMap, Indexable};
 
 /// Trait for event variant types that can provide their index within the parent enum
 pub trait EventVariant {
@@ -14,50 +14,18 @@ pub trait EventVariant {
     const VARIANT_INDEX: usize;
 }
 
-/// Trait for array types used by EventMap
-///
-/// This trait provides array operations needed by EventMap.
-/// Safety: LENGTH must match the actual array size.
-pub unsafe trait EventArray<V>: Sized {
-    /// The actual length of the array
-    const LENGTH: usize;
-
-    /// Get a slice view of the array
-    fn as_slice(&self) -> &[V];
-
-    /// Get a mutable slice view of the array
-    fn as_mut_slice(&mut self) -> &mut [V];
-}
-
-// Implement EventArray for standard arrays
-unsafe impl<V, const N: usize> EventArray<V> for [V; N] {
-    const LENGTH: usize = N;
-
-    #[inline(always)]
-    fn as_slice(&self) -> &[V] {
-        self
-    }
-
-    #[inline(always)]
-    fn as_mut_slice(&mut self) -> &mut [V] {
-        self
-    }
-}
+// Re-export IndexArray as EventArray for backward compatibility
+pub use crate::indexed_map::IndexArray as EventArray;
 
 /// Trait for indexable event enums
 ///
 /// This trait enables enum variants to be used as array indices for
 /// zero-overhead dispatch. Each variant must contain a unique type.
-pub trait Event: Sized {
-    /// Number of variants in the enum
-    const LENGTH: usize;
-
-    /// Array type for storing values indexed by this enum
-    /// This is needed because Rust doesn't allow E::LENGTH in array types directly
-    type Array<V>: EventArray<V>;
-
-    /// Convert the variant to its array index
-    fn variant_index(&self) -> usize;
+pub trait Event: Indexable {
+    /// Convert the variant to its array index (alias for index())
+    fn variant_index(&self) -> usize {
+        self.index()
+    }
 
     /// Extract the inner data as a type-erased reference
     fn inner_as_any(&self) -> &dyn Any;
@@ -127,29 +95,15 @@ pub trait Event: Sized {
 pub struct EventMap<E: Event, M, C> {
     /// Array of raw function pointers, one per event variant
     /// Each pointer has a different concrete signature but is stored type-erased
-    handlers: E::Array<*const ()>,
+    handlers: IndexedMap<E, *const ()>,
     _phantom: PhantomData<(E, M, C)>,
 }
 
 impl<E: Event, M, C> EventMap<E, M, C> {
     /// Create a new EventMap with all handlers unset
     pub fn new() -> Self {
-        // Initialize the array with null pointers using MaybeUninit pattern
-        let mut array: MaybeUninit<E::Array<*const ()>> = MaybeUninit::uninit();
-        let array_ptr = array.as_mut_ptr() as *mut *const ();
-
-        // Initialize each element to null pointer
-        for i in 0..E::LENGTH {
-            unsafe {
-                array_ptr.add(i).write(std::ptr::null());
-            }
-        }
-
-        // Safety: We've initialized all elements to null pointers
-        let handlers = unsafe { array.assume_init() };
-
         Self {
-            handlers,
+            handlers: IndexedMap::new_null_pointers(),
             _phantom: PhantomData,
         }
     }
@@ -179,7 +133,9 @@ impl<E: Event, M, C> EventMap<E, M, C> {
 
         // Store the typed handler as a raw pointer
         // This loses the type information, but we'll recover it during dispatch
-        self.handlers.as_mut_slice()[index] = handler as *const ();
+        unsafe {
+            self.handlers.set(index, handler as *const ());
+        }
     }
 
     /// Dispatch an event enum to its registered handler (ultra-optimized)
@@ -203,13 +159,13 @@ impl<E: Event, M, C> EventMap<E, M, C> {
     /// Check if a handler is registered for a specific variant index
     #[inline]
     pub fn has_handler(&self, variant_index: usize) -> bool {
-        variant_index < self.handlers.as_slice().len() && !self.handlers.as_slice()[variant_index].is_null()
+        variant_index < self.handlers.len() && !self.handlers.is_null_at(variant_index)
     }
 
     /// Get the number of registered handlers
     #[inline]
     pub fn handler_count(&self) -> usize {
-        self.handlers.as_slice().iter().filter(|ptr| !ptr.is_null()).count()
+        self.handlers.non_null_count()
     }
 }
 
@@ -323,18 +279,22 @@ mod tests {
         Delete(DeleteUser),
     }
 
-    // Manual Event implementation for testing
-    impl Event for TestEvent {
+    // Manual Indexable implementation for testing
+    impl Indexable for TestEvent {
         const LENGTH: usize = 3;
         type Array<V> = [V; 3];
 
-        fn variant_index(&self) -> usize {
+        fn index(&self) -> usize {
             match self {
                 TestEvent::Create(_) => 0,
                 TestEvent::Update(_) => 1,
                 TestEvent::Delete(_) => 2,
             }
         }
+    }
+
+    // Manual Event implementation for testing
+    impl Event for TestEvent {
 
         fn inner_as_any(&self) -> &dyn Any {
             match self {

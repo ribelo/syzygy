@@ -349,15 +349,18 @@ pub fn derive_event(input: TokenStream) -> TokenStream {
     
     // Generate the Event trait implementation
     let output = quote! {
-        impl syzygy::event_map::Event for #enum_name {
+        impl syzygy::indexed_map::Indexable for #enum_name {
             const LENGTH: usize = #variant_count;
             type Array<V> = [V; #variant_count];
             
-            fn variant_index(&self) -> usize {
+            fn index(&self) -> usize {
                 match self {
                     #(#variant_index_arms,)*
                 }
             }
+        }
+
+        impl syzygy::event_map::Event for #enum_name {
             
             fn inner_as_any(&self) -> &dyn std::any::Any {
                 match self {
