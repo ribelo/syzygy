@@ -2,7 +2,7 @@
 //!
 //! This benchmark compares multiple dispatch approaches for Syzygy event handling:
 //! 1. Single big match function (baseline - static dispatch)
-//! 2. HashMap<TypeId, fn> with function pointers  
+//! 2. HashMap<TypeId, fn> with function pointers
 //! 3. EnumMap for array-based dispatch
 //! 4. EventMap with Event derive macro
 //! 5. UnsafeEventMap with maximum performance
@@ -16,20 +16,19 @@
 //! UnsafeEventMap legitimately requires owned values for zero-copy dispatch,
 //! so it uses .iter().cloned() which shows the real usage cost/benefit tradeoff.
 
-use criterion::{black_box, criterion_group, criterion_main, Criterion, BenchmarkId};
+use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
+use enum_map::{Enum, EnumMap};
 use rustc_hash::FxHashMap;
-use std::any::{TypeId, Any};
+use std::any::{Any, TypeId};
 use std::marker::PhantomData;
 use syzygy::dispatch::Dispatch;
 use syzygy::event_map::EventMapBuilder;
 use syzygy::unsafe_event_map::UnsafeEventMapBuilder;
 use syzygy_macros::Event as EventDerive;
-use enum_map::{Enum, EnumMap};
 
 // ============================================================================
 // Common Types and Model - Syzygy Style
 // ============================================================================
-
 
 #[derive(Clone, Debug, PartialEq)]
 enum SyzygyCommand {
@@ -39,20 +38,29 @@ enum SyzygyCommand {
 
 // Event types for testing - realistic Syzygy events with minimal payload
 #[derive(Clone, Debug)]
-struct Event1 { id: u32 }
+struct Event1 {
+    id: u32,
+}
 
 #[derive(Clone, Debug)]
-struct Event2 { value: u64 }
+struct Event2 {
+    value: u64,
+}
 
 #[derive(Clone, Debug)]
-struct Event3 { flag: bool }
+struct Event3 {
+    flag: bool,
+}
 
 #[derive(Clone, Debug)]
-struct Event4 { count: u16 }
+struct Event4 {
+    count: u16,
+}
 
 #[derive(Clone, Debug)]
-struct Event5 { index: usize }
-
+struct Event5 {
+    index: usize,
+}
 
 // Main event enum for match-based dispatch
 #[derive(Clone, Debug, EventDerive)]
@@ -70,7 +78,10 @@ enum SyzygyEvent {
 // Method 1: Single Big Match Function (Current Syzygy Approach)
 // ============================================================================
 
-fn syzygy_match_handler(event: SyzygyEvent, model: &mut UnifiedModel) -> Dispatch<SyzygyEvent, SyzygyCommand> {
+fn syzygy_match_handler(
+    event: SyzygyEvent,
+    model: &mut UnifiedModel,
+) -> Dispatch<SyzygyEvent, SyzygyCommand> {
     model.processed_events += 1;
 
     match event {
@@ -102,7 +113,10 @@ fn syzygy_match_handler(event: SyzygyEvent, model: &mut UnifiedModel) -> Dispatc
 // ============================================================================
 
 // Individual handler functions (unboxed) - using unified model
-fn handle_event1(event: &dyn Any, model: &mut UnifiedModel) -> Dispatch<SyzygyEvent, SyzygyCommand> {
+fn handle_event1(
+    event: &dyn Any,
+    model: &mut UnifiedModel,
+) -> Dispatch<SyzygyEvent, SyzygyCommand> {
     model.processed_events += 1;
     if let Some(e) = event.downcast_ref::<Event1>() {
         model.counter += e.id as u64;
@@ -110,7 +124,10 @@ fn handle_event1(event: &dyn Any, model: &mut UnifiedModel) -> Dispatch<SyzygyEv
     Dispatch::none()
 }
 
-fn handle_event2(event: &dyn Any, model: &mut UnifiedModel) -> Dispatch<SyzygyEvent, SyzygyCommand> {
+fn handle_event2(
+    event: &dyn Any,
+    model: &mut UnifiedModel,
+) -> Dispatch<SyzygyEvent, SyzygyCommand> {
     model.processed_events += 1;
     if let Some(e) = event.downcast_ref::<Event2>() {
         model.counter += e.value;
@@ -118,7 +135,10 @@ fn handle_event2(event: &dyn Any, model: &mut UnifiedModel) -> Dispatch<SyzygyEv
     Dispatch::none()
 }
 
-fn handle_event3(event: &dyn Any, model: &mut UnifiedModel) -> Dispatch<SyzygyEvent, SyzygyCommand> {
+fn handle_event3(
+    event: &dyn Any,
+    model: &mut UnifiedModel,
+) -> Dispatch<SyzygyEvent, SyzygyCommand> {
     model.processed_events += 1;
     if let Some(_e) = event.downcast_ref::<Event3>() {
         model.counter += 3;
@@ -126,7 +146,10 @@ fn handle_event3(event: &dyn Any, model: &mut UnifiedModel) -> Dispatch<SyzygyEv
     Dispatch::none()
 }
 
-fn handle_event4(event: &dyn Any, model: &mut UnifiedModel) -> Dispatch<SyzygyEvent, SyzygyCommand> {
+fn handle_event4(
+    event: &dyn Any,
+    model: &mut UnifiedModel,
+) -> Dispatch<SyzygyEvent, SyzygyCommand> {
     model.processed_events += 1;
     if let Some(e) = event.downcast_ref::<Event4>() {
         model.counter += e.count as u64;
@@ -134,7 +157,10 @@ fn handle_event4(event: &dyn Any, model: &mut UnifiedModel) -> Dispatch<SyzygyEv
     Dispatch::none()
 }
 
-fn handle_event5(event: &dyn Any, model: &mut UnifiedModel) -> Dispatch<SyzygyEvent, SyzygyCommand> {
+fn handle_event5(
+    event: &dyn Any,
+    model: &mut UnifiedModel,
+) -> Dispatch<SyzygyEvent, SyzygyCommand> {
     model.processed_events += 1;
     if let Some(e) = event.downcast_ref::<Event5>() {
         model.counter += e.index as u64;
@@ -163,7 +189,11 @@ impl SyzygyTypeIdDispatcher {
         Self { handlers }
     }
 
-    fn dispatch(&self, event: SyzygyEvent, model: &mut UnifiedModel) -> Dispatch<SyzygyEvent, SyzygyCommand> {
+    fn dispatch(
+        &self,
+        event: SyzygyEvent,
+        model: &mut UnifiedModel,
+    ) -> Dispatch<SyzygyEvent, SyzygyCommand> {
         let type_id = event.inner_type_id();
 
         if let Some(handler) = self.handlers.get(&type_id) {
@@ -173,7 +203,6 @@ impl SyzygyTypeIdDispatcher {
         }
     }
 }
-
 
 // Array indexing approach removed - not dynamic for library use
 
@@ -199,7 +228,7 @@ fn generate_unified_events(count: usize, pattern: &str) -> Vec<SyzygyEvent> {
             "random" => {
                 rng_state = rng_state.wrapping_mul(1103515245).wrapping_add(12345);
                 (rng_state % 5) as usize
-            },
+            }
             _ => panic!("Unknown pattern: {}", pattern),
         };
 
@@ -207,7 +236,9 @@ fn generate_unified_events(count: usize, pattern: &str) -> Vec<SyzygyEvent> {
             0 => SyzygyEvent::Event1(Event1 { id: i as u32 }),
             1 => SyzygyEvent::Event2(Event2 { value: i as u64 }),
             2 => SyzygyEvent::Event3(Event3 { flag: (i % 2) == 0 }),
-            3 => SyzygyEvent::Event4(Event4 { count: (i % 1000) as u16 }),
+            3 => SyzygyEvent::Event4(Event4 {
+                count: (i % 1000) as u16,
+            }),
             4 => SyzygyEvent::Event5(Event5 { index: i }),
             _ => unreachable!(),
         };
@@ -218,79 +249,97 @@ fn generate_unified_events(count: usize, pattern: &str) -> Vec<SyzygyEvent> {
     events
 }
 
-
-
 // ============================================================================
 // EventMap Handler Functions for SyzygyEvent
 // ============================================================================
 
-// Direct handlers for EventMap (take full enum for maximum performance - same as EnumMap)
-fn handle_map_direct_event1(event: SyzygyEvent, model: &mut UnifiedModel) -> Dispatch<SyzygyEvent, SyzygyCommand> {
-    model.processed_events += 1;
-    if let SyzygyEvent::Event1(data) = event {
-        model.counter += data.id as u64;
-    }
-    Dispatch::none()
-}
-
-fn handle_map_direct_event2(event: SyzygyEvent, model: &mut UnifiedModel) -> Dispatch<SyzygyEvent, SyzygyCommand> {
-    model.processed_events += 1;
-    if let SyzygyEvent::Event2(data) = event {
-        model.counter += data.value;
-    }
-    Dispatch::none()
-}
-
-fn handle_map_direct_event3(event: SyzygyEvent, model: &mut UnifiedModel) -> Dispatch<SyzygyEvent, SyzygyCommand> {
-    model.processed_events += 1;
-    if let SyzygyEvent::Event3(_) = event {
-        model.counter += 3;
-    }
-    Dispatch::none()
-}
-
-fn handle_map_direct_event4(event: SyzygyEvent, model: &mut UnifiedModel) -> Dispatch<SyzygyEvent, SyzygyCommand> {
-    model.processed_events += 1;
-    if let SyzygyEvent::Event4(data) = event {
-        model.counter += data.count as u64;
-    }
-    Dispatch::none()
-}
-
-fn handle_map_direct_event5(event: SyzygyEvent, model: &mut UnifiedModel) -> Dispatch<SyzygyEvent, SyzygyCommand> {
-    model.processed_events += 1;
-    if let SyzygyEvent::Event5(data) = event {
-        model.counter += data.index as u64;
-    }
-    Dispatch::none()
-}
-
-// Handler functions for UnsafeEventMap (take owned values - the key difference!)
-fn handle_unsafe_event1(data: Event1, model: &mut UnifiedModel) -> Dispatch<SyzygyEvent, SyzygyCommand> {
+// Typed handlers for EventMap (take inner types directly)
+fn handle_map_event1(
+    data: Event1,
+    model: &mut UnifiedModel,
+) -> Dispatch<SyzygyEvent, SyzygyCommand> {
     model.processed_events += 1;
     model.counter += data.id as u64;
     Dispatch::none()
 }
 
-fn handle_unsafe_event2(data: Event2, model: &mut UnifiedModel) -> Dispatch<SyzygyEvent, SyzygyCommand> {
+fn handle_map_event2(
+    data: Event2,
+    model: &mut UnifiedModel,
+) -> Dispatch<SyzygyEvent, SyzygyCommand> {
     model.processed_events += 1;
     model.counter += data.value;
     Dispatch::none()
 }
 
-fn handle_unsafe_event3(_data: Event3, model: &mut UnifiedModel) -> Dispatch<SyzygyEvent, SyzygyCommand> {
+fn handle_map_event3(
+    _data: Event3,
+    model: &mut UnifiedModel,
+) -> Dispatch<SyzygyEvent, SyzygyCommand> {
     model.processed_events += 1;
     model.counter += 3;
     Dispatch::none()
 }
 
-fn handle_unsafe_event4(data: Event4, model: &mut UnifiedModel) -> Dispatch<SyzygyEvent, SyzygyCommand> {
+fn handle_map_event4(
+    data: Event4,
+    model: &mut UnifiedModel,
+) -> Dispatch<SyzygyEvent, SyzygyCommand> {
     model.processed_events += 1;
     model.counter += data.count as u64;
     Dispatch::none()
 }
 
-fn handle_unsafe_event5(data: Event5, model: &mut UnifiedModel) -> Dispatch<SyzygyEvent, SyzygyCommand> {
+fn handle_map_event5(
+    data: Event5,
+    model: &mut UnifiedModel,
+) -> Dispatch<SyzygyEvent, SyzygyCommand> {
+    model.processed_events += 1;
+    model.counter += data.index as u64;
+    Dispatch::none()
+}
+
+// Handler functions for UnsafeEventMap (take owned values - the key difference!)
+fn handle_unsafe_event1(
+    data: Event1,
+    model: &mut UnifiedModel,
+) -> Dispatch<SyzygyEvent, SyzygyCommand> {
+    model.processed_events += 1;
+    model.counter += data.id as u64;
+    Dispatch::none()
+}
+
+fn handle_unsafe_event2(
+    data: Event2,
+    model: &mut UnifiedModel,
+) -> Dispatch<SyzygyEvent, SyzygyCommand> {
+    model.processed_events += 1;
+    model.counter += data.value;
+    Dispatch::none()
+}
+
+fn handle_unsafe_event3(
+    _data: Event3,
+    model: &mut UnifiedModel,
+) -> Dispatch<SyzygyEvent, SyzygyCommand> {
+    model.processed_events += 1;
+    model.counter += 3;
+    Dispatch::none()
+}
+
+fn handle_unsafe_event4(
+    data: Event4,
+    model: &mut UnifiedModel,
+) -> Dispatch<SyzygyEvent, SyzygyCommand> {
+    model.processed_events += 1;
+    model.counter += data.count as u64;
+    Dispatch::none()
+}
+
+fn handle_unsafe_event5(
+    data: Event5,
+    model: &mut UnifiedModel,
+) -> Dispatch<SyzygyEvent, SyzygyCommand> {
     model.processed_events += 1;
     model.counter += data.index as u64;
     Dispatch::none()
@@ -333,11 +382,15 @@ impl<M, C> SyzygyEnumMapDispatcher<M, C> {
     pub fn new() -> Self {
         Self {
             handlers: EnumMap::default(),
-            _phantom: PhantomData
+            _phantom: PhantomData,
         }
     }
 
-    pub fn register(&mut self, variant: SyzygyEventType, handler: fn(SyzygyEvent, &mut M) -> Dispatch<SyzygyEvent, C>) {
+    pub fn register(
+        &mut self,
+        variant: SyzygyEventType,
+        handler: fn(SyzygyEvent, &mut M) -> Dispatch<SyzygyEvent, C>,
+    ) {
         self.handlers[variant] = Some(handler);
     }
 
@@ -375,7 +428,8 @@ impl SyzygyEvent {
     }
 }
 
-pub type SyzygyHandlerFnTypeId<M, C> = fn(event_data: &dyn Any, model: &mut M) -> Dispatch<SyzygyEvent, C>;
+pub type SyzygyHandlerFnTypeId<M, C> =
+    fn(event_data: &dyn Any, model: &mut M) -> Dispatch<SyzygyEvent, C>;
 
 pub struct SyzygyTypeIdDispatcherAlt<M, C> {
     handlers: FxHashMap<TypeId, SyzygyHandlerFnTypeId<M, C>>,
@@ -386,7 +440,7 @@ impl<M, C> SyzygyTypeIdDispatcherAlt<M, C> {
     pub fn new() -> Self {
         Self {
             handlers: FxHashMap::default(),
-            _phantom: PhantomData
+            _phantom: PhantomData,
         }
     }
 
@@ -425,7 +479,7 @@ impl<E, M, C> GoodDxTypeIdDispatcher<E, M, C> {
     pub fn new() -> Self {
         Self {
             handlers: FxHashMap::default(),
-            _phantom: PhantomData
+            _phantom: PhantomData,
         }
     }
 
@@ -469,7 +523,10 @@ impl EventVariant for SyzygyEvent {
 }
 
 // --- Handlers for EnumMap using SyzygyEvent (owned values) ---
-fn handle_syzygy_e1_enum(e: SyzygyEvent, m: &mut UnifiedModel) -> Dispatch<SyzygyEvent, SyzygyCommand> {
+fn handle_syzygy_e1_enum(
+    e: SyzygyEvent,
+    m: &mut UnifiedModel,
+) -> Dispatch<SyzygyEvent, SyzygyCommand> {
     m.processed_events += 1;
     if let SyzygyEvent::Event1(v) = e {
         m.counter += v.id as u64;
@@ -477,7 +534,10 @@ fn handle_syzygy_e1_enum(e: SyzygyEvent, m: &mut UnifiedModel) -> Dispatch<Syzyg
     Dispatch::none()
 }
 
-fn handle_syzygy_e2_enum(e: SyzygyEvent, m: &mut UnifiedModel) -> Dispatch<SyzygyEvent, SyzygyCommand> {
+fn handle_syzygy_e2_enum(
+    e: SyzygyEvent,
+    m: &mut UnifiedModel,
+) -> Dispatch<SyzygyEvent, SyzygyCommand> {
     m.processed_events += 1;
     if let SyzygyEvent::Event2(v) = e {
         m.counter += v.value;
@@ -485,13 +545,19 @@ fn handle_syzygy_e2_enum(e: SyzygyEvent, m: &mut UnifiedModel) -> Dispatch<Syzyg
     Dispatch::none()
 }
 
-fn handle_syzygy_e3_enum(_e: SyzygyEvent, m: &mut UnifiedModel) -> Dispatch<SyzygyEvent, SyzygyCommand> {
+fn handle_syzygy_e3_enum(
+    _e: SyzygyEvent,
+    m: &mut UnifiedModel,
+) -> Dispatch<SyzygyEvent, SyzygyCommand> {
     m.processed_events += 1;
     m.counter += 3;
     Dispatch::none()
 }
 
-fn handle_syzygy_e4_enum(e: SyzygyEvent, m: &mut UnifiedModel) -> Dispatch<SyzygyEvent, SyzygyCommand> {
+fn handle_syzygy_e4_enum(
+    e: SyzygyEvent,
+    m: &mut UnifiedModel,
+) -> Dispatch<SyzygyEvent, SyzygyCommand> {
     m.processed_events += 1;
     if let SyzygyEvent::Event4(v) = e {
         m.counter += v.count as u64;
@@ -499,7 +565,10 @@ fn handle_syzygy_e4_enum(e: SyzygyEvent, m: &mut UnifiedModel) -> Dispatch<Syzyg
     Dispatch::none()
 }
 
-fn handle_syzygy_e5_enum(e: SyzygyEvent, m: &mut UnifiedModel) -> Dispatch<SyzygyEvent, SyzygyCommand> {
+fn handle_syzygy_e5_enum(
+    e: SyzygyEvent,
+    m: &mut UnifiedModel,
+) -> Dispatch<SyzygyEvent, SyzygyCommand> {
     m.processed_events += 1;
     if let SyzygyEvent::Event5(v) = e {
         m.counter += v.index as u64;
@@ -508,7 +577,10 @@ fn handle_syzygy_e5_enum(e: SyzygyEvent, m: &mut UnifiedModel) -> Dispatch<Syzyg
 }
 
 // --- Handlers for TypeId using SyzygyEvent ---
-fn handle_syzygy_e1_typeid(d: &dyn Any, m: &mut UnifiedModel) -> Dispatch<SyzygyEvent, SyzygyCommand> {
+fn handle_syzygy_e1_typeid(
+    d: &dyn Any,
+    m: &mut UnifiedModel,
+) -> Dispatch<SyzygyEvent, SyzygyCommand> {
     m.processed_events += 1;
     if let Some(v) = d.downcast_ref::<Event1>() {
         m.counter += v.id as u64;
@@ -516,7 +588,10 @@ fn handle_syzygy_e1_typeid(d: &dyn Any, m: &mut UnifiedModel) -> Dispatch<Syzygy
     Dispatch::none()
 }
 
-fn handle_syzygy_e2_typeid(d: &dyn Any, m: &mut UnifiedModel) -> Dispatch<SyzygyEvent, SyzygyCommand> {
+fn handle_syzygy_e2_typeid(
+    d: &dyn Any,
+    m: &mut UnifiedModel,
+) -> Dispatch<SyzygyEvent, SyzygyCommand> {
     m.processed_events += 1;
     if let Some(v) = d.downcast_ref::<Event2>() {
         m.counter += v.value;
@@ -524,13 +599,19 @@ fn handle_syzygy_e2_typeid(d: &dyn Any, m: &mut UnifiedModel) -> Dispatch<Syzygy
     Dispatch::none()
 }
 
-fn handle_syzygy_e3_typeid(_d: &dyn Any, m: &mut UnifiedModel) -> Dispatch<SyzygyEvent, SyzygyCommand> {
+fn handle_syzygy_e3_typeid(
+    _d: &dyn Any,
+    m: &mut UnifiedModel,
+) -> Dispatch<SyzygyEvent, SyzygyCommand> {
     m.processed_events += 1;
     m.counter += 3;
     Dispatch::none()
 }
 
-fn handle_syzygy_e4_typeid(d: &dyn Any, m: &mut UnifiedModel) -> Dispatch<SyzygyEvent, SyzygyCommand> {
+fn handle_syzygy_e4_typeid(
+    d: &dyn Any,
+    m: &mut UnifiedModel,
+) -> Dispatch<SyzygyEvent, SyzygyCommand> {
     m.processed_events += 1;
     if let Some(v) = d.downcast_ref::<Event4>() {
         m.counter += v.count as u64;
@@ -538,7 +619,10 @@ fn handle_syzygy_e4_typeid(d: &dyn Any, m: &mut UnifiedModel) -> Dispatch<Syzygy
     Dispatch::none()
 }
 
-fn handle_syzygy_e5_typeid(d: &dyn Any, m: &mut UnifiedModel) -> Dispatch<SyzygyEvent, SyzygyCommand> {
+fn handle_syzygy_e5_typeid(
+    d: &dyn Any,
+    m: &mut UnifiedModel,
+) -> Dispatch<SyzygyEvent, SyzygyCommand> {
     m.processed_events += 1;
     if let Some(v) = d.downcast_ref::<Event5>() {
         m.counter += v.index as u64;
@@ -547,7 +631,10 @@ fn handle_syzygy_e5_typeid(d: &dyn Any, m: &mut UnifiedModel) -> Dispatch<Syzygy
 }
 
 // --- Handlers for Good DX TypeId Dispatcher ---
-fn handle_gooddx_e1_typeid(d: &dyn Any, m: &mut UnifiedModel) -> Dispatch<SyzygyEvent, SyzygyCommand> {
+fn handle_gooddx_e1_typeid(
+    d: &dyn Any,
+    m: &mut UnifiedModel,
+) -> Dispatch<SyzygyEvent, SyzygyCommand> {
     m.processed_events += 1;
     if let Some(v) = d.downcast_ref::<Event1>() {
         m.counter += v.id as u64;
@@ -555,7 +642,10 @@ fn handle_gooddx_e1_typeid(d: &dyn Any, m: &mut UnifiedModel) -> Dispatch<Syzygy
     Dispatch::none()
 }
 
-fn handle_gooddx_e2_typeid(d: &dyn Any, m: &mut UnifiedModel) -> Dispatch<SyzygyEvent, SyzygyCommand> {
+fn handle_gooddx_e2_typeid(
+    d: &dyn Any,
+    m: &mut UnifiedModel,
+) -> Dispatch<SyzygyEvent, SyzygyCommand> {
     m.processed_events += 1;
     if let Some(v) = d.downcast_ref::<Event2>() {
         m.counter += v.value;
@@ -563,13 +653,19 @@ fn handle_gooddx_e2_typeid(d: &dyn Any, m: &mut UnifiedModel) -> Dispatch<Syzygy
     Dispatch::none()
 }
 
-fn handle_gooddx_e3_typeid(_d: &dyn Any, m: &mut UnifiedModel) -> Dispatch<SyzygyEvent, SyzygyCommand> {
+fn handle_gooddx_e3_typeid(
+    _d: &dyn Any,
+    m: &mut UnifiedModel,
+) -> Dispatch<SyzygyEvent, SyzygyCommand> {
     m.processed_events += 1;
     m.counter += 3;
     Dispatch::none()
 }
 
-fn handle_gooddx_e4_typeid(d: &dyn Any, m: &mut UnifiedModel) -> Dispatch<SyzygyEvent, SyzygyCommand> {
+fn handle_gooddx_e4_typeid(
+    d: &dyn Any,
+    m: &mut UnifiedModel,
+) -> Dispatch<SyzygyEvent, SyzygyCommand> {
     m.processed_events += 1;
     if let Some(v) = d.downcast_ref::<Event4>() {
         m.counter += v.count as u64;
@@ -577,7 +673,10 @@ fn handle_gooddx_e4_typeid(d: &dyn Any, m: &mut UnifiedModel) -> Dispatch<Syzygy
     Dispatch::none()
 }
 
-fn handle_gooddx_e5_typeid(d: &dyn Any, m: &mut UnifiedModel) -> Dispatch<SyzygyEvent, SyzygyCommand> {
+fn handle_gooddx_e5_typeid(
+    d: &dyn Any,
+    m: &mut UnifiedModel,
+) -> Dispatch<SyzygyEvent, SyzygyCommand> {
     m.processed_events += 1;
     if let Some(v) = d.downcast_ref::<Event5>() {
         m.counter += v.index as u64;
@@ -627,8 +726,10 @@ fn benchmark_dispatch_methods(c: &mut Criterion) {
                 b.iter(|| {
                     let mut model = UnifiedModel::default();
 
-                    for event in events.iter().cloned() { // TypeId HashMap now takes owned events
-                        let _result = typeid_dispatcher.dispatch(black_box(event), black_box(&mut model));
+                    for event in events.iter().cloned() {
+                        // TypeId HashMap now takes owned events
+                        let _result =
+                            typeid_dispatcher.dispatch(black_box(event), black_box(&mut model));
                     }
 
                     black_box(model);
@@ -644,15 +745,20 @@ fn benchmark_dispatch_methods(c: &mut Criterion) {
         enum_dispatcher.register(SyzygyEventType::Event4, handle_syzygy_e4_enum);
         enum_dispatcher.register(SyzygyEventType::Event5, handle_syzygy_e5_enum);
 
-        group.bench_with_input(BenchmarkId::new("enummap", pattern_name), &events, |b, evts| {
-            b.iter(|| {
-                let mut model = UnifiedModel::default();
-                for event in evts.iter().cloned() { // EnumMap now takes owned events
-                    enum_dispatcher.dispatch(black_box(event), black_box(&mut model));
-                }
-                black_box(model);
-            });
-        });
+        group.bench_with_input(
+            BenchmarkId::new("enummap", pattern_name),
+            &events,
+            |b, evts| {
+                b.iter(|| {
+                    let mut model = UnifiedModel::default();
+                    for event in evts.iter().cloned() {
+                        // EnumMap now takes owned events
+                        enum_dispatcher.dispatch(black_box(event), black_box(&mut model));
+                    }
+                    black_box(model);
+                });
+            },
+        );
 
         // --- TypeId Alt dispatch ---
         let mut typeid_alt_dispatcher = SyzygyTypeIdDispatcherAlt::new();
@@ -662,15 +768,20 @@ fn benchmark_dispatch_methods(c: &mut Criterion) {
         typeid_alt_dispatcher.register::<Event4>(handle_syzygy_e4_typeid);
         typeid_alt_dispatcher.register::<Event5>(handle_syzygy_e5_typeid);
 
-        group.bench_with_input(BenchmarkId::new("typeid_alt", pattern_name), &events, |b, evts| {
-            b.iter(|| {
-                let mut model = UnifiedModel::default();
-                for event in evts.iter().cloned() { // TypeId Alt now takes owned events
-                    typeid_alt_dispatcher.dispatch(black_box(event), black_box(&mut model));
-                }
-                black_box(model);
-            });
-        });
+        group.bench_with_input(
+            BenchmarkId::new("typeid_alt", pattern_name),
+            &events,
+            |b, evts| {
+                b.iter(|| {
+                    let mut model = UnifiedModel::default();
+                    for event in evts.iter().cloned() {
+                        // TypeId Alt now takes owned events
+                        typeid_alt_dispatcher.dispatch(black_box(event), black_box(&mut model));
+                    }
+                    black_box(model);
+                });
+            },
+        );
 
         // --- Good DX TypeId dispatch ---
         let mut gooddx_dispatcher = GoodDxTypeIdDispatcher::new();
@@ -680,64 +791,76 @@ fn benchmark_dispatch_methods(c: &mut Criterion) {
         gooddx_dispatcher.register::<Event4>(handle_gooddx_e4_typeid);
         gooddx_dispatcher.register::<Event5>(handle_gooddx_e5_typeid);
 
-        group.bench_with_input(BenchmarkId::new("typeid_gooddx", pattern_name), &events, |b, evts| {
-            b.iter(|| {
-                let mut model = UnifiedModel::default();
-                for event in evts.iter().cloned() { // Good DX TypeId now takes owned events
-                    gooddx_dispatcher.dispatch(black_box(event), black_box(&mut model));
-                }
-                black_box(model);
-            });
-        });
-        
-        // --- EventMap with direct handlers (maximum performance) ---
+        group.bench_with_input(
+            BenchmarkId::new("typeid_gooddx", pattern_name),
+            &events,
+            |b, evts| {
+                b.iter(|| {
+                    let mut model = UnifiedModel::default();
+                    for event in evts.iter().cloned() {
+                        // Good DX TypeId now takes owned events
+                        gooddx_dispatcher.dispatch(black_box(event), black_box(&mut model));
+                    }
+                    black_box(model);
+                });
+            },
+        );
+
+        // --- EventMap with automatic variant indexing ---
         let event_map = EventMapBuilder::<SyzygyEvent, SyzygyCommand, UnifiedModel>::new()
-            .on_direct(0, handle_map_direct_event1)
-            .on_direct(1, handle_map_direct_event2)
-            .on_direct(2, handle_map_direct_event3)
-            .on_direct(3, handle_map_direct_event4)
-            .on_direct(4, handle_map_direct_event5)
+            .on(handle_map_event1) // Variant index automatically determined
+            .on(handle_map_event2)
+            .on(handle_map_event3)
+            .on(handle_map_event4)
+            .on(handle_map_event5)
             .build();
-        
-        group.bench_with_input(BenchmarkId::new("eventmap_derive", pattern_name), &events, |b, evts| {
-            b.iter(|| {
-                let mut model = UnifiedModel::default();
-                for event in evts.iter().cloned() { // EventMap now takes owned events
-                    event_map.dispatch(black_box(event), black_box(&mut model));
-                }
-                black_box(model);
-            });
-        });
-        
+
+        group.bench_with_input(
+            BenchmarkId::new("eventmap_derive", pattern_name),
+            &events,
+            |b, evts| {
+                b.iter(|| {
+                    let mut model = UnifiedModel::default();
+                    for event in evts.iter().cloned() {
+                        // EventMap now takes owned events
+                        event_map.dispatch(black_box(event), black_box(&mut model));
+                    }
+                    black_box(model);
+                });
+            },
+        );
+
         // --- UnsafeEventMap with maximum performance ---
         // Note: UnsafeEventMap requires owned values, so we must clone events for fair comparison
-        let unsafe_event_map = unsafe {
+        let unsafe_event_map =
             UnsafeEventMapBuilder::<SyzygyEvent, UnifiedModel, SyzygyCommand>::new()
-                .on::<Event1>(0, handle_unsafe_event1)
-                .on::<Event2>(1, handle_unsafe_event2)
-                .on::<Event3>(2, handle_unsafe_event3)
-                .on::<Event4>(3, handle_unsafe_event4)
-                .on::<Event5>(4, handle_unsafe_event5)
-                .build()
-        };
-        
-        group.bench_with_input(BenchmarkId::new("unsafe_eventmap", pattern_name), &events, |b, evts| {
-            b.iter(|| {
-                let mut model = UnifiedModel::default();
-                for event in evts.iter().cloned() { // UnsafeEventMap consumes the event - shows real usage cost
-                    unsafe {
-                        unsafe_event_map.dispatch(black_box(event), black_box(&mut model));
+                .on::<Event1>(handle_unsafe_event1)
+                .on::<Event2>(handle_unsafe_event2)
+                .on::<Event3>(handle_unsafe_event3)
+                .on::<Event4>(handle_unsafe_event4)
+                .on::<Event5>(handle_unsafe_event5)
+                .build();
+
+        group.bench_with_input(
+            BenchmarkId::new("unsafe_eventmap", pattern_name),
+            &events,
+            |b, evts| {
+                b.iter(|| {
+                    let mut model = UnifiedModel::default();
+                    for event in evts.iter().cloned() {
+                        // UnsafeEventMap consumes the event - shows real usage cost
+                        unsafe {
+                            unsafe_event_map.dispatch(black_box(event), black_box(&mut model));
+                        }
                     }
-                }
-                black_box(model);
-            });
-        });
+                    black_box(model);
+                });
+            },
+        );
     }
 
     group.finish();
 }
-
-
 
 criterion_group!(benches, benchmark_dispatch_methods);
 criterion_main!(benches);

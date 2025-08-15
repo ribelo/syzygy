@@ -311,6 +311,15 @@ pub fn derive_event(input: TokenStream) -> TokenStream {
         }
     });
     
+    // Generate EventVariant implementations for each inner type
+    let event_variant_impls = variant_names.iter().enumerate().zip(&inner_types).map(|((i, _name), ty)| {
+        quote! {
+            impl syzygy::event_map::EventVariant for #ty {
+                const VARIANT_INDEX: usize = #i;
+            }
+        }
+    });
+    
     // Generate call_handler_with_data match arms
     let call_handler_arms = variant_names.iter().zip(&inner_types).map(|(name, ty)| {
         quote! {
@@ -359,6 +368,7 @@ pub fn derive_event(input: TokenStream) -> TokenStream {
         
         #(#from_impls)*
         #(#reverse_from_impls)*
+        #(#event_variant_impls)*
     };
     
     output.into()
