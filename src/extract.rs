@@ -77,6 +77,16 @@ where
     }
 }
 
+// Common implementations for basic types - allows () extraction from any container
+impl<T> FromContainer<T> for () {
+    fn from_container(_container: &T) -> Self {
+        ()
+    }
+}
+
+// Common implementations for reference types - removed due to lifetime conflicts
+// Instead, users should implement FromContainer for their specific types
+
 #[cfg(test)]
 mod tests {
     use super::*;

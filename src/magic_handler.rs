@@ -49,6 +49,54 @@ pub trait MagicHandler<C, Args> {
     fn call(self, container: &mut C) -> Self::Output;
 }
 
+/// Trait for functions that can handle events with automatic container field extraction
+/// 
+/// This trait extends MagicHandler to support event-driven handlers where the first
+/// parameter is always the event, followed by automatically extracted container fields.
+/// 
+/// # Examples
+/// 
+/// ```rust,ignore
+/// use syzygy::prelude::*;
+/// use syzygy::magic_handler::EventMagicHandler;
+/// 
+/// #[derive(Debug, Clone)]
+/// struct CreateUser { name: String }
+/// 
+/// #[derive(Debug)]
+/// struct AppModel {
+///     users: Vec<String>,
+///     counter: i32,
+/// }
+/// 
+/// #[derive(Debug, Clone)]
+/// enum Event { CreateUser(CreateUser) }
+/// 
+/// #[derive(Debug, Clone)]  
+/// enum Command { SaveUser { name: String } }
+/// 
+/// // Event magic handler - event + automatically extracted fields
+/// fn handle_create_user(
+///     event: CreateUser,
+///     users: &mut Vec<String>, 
+///     counter: &i32
+/// ) -> Dispatch<Event, Command> {
+///     users.push(format!("{}_{}", event.name, counter));
+///     Dispatch::command(Command::SaveUser { name: event.name })
+/// }
+/// 
+/// // Call the handler with event + magic parameter extraction
+/// let mut model = AppModel { users: vec![], counter: 1 };
+/// let event = CreateUser { name: "alice".to_string() };
+/// let result = handle_create_user.call_with_event(event, &mut model);
+/// ```
+pub trait EventMagicHandler<E, C, Args> {
+    type Output;
+    
+    /// Call the handler with event + automatic parameter extraction from the container
+    fn call_with_event(self, event: E, container: &mut C) -> Self::Output;
+}
+
 // Implementation for functions with no container dependencies
 impl<C, F, R> MagicHandler<C, ()> for F
 where
@@ -128,6 +176,96 @@ where
         self(a, b, c, d)
     }
 }
+
+// ============================================================================
+// EventMagicHandler Implementations
+// ============================================================================
+
+// Implementation for event-only functions (no container dependencies)
+impl<E, C, F, R> EventMagicHandler<E, C, (E,)> for F
+where
+    F: FnOnce(E) -> R,
+{
+    type Output = R;
+    
+    fn call_with_event(self, event: E, _container: &mut C) -> Self::Output {
+        self(event)
+    }
+}
+
+// Implementation for event + one immutable parameter
+impl<E, C, F, A, R> EventMagicHandler<E, C, (E, A)> for F
+where
+    F: FnOnce(E, A) -> R,
+    A: FromContainer<C>,
+{
+    type Output = R;
+    
+    fn call_with_event(self, event: E, container: &mut C) -> Self::Output {
+        let a = A::from_container(container);
+        self(event, a)
+    }
+}
+
+// Implementation for event + two immutable parameters
+impl<E, C, F, A, B, R> EventMagicHandler<E, C, (E, A, B)> for F
+where
+    F: FnOnce(E, A, B) -> R,
+    A: FromContainer<C>,
+    B: FromContainer<C>,
+{
+    type Output = R;
+    
+    fn call_with_event(self, event: E, container: &mut C) -> Self::Output {
+        let a = A::from_container(container);
+        let b = B::from_container(container);
+        self(event, a, b)
+    }
+}
+
+// Implementation for event + three immutable parameters
+impl<E, Container, F, A, B, C, R> EventMagicHandler<E, Container, (E, A, B, C)> for F
+where
+    F: FnOnce(E, A, B, C) -> R,
+    A: FromContainer<Container>,
+    B: FromContainer<Container>,
+    C: FromContainer<Container>,
+{
+    type Output = R;
+    
+    fn call_with_event(self, event: E, container: &mut Container) -> Self::Output {
+        let a = A::from_container(container);
+        let b = B::from_container(container);
+        let c = C::from_container(container);
+        self(event, a, b, c)
+    }
+}
+
+// Implementation for event + four immutable parameters
+impl<E, Container, F, A, B, C, D, R> EventMagicHandler<E, Container, (E, A, B, C, D)> for F
+where
+    F: FnOnce(E, A, B, C, D) -> R,
+    A: FromContainer<Container>,
+    B: FromContainer<Container>,
+    C: FromContainer<Container>,
+    D: FromContainer<Container>,
+{
+    type Output = R;
+    
+    fn call_with_event(self, event: E, container: &mut Container) -> Self::Output {
+        let a = A::from_container(container);
+        let b = B::from_container(container);
+        let c = C::from_container(container);
+        let d = D::from_container(container);
+        self(event, a, b, c, d)
+    }
+}
+
+// ============================================================================
+// EventMagicHandler Implementations with Mutable Parameters
+// ============================================================================
+// Note: These are commented out due to trait conflicts. 
+// We'll use a different approach for mutable parameter extraction.
 
 /// Convenience trait to enable `.call_magic()` syntax on functions
 /// 

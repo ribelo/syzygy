@@ -1,4 +1,5 @@
 pub mod builder;
+pub mod codegen;
 pub mod context;
 pub mod dispatch;
 pub mod error;
@@ -35,7 +36,7 @@ pub mod prelude {
 
     // Magic handler types
     pub use crate::extract::{FromContainer, FromContainerMut};
-    pub use crate::magic_handler::{MagicHandler, MagicHandlerExt};
+    pub use crate::magic_handler::{MagicHandler, MagicHandlerExt, EventMagicHandler};
 
     // Re-export the derive macros
     pub use syzygy_macros::{ModelExtractors, ResourceExtractors};
