@@ -262,8 +262,8 @@ fn main() {
                  handler.handler_function_name);
     }
     
-    println!("\n🔧 Generated Handler Tokens:");
-    for (name, _tokens) in &builder.event_handler_storage.handler_tokens {
+    println!("\n🔧 Generated Handler Code:");
+    for (name, _code) in &builder.event_handler_storage.handler_code {
         println!("  - {}", name);
     }
     

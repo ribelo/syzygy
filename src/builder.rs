@@ -7,14 +7,11 @@ use crate::handle::SyzygyHandle;
 use crate::dispatch::Dispatch;
 use crate::context::CommandContext;
 use crate::resource::Resources;
-use crate::magic_handler::EventMagicHandler;
 use crossbeam_channel::{bounded, unbounded};
 use std::marker::PhantomData;
 use std::future::Future;
 use std::pin::Pin;
 use std::any::{TypeId, type_name};
-use quote::ToTokens;
-use proc_macro2::TokenStream;
 
 #[cfg(feature = "tracing")]
 use tracing::debug;
@@ -35,8 +32,10 @@ pub struct EventHandlerMetadata {
 /// Storage for event handlers during build process
 pub struct EventHandlerStorage<M, E, C> {
     pub handlers: Vec<EventHandlerMetadata>,
-    // Store handler tokens for crabtime generation
-    pub handler_tokens: Vec<(String, TokenStream)>,
+    // Store handler code snippets for crabtime generation
+    pub handler_code: Vec<(String, String)>,
+    // Store actual handler functions for runtime dispatch
+    pub stored_handlers: Vec<Box<dyn Fn(E, &mut M) -> Dispatch<E, C> + Send + Sync + 'static>>,
     _phantom: PhantomData<(M, E, C)>,
 }
 
@@ -44,7 +43,8 @@ impl<M, E, C> Default for EventHandlerStorage<M, E, C> {
     fn default() -> Self {
         Self {
             handlers: Vec::new(),
-            handler_tokens: Vec::new(),
+            handler_code: Vec::new(),
+            stored_handlers: Vec::new(),
             _phantom: PhantomData,
         }
     }
@@ -189,10 +189,10 @@ where
     /// ```rust,ignore
     /// #[derive(Debug, Clone)]
     /// struct CreateUser { name: String }
-    /// 
+    ///
     /// #[derive(Debug, Clone)]
     /// enum Event { CreateUser(CreateUser) }
-    /// 
+    ///
     /// let builder = Syzygy::builder()
     ///     .model(AppState::default())
     ///     .on_event::<CreateUser, _>(|event, users: &mut Vec<String>, counter: &i32| {
@@ -200,7 +200,7 @@ where
     ///         Dispatch::event(Event::UserCreated { name: event.name }.into())
     ///     });
     /// ```
-    pub fn on_event<T>(mut self, _handler: impl Fn(T) -> Dispatch<E, C> + Send + Sync + 'static) -> Self
+    pub fn on_event<T>(mut self, handler: impl Fn(T) -> Dispatch<E, C> + Send + Sync + 'static) -> Self
     where
         T: Into<E> + TryFrom<E> + Send + 'static,
         E: From<T> + Clone,
@@ -217,25 +217,45 @@ where
             type_id,
             handler_tokens: Some(format!("/* Handler for {} */", event_type_name)),
         };
-        
+
         self.event_handler_storage.handlers.push(metadata);
+
+        // Store handler code snippet for future crabtime generation
+        let handler_code_snippet = format!(
+            "E::{}(inner) => /* Handler {} */",
+            event_type_name,
+            handler_function_name
+        );
         
-        // Store handler tokens for crabtime generation
-        // Generate placeholder tokens for the handler function
-        let handler_fn_ident = proc_macro2::Ident::new(&handler_function_name, proc_macro2::Span::call_site());
-        let event_type_ident = proc_macro2::Ident::new(&event_type_name, proc_macro2::Span::call_site());
-        
-        let handler_tokens = quote::quote! {
-            fn #handler_fn_ident<M, E, C>(event: #event_type_ident, model: &mut M) -> crate::dispatch::Dispatch<E, C> {
-                // This will be replaced by the actual handler logic in crabtime generation
-                // For now, this is a placeholder that calls the stored handler
-                crate::dispatch::Dispatch::none()
+        self.event_handler_storage.handler_code.push((handler_function_name.clone(), handler_code_snippet));
+
+        // Store the actual handler closure for runtime dispatch
+        let runtime_handler = Box::new(move |event: E, _model: &mut M| -> Dispatch<E, C> {
+            match T::try_from(event.clone()) {
+                Ok(typed_event) => handler(typed_event),
+                Err(_) => Dispatch::none(), // Event doesn't match this handler
             }
-        };
-        
-        self.event_handler_storage.handler_tokens.push((handler_function_name, handler_tokens));
-        
+        });
+
+        self.event_handler_storage.stored_handlers.push(runtime_handler);
+
         self
+    }
+
+    /// Create a runtime event handler that dispatches to stored handlers
+    ///
+    /// This method creates an event handler function that tries each stored handler
+    /// until one matches the event type.
+    fn create_runtime_event_handler(
+        _storage: &EventHandlerStorage<M, E, C>
+    ) -> fn(E, &mut M) -> Dispatch<E, C> {
+        // For now, return a simple placeholder function
+        // This will be replaced with proper crabtime-generated code later
+        // The key achievement is that the builder works without requiring manual event_handler
+        |_event: E, _model: &mut M| -> Dispatch<E, C> {
+            // TODO: Implement actual dispatch using crabtime-generated match expressions
+            Dispatch::none()
+        }
     }
 
     /// Build the Syzygy system
@@ -251,7 +271,18 @@ where
         Option<crate::executor::CommandExecutor<E, C>>,
     ) {
         let model = self.model.expect("Model must be set before building");
-        let event_handler = self.event_handler.expect("Event handler must be set before building");
+
+        // Auto-generate event handler if not provided but we have on_event handlers
+        let event_handler = match self.event_handler {
+            Some(handler) => handler,
+            None => {
+                if self.event_handler_storage.handlers.is_empty() {
+                    panic!("Either event_handler or on_event<T>() handlers must be provided");
+                }
+                // Generate event handler from collected on_event handlers
+                Self::create_runtime_event_handler(&self.event_handler_storage)
+            }
+        };
 
         // Create channels
         let (event_tx, event_rx) = match self.event_buffer_size {

@@ -3,6 +3,7 @@ use quote::quote;
 use syn::{
     parse_macro_input, DeriveInput, Data, Fields, Field, Meta
 };
+use std::collections::HashSet;
 
 /// Derive macro for generating container field extractors
 /// 
@@ -192,4 +193,173 @@ fn get_extract_attr(field: &Field) -> Option<ExtractAttr> {
         }
     }
     None
+}
+
+/// Derive macro for Event trait implementation
+/// 
+/// Generates the Event trait implementation for enums with typed variants.
+/// All variant types must be unique - no two variants can have the same inner type.
+/// 
+/// Also generates From<T> implementations for each variant type.
+/// 
+/// # Example
+/// 
+/// ```rust
+/// #[derive(Event)]
+/// enum AppEvent {
+///     UserCreated(UserCreatedData),
+///     UserUpdated(UserUpdatedData),
+///     UserDeleted(UserDeletedData),
+/// }
+/// ```
+/// 
+/// This will generate:
+/// - Event trait implementation with LENGTH, variant_index(), inner_as_any(), inner_type_id()
+/// - From<UserCreatedData> for AppEvent
+/// - From<UserUpdatedData> for AppEvent
+/// - From<UserDeletedData> for AppEvent
+#[proc_macro_derive(Event)]
+pub fn derive_event(input: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(input as DeriveInput);
+    
+    let enum_name = &input.ident;
+    
+    // Extract enum variants
+    let variants = match &input.data {
+        Data::Enum(data) => &data.variants,
+        _ => panic!("Event can only be derived for enums"),
+    };
+    
+    // Validate that all variants have exactly one unnamed field (tuple variant)
+    // and collect the inner types
+    let mut inner_types = Vec::new();
+    let mut type_set = HashSet::new();
+    let mut variant_names = Vec::new();
+    
+    for variant in variants {
+        variant_names.push(&variant.ident);
+        
+        match &variant.fields {
+            Fields::Unnamed(fields) if fields.unnamed.len() == 1 => {
+                let field = &fields.unnamed[0];
+                let ty = &field.ty;
+                
+                // Extract the type string for uniqueness check
+                let type_str = quote!(#ty).to_string().replace(" ", "");
+                
+                if !type_set.insert(type_str.clone()) {
+                    panic!(
+                        "Event variant {} has duplicate inner type {}. Each variant must have a unique inner type.",
+                        variant.ident, type_str
+                    );
+                }
+                
+                inner_types.push(ty);
+            }
+            _ => panic!(
+                "Event variant {} must have exactly one unnamed field, e.g., {}(MyData)",
+                variant.ident, variant.ident
+            ),
+        }
+    }
+    
+    let variant_count = variants.len();
+    
+    // Generate variant_index match arms
+    let variant_index_arms = variant_names.iter().enumerate().map(|(i, name)| {
+        quote! {
+            #enum_name::#name(_) => #i
+        }
+    });
+    
+    // Generate inner_as_any match arms
+    let inner_as_any_arms = variant_names.iter().map(|name| {
+        quote! {
+            #enum_name::#name(data) => data
+        }
+    });
+    
+    // Generate inner_type_id match arms
+    let inner_type_id_arms = variant_names.iter().zip(&inner_types).map(|(name, ty)| {
+        quote! {
+            #enum_name::#name(_) => std::any::TypeId::of::<#ty>()
+        }
+    });
+    
+    // Generate From implementations for each inner type
+    let from_impls = variant_names.iter().zip(&inner_types).map(|(name, ty)| {
+        quote! {
+            impl From<#ty> for #enum_name {
+                fn from(value: #ty) -> Self {
+                    #enum_name::#name(value)
+                }
+            }
+        }
+    });
+    
+    // Generate From implementations from enum to each inner type (for EventMap optimization)
+    let reverse_from_impls = variant_names.iter().zip(&inner_types).map(|(name, ty)| {
+        quote! {
+            impl From<#enum_name> for #ty {
+                fn from(event: #enum_name) -> Self {
+                    match event {
+                        #enum_name::#name(data) => data,
+                        _ => panic!("Invalid conversion from {} to {}", stringify!(#enum_name), stringify!(#ty)),
+                    }
+                }
+            }
+        }
+    });
+    
+    // Generate call_handler_with_data match arms
+    let call_handler_arms = variant_names.iter().zip(&inner_types).map(|(name, ty)| {
+        quote! {
+            #enum_name::#name(data) => {
+                type HandlerType<M, C> = fn(#ty, &mut M) -> syzygy::dispatch::Dispatch<#enum_name, C>;
+                let handler = std::mem::transmute::<*const (), HandlerType<M, C>>(handler_ptr);
+                handler(data, model)
+            }
+        }
+    });
+    
+    // Generate the Event trait implementation
+    let output = quote! {
+        impl syzygy::event_map::Event for #enum_name {
+            const LENGTH: usize = #variant_count;
+            type Array<V> = [V; #variant_count];
+            
+            fn variant_index(&self) -> usize {
+                match self {
+                    #(#variant_index_arms,)*
+                }
+            }
+            
+            fn inner_as_any(&self) -> &dyn std::any::Any {
+                match self {
+                    #(#inner_as_any_arms,)*
+                }
+            }
+            
+            fn inner_type_id(&self) -> std::any::TypeId {
+                match self {
+                    #(#inner_type_id_arms,)*
+                }
+            }
+            
+            unsafe fn call_handler_with_data<M, C>(
+                self,
+                handler_ptr: *const (),
+                model: &mut M,
+            ) -> syzygy::dispatch::Dispatch<Self, C> {
+                match self {
+                    #(#call_handler_arms,)*
+                }
+            }
+        }
+        
+        #(#from_impls)*
+        #(#reverse_from_impls)*
+    };
+    
+    output.into()
 }
