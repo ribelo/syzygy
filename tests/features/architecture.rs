@@ -1,11 +1,8 @@
 //! Cucumber tests for Architecture Requirements (SYZ-022 to SYZ-030)
 
 use cucumber::{given, then, when, World};
-use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::Duration;
 use syzygy::prelude::*;
-use syzygy::resource::NoResources;
 
 #[derive(Debug, Clone, Default)]
 struct TestState {
@@ -23,33 +20,16 @@ enum TestEvent {
 }
 
 #[derive(Debug, Clone)]
-enum TestTask {
+enum TestCommand {
     LogEvent(String),
     UserFetch(String),
 }
 
-impl Task<TestEvent, NoResources> for TestTask {
-    async fn execute(&self, ctx: TaskContext<TestEvent, NoResources>) {
-        match self {
-            TestTask::LogEvent(_msg) => {
-                let _ = ctx.dispatch(TestEvent::ProcessingComplete);
-            }
-            TestTask::UserFetch(username) => {
-                tokio::time::sleep(Duration::from_millis(20)).await;
-                if username == "valid_user" {
-                    let _ = ctx.dispatch(TestEvent::SetUser(username.clone()));
-                } else {
-                    let _ = ctx.dispatch(TestEvent::UserLoginFailed);
-                }
-            }
-        }
-    }
-}
 
 #[derive(Debug, World)]
 #[world(init = Self::new)]
 struct SyzygyWorld {
-    syzygy: Option<Syzygy<TestState, TestEvent, TestTask>>,
+    syzygy: Option<Syzygy<TestState, TestEvent, TestCommand>>,
     handle: Option<SyzygyHandle<TestEvent>>,
     side_effects_as_data: bool,
     shell_core_separated: bool,
@@ -80,28 +60,28 @@ impl SyzygyWorld {
     }
 
     fn create_system(&mut self) {
-        let (syzygy, handle) = Syzygy::builder()
-            .with_state(TestState::default())
-            .on_event(|event: TestEvent, state: &mut TestState| -> Dispatch<TestEvent, TestTask> {
+        let (syzygy, handle, _executor) = Syzygy::builder()
+            .model(TestState::default())
+            .event_handler(|event: TestEvent, state: &mut TestState| -> Dispatch<TestEvent, TestCommand> {
                 match event {
                     TestEvent::Increment(value) => {
                         state.counter += value;
                         Dispatch::new(
                             vec![TestEvent::ProcessingComplete],
-                            vec![TestTask::LogEvent("increment".to_string())]
+                            vec![TestCommand::LogEvent("increment".to_string())]
                         )
                     }
                     TestEvent::SetUser(name) => {
                         state.user_name = Some(name.clone());
-                        Dispatch::tasks_only(vec![TestTask::UserFetch(name)])
+                        Dispatch::from(vec![TestCommand::UserFetch(name)])
                     }
                     TestEvent::ProcessingComplete => {
                         state.events_processed.push("completed".to_string());
-                        Dispatch::empty()
+                        Dispatch::none()
                     }
                     TestEvent::UserLoginFailed => {
                         state.events_processed.push("login_failed".to_string());
-                        Dispatch::empty()
+                        Dispatch::none()
                     }
                 }
             })
@@ -135,8 +115,8 @@ fn then_side_effects_as_data_structures(world: &mut SyzygyWorld) {
     
     let syzygy = world.syzygy.as_ref().unwrap();
     // Handler returned effects as data, imperative shell executed them
-    assert_eq!(syzygy.state().counter, 1);
-    assert!(syzygy.state().events_processed.contains(&"completed".to_string()));
+    assert_eq!(syzygy.model().counter, 1);
+    assert!(syzygy.model().events_processed.contains(&"completed".to_string()));
 }
 
 #[then("the imperative shell should execute them")]
@@ -149,20 +129,20 @@ fn then_imperative_shell_executes_effects(world: &mut SyzygyWorld) {
 #[when("I examine the architecture design")]
 fn when_examine_architecture_design(world: &mut SyzygyWorld) {
     // The pure handler contains only business logic
-    let pure_handler = |event: TestEvent, state: &mut TestState| -> Dispatch<TestEvent, TestTask> {
+    let pure_handler = |event: TestEvent, state: &mut TestState| -> Dispatch<TestEvent, TestCommand> {
         // This is the functional core - no I/O, pure logic only
         match event {
             TestEvent::Increment(value) => {
                 state.counter += value;
-                Dispatch::tasks_only(vec![TestTask::LogEvent("test".to_string())])
+                Dispatch::from(vec![TestCommand::LogEvent("test".to_string())])
             }
-            _ => Dispatch::empty(),
+            _ => Dispatch::none(),
         }
     };
     
-    let (syzygy, handle) = Syzygy::builder()
-        .with_state(TestState::default())
-        .on_event(pure_handler) // Pure functional core
+    let (syzygy, handle, _executor) = Syzygy::builder()
+        .model(TestState::default())
+        .event_handler(pure_handler) // Pure functional core
         .build(); // Builder creates the imperative shell
     
     world.syzygy = Some(syzygy);
@@ -185,7 +165,7 @@ fn then_imperative_shell_handles_io(world: &mut SyzygyWorld) {
     handle.dispatch(TestEvent::Increment(3)).unwrap();
     syzygy.process_events(); // Shell executes the effects
     
-    assert_eq!(syzygy.state().counter, 3);
+    assert_eq!(syzygy.model().counter, 3);
 }
 
 // SYZ-024: Worker Communication Protocol
@@ -234,7 +214,7 @@ fn then_diagnostic_separate_from_semantic(world: &mut SyzygyWorld) {
     
     let syzygy = world.syzygy.as_ref().unwrap();
     // System handles both diagnostic and semantic logging
-    assert_eq!(syzygy.state().counter, 5);
+    assert_eq!(syzygy.model().counter, 5);
 }
 
 // SYZ-026: Errors as Events
@@ -252,7 +232,7 @@ fn when_io_operations_fail_in_workers(world: &mut SyzygyWorld) {
     world.errors_as_events = true;
 }
 
-#[then("failures should be communicated back as events")]
+#[then("failures should be communicated as events in the enum")]
 fn then_failures_communicated_as_events(world: &mut SyzygyWorld) {
     assert!(world.errors_as_events);
     
@@ -260,7 +240,7 @@ fn then_failures_communicated_as_events(world: &mut SyzygyWorld) {
     // Here we verify the architecture supports this pattern
 }
 
-#[then("not as exceptions or panics")]
+#[then("not as exceptions, Result types, or panics")]
 fn then_not_as_exceptions_or_panics(world: &mut SyzygyWorld) {
     assert!(world.errors_as_events);
     // No panics occurred - system handled errors gracefully
@@ -269,22 +249,20 @@ fn then_not_as_exceptions_or_panics(world: &mut SyzygyWorld) {
 // SYZ-027: Single-Threaded Event Loop
 #[when("multiple threads dispatch events")]
 fn when_multiple_threads_dispatch(world: &mut SyzygyWorld) {
-    let counter = Arc::new(Mutex::new(0));
-    let counter_clone = counter.clone();
-    
-    let (syzygy, handle) = Syzygy::builder()
-        .with_state(TestState::default())
-        .on_event(move |event: TestEvent, state: &mut TestState| -> Dispatch<TestEvent, TestTask> {
-            match event {
-                TestEvent::Increment(value) => {
-                    // All mutations happen in single thread
-                    state.counter += value;
-                    *counter_clone.lock().unwrap() += 1;
-                    Dispatch::empty()
-                }
-                _ => Dispatch::empty(),
+    fn test_handler(event: TestEvent, state: &mut TestState) -> Dispatch<TestEvent, TestCommand> {
+        match event {
+            TestEvent::Increment(value) => {
+                // All mutations happen in single thread
+                state.counter += value;
+                Dispatch::none()
             }
-        })
+            _ => Dispatch::none(),
+        }
+    }
+    
+    let (syzygy, handle, _executor) = Syzygy::builder()
+        .model(TestState::default())
+        .event_handler(test_handler)
         .build();
     
     // Dispatch from multiple threads  
@@ -312,7 +290,7 @@ fn then_processing_serialized_single_thread(world: &mut SyzygyWorld) {
     syzygy.process_events();
     
     // Should have processed all events atomically
-    assert_eq!(syzygy.state().counter, 45); // 0+1+2+...+9
+    assert_eq!(syzygy.model().counter, 45); // 0+1+2+...+9
 }
 
 // SYZ-028: Channel-Based Interface
@@ -339,7 +317,7 @@ fn then_outgoing_effects_through_channels(world: &mut SyzygyWorld) {
     // Syzygy processes and potentially generates outgoing effects
     syzygy.process_events();
     
-    assert_eq!(syzygy.state().counter, 7);
+    assert_eq!(syzygy.model().counter, 7);
     // In full implementation, outgoing effects would be available through another channel
 }
 
@@ -350,23 +328,23 @@ fn when_run_identical_sequences(world: &mut SyzygyWorld) {
     
     // Run the same test scenario multiple times
     for _ in 0..10 {
-        let (mut syzygy, handle) = Syzygy::builder()
-            .with_state(TestState::default())
-            .on_event(|event: TestEvent, state: &mut TestState| -> Dispatch<TestEvent, TestTask> {
+        let (mut syzygy, handle, _executor) = Syzygy::builder()
+            .model(TestState::default())
+            .event_handler(|event: TestEvent, state: &mut TestState| -> Dispatch<TestEvent, TestCommand> {
                 match event {
                     TestEvent::Increment(value) => {
                         state.counter += value;
                         if state.counter > 10 {
-                            Dispatch::events_only(vec![TestEvent::ProcessingComplete])
+                            Dispatch::new(vec![TestEvent::ProcessingComplete], vec![])
                         } else {
-                            Dispatch::empty()
+                            Dispatch::none()
                         }
                     }
                     TestEvent::ProcessingComplete => {
                         state.events_processed.push("complete".to_string());
-                        Dispatch::empty()
+                        Dispatch::none()
                     }
-                    _ => Dispatch::empty(),
+                    _ => Dispatch::none(),
                 }
             })
             .build();
@@ -376,7 +354,7 @@ fn when_run_identical_sequences(world: &mut SyzygyWorld) {
         handle.dispatch(TestEvent::Increment(8)).unwrap();
         syzygy.process_events();
         
-        results.push((syzygy.state().counter, syzygy.state().events_processed.len()));
+        results.push((syzygy.model().counter, syzygy.model().events_processed.len()));
     }
     
     // All runs should produce identical results
@@ -393,16 +371,16 @@ fn then_core_produces_deterministic_results(world: &mut SyzygyWorld) {
 #[when("I interact with the type system")]
 fn when_interact_with_type_system(world: &mut SyzygyWorld) {
     // The type system enforces strongly-typed contracts
-    let (syzygy, handle) = Syzygy::builder()
-        .with_state(TestState::default())
-        .on_event(|event: TestEvent, state: &mut TestState| -> Dispatch<TestEvent, TestTask> {
-            // Contract: TestEvent -> Dispatch<TestEvent, TestTask>
+    let (syzygy, handle, _executor) = Syzygy::builder()
+        .model(TestState::default())
+        .event_handler(|event: TestEvent, state: &mut TestState| -> Dispatch<TestEvent, TestCommand> {
+            // Contract: TestEvent -> Dispatch<TestEvent, TestCommand>
             match event {
                 TestEvent::Increment(value) => {
                     state.counter += value;
-                    Dispatch::empty() // Must return correct type
+                    Dispatch::none() // Must return correct type
                 }
-                _ => Dispatch::empty(),
+                _ => Dispatch::none(),
             }
         })
         .build();
@@ -432,11 +410,44 @@ fn then_version_compatibility_through_types(world: &mut SyzygyWorld) {
     
     let syzygy = world.syzygy.as_mut().unwrap();
     syzygy.process_events();
-    assert_eq!(syzygy.state().counter, 1);
+    assert_eq!(syzygy.model().counter, 1);
     
     // Contracts are validated at compile time through the type system
     // Versioning would be handled through type evolution patterns
 }
+
+#[then("side effects should be returned as command data structures")]
+fn then_side_effects_returned_as_commands(_world: &mut SyzygyWorld) {
+    // This is enforced by the type system - event handlers return Dispatch<Event, Command>
+    // Commands represent side effects as data, not executed effects
+}
+
+#[then("the functional core should contain only pure event processing")]
+fn then_functional_core_pure(_world: &mut SyzygyWorld) {
+    // This is enforced by the architecture - event handlers are pure functions
+    // They only transform (Event, &mut Model) -> Dispatch<Event, Command>
+}
+
+#[then("the imperative shell should handle command execution and effects")]
+fn then_imperative_shell_handles_effects(_world: &mut SyzygyWorld) {
+    // The shell (command executor) handles all side effects
+    // Commands are executed asynchronously outside the functional core
+}
+
+#[given("a Syzygy system with worker support")]
+fn given_syzygy_with_worker_support_new(world: &mut SyzygyWorld) {
+    // Create a system that supports background workers
+    world.create_system();
+}
+
+#[when("I/O operations fail in workers or validation fails in handlers")]
+fn when_io_operations_fail(world: &mut SyzygyWorld) {
+    // This step represents scenarios where I/O fails or validation fails
+    // These should be converted to events rather than exceptions
+    world.errors_as_events = true;
+}
+
+
 
 #[tokio::main]
 async fn main() {

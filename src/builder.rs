@@ -117,7 +117,7 @@ where
     }
 }
 
-impl<M, E, C, R> SyzygyBuilder<M, E, C, R, InitialStage>
+impl<M, E, C> SyzygyBuilder<M, E, C, Resources, InitialStage>
 where
     E: Send + Clone + 'static,
     C: Send + Clone + 'static,
@@ -135,7 +135,7 @@ where
     ///
     /// The handler receives a CommandContext and command, and returns a boxed Future.
     /// Must be a function pointer (not a closure with captures).
-    pub fn command_handler(mut self, handler: fn(CommandContext<E, R>, C) -> Pin<Box<dyn Future<Output = ()> + Send + 'static>>) -> Self {
+    pub fn command_handler(mut self, handler: fn(CommandContext<E, Resources>, C) -> Pin<Box<dyn Future<Output = ()> + Send + 'static>>) -> Self {
         self.command_handler = Some(handler);
         self
     }
@@ -143,10 +143,68 @@ where
     /// Build the Syzygy system
     ///
     /// Requires model and event handler to be set.
+    /// If a command handler is set, also returns a CommandExecutor.
+    #[cfg(feature = "async")]
     pub fn build(
         self,
     ) -> (
-        crate::syzygy::Syzygy<M, E, C, R>,
+        crate::syzygy::Syzygy<M, E, C, Resources>,
+        SyzygyHandle<E>,
+        Option<crate::executor::CommandExecutor<E, C>>,
+    ) {
+        let model = self.model.expect("Model must be set before building");
+        let event_handler = self.event_handler.expect("Event handler must be set before building");
+
+        // Create channels
+        let (event_tx, event_rx) = match self.event_buffer_size {
+            Some(size) => bounded(size),
+            None => unbounded(),
+        };
+
+        let (command_tx, command_rx) = match self.command_buffer_size {
+            Some(size) => bounded(size),
+            None => unbounded(),
+        };
+
+        // Create executor if command handler is provided
+        let executor = if let Some(command_handler) = self.command_handler {
+            Some(crate::executor::CommandExecutor::new(
+                command_rx,
+                event_tx.clone(),
+                self.resources.clone(),
+                command_handler,
+            ))
+        } else {
+            None
+        };
+
+        let syzygy = crate::syzygy::Syzygy {
+            model,
+            resources: self.resources,
+            event_rx,
+            event_tx: event_tx.clone(),
+            command_tx: command_tx.clone(),
+            event_handler,
+            command_handler: self.command_handler,
+            processed_events_count: 0,
+        };
+
+        let handle = SyzygyHandle::new(event_tx);
+
+        #[cfg(feature = "tracing")]
+        debug!("Built Syzygy with single model dispatch");
+
+        (syzygy, handle, executor)
+    }
+
+    /// Build the Syzygy system (without async features)
+    ///
+    /// Requires model and event handler to be set.
+    #[cfg(not(feature = "async"))]
+    pub fn build(
+        self,
+    ) -> (
+        crate::syzygy::Syzygy<M, E, C, Resources>,
         SyzygyHandle<E>,
     ) {
         let model = self.model.expect("Model must be set before building");
@@ -181,4 +239,5 @@ where
 
         (syzygy, handle)
     }
+
 }

@@ -138,7 +138,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("=======================");
 
     // Build the Syzygy system
-    let (mut syzygy, handle) = Syzygy::builder()
+    let (mut syzygy, handle, _executor) = Syzygy::builder()
         .resource(Logger::default()) // Logger resource (must come before model)
         .model(AppState::default())  // Single model 
         .event_handler(handle_events)

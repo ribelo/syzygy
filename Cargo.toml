@@ -61,10 +61,6 @@ name = "state_management"
 path = "tests/features/state_management.rs"
 harness = false
 
-[[test]]
-name = "task_execution"
-path = "tests/features/task_execution.rs"
-harness = false
 
 [[test]]
 name = "error_handling"

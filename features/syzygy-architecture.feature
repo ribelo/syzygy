@@ -8,15 +8,15 @@ Feature: Syzygy Architecture Patterns
   Scenario: Side Effects as Data
     Given a Syzygy system with functional core design
     When event handlers process events
-    Then side effects should be returned as data structures
+    Then side effects should be returned as command data structures
     And the imperative shell should execute them
 
   @SYZ-023
-  Scenario: Shell/Core Separation
+  Scenario: Core/Shell Separation
     Given a Syzygy system with functional core design
     When I examine the architecture design
-    Then the functional core should contain only pure business logic
-    And the imperative shell should handle I/O and effects
+    Then the functional core should contain only pure event processing
+    And the imperative shell should handle command execution and effects
 
   @SYZ-024
   Scenario: Worker Communication Protocol

@@ -2,7 +2,6 @@
 
 use cucumber::{given, then, when, World};
 use syzygy::prelude::*;
-use syzygy::resource::NoResources;
 
 #[derive(Debug, Clone, Default)]
 struct TestState {
@@ -19,20 +18,15 @@ enum TestEvent {
 }
 
 #[derive(Debug, Clone)]
-enum TestTask {
+enum TestCommand {
     LogEvent(String),
 }
 
-impl Task<TestEvent, NoResources> for TestTask {
-    async fn execute(&self, _ctx: TaskContext<TestEvent, NoResources>) {
-        // Simple task implementation for testing
-    }
-}
 
 #[derive(Debug, World)]
 #[world(init = Self::new)]
 struct SyzygyWorld {
-    syzygy: Option<Syzygy<TestState, TestEvent, TestTask>>,
+    syzygy: Option<Syzygy<TestState, TestEvent, TestCommand>>,
     handle: Option<SyzygyHandle<TestEvent>>,
     state_accessed: bool,
     resource_accessed: bool,
@@ -49,26 +43,26 @@ impl SyzygyWorld {
     }
 
     fn create_system(&mut self) {
-        let (syzygy, handle) = Syzygy::builder()
-            .with_state(TestState {
+        let (syzygy, handle, _executor) = Syzygy::builder()
+            .model(TestState {
                 counter: 0,
                 user_name: None,
                 immutable_data: "test_data".to_string(),
             })
-            .on_event(|event: TestEvent, state: &mut TestState| -> Dispatch<TestEvent, TestTask> {
+            .event_handler(|event: TestEvent, state: &mut TestState| -> Dispatch<TestEvent, TestCommand> {
                 match event {
                     TestEvent::Increment(value) => {
                         state.counter += value;
-                        Dispatch::empty()
+                        Dispatch::none()
                     }
                     TestEvent::SetUser(name) => {
                         state.user_name = Some(name);
-                        Dispatch::empty()
+                        Dispatch::none()
                     }
                     TestEvent::ReadData => {
                         // Read immutable data without modifying
                         let _data = &state.immutable_data;
-                        Dispatch::empty()
+                        Dispatch::none()
                     }
                 }
             })
@@ -85,12 +79,12 @@ fn given_syzygy_with_models(world: &mut SyzygyWorld) {
     world.create_system();
 }
 
-#[when("I access models through the model\\(\\) method")]
+#[when("I access models through the model() method")]
 fn when_access_models_through_method(world: &mut SyzygyWorld) {
     let syzygy = world.syzygy.as_ref().unwrap();
     
     // Access state (which acts as a model)
-    let _state = syzygy.state();
+    let _state = syzygy.model();
     world.state_accessed = true;
 }
 
@@ -107,8 +101,8 @@ fn then_can_read_write_model_data(world: &mut SyzygyWorld) {
     syzygy.process_events();
     
     // Test reading from model
-    assert_eq!(syzygy.state().counter, 5);
-    assert_eq!(syzygy.state().user_name, Some("Alice".to_string()));
+    assert_eq!(syzygy.model().counter, 5);
+    assert_eq!(syzygy.model().user_name, Some("Alice".to_string()));
 }
 
 // SYZ-009: Resource Access (Immutable Only)
@@ -118,7 +112,7 @@ fn given_syzygy_with_resources(world: &mut SyzygyWorld) {
     world.create_system();
 }
 
-#[when("I access resources through the resource\\(\\) method")]
+#[when("I access resources through the resource() method")]
 fn when_access_resources_through_method(world: &mut SyzygyWorld) {
     // In this test, we'll verify resource access through event handling
     let handle = world.handle.as_ref().unwrap();
@@ -134,7 +128,7 @@ fn then_can_only_read_resource_data(world: &mut SyzygyWorld) {
     syzygy.process_events();
     
     // Verify we can read immutable data
-    assert_eq!(syzygy.state().immutable_data, "test_data");
+    assert_eq!(syzygy.model().immutable_data, "test_data");
 }
 
 // SYZ-010: Immediate State Consistency
@@ -162,8 +156,8 @@ fn then_all_changes_immediately_visible(world: &mut SyzygyWorld) {
     let syzygy = world.syzygy.as_ref().unwrap();
     
     // All changes should be applied
-    assert_eq!(syzygy.state().counter, 3);
-    assert_eq!(syzygy.state().user_name, Some("Bob".to_string()));
+    assert_eq!(syzygy.model().counter, 3);
+    assert_eq!(syzygy.model().user_name, Some("Bob".to_string()));
 }
 
 // SYZ-011: State Access During Event Processing
@@ -182,7 +176,7 @@ fn then_state_changes_isolated_per_event(world: &mut SyzygyWorld) {
     let syzygy = world.syzygy.as_ref().unwrap();
     
     // Each event should see consistent state
-    assert_eq!(syzygy.state().counter, 10);
+    assert_eq!(syzygy.model().counter, 10);
     
     // Process another event to verify isolation
     let handle = world.handle.as_ref().unwrap();
@@ -192,7 +186,7 @@ fn then_state_changes_isolated_per_event(world: &mut SyzygyWorld) {
     syzygy.process_events();
     
     // State should reflect both changes
-    assert_eq!(syzygy.state().counter, 15);
+    assert_eq!(syzygy.model().counter, 15);
 }
 
 #[tokio::main]

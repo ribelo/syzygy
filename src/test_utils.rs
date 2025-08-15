@@ -5,13 +5,12 @@
 
 use crate::{
     syzygy::Syzygy,
-    recorder::{EventRecorder, TimestampedEvent},
+    recorder::TimestampedEvent,
     replay::{EventReplayer, ReplayResult, TimingMode},
     handle::SyzygyHandle,
 };
 use std::fmt::Debug;
 use std::time::{Duration, Instant};
-use std::sync::{Arc, Mutex};
 
 /// Test scenario result containing final state and recorded events
 #[derive(Debug, Clone)]
@@ -67,31 +66,28 @@ impl TestUtils {
         let recording_handle = SyzygyHandle::new(event_sender);
 
         // Execute the test function and capture the events being dispatched
-        let mut event_count = 0;
         test_fn(&recording_handle);
 
         // Process events and record them
         while syzygy.has_pending_events() {
-            // Capture any events that were dispatched before processing
+            // Capture all events that were dispatched before processing
+            let mut events_to_process = Vec::new();
             while let Ok(event) = syzygy.event_rx.try_recv() {
                 let timestamp_ms = start_time.elapsed().as_millis() as u64;
                 recorded_events.push(TimestampedEvent {
                     event: event.clone(),
                     timestamp_ms,
                 });
-                
-                // Put the event back for processing
-                let _ = syzygy.event_tx.send(event);
-                event_count += 1;
-                break; // Process one at a time
+                events_to_process.push(event);
             }
             
-            if event_count > 0 {
-                syzygy.process_events();
-                event_count = 0;
-            } else {
-                break;
+            // Put all events back for processing
+            for event in events_to_process {
+                let _ = syzygy.event_tx.send(event);
             }
+            
+            // Process all pending events
+            syzygy.process_events();
         }
 
         TestScenario {
@@ -256,7 +252,7 @@ impl TestUtils {
 
         let mut results = Vec::new();
 
-        for i in 0..iterations {
+        for _i in 0..iterations {
             let (mut syzygy, handle) = create_syzygy();
             let scenario = Self::record_scenario(&mut syzygy, &handle, test_fn.clone());
             results.push(scenario);
@@ -385,7 +381,7 @@ mod tests {
     }
 
     fn create_test_syzygy() -> (Syzygy<TestModel, TestEvent, TestCommand, Resources>, SyzygyHandle<TestEvent>) {
-        Syzygy::builder()
+        let result = Syzygy::builder()
             .model(TestModel::default())
             .event_handler(|event, model| {
                 match event {
@@ -404,7 +400,15 @@ mod tests {
                     }
                 }
             })
-            .build()
+            .build();
+            
+        #[cfg(feature = "async")]
+        let (syzygy, handle, _executor) = result;
+        
+        #[cfg(not(feature = "async"))]
+        let (syzygy, handle) = result;
+        
+        (syzygy, handle)
     }
 
     #[test]

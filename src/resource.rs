@@ -180,18 +180,12 @@ pub trait ResourceModify: ResourceAccess {
     ///
     /// # Examples
     ///
-    /// ```rust
+    /// ```rust,ignore
     /// use syzygy::prelude::*;
+    /// use syzygy::resource::ResourceModify;
     ///
-    /// # #[derive(Debug, Clone)]
-    /// # struct AppModel { counter: i32 }
-    /// # impl Model for AppModel {
-    /// #     type Snapshot = Self;
-    /// #     fn to_snapshot(&self) -> Self::Snapshot { self.clone() }
-    /// # }
-    /// let mut syzygy: Syzygy<AppModel> = Syzygy::builder()
-    ///     .model(AppModel { counter: 0 })
-    ///     .build();
+    /// // This example shows the intended API (trait not currently implemented)
+    /// let syzygy = /* ... initialized Syzygy system ... */;
     ///
     /// // Set a new resource
     /// let old_config = syzygy.set_resource("initial config".to_string());

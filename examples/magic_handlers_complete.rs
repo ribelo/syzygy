@@ -244,7 +244,7 @@ fn main() {
     println!("=====================================");
     
     // Create a Syzygy system with custom resources
-    let (mut syzygy, handle) = Syzygy::builder()
+    let (mut syzygy, handle, _executor) = Syzygy::builder()
         .model(AppModel::default())
         .event_handler(handle_event)
         .build();

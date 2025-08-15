@@ -2,7 +2,6 @@
 
 use cucumber::{given, then, when, World};
 use syzygy::prelude::*;
-use syzygy::resource::NoResources;
 
 #[derive(Debug, Clone, Default)]
 struct TestState {
@@ -15,20 +14,15 @@ enum TestEvent {
 }
 
 #[derive(Debug, Clone)]
-enum TestTask {
+enum TestCommand {
     LogEvent(String),
 }
 
-impl Task<TestEvent, NoResources> for TestTask {
-    async fn execute(&self, _ctx: TaskContext<TestEvent, NoResources>) {
-        // Send trait required for async tasks
-    }
-}
 
 #[derive(Debug, World)]
 #[world(init = Self::new)]
 struct SyzygyWorld {
-    syzygy: Option<Syzygy<TestState, TestEvent, TestTask>>,
+    syzygy: Option<Syzygy<TestState, TestEvent, TestCommand>>,
     handle: Option<SyzygyHandle<TestEvent>>,
     type_safety_verified: bool,
     thread_safety_verified: bool,
@@ -45,13 +39,13 @@ impl SyzygyWorld {
     }
 
     fn create_system(&mut self) {
-        let (syzygy, handle) = Syzygy::builder()
-            .with_state(TestState::default())
-            .on_event(|event: TestEvent, state: &mut TestState| -> Dispatch<TestEvent, TestTask> {
+        let (syzygy, handle, _executor) = Syzygy::builder()
+            .model(TestState::default())
+            .event_handler(|event: TestEvent, state: &mut TestState| -> Dispatch<TestEvent, TestCommand> {
                 match event {
                     TestEvent::Increment(value) => {
                         state.counter += value;
-                        Dispatch::empty()
+                        Dispatch::none()
                     }
                 }
             })
@@ -108,7 +102,7 @@ fn when_verify_send_sync_bounds(world: &mut SyzygyWorld) {
     
     // Events and tasks must be Send for async execution
     assert_send::<TestEvent>();
-    assert_send::<TestTask>();
+    assert_send::<TestCommand>();
     
     // Handle must be Send to share across threads
     if let Some(ref handle) = world.handle {
@@ -143,7 +137,7 @@ fn then_handles_shareable_across_threads(world: &mut SyzygyWorld) {
         
         let syzygy = world.syzygy.as_mut().unwrap();
         syzygy.process_events();
-        assert_eq!(syzygy.state().counter, 3);
+        assert_eq!(syzygy.model().counter, 3);
     }
 }
 

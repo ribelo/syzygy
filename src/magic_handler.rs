@@ -142,9 +142,12 @@ where
 ///     format!("Count: {}", counter)
 /// }
 /// 
-/// // Both of these work:
-/// let result1 = my_handler.call(&mut container);
-/// let result2 = my_handler.call_magic(&mut container);
+/// // Create a container with the required data
+/// struct Container { counter: i32 }
+/// let mut container = Container { counter: 42 };
+/// 
+/// // Use the MagicHandlerExt trait method
+/// // let result = my_handler.call_magic(&mut container);
 /// ```
 pub trait MagicHandlerExt<C, Args>: MagicHandler<C, Args> {
     /// Call the handler with magic parameter extraction (convenience method)

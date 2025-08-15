@@ -24,6 +24,7 @@ pub mod prelude {
     // Core types for the unified API
     pub use crate::dispatch::Dispatch;
     pub use crate::handle::SyzygyHandle;
+    pub use crate::model::Model;
 
     // CommandContext for command execution
     pub use crate::context::CommandContext;

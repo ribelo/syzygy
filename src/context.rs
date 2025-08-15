@@ -166,7 +166,7 @@ mod tests {
         }
         
         let (event_tx, _event_rx) = unbounded::<String>();
-        let mut resources = Resources::default();
+        let resources = Resources::default();
         resources.insert(Database { connected: true });
         let ctx = CommandContext::new(event_tx, resources);
         
