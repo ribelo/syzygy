@@ -72,7 +72,6 @@ enum SyzygyEvent {
     Event5(Event5),
 }
 
-
 // We use Syzygy's Dispatch directly - no custom result type needed
 
 // ============================================================================
@@ -113,71 +112,116 @@ fn syzygy_match_handler(
 // Method 2: FxHashMap<TypeId, fn> with Unboxed Function Pointers
 // ============================================================================
 
-// Individual handler functions (unboxed) - using unified model
-fn handle_event1(
-    event: &dyn Any,
+// Properly typed handler functions that get boxed in the dispatcher
+fn typed_handle_event1(
+    event: Event1,
     model: &mut UnifiedModel,
 ) -> Dispatch<SyzygyEvent, SyzygyCommand> {
     model.processed_events += 1;
-    let e = unsafe { event.downcast_ref_unchecked::<Event1>() }; model.counter += e.id as u64;
+    model.counter += event.id as u64;
     Dispatch::none()
 }
 
-fn handle_event2(
-    event: &dyn Any,
+fn typed_handle_event2(
+    event: Event2,
     model: &mut UnifiedModel,
 ) -> Dispatch<SyzygyEvent, SyzygyCommand> {
     model.processed_events += 1;
-    let e = unsafe { event.downcast_ref_unchecked::<Event2>() }; model.counter += e.value;
+    model.counter += event.value;
     Dispatch::none()
 }
 
-fn handle_event3(
-    event: &dyn Any,
+fn typed_handle_event3(
+    _event: Event3,
     model: &mut UnifiedModel,
 ) -> Dispatch<SyzygyEvent, SyzygyCommand> {
     model.processed_events += 1;
-    let _e = unsafe { event.downcast_ref_unchecked::<Event3>() }; model.counter += 3;
+    model.counter += 3;
     Dispatch::none()
 }
 
-fn handle_event4(
-    event: &dyn Any,
+fn typed_handle_event4(
+    event: Event4,
     model: &mut UnifiedModel,
 ) -> Dispatch<SyzygyEvent, SyzygyCommand> {
     model.processed_events += 1;
-    let e = unsafe { event.downcast_ref_unchecked::<Event4>() }; model.counter += e.count as u64;
+    model.counter += event.count as u64;
     Dispatch::none()
 }
 
-fn handle_event5(
-    event: &dyn Any,
+fn typed_handle_event5(
+    event: Event5,
     model: &mut UnifiedModel,
 ) -> Dispatch<SyzygyEvent, SyzygyCommand> {
     model.processed_events += 1;
-    let e = unsafe { event.downcast_ref_unchecked::<Event5>() }; model.counter += e.index as u64;
+    model.counter += event.index as u64;
     Dispatch::none()
 }
 
-// TypeId -> function pointer HashMap
-type HandlerFn = fn(&dyn Any, &mut UnifiedModel) -> Dispatch<SyzygyEvent, SyzygyCommand>;
+// Fair TypeId dispatcher working with proper SyzygyEvent variants
+type BoxedHandlerFn = Box<dyn Fn(SyzygyEvent, &mut UnifiedModel) -> Dispatch<SyzygyEvent, SyzygyCommand>>;
 
 struct SyzygyTypeIdDispatcher {
-    handlers: FxHashMap<TypeId, HandlerFn>,
+    handlers: FxHashMap<TypeId, BoxedHandlerFn>,
 }
 
 impl SyzygyTypeIdDispatcher {
     fn new() -> Self {
-        let mut handlers = FxHashMap::default();
+        Self {
+            handlers: FxHashMap::default(),
+        }
+    }
 
-        // Register function pointers - only first 5 event types for consistency
-        handlers.insert(TypeId::of::<Event1>(), handle_event1 as HandlerFn);
-        handlers.insert(TypeId::of::<Event2>(), handle_event2 as HandlerFn);
-        handlers.insert(TypeId::of::<Event3>(), handle_event3 as HandlerFn);
-        handlers.insert(TypeId::of::<Event4>(), handle_event4 as HandlerFn);
-        handlers.insert(TypeId::of::<Event5>(), handle_event5 as HandlerFn);
-
-        Self { handlers }
+    fn on<T: 'static + Clone>(
+        &mut self,
+        handler: fn(T, &mut UnifiedModel) -> Dispatch<SyzygyEvent, SyzygyCommand>,
+    ) where
+        T: Any,
+    {
+        let boxed_handler = Box::new(move |event: SyzygyEvent, model: &mut UnifiedModel| {
+            // Extract the inner event data from the SyzygyEvent variant
+            let inner_data = match TypeId::of::<T>() {
+                id if id == TypeId::of::<Event1>() => {
+                    if let SyzygyEvent::Event1(ref data) = event {
+                        unsafe { &*(data as *const Event1 as *const T) }
+                    } else {
+                        return Dispatch::none();
+                    }
+                }
+                id if id == TypeId::of::<Event2>() => {
+                    if let SyzygyEvent::Event2(ref data) = event {
+                        unsafe { &*(data as *const Event2 as *const T) }
+                    } else {
+                        return Dispatch::none();
+                    }
+                }
+                id if id == TypeId::of::<Event3>() => {
+                    if let SyzygyEvent::Event3(ref data) = event {
+                        unsafe { &*(data as *const Event3 as *const T) }
+                    } else {
+                        return Dispatch::none();
+                    }
+                }
+                id if id == TypeId::of::<Event4>() => {
+                    if let SyzygyEvent::Event4(ref data) = event {
+                        unsafe { &*(data as *const Event4 as *const T) }
+                    } else {
+                        return Dispatch::none();
+                    }
+                }
+                id if id == TypeId::of::<Event5>() => {
+                    if let SyzygyEvent::Event5(ref data) = event {
+                        unsafe { &*(data as *const Event5 as *const T) }
+                    } else {
+                        return Dispatch::none();
+                    }
+                }
+                _ => return Dispatch::none(),
+            };
+            
+            handler(inner_data.clone(), model)
+        });
+        self.handlers.insert(TypeId::of::<T>(), boxed_handler);
     }
 
     fn dispatch(
@@ -188,7 +232,7 @@ impl SyzygyTypeIdDispatcher {
         let type_id = event.inner_type_id();
 
         if let Some(handler) = self.handlers.get(&type_id) {
-            handler(event.inner_as_any(), model)
+            handler(event, model)
         } else {
             Dispatch::none()
         }
@@ -364,12 +408,15 @@ impl SyzygyEvent {
     }
 }
 
+// Fair EnumMap dispatcher with proper variant type handling
+type BoxedEnumHandler<M, C> = Box<dyn Fn(SyzygyEvent, &mut M) -> Dispatch<SyzygyEvent, C>>;
+
 pub struct SyzygyEnumMapDispatcher<M, C> {
-    handlers: EnumMap<SyzygyEventType, Option<fn(SyzygyEvent, &mut M) -> Dispatch<SyzygyEvent, C>>>,
+    handlers: EnumMap<SyzygyEventType, Option<BoxedEnumHandler<M, C>>>,
     _phantom: PhantomData<(M, C)>,
 }
 
-impl<M, C> SyzygyEnumMapDispatcher<M, C> {
+impl<M: 'static, C: 'static> SyzygyEnumMapDispatcher<M, C> {
     pub fn new() -> Self {
         Self {
             handlers: EnumMap::default(),
@@ -377,17 +424,62 @@ impl<M, C> SyzygyEnumMapDispatcher<M, C> {
         }
     }
 
-    pub fn register(
+    pub fn on<T: 'static + Clone>(
         &mut self,
         variant: SyzygyEventType,
-        handler: fn(SyzygyEvent, &mut M) -> Dispatch<SyzygyEvent, C>,
-    ) {
-        self.handlers[variant] = Some(handler);
+        handler: fn(T, &mut M) -> Dispatch<SyzygyEvent, C>,
+    ) where
+        T: Any,
+    {
+        let boxed_handler = Box::new(move |event: SyzygyEvent, model: &mut M| {
+            // Extract the inner variant data from SyzygyEvent
+            let inner_data = match TypeId::of::<T>() {
+                id if id == TypeId::of::<Event1>() => {
+                    if let SyzygyEvent::Event1(ref data) = event {
+                        unsafe { &*(data as *const Event1 as *const T) }
+                    } else {
+                        return Dispatch::none();
+                    }
+                }
+                id if id == TypeId::of::<Event2>() => {
+                    if let SyzygyEvent::Event2(ref data) = event {
+                        unsafe { &*(data as *const Event2 as *const T) }
+                    } else {
+                        return Dispatch::none();
+                    }
+                }
+                id if id == TypeId::of::<Event3>() => {
+                    if let SyzygyEvent::Event3(ref data) = event {
+                        unsafe { &*(data as *const Event3 as *const T) }
+                    } else {
+                        return Dispatch::none();
+                    }
+                }
+                id if id == TypeId::of::<Event4>() => {
+                    if let SyzygyEvent::Event4(ref data) = event {
+                        unsafe { &*(data as *const Event4 as *const T) }
+                    } else {
+                        return Dispatch::none();
+                    }
+                }
+                id if id == TypeId::of::<Event5>() => {
+                    if let SyzygyEvent::Event5(ref data) = event {
+                        unsafe { &*(data as *const Event5 as *const T) }
+                    } else {
+                        return Dispatch::none();
+                    }
+                }
+                _ => return Dispatch::none(),
+            };
+            
+            handler(inner_data.clone(), model)
+        });
+        self.handlers[variant] = Some(boxed_handler);
     }
 
     #[inline(always)]
     pub fn dispatch(&self, event: SyzygyEvent, model: &mut M) -> Dispatch<SyzygyEvent, C> {
-        if let Some(handler) = self.handlers[event.event_type()] {
+        if let Some(handler) = &self.handlers[event.event_type()] {
             handler(event, model)
         } else {
             Dispatch::none()
@@ -419,15 +511,15 @@ impl SyzygyEvent {
     }
 }
 
-pub type SyzygyHandlerFnTypeId<M, C> =
-    fn(event_data: &dyn Any, model: &mut M) -> Dispatch<SyzygyEvent, C>;
+// Fair TypeId dispatcher Alt with proper SyzygyEvent handling
+type BoxedHandlerFnAlt<M, C> = Box<dyn Fn(SyzygyEvent, &mut M) -> Dispatch<SyzygyEvent, C>>;
 
 pub struct SyzygyTypeIdDispatcherAlt<M, C> {
-    handlers: FxHashMap<TypeId, SyzygyHandlerFnTypeId<M, C>>,
+    handlers: FxHashMap<TypeId, BoxedHandlerFnAlt<M, C>>,
     _phantom: PhantomData<(M, C)>,
 }
 
-impl<M, C> SyzygyTypeIdDispatcherAlt<M, C> {
+impl<M: 'static, C: 'static> SyzygyTypeIdDispatcherAlt<M, C> {
     pub fn new() -> Self {
         Self {
             handlers: FxHashMap::default(),
@@ -435,15 +527,63 @@ impl<M, C> SyzygyTypeIdDispatcherAlt<M, C> {
         }
     }
 
-    pub fn register<T: Any>(&mut self, handler: SyzygyHandlerFnTypeId<M, C>) {
-        self.handlers.insert(TypeId::of::<T>(), handler);
+    pub fn on<T: 'static + Clone>(
+        &mut self,
+        handler: fn(T, &mut M) -> Dispatch<SyzygyEvent, C>,
+    ) where
+        T: Any,
+    {
+        let boxed_handler = Box::new(move |event: SyzygyEvent, model: &mut M| {
+            // Extract the inner event data from the SyzygyEvent variant
+            let inner_data = match TypeId::of::<T>() {
+                id if id == TypeId::of::<Event1>() => {
+                    if let SyzygyEvent::Event1(ref data) = event {
+                        unsafe { &*(data as *const Event1 as *const T) }
+                    } else {
+                        return Dispatch::none();
+                    }
+                }
+                id if id == TypeId::of::<Event2>() => {
+                    if let SyzygyEvent::Event2(ref data) = event {
+                        unsafe { &*(data as *const Event2 as *const T) }
+                    } else {
+                        return Dispatch::none();
+                    }
+                }
+                id if id == TypeId::of::<Event3>() => {
+                    if let SyzygyEvent::Event3(ref data) = event {
+                        unsafe { &*(data as *const Event3 as *const T) }
+                    } else {
+                        return Dispatch::none();
+                    }
+                }
+                id if id == TypeId::of::<Event4>() => {
+                    if let SyzygyEvent::Event4(ref data) = event {
+                        unsafe { &*(data as *const Event4 as *const T) }
+                    } else {
+                        return Dispatch::none();
+                    }
+                }
+                id if id == TypeId::of::<Event5>() => {
+                    if let SyzygyEvent::Event5(ref data) = event {
+                        unsafe { &*(data as *const Event5 as *const T) }
+                    } else {
+                        return Dispatch::none();
+                    }
+                }
+                _ => return Dispatch::none(),
+            };
+            
+            handler(inner_data.clone(), model)
+        });
+        self.handlers.insert(TypeId::of::<T>(), boxed_handler);
     }
 
     #[inline]
     pub fn dispatch(&self, event: SyzygyEvent, model: &mut M) -> Dispatch<SyzygyEvent, C> {
         let type_id = event.inner_type_id();
         if let Some(handler) = self.handlers.get(&type_id) {
-            handler(event.inner_as_any(), model)
+            handler(event, model)
         } else {
             Dispatch::none()
         }
@@ -455,18 +595,19 @@ impl<M, C> SyzygyTypeIdDispatcherAlt<M, C> {
 /// Trait that event enums must implement for the Good DX TypeId dispatcher
 pub trait EventVariant {
     fn inner_type_id(&self) -> TypeId;
-    fn inner_as_any(&self) -> &dyn Any;
 }
 
-pub type HandlerFnTypeId<E, M, C> = fn(event_data: &dyn Any, model: &mut M) -> Dispatch<E, C>;
+// Fair GoodDx TypeId dispatcher with proper SyzygyEvent handling
+type BoxedHandlerFnGoodDx<E, M, C> = Box<dyn Fn(E, &mut M) -> Dispatch<E, C>>;
 
 /// Generic TypeId dispatcher that works with any event type implementing EventVariant
 pub struct GoodDxTypeIdDispatcher<E, M, C> {
-    handlers: FxHashMap<TypeId, HandlerFnTypeId<E, M, C>>,
+    handlers: FxHashMap<TypeId, BoxedHandlerFnGoodDx<E, M, C>>,
     _phantom: PhantomData<(E, M, C)>,
 }
 
-impl<E, M, C> GoodDxTypeIdDispatcher<E, M, C> {
+impl<E: 'static, M: 'static, C: 'static> GoodDxTypeIdDispatcher<E, M, C>
+{
     pub fn new() -> Self {
         Self {
             handlers: FxHashMap::default(),
@@ -474,16 +615,77 @@ impl<E, M, C> GoodDxTypeIdDispatcher<E, M, C> {
         }
     }
 
-    pub fn register<T: Any>(&mut self, handler: HandlerFnTypeId<E, M, C>) {
-        self.handlers.insert(TypeId::of::<T>(), handler);
+    pub fn on<T: 'static + Clone>(
+        &mut self,
+        handler: fn(T, &mut M) -> Dispatch<SyzygyEvent, SyzygyCommand>,
+    ) where
+        T: Any,
+    {
+        let boxed_handler = Box::new(move |event: SyzygyEvent, model: &mut M| {
+            let inner_data = match TypeId::of::<T>() {
+                id if id == TypeId::of::<Event1>() => {
+                    if let SyzygyEvent::Event1(ref data) = event {
+                        unsafe { &*(data as *const Event1 as *const T) }
+                    } else {
+                        return Dispatch::none();
+                    }
+                }
+                id if id == TypeId::of::<Event2>() => {
+                    if let SyzygyEvent::Event2(ref data) = event {
+                        unsafe { &*(data as *const Event2 as *const T) }
+                    } else {
+                        return Dispatch::none();
+                    }
+                }
+                id if id == TypeId::of::<Event3>() => {
+                    if let SyzygyEvent::Event3(ref data) = event {
+                        unsafe { &*(data as *const Event3 as *const T) }
+                    } else {
+                        return Dispatch::none();
+                    }
+                }
+                id if id == TypeId::of::<Event4>() => {
+                    if let SyzygyEvent::Event4(ref data) = event {
+                        unsafe { &*(data as *const Event4 as *const T) }
+                    } else {
+                        return Dispatch::none();
+                    }
+                }
+                id if id == TypeId::of::<Event5>() => {
+                    if let SyzygyEvent::Event5(ref data) = event {
+                        unsafe { &*(data as *const Event5 as *const T) }
+                    } else {
+                        return Dispatch::none();
+                    }
+                }
+                _ => return Dispatch::none(),
+            };
+            
+            handler(inner_data.clone(), model)
+        });
+        // Cast to store in the generic handler map
+        let generic_handler = unsafe {
+            std::mem::transmute::<
+                BoxedHandlerFnGoodDx<SyzygyEvent, M, SyzygyCommand>,
+                BoxedHandlerFnGoodDx<E, M, C>
+            >(boxed_handler)
+        };
+        self.handlers.insert(TypeId::of::<T>(), generic_handler);
     }
 
     /// The key method: generic dispatch that works with any EventVariant
     #[inline]
-    pub fn dispatch<Ev: EventVariant>(&self, event: Ev, model: &mut M) -> Dispatch<E, C> {
+    pub fn dispatch(&self, event: SyzygyEvent, model: &mut M) -> Dispatch<SyzygyEvent, SyzygyCommand> {
         let type_id = event.inner_type_id();
         if let Some(handler) = self.handlers.get(&type_id) {
-            handler(event.inner_as_any(), model)
+            // Cast the handler to the specific type we need for SyzygyEvent
+            let specific_handler = unsafe {
+                std::mem::transmute::<
+                    &BoxedHandlerFnGoodDx<E, M, C>,
+                    &BoxedHandlerFnGoodDx<SyzygyEvent, M, SyzygyCommand>
+                >(handler)
+            };
+            specific_handler(event, model)
         } else {
             Dispatch::none()
         }
@@ -501,17 +703,8 @@ impl EventVariant for SyzygyEvent {
             SyzygyEvent::Event5(_) => TypeId::of::<Event5>(),
         }
     }
-
-    fn inner_as_any(&self) -> &dyn Any {
-        match self {
-            SyzygyEvent::Event1(e) => e,
-            SyzygyEvent::Event2(e) => e,
-            SyzygyEvent::Event3(e) => e,
-            SyzygyEvent::Event4(e) => e,
-            SyzygyEvent::Event5(e) => e,
-        }
-    }
 }
+
 
 // --- Handlers for EnumMap using SyzygyEvent (owned values) ---
 fn handle_syzygy_e1_enum(
@@ -573,7 +766,8 @@ fn handle_syzygy_e1_typeid(
     m: &mut UnifiedModel,
 ) -> Dispatch<SyzygyEvent, SyzygyCommand> {
     m.processed_events += 1;
-    let v = unsafe { d.downcast_ref_unchecked::<Event1>() }; m.counter += v.id as u64;
+    let v = unsafe { d.downcast_ref_unchecked::<Event1>() };
+    m.counter += v.id as u64;
     Dispatch::none()
 }
 
@@ -582,7 +776,8 @@ fn handle_syzygy_e2_typeid(
     m: &mut UnifiedModel,
 ) -> Dispatch<SyzygyEvent, SyzygyCommand> {
     m.processed_events += 1;
-    let v = unsafe { d.downcast_ref_unchecked::<Event2>() }; m.counter += v.value;
+    let v = unsafe { d.downcast_ref_unchecked::<Event2>() };
+    m.counter += v.value;
     Dispatch::none()
 }
 
@@ -600,7 +795,8 @@ fn handle_syzygy_e4_typeid(
     m: &mut UnifiedModel,
 ) -> Dispatch<SyzygyEvent, SyzygyCommand> {
     m.processed_events += 1;
-    let v = unsafe { d.downcast_ref_unchecked::<Event4>() }; m.counter += v.count as u64;
+    let v = unsafe { d.downcast_ref_unchecked::<Event4>() };
+    m.counter += v.count as u64;
     Dispatch::none()
 }
 
@@ -609,7 +805,8 @@ fn handle_syzygy_e5_typeid(
     m: &mut UnifiedModel,
 ) -> Dispatch<SyzygyEvent, SyzygyCommand> {
     m.processed_events += 1;
-    let v = unsafe { d.downcast_ref_unchecked::<Event5>() }; m.counter += v.index as u64;
+    let v = unsafe { d.downcast_ref_unchecked::<Event5>() };
+    m.counter += v.index as u64;
     Dispatch::none()
 }
 
@@ -619,7 +816,8 @@ fn handle_gooddx_e1_typeid(
     m: &mut UnifiedModel,
 ) -> Dispatch<SyzygyEvent, SyzygyCommand> {
     m.processed_events += 1;
-    let v = unsafe { d.downcast_ref_unchecked::<Event1>() }; m.counter += v.id as u64;
+    let v = unsafe { d.downcast_ref_unchecked::<Event1>() };
+    m.counter += v.id as u64;
     Dispatch::none()
 }
 
@@ -628,7 +826,8 @@ fn handle_gooddx_e2_typeid(
     m: &mut UnifiedModel,
 ) -> Dispatch<SyzygyEvent, SyzygyCommand> {
     m.processed_events += 1;
-    let v = unsafe { d.downcast_ref_unchecked::<Event2>() }; m.counter += v.value;
+    let v = unsafe { d.downcast_ref_unchecked::<Event2>() };
+    m.counter += v.value;
     Dispatch::none()
 }
 
@@ -646,7 +845,8 @@ fn handle_gooddx_e4_typeid(
     m: &mut UnifiedModel,
 ) -> Dispatch<SyzygyEvent, SyzygyCommand> {
     m.processed_events += 1;
-    let v = unsafe { d.downcast_ref_unchecked::<Event4>() }; m.counter += v.count as u64;
+    let v = unsafe { d.downcast_ref_unchecked::<Event4>() };
+    m.counter += v.count as u64;
     Dispatch::none()
 }
 
@@ -655,7 +855,8 @@ fn handle_gooddx_e5_typeid(
     m: &mut UnifiedModel,
 ) -> Dispatch<SyzygyEvent, SyzygyCommand> {
     m.processed_events += 1;
-    let v = unsafe { d.downcast_ref_unchecked::<Event5>() }; m.counter += v.index as u64;
+    let v = unsafe { d.downcast_ref_unchecked::<Event5>() };
+    m.counter += v.index as u64;
     Dispatch::none()
 }
 
@@ -693,7 +894,13 @@ fn benchmark_dispatch_methods(c: &mut Criterion) {
         );
 
         // --- TypeId HashMap dispatch ---
-        let typeid_dispatcher = SyzygyTypeIdDispatcher::new();
+        let mut typeid_dispatcher = SyzygyTypeIdDispatcher::new();
+        typeid_dispatcher.on::<Event1>(typed_handle_event1);
+        typeid_dispatcher.on::<Event2>(typed_handle_event2);
+        typeid_dispatcher.on::<Event3>(typed_handle_event3);
+        typeid_dispatcher.on::<Event4>(typed_handle_event4);
+        typeid_dispatcher.on::<Event5>(typed_handle_event5);
+
         group.bench_with_input(
             BenchmarkId::new("typeid_hashmap", pattern_name),
             &events,
@@ -714,11 +921,11 @@ fn benchmark_dispatch_methods(c: &mut Criterion) {
 
         // --- EnumMap dispatch ---
         let mut enum_dispatcher = SyzygyEnumMapDispatcher::new();
-        enum_dispatcher.register(SyzygyEventType::Event1, handle_syzygy_e1_enum);
-        enum_dispatcher.register(SyzygyEventType::Event2, handle_syzygy_e2_enum);
-        enum_dispatcher.register(SyzygyEventType::Event3, handle_syzygy_e3_enum);
-        enum_dispatcher.register(SyzygyEventType::Event4, handle_syzygy_e4_enum);
-        enum_dispatcher.register(SyzygyEventType::Event5, handle_syzygy_e5_enum);
+        enum_dispatcher.on::<Event1>(SyzygyEventType::Event1, typed_handle_event1);
+        enum_dispatcher.on::<Event2>(SyzygyEventType::Event2, typed_handle_event2);
+        enum_dispatcher.on::<Event3>(SyzygyEventType::Event3, typed_handle_event3);
+        enum_dispatcher.on::<Event4>(SyzygyEventType::Event4, typed_handle_event4);
+        enum_dispatcher.on::<Event5>(SyzygyEventType::Event5, typed_handle_event5);
 
         group.bench_with_input(
             BenchmarkId::new("enummap", pattern_name),
@@ -737,11 +944,11 @@ fn benchmark_dispatch_methods(c: &mut Criterion) {
 
         // --- TypeId Alt dispatch ---
         let mut typeid_alt_dispatcher = SyzygyTypeIdDispatcherAlt::new();
-        typeid_alt_dispatcher.register::<Event1>(handle_syzygy_e1_typeid);
-        typeid_alt_dispatcher.register::<Event2>(handle_syzygy_e2_typeid);
-        typeid_alt_dispatcher.register::<Event3>(handle_syzygy_e3_typeid);
-        typeid_alt_dispatcher.register::<Event4>(handle_syzygy_e4_typeid);
-        typeid_alt_dispatcher.register::<Event5>(handle_syzygy_e5_typeid);
+        typeid_alt_dispatcher.on::<Event1>(typed_handle_event1);
+        typeid_alt_dispatcher.on::<Event2>(typed_handle_event2);
+        typeid_alt_dispatcher.on::<Event3>(typed_handle_event3);
+        typeid_alt_dispatcher.on::<Event4>(typed_handle_event4);
+        typeid_alt_dispatcher.on::<Event5>(typed_handle_event5);
 
         group.bench_with_input(
             BenchmarkId::new("typeid_alt", pattern_name),
@@ -759,12 +966,12 @@ fn benchmark_dispatch_methods(c: &mut Criterion) {
         );
 
         // --- Good DX TypeId dispatch ---
-        let mut gooddx_dispatcher = GoodDxTypeIdDispatcher::new();
-        gooddx_dispatcher.register::<Event1>(handle_gooddx_e1_typeid);
-        gooddx_dispatcher.register::<Event2>(handle_gooddx_e2_typeid);
-        gooddx_dispatcher.register::<Event3>(handle_gooddx_e3_typeid);
-        gooddx_dispatcher.register::<Event4>(handle_gooddx_e4_typeid);
-        gooddx_dispatcher.register::<Event5>(handle_gooddx_e5_typeid);
+        let mut gooddx_dispatcher: GoodDxTypeIdDispatcher<SyzygyEvent, UnifiedModel, SyzygyCommand> = GoodDxTypeIdDispatcher::new();
+        gooddx_dispatcher.on::<Event1>(typed_handle_event1);
+        gooddx_dispatcher.on::<Event2>(typed_handle_event2);
+        gooddx_dispatcher.on::<Event3>(typed_handle_event3);
+        gooddx_dispatcher.on::<Event4>(typed_handle_event4);
+        gooddx_dispatcher.on::<Event5>(typed_handle_event5);
 
         group.bench_with_input(
             BenchmarkId::new("typeid_gooddx", pattern_name),
@@ -807,14 +1014,13 @@ fn benchmark_dispatch_methods(c: &mut Criterion) {
 
         // --- EventMap with maximum performance ---
         // Note: EventMap requires owned values, so we must clone events for fair comparison
-        let unsafe_event_map =
-            EventMapBuilder::<SyzygyEvent, UnifiedModel, SyzygyCommand>::new()
-                .on::<Event1>(handle_unsafe_event1)
-                .on::<Event2>(handle_unsafe_event2)
-                .on::<Event3>(handle_unsafe_event3)
-                .on::<Event4>(handle_unsafe_event4)
-                .on::<Event5>(handle_unsafe_event5)
-                .build();
+        let unsafe_event_map = EventMapBuilder::<SyzygyEvent, UnifiedModel, SyzygyCommand>::new()
+            .on::<Event1>(handle_unsafe_event1)
+            .on::<Event2>(handle_unsafe_event2)
+            .on::<Event3>(handle_unsafe_event3)
+            .on::<Event4>(handle_unsafe_event4)
+            .on::<Event5>(handle_unsafe_event5)
+            .build();
 
         group.bench_with_input(
             BenchmarkId::new("unsafe_eventmap", pattern_name),

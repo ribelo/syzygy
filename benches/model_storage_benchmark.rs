@@ -16,6 +16,34 @@ use rustc_hash::FxHashMap;
 use heapless::LinearMap;
 use std::any::{Any, TypeId};
 use std::collections::HashMap;
+use std::hash::{Hasher, BuildHasher};
+
+// Identity hasher that passes through u64 values without hashing
+struct IdentityHasher(u64);
+
+impl Hasher for IdentityHasher {
+    fn write(&mut self, _: &[u8]) { 
+        unreachable!("IdentityHasher only works with u64 values") 
+    }
+    
+    fn write_u64(&mut self, i: u64) { 
+        self.0 = i; 
+    }
+    
+    fn finish(&self) -> u64 { 
+        self.0 
+    }
+}
+
+struct IdentityBuildHasher;
+
+impl BuildHasher for IdentityBuildHasher {
+    type Hasher = IdentityHasher;
+    
+    fn build_hasher(&self) -> Self::Hasher { 
+        IdentityHasher(0) 
+    }
+}
 
 // ============================================================================
 // Model Types - 12 different models with various data
@@ -389,6 +417,77 @@ struct FxHashMapStorage {
 impl FxHashMapStorage {
     fn new() -> Self {
         let mut models = FxHashMap::default();
+        
+        models.insert(TypeId::of::<Model1>(), Box::new(Model1 { value: 1, active: true }) as Box<dyn Any>);
+        models.insert(TypeId::of::<Model2>(), Box::new(Model2 { value: 2, name: "test".to_string() }) as Box<dyn Any>);
+        models.insert(TypeId::of::<Model3>(), Box::new(Model3 { value: 3, count: 100 }) as Box<dyn Any>);
+        models.insert(TypeId::of::<Model4>(), Box::new(Model4 { value: 4, temperature: 20.5 }) as Box<dyn Any>);
+        models.insert(TypeId::of::<Model5>(), Box::new(Model5 { value: 5, items: vec!["a".to_string(), "b".to_string()] }) as Box<dyn Any>);
+        models.insert(TypeId::of::<Model6>(), Box::new(Model6 { value: 6, timestamp: 1234567890 }) as Box<dyn Any>);
+        models.insert(TypeId::of::<Model7>(), Box::new(Model7 { value: 7, enabled: false, priority: 3 }) as Box<dyn Any>);
+        models.insert(TypeId::of::<Model8>(), Box::new(Model8 { value: 8, coordinates: (10.0, 20.0) }) as Box<dyn Any>);
+        models.insert(TypeId::of::<Model9>(), Box::new(Model9 { value: 9, status: "running".to_string(), retries: 0 }) as Box<dyn Any>);
+        models.insert(TypeId::of::<Model10>(), Box::new(Model10 { value: 10, data: vec![1, 2, 3, 4] }) as Box<dyn Any>);
+        models.insert(TypeId::of::<Model11>(), Box::new(Model11 { value: 11, config: Some("config".to_string()) }) as Box<dyn Any>);
+        
+        let mut metadata = HashMap::new();
+        metadata.insert("key".to_string(), "value".to_string());
+        models.insert(TypeId::of::<Model12>(), Box::new(Model12 { value: 12, metadata }) as Box<dyn Any>);
+        
+        let type_ids = vec![
+            TypeId::of::<Model1>(),
+            TypeId::of::<Model2>(),
+            TypeId::of::<Model3>(),
+            TypeId::of::<Model4>(),
+            TypeId::of::<Model5>(),
+            TypeId::of::<Model6>(),
+            TypeId::of::<Model7>(),
+            TypeId::of::<Model8>(),
+            TypeId::of::<Model9>(),
+            TypeId::of::<Model10>(),
+            TypeId::of::<Model11>(),
+            TypeId::of::<Model12>(),
+        ];
+        
+        Self { models, type_ids }
+    }
+    
+    fn get_value_by_index(&self, index: usize) -> u64 {
+        let type_id = self.type_ids[index % 12];
+        if let Some(model) = self.models.get(&type_id) {
+            match index % 12 {
+                0 => unsafe { model.downcast_ref_unchecked::<Model1>() }.value,
+                1 => unsafe { model.downcast_ref_unchecked::<Model2>() }.value,
+                2 => unsafe { model.downcast_ref_unchecked::<Model3>() }.value,
+                3 => unsafe { model.downcast_ref_unchecked::<Model4>() }.value,
+                4 => unsafe { model.downcast_ref_unchecked::<Model5>() }.value,
+                5 => unsafe { model.downcast_ref_unchecked::<Model6>() }.value,
+                6 => unsafe { model.downcast_ref_unchecked::<Model7>() }.value,
+                7 => unsafe { model.downcast_ref_unchecked::<Model8>() }.value,
+                8 => unsafe { model.downcast_ref_unchecked::<Model9>() }.value,
+                9 => unsafe { model.downcast_ref_unchecked::<Model10>() }.value,
+                10 => unsafe { model.downcast_ref_unchecked::<Model11>() }.value,
+                11 => unsafe { model.downcast_ref_unchecked::<Model12>() }.value,
+                _ => unreachable!(),
+            }
+        } else {
+            0
+        }
+    }
+}
+
+// ============================================================================
+// NoHash HashMap Approach - No hashing for TypeId (already good hash)
+// ============================================================================
+
+struct NoHashStorage {
+    models: HashMap<TypeId, Box<dyn Any>, IdentityBuildHasher>,
+    type_ids: Vec<TypeId>,
+}
+
+impl NoHashStorage {
+    fn new() -> Self {
+        let mut models = HashMap::with_hasher(IdentityBuildHasher);
         
         models.insert(TypeId::of::<Model1>(), Box::new(Model1 { value: 1, active: true }) as Box<dyn Any>);
         models.insert(TypeId::of::<Model2>(), Box::new(Model2 { value: 2, name: "test".to_string() }) as Box<dyn Any>);
@@ -1236,6 +1335,288 @@ impl MicroMapStorage32 {
     }
 }
 
+struct NoHashStorage32 {
+    models: HashMap<TypeId, Box<dyn Any>, IdentityBuildHasher>,
+    type_ids: Vec<TypeId>,
+}
+
+impl NoHashStorage32 {
+    fn new() -> Self {
+        let mut models = HashMap::with_hasher(IdentityBuildHasher);
+        
+        models.insert(TypeId::of::<Model1>(), Box::new(Model1 { value: 1, active: true }) as Box<dyn Any>);
+        models.insert(TypeId::of::<Model2>(), Box::new(Model2 { value: 2, name: "test".to_string() }) as Box<dyn Any>);
+        models.insert(TypeId::of::<Model3>(), Box::new(Model3 { value: 3, count: 100 }) as Box<dyn Any>);
+        models.insert(TypeId::of::<Model4>(), Box::new(Model4 { value: 4, temperature: 20.5 }) as Box<dyn Any>);
+        models.insert(TypeId::of::<Model5>(), Box::new(Model5 { value: 5, items: vec!["a".to_string(), "b".to_string()] }) as Box<dyn Any>);
+        models.insert(TypeId::of::<Model6>(), Box::new(Model6 { value: 6, timestamp: 1234567890 }) as Box<dyn Any>);
+        models.insert(TypeId::of::<Model7>(), Box::new(Model7 { value: 7, enabled: false, priority: 3 }) as Box<dyn Any>);
+        models.insert(TypeId::of::<Model8>(), Box::new(Model8 { value: 8, coordinates: (10.0, 20.0) }) as Box<dyn Any>);
+        models.insert(TypeId::of::<Model9>(), Box::new(Model9 { value: 9, status: "running".to_string(), retries: 0 }) as Box<dyn Any>);
+        models.insert(TypeId::of::<Model10>(), Box::new(Model10 { value: 10, data: vec![1, 2, 3, 4] }) as Box<dyn Any>);
+        models.insert(TypeId::of::<Model11>(), Box::new(Model11 { value: 11, config: Some("config".to_string()) }) as Box<dyn Any>);
+        
+        let mut metadata = HashMap::new();
+        metadata.insert("key".to_string(), "value".to_string());
+        models.insert(TypeId::of::<Model12>(), Box::new(Model12 { value: 12, metadata }) as Box<dyn Any>);
+        
+        models.insert(TypeId::of::<Model13>(), Box::new(Model13 { value: 13, id: 1001 }) as Box<dyn Any>);
+        models.insert(TypeId::of::<Model14>(), Box::new(Model14 { value: 14, score: 85.5 }) as Box<dyn Any>);
+        models.insert(TypeId::of::<Model15>(), Box::new(Model15 { value: 15, label: "label".to_string() }) as Box<dyn Any>);
+        models.insert(TypeId::of::<Model16>(), Box::new(Model16 { value: 16, flags: vec![true, false] }) as Box<dyn Any>);
+        models.insert(TypeId::of::<Model17>(), Box::new(Model17 { value: 17, weight: 2.5 }) as Box<dyn Any>);
+        models.insert(TypeId::of::<Model18>(), Box::new(Model18 { value: 18, sequence: 12345 }) as Box<dyn Any>);
+        models.insert(TypeId::of::<Model19>(), Box::new(Model19 { value: 19, category: "A".to_string() }) as Box<dyn Any>);
+        models.insert(TypeId::of::<Model20>(), Box::new(Model20 { value: 20, position: (100, 200) }) as Box<dyn Any>);
+        models.insert(TypeId::of::<Model21>(), Box::new(Model21 { value: 21, state: true }) as Box<dyn Any>);
+        models.insert(TypeId::of::<Model22>(), Box::new(Model22 { value: 22, duration: 987654321 }) as Box<dyn Any>);
+        models.insert(TypeId::of::<Model23>(), Box::new(Model23 { value: 23, bytes: vec![0xFF, 0x00, 0xAA] }) as Box<dyn Any>);
+        models.insert(TypeId::of::<Model24>(), Box::new(Model24 { value: 24, ratio: 0.75 }) as Box<dyn Any>);
+        models.insert(TypeId::of::<Model25>(), Box::new(Model25 { value: 25, tags: vec!["tag1".to_string(), "tag2".to_string()] }) as Box<dyn Any>);
+        models.insert(TypeId::of::<Model26>(), Box::new(Model26 { value: 26, index: 42 }) as Box<dyn Any>);
+        models.insert(TypeId::of::<Model27>(), Box::new(Model27 { value: 27, offset: -100 }) as Box<dyn Any>);
+        models.insert(TypeId::of::<Model28>(), Box::new(Model28 { value: 28, size: 1024 }) as Box<dyn Any>);
+        models.insert(TypeId::of::<Model29>(), Box::new(Model29 { value: 29, version: "1.0.0".to_string() }) as Box<dyn Any>);
+        models.insert(TypeId::of::<Model30>(), Box::new(Model30 { value: 30, level: 5 }) as Box<dyn Any>);
+        models.insert(TypeId::of::<Model31>(), Box::new(Model31 { value: 31, status_code: 200 }) as Box<dyn Any>);
+        models.insert(TypeId::of::<Model32>(), Box::new(Model32 { value: 32, checksum: 0xDEADBEEF }) as Box<dyn Any>);
+        
+        let type_ids = vec![
+            TypeId::of::<Model1>(), TypeId::of::<Model2>(), TypeId::of::<Model3>(), TypeId::of::<Model4>(),
+            TypeId::of::<Model5>(), TypeId::of::<Model6>(), TypeId::of::<Model7>(), TypeId::of::<Model8>(),
+            TypeId::of::<Model9>(), TypeId::of::<Model10>(), TypeId::of::<Model11>(), TypeId::of::<Model12>(),
+            TypeId::of::<Model13>(), TypeId::of::<Model14>(), TypeId::of::<Model15>(), TypeId::of::<Model16>(),
+            TypeId::of::<Model17>(), TypeId::of::<Model18>(), TypeId::of::<Model19>(), TypeId::of::<Model20>(),
+            TypeId::of::<Model21>(), TypeId::of::<Model22>(), TypeId::of::<Model23>(), TypeId::of::<Model24>(),
+            TypeId::of::<Model25>(), TypeId::of::<Model26>(), TypeId::of::<Model27>(), TypeId::of::<Model28>(),
+            TypeId::of::<Model29>(), TypeId::of::<Model30>(), TypeId::of::<Model31>(), TypeId::of::<Model32>(),
+        ];
+        
+        Self { models, type_ids }
+    }
+    
+    fn get_value_by_index(&self, index: usize) -> u64 {
+        let type_id = self.type_ids[index % 32];
+        if let Some(model) = self.models.get(&type_id) {
+            match index % 32 {
+                0 => unsafe { model.downcast_ref_unchecked::<Model1>() }.value,
+                1 => unsafe { model.downcast_ref_unchecked::<Model2>() }.value,
+                2 => unsafe { model.downcast_ref_unchecked::<Model3>() }.value,
+                3 => unsafe { model.downcast_ref_unchecked::<Model4>() }.value,
+                4 => unsafe { model.downcast_ref_unchecked::<Model5>() }.value,
+                5 => unsafe { model.downcast_ref_unchecked::<Model6>() }.value,
+                6 => unsafe { model.downcast_ref_unchecked::<Model7>() }.value,
+                7 => unsafe { model.downcast_ref_unchecked::<Model8>() }.value,
+                8 => unsafe { model.downcast_ref_unchecked::<Model9>() }.value,
+                9 => unsafe { model.downcast_ref_unchecked::<Model10>() }.value,
+                10 => unsafe { model.downcast_ref_unchecked::<Model11>() }.value,
+                11 => unsafe { model.downcast_ref_unchecked::<Model12>() }.value,
+                12 => unsafe { model.downcast_ref_unchecked::<Model13>() }.value,
+                13 => unsafe { model.downcast_ref_unchecked::<Model14>() }.value,
+                14 => unsafe { model.downcast_ref_unchecked::<Model15>() }.value,
+                15 => unsafe { model.downcast_ref_unchecked::<Model16>() }.value,
+                16 => unsafe { model.downcast_ref_unchecked::<Model17>() }.value,
+                17 => unsafe { model.downcast_ref_unchecked::<Model18>() }.value,
+                18 => unsafe { model.downcast_ref_unchecked::<Model19>() }.value,
+                19 => unsafe { model.downcast_ref_unchecked::<Model20>() }.value,
+                20 => unsafe { model.downcast_ref_unchecked::<Model21>() }.value,
+                21 => unsafe { model.downcast_ref_unchecked::<Model22>() }.value,
+                22 => unsafe { model.downcast_ref_unchecked::<Model23>() }.value,
+                23 => unsafe { model.downcast_ref_unchecked::<Model24>() }.value,
+                24 => unsafe { model.downcast_ref_unchecked::<Model25>() }.value,
+                25 => unsafe { model.downcast_ref_unchecked::<Model26>() }.value,
+                26 => unsafe { model.downcast_ref_unchecked::<Model27>() }.value,
+                27 => unsafe { model.downcast_ref_unchecked::<Model28>() }.value,
+                28 => unsafe { model.downcast_ref_unchecked::<Model29>() }.value,
+                29 => unsafe { model.downcast_ref_unchecked::<Model30>() }.value,
+                30 => unsafe { model.downcast_ref_unchecked::<Model31>() }.value,
+                31 => unsafe { model.downcast_ref_unchecked::<Model32>() }.value,
+                _ => unreachable!(),
+            }
+        } else {
+            0
+        }
+    }
+}
+
+// ============================================================================
+// ErasedModelChain Approach - Type-erased chain with recursive search
+// ============================================================================
+
+use syzygy::model_chain::{ErasedModelChain, NoModels, ModelChainBuilder};
+
+struct ErasedModelChainStorage {
+    chain: ErasedModelChain,
+    type_ids: Vec<TypeId>,
+}
+
+impl ErasedModelChainStorage {
+    fn new() -> Self {
+        // Build the chain using the ModelChainBuilder pattern
+        let chain = NoModels::default()
+            .with_model(Model1 { value: 1, active: true })
+            .with_model(Model2 { value: 2, name: "test".to_string() })
+            .with_model(Model3 { value: 3, count: 100 })
+            .with_model(Model4 { value: 4, temperature: 20.5 })
+            .with_model(Model5 { value: 5, items: vec!["a".to_string(), "b".to_string()] })
+            .with_model(Model6 { value: 6, timestamp: 1234567890 })
+            .with_model(Model7 { value: 7, enabled: false, priority: 3 })
+            .with_model(Model8 { value: 8, coordinates: (10.0, 20.0) })
+            .with_model(Model9 { value: 9, status: "running".to_string(), retries: 0 })
+            .with_model(Model10 { value: 10, data: vec![1, 2, 3, 4] })
+            .with_model(Model11 { value: 11, config: Some("config".to_string()) });
+        
+        let mut metadata = HashMap::new();
+        metadata.insert("key".to_string(), "value".to_string());
+        let chain = chain.with_model(Model12 { value: 12, metadata });
+        
+        // Type erase the chain for runtime access
+        let erased_chain: ErasedModelChain = Box::new(chain);
+        
+        let type_ids = vec![
+            TypeId::of::<Model1>(),
+            TypeId::of::<Model2>(),
+            TypeId::of::<Model3>(),
+            TypeId::of::<Model4>(),
+            TypeId::of::<Model5>(),
+            TypeId::of::<Model6>(),
+            TypeId::of::<Model7>(),
+            TypeId::of::<Model8>(),
+            TypeId::of::<Model9>(),
+            TypeId::of::<Model10>(),
+            TypeId::of::<Model11>(),
+            TypeId::of::<Model12>(),
+        ];
+        
+        Self { 
+            chain: erased_chain,
+            type_ids 
+        }
+    }
+    
+    fn get_value_by_index(&self, index: usize) -> u64 {
+        match index % 12 {
+            0 => self.chain.find_model::<Model1>().map(|m| m.value).unwrap_or(0),
+            1 => self.chain.find_model::<Model2>().map(|m| m.value).unwrap_or(0),
+            2 => self.chain.find_model::<Model3>().map(|m| m.value).unwrap_or(0),
+            3 => self.chain.find_model::<Model4>().map(|m| m.value).unwrap_or(0),
+            4 => self.chain.find_model::<Model5>().map(|m| m.value).unwrap_or(0),
+            5 => self.chain.find_model::<Model6>().map(|m| m.value).unwrap_or(0),
+            6 => self.chain.find_model::<Model7>().map(|m| m.value).unwrap_or(0),
+            7 => self.chain.find_model::<Model8>().map(|m| m.value).unwrap_or(0),
+            8 => self.chain.find_model::<Model9>().map(|m| m.value).unwrap_or(0),
+            9 => self.chain.find_model::<Model10>().map(|m| m.value).unwrap_or(0),
+            10 => self.chain.find_model::<Model11>().map(|m| m.value).unwrap_or(0),
+            11 => self.chain.find_model::<Model12>().map(|m| m.value).unwrap_or(0),
+            _ => unreachable!(),
+        }
+    }
+}
+
+struct ErasedModelChainStorage32 {
+    chain: ErasedModelChain,
+    type_ids: Vec<TypeId>,
+}
+
+impl ErasedModelChainStorage32 {
+    fn new() -> Self {
+        // Build the chain with all 32 models
+        let chain = NoModels::default()
+            .with_model(Model1 { value: 1, active: true })
+            .with_model(Model2 { value: 2, name: "test".to_string() })
+            .with_model(Model3 { value: 3, count: 100 })
+            .with_model(Model4 { value: 4, temperature: 20.5 })
+            .with_model(Model5 { value: 5, items: vec!["a".to_string(), "b".to_string()] })
+            .with_model(Model6 { value: 6, timestamp: 1234567890 })
+            .with_model(Model7 { value: 7, enabled: false, priority: 3 })
+            .with_model(Model8 { value: 8, coordinates: (10.0, 20.0) })
+            .with_model(Model9 { value: 9, status: "running".to_string(), retries: 0 })
+            .with_model(Model10 { value: 10, data: vec![1, 2, 3, 4] })
+            .with_model(Model11 { value: 11, config: Some("config".to_string()) });
+        
+        let mut metadata = HashMap::new();
+        metadata.insert("key".to_string(), "value".to_string());
+        let chain = chain.with_model(Model12 { value: 12, metadata })
+            .with_model(Model13 { value: 13, id: 13 })
+            .with_model(Model14 { value: 14, score: 14.0 })
+            .with_model(Model15 { value: 15, label: "fifteen".to_string() })
+            .with_model(Model16 { value: 16, flags: vec![true, false] })
+            .with_model(Model17 { value: 17, weight: 17.5 })
+            .with_model(Model18 { value: 18, sequence: 18 })
+            .with_model(Model19 { value: 19, category: "nineteen".to_string() })
+            .with_model(Model20 { value: 20, position: (20, 20) })
+            .with_model(Model21 { value: 21, state: true })
+            .with_model(Model22 { value: 22, duration: 22 })
+            .with_model(Model23 { value: 23, bytes: vec![23u8] })
+            .with_model(Model24 { value: 24, ratio: 24.0 })
+            .with_model(Model25 { value: 25, tags: vec!["twenty-five".to_string()] })
+            .with_model(Model26 { value: 26, index: 26 })
+            .with_model(Model27 { value: 27, offset: 27 })
+            .with_model(Model28 { value: 28, size: 28 })
+            .with_model(Model29 { value: 29, version: "29".to_string() })
+            .with_model(Model30 { value: 30, level: 30 })
+            .with_model(Model31 { value: 31, status_code: 31 })
+            .with_model(Model32 { value: 32, checksum: 32 });
+        
+        // Type erase the chain for runtime access
+        let erased_chain: ErasedModelChain = Box::new(chain);
+        
+        let type_ids = vec![
+            TypeId::of::<Model1>(), TypeId::of::<Model2>(), TypeId::of::<Model3>(), TypeId::of::<Model4>(),
+            TypeId::of::<Model5>(), TypeId::of::<Model6>(), TypeId::of::<Model7>(), TypeId::of::<Model8>(),
+            TypeId::of::<Model9>(), TypeId::of::<Model10>(), TypeId::of::<Model11>(), TypeId::of::<Model12>(),
+            TypeId::of::<Model13>(), TypeId::of::<Model14>(), TypeId::of::<Model15>(), TypeId::of::<Model16>(),
+            TypeId::of::<Model17>(), TypeId::of::<Model18>(), TypeId::of::<Model19>(), TypeId::of::<Model20>(),
+            TypeId::of::<Model21>(), TypeId::of::<Model22>(), TypeId::of::<Model23>(), TypeId::of::<Model24>(),
+            TypeId::of::<Model25>(), TypeId::of::<Model26>(), TypeId::of::<Model27>(), TypeId::of::<Model28>(),
+            TypeId::of::<Model29>(), TypeId::of::<Model30>(), TypeId::of::<Model31>(), TypeId::of::<Model32>(),
+        ];
+        
+        Self { 
+            chain: erased_chain,
+            type_ids 
+        }
+    }
+    
+    fn get_value_by_index(&self, index: usize) -> u64 {
+        match index % 32 {
+            0 => self.chain.find_model::<Model1>().map(|m| m.value).unwrap_or(0),
+            1 => self.chain.find_model::<Model2>().map(|m| m.value).unwrap_or(0),
+            2 => self.chain.find_model::<Model3>().map(|m| m.value).unwrap_or(0),
+            3 => self.chain.find_model::<Model4>().map(|m| m.value).unwrap_or(0),
+            4 => self.chain.find_model::<Model5>().map(|m| m.value).unwrap_or(0),
+            5 => self.chain.find_model::<Model6>().map(|m| m.value).unwrap_or(0),
+            6 => self.chain.find_model::<Model7>().map(|m| m.value).unwrap_or(0),
+            7 => self.chain.find_model::<Model8>().map(|m| m.value).unwrap_or(0),
+            8 => self.chain.find_model::<Model9>().map(|m| m.value).unwrap_or(0),
+            9 => self.chain.find_model::<Model10>().map(|m| m.value).unwrap_or(0),
+            10 => self.chain.find_model::<Model11>().map(|m| m.value).unwrap_or(0),
+            11 => self.chain.find_model::<Model12>().map(|m| m.value).unwrap_or(0),
+            12 => self.chain.find_model::<Model13>().map(|m| m.value).unwrap_or(0),
+            13 => self.chain.find_model::<Model14>().map(|m| m.value).unwrap_or(0),
+            14 => self.chain.find_model::<Model15>().map(|m| m.value).unwrap_or(0),
+            15 => self.chain.find_model::<Model16>().map(|m| m.value).unwrap_or(0),
+            16 => self.chain.find_model::<Model17>().map(|m| m.value).unwrap_or(0),
+            17 => self.chain.find_model::<Model18>().map(|m| m.value).unwrap_or(0),
+            18 => self.chain.find_model::<Model19>().map(|m| m.value).unwrap_or(0),
+            19 => self.chain.find_model::<Model20>().map(|m| m.value).unwrap_or(0),
+            20 => self.chain.find_model::<Model21>().map(|m| m.value).unwrap_or(0),
+            21 => self.chain.find_model::<Model22>().map(|m| m.value).unwrap_or(0),
+            22 => self.chain.find_model::<Model23>().map(|m| m.value).unwrap_or(0),
+            23 => self.chain.find_model::<Model24>().map(|m| m.value).unwrap_or(0),
+            24 => self.chain.find_model::<Model25>().map(|m| m.value).unwrap_or(0),
+            25 => self.chain.find_model::<Model26>().map(|m| m.value).unwrap_or(0),
+            26 => self.chain.find_model::<Model27>().map(|m| m.value).unwrap_or(0),
+            27 => self.chain.find_model::<Model28>().map(|m| m.value).unwrap_or(0),
+            28 => self.chain.find_model::<Model29>().map(|m| m.value).unwrap_or(0),
+            29 => self.chain.find_model::<Model30>().map(|m| m.value).unwrap_or(0),
+            30 => self.chain.find_model::<Model31>().map(|m| m.value).unwrap_or(0),
+            31 => self.chain.find_model::<Model32>().map(|m| m.value).unwrap_or(0),
+            _ => unreachable!(),
+        }
+    }
+}
+
 // ============================================================================
 // Random Number Generator for Reproducible Tests
 // ============================================================================
@@ -1356,6 +1737,30 @@ fn benchmark_model_storage_12_models(c: &mut Criterion) {
         });
     });
     
+    // NoHash HashMap approach (no hashing for TypeId)
+    let nohash_storage = NoHashStorage::new();
+    group.bench_function("nohash", |b| {
+        b.iter(|| {
+            let mut counter = 0u64;
+            for &index in &random_indices {
+                counter += black_box(nohash_storage.get_value_by_index(black_box(index)));
+            }
+            black_box(counter);
+        });
+    });
+    
+    // ErasedModelChain approach (type-erased chain with recursive search)
+    let erased_chain_storage = ErasedModelChainStorage::new();
+    group.bench_function("erased_model_chain", |b| {
+        b.iter(|| {
+            let mut counter = 0u64;
+            for &index in &random_indices {
+                counter += black_box(erased_chain_storage.get_value_by_index(black_box(index)));
+            }
+            black_box(counter);
+        });
+    });
+    
     group.finish();
 }
 
@@ -1452,6 +1857,18 @@ fn benchmark_model_storage_4_models(c: &mut Criterion) {
         });
     });
     
+    // NoHash HashMap approach (only first 4 models)
+    let nohash_storage = NoHashStorage::new();
+    group.bench_function("nohash", |b| {
+        b.iter(|| {
+            let mut counter = 0u64;
+            for &index in &random_indices {
+                counter += black_box(nohash_storage.get_value_by_index(black_box(index)));
+            }
+            black_box(counter);
+        });
+    });
+    
     group.finish();
 }
 
@@ -1507,6 +1924,30 @@ fn benchmark_model_storage_32_models(c: &mut Criterion) {
             let mut counter = 0u64;
             for &index in &random_indices {
                 counter += black_box(hybrid_storage32.get_value_by_index(black_box(index)));
+            }
+            black_box(counter);
+        });
+    });
+    
+    // NoHash HashMap approach with 32 models (no hashing for TypeId)
+    let nohash_storage32 = NoHashStorage32::new();
+    group.bench_function("nohash", |b| {
+        b.iter(|| {
+            let mut counter = 0u64;
+            for &index in &random_indices {
+                counter += black_box(nohash_storage32.get_value_by_index(black_box(index)));
+            }
+            black_box(counter);
+        });
+    });
+    
+    // ErasedModelChain approach with 32 models (type-erased chain with recursive search)
+    let erased_chain_storage32 = ErasedModelChainStorage32::new();
+    group.bench_function("erased_model_chain", |b| {
+        b.iter(|| {
+            let mut counter = 0u64;
+            for &index in &random_indices {
+                counter += black_box(erased_chain_storage32.get_value_by_index(black_box(index)));
             }
             black_box(counter);
         });

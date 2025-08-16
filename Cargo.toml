@@ -94,6 +94,10 @@ harness = false
 name = "model_storage_benchmark"
 harness = false
 
+[[bench]]
+name = "profile_test"
+harness = false
+
 [lints.clippy]
 all = { level = "warn", priority = -2 }
 

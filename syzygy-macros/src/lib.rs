@@ -1,7 +1,9 @@
 use proc_macro::TokenStream;
 use quote::quote;
 use syn::{
-    parse_macro_input, DeriveInput, Data, Fields, Field, Meta
+    parse_macro_input, DeriveInput, Data, Fields, Field, Meta, 
+    punctuated::Punctuated, Token, Expr, ExprLit, Lit, 
+    parse::Parser
 };
 use std::collections::HashSet;
 
@@ -171,22 +173,36 @@ fn get_extract_attr(field: &Field) -> Option<ExtractAttr> {
             return match &attr.meta {
                 Meta::Path(_) => Some(ExtractAttr::Direct),
                 Meta::List(meta) => {
-                    // Parse extract(as = Name) format
-                    let content = meta.tokens.to_string();
+                    // Parse extract(as = Name) format using syn's robust parsing
+                    let parsed = Punctuated::<Meta, Token![,]>::parse_terminated.parse2(meta.tokens.clone());
                     
-                    // Look for "as = identifier" pattern
-                    if content.starts_with("as = ") {
-                        let ident_str = content[5..].trim();
-                        
-                        // Validate it's a valid identifier (basic check)
-                        if ident_str.chars().all(|c| c.is_alphanumeric() || c == '_') 
-                           && !ident_str.starts_with(char::is_numeric)
-                           && !ident_str.is_empty() {
-                            return Some(ExtractAttr::As(ident_str.to_string()));
+                    match parsed {
+                        Ok(metas) => {
+                            if let Some(Meta::NameValue(name_value)) = metas.first() {
+                                if name_value.path.is_ident("as") {
+                                    match &name_value.value {
+                                        // Handle quoted strings: as = "Name"
+                                        Expr::Lit(ExprLit { lit: Lit::Str(lit_str), .. }) => {
+                                            return Some(ExtractAttr::As(lit_str.value()));
+                                        }
+                                        // Handle unquoted identifiers: as = Name
+                                        Expr::Path(expr_path) => {
+                                            if let Some(ident) = expr_path.path.get_ident() {
+                                                return Some(ExtractAttr::As(ident.to_string()));
+                                            }
+                                        }
+                                        _ => {
+                                            panic!("Invalid value for 'as' attribute. Use #[extract(as = Name)] or #[extract(as = \"Name\")]");
+                                        }
+                                    }
+                                }
+                            }
+                            panic!("Invalid extract attribute format. Use #[extract] or #[extract(as = Name)]");
+                        }
+                        Err(_) => {
+                            panic!("Failed to parse extract attribute. Use #[extract] or #[extract(as = Name)]");
                         }
                     }
-                    
-                    panic!("Invalid extract attribute format. Use #[extract] or #[extract(as = Name)]");
                 }
                 _ => panic!("Invalid extract attribute format. Use #[extract] or #[extract(as = Name)]"),
             };
@@ -320,16 +336,6 @@ pub fn derive_event(input: TokenStream) -> TokenStream {
         }
     });
     
-    // Generate call_handler_with_data match arms (for backward compatibility)
-    let call_handler_arms = variant_names.iter().zip(&inner_types).map(|(name, ty)| {
-        quote! {
-            #enum_name::#name(data) => {
-                type HandlerType<M, C> = fn(#ty, &mut M) -> syzygy::dispatch::Dispatch<#enum_name, C>;
-                let handler = unsafe { std::mem::transmute::<*const (), HandlerType<M, C>>(handler_ptr) };
-                handler(data, model)
-            }
-        }
-    });
 
     // Generate optimized dispatch_with_handlers match arms (zero-overhead jump table)
     let dispatch_with_handlers_arms = variant_names.iter().enumerate().zip(&inner_types).map(|((i, name), ty)| {
@@ -360,7 +366,16 @@ pub fn derive_event(input: TokenStream) -> TokenStream {
             }
         }
 
+        impl #enum_name {
+            /// Const array of null handler pointers for EventMap initialization
+            /// 
+            /// This enables compile-time initialization of EventMaps with
+            /// zero runtime overhead.
+            pub const NULL_HANDLERS: [*const (); #variant_count] = [std::ptr::null(); #variant_count];
+        }
+
         impl syzygy::event_map::Event for #enum_name {
+            const NULL_HANDLERS: &'static [*const ()] = &Self::NULL_HANDLERS;
             
             fn inner_as_any(&self) -> &dyn std::any::Any {
                 match self {
@@ -374,15 +389,6 @@ pub fn derive_event(input: TokenStream) -> TokenStream {
                 }
             }
             
-            unsafe fn call_handler_with_data<M, C>(
-                self,
-                handler_ptr: *const (),
-                model: &mut M,
-            ) -> syzygy::dispatch::Dispatch<Self, C> {
-                match self {
-                    #(#call_handler_arms,)*
-                }
-            }
 
             #[inline(always)]
             unsafe fn dispatch_with_handlers<M, C>(

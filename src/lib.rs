@@ -1,4 +1,5 @@
 pub mod builder;
+pub mod chain;
 pub mod codegen;
 pub mod context;
 pub mod dispatch;
@@ -10,6 +11,7 @@ pub mod handler;
 pub mod indexed_map;
 pub mod magic_handler;
 pub mod model;
+pub mod model_chain;
 pub mod model_map;
 pub mod recorder;
 pub mod replay;
