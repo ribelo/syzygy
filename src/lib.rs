@@ -1,66 +1,148 @@
-pub mod builder;
-pub mod chain;
-pub mod codegen;
-pub mod context;
-pub mod dispatch;
-pub mod error;
-pub mod event_map;
-pub mod extract;
-pub mod handle;
-pub mod handler;
-pub mod indexed_map;
-pub mod magic_handler;
-pub mod model;
-pub mod model_chain;
-pub mod model_map;
-pub mod recorder;
-pub mod replay;
-pub mod resource;
-pub mod syzygy;
-pub mod test_utils;
+//! # Syzygy
+//!
+//! Zero-overhead event-driven state management library for Rust applications.
+//! 
+//! Syzygy provides a zero-overhead implementation of The Elm Architecture (TEA) with 
+//! Core/Shell separation, enabling deterministic state management with async side effects.
+//!
+//! ## Runtime Support
+//!
+//! Syzygy takes a **"tokio-first with runtime flexibility"** approach:
+//!
+//! - **🥇 Tokio** (Default) - Recommended for production use
+//! - **🥈 Smol** - Lightweight alternative for resource-constrained environments
+//! - **🥉 Async-std** - Standard library approach
+//!
+//! The library achieves runtime neutrality through generic spawn functions while
+//! acknowledging that tokio is the most common choice in practice.
+//!
+//! ```rust,ignore
+//! use syzygy::prelude::*;
+//!
+//! // Auto-detect runtime (recommended) - zero-cost abstractions
+//! runner.run_until(condition, syzygy::spawn::spawner()).await?;
+//!
+//! // Or be explicit
+//! runner.run_until(condition, syzygy::spawn::TokioSpawn).await?;
+//! ```
+//!
+//! ## Features
+//!
+//! ```toml
+//! [dependencies]
+//! # Default: tokio runtime
+//! syzygy = { version = "0.1" }
+//!
+//! # Alternative runtimes
+//! syzygy = { version = "0.1", default-features = false, features = ["smol"] }
+//! syzygy = { version = "0.1", default-features = false, features = ["async-std"] }
+//!
+//! # Optional: tracing for debugging (zero overhead when disabled)
+//! syzygy = { version = "0.1", features = ["tracing"] }
 
-#[cfg(feature = "async")]
-pub mod executor;
+//! ## Effect Composition Patterns
+//!
+//! Syzygy supports both parallel and sequential effect execution patterns:
+//!
+//! ### Parallel Effects (Default)
+//! ```rust,ignore
+//! // All effects execute concurrently
+//! Command::batch([
+//!     Command::effect(FetchUserData { user_id }),
+//!     Command::effect(FetchPosts { user_id }),
+//!     Command::effect(FetchNotifications { user_id }),
+//! ])
+//! ```
+//!
+//! ### Sequential Effects (The Consensus Solution)
+//! ```rust,ignore
+//! // Effects execute one after another, stopping on first failure
+//! Command::sequence([
+//!     Command::effect(LoginUser { credentials }),
+//!     Command::effect(FetchUserData { user_id }),
+//!     Command::effect(FetchAddressData { user_id }),
+//!     Command::effect(MakeASandwichForUser { user_id, preferences }),
+//! ])
+//!
+//! // Or compose with events and effects directly
+//! Command::batch([
+//!     Command::effect(LoginUser { credentials }),
+//!     Command::effect(FetchUserData { user_id }),
+//!     Command::effect(FetchAddressData { user_id }),
+//!     Command::effect(MakeASandwichForUser { user_id, preferences }),
+//! ])
+//! ```
+//!
+//! Sequential effects solve the "event-driven spaghetti" problem by eliminating
+//! the need for complex event chains and manual state tracking in multi-step workflows.
+//!
+//! **Benefits**:
+//! - ✅ Grug-friendly: Simple, readable composition
+//! - ✅ Functional: Clean error handling, composable patterns
+//! - ✅ Zero-overhead: Built on existing Command structure
+//! - ✅ Error handling: Automatic failure propagation
+//!
+
+//! ```
+
+// Core modules
+pub mod app;
+pub mod async_context;
+pub mod command;
+pub mod core;
+pub mod shell;
+pub mod task;
+pub mod task_collector;
+pub mod runner;
+
+// Builder pattern
+pub mod builder;
+
+// Effect handlers with AFIT
+pub mod effect_handler;
+
+// Error handling
+pub mod error;
+
+// Timer abstractions for runtime neutrality
+pub mod timer;
+
+// Spawn adapters for different async runtimes
+pub mod spawn;
+
 
 pub mod prelude {
-    // THE Syzygy - Simple enum-based system
-    pub use crate::builder::SyzygyBuilder;
-    pub use crate::syzygy::Syzygy;
+    // Core trait
+    pub use crate::app::App;
+    
+    // EffectContext for controlled task spawning with safety guarantees
+    pub use crate::async_context::EffectContext;
 
-    // Core types for the unified API
-    pub use crate::dispatch::Dispatch;
-    pub use crate::handle::SyzygyHandle;
-    pub use crate::model::Model;
+    // Command system
+    pub use crate::command::{Command, CommandStep};
+    
 
-    // CommandContext for command execution
-    pub use crate::context::CommandContext;
-    pub use crate::error::{ChannelClosed, ResourceNotFoundError, SyzygyError};
+    // Core/Shell architecture
+    pub use crate::core::Core;
+    pub use crate::shell::{Shell, ShellConfig};
+    pub use crate::runner::{Runner, RunnerConfig, RunnerError};
+    
+    // Effect handlers with AFIT
+    pub use crate::effect_handler::EffectHandler;
+    
+    // Timer abstractions for runtime neutrality
+    pub use crate::timer::{Time, TimeoutError, time};
+    
+    // Spawn adapters for runtime neutrality  
+    pub use crate::spawn::{Spawn, TokioSpawn, SmolSpawn, AsyncStdSpawn, spawner};
+    
+    // Task management
+    pub use crate::task::{TaskTracker, TaskHandle, TaskId, TaskStats};
 
-    // Handler types
-    pub use crate::handler::{CommandHandler, EventHandler};
 
-    // Magic handler types
-    pub use crate::extract::{FromContainer, FromContainerMut};
-    pub use crate::magic_handler::{MagicHandler, MagicHandlerExt, EventMagicHandler};
+    // Builder
+    pub use crate::builder::{Syzygy, SyzygyBuilder};
 
-    // EventMap for zero-overhead dispatch
-    pub use crate::event_map::{Event, EventMap, EventMapBuilder, EventVariant};
-
-    // IndexedMap for generic zero-overhead storage
-    pub use crate::indexed_map::{IndexedMap, Indexable, IndexArray};
-
-    // ModelMap for multiple model support
-    pub use crate::model_map::{ModelMap, ModelMapBuilder, ModelType};
-
-    // Re-export the derive macros
-    pub use syzygy_macros::{Event, ModelExtractors, ResourceExtractors};
-
-    // Command executor for async execution
-    #[cfg(feature = "async")]
-    pub use crate::executor::{CommandExecutor, CommandExecutorHandle};
-
-    // Deterministic testing utilities
-    pub use crate::recorder::{EventRecorder, TimestampedEvent};
-    pub use crate::replay::{EventReplayer, ReplayResult, TimingMode};
-    pub use crate::test_utils::{TestUtils, TestScenario, TestConfig};
+    // Errors
+    pub use crate::error::{CoreError, ShellError, CommandError};
 }

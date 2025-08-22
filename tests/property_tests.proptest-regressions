@@ -1,0 +1,9 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc c070233cd8792ba90d36d000c95ce2bae03a4ca33816142ab0f639b56a8470de # shrinks to event = Increment, model = TestModel { counter: -2, max_value: 0, history: [] }
+cc 8af4165004da357764f119bdacb9cff488f680d07b71c797c7c5c2ed91d2d30b # shrinks to events = [Multiply(0)], initial_model = TestModel { counter: -1, max_value: 0, history: [] }
+cc 815940a18f697bf9ee362adb920ffe0ed217d167cec7fbbb6938643f684c0b1e # shrinks to event = Multiply(-1), model = TestModel { counter: 1, max_value: 1, history: [] }

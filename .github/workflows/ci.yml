@@ -21,9 +21,10 @@ jobs:
           - nightly
         features:
           - default
-          - no-default-features
-          - async
-          - parallel
+          - smol
+          - async-std
+          - view-model
+          - tracing
     steps:
     - uses: actions/checkout@v4
     
@@ -54,37 +55,44 @@ jobs:
       run: cargo build --verbose
       if: matrix.features == 'default'
     
-    - name: Build (no default features)
-      run: cargo build --no-default-features --verbose
-      if: matrix.features == 'no-default-features'
     
-    - name: Build (async feature)
-      run: cargo build --features async --verbose
-      if: matrix.features == 'async'
+    - name: Build (smol feature)
+      run: cargo build --no-default-features --features smol --verbose
+      if: matrix.features == 'smol'
     
-    - name: Build (parallel feature)
-      run: cargo build --features parallel --verbose
-      if: matrix.features == 'parallel'
+    - name: Build (async-std feature)
+      run: cargo build --no-default-features --features async-std --verbose
+      if: matrix.features == 'async-std'
+    
+    - name: Build (view-model feature)
+      run: cargo build --features view-model --verbose
+      if: matrix.features == 'view-model'
+    
+    - name: Build (tracing feature)
+      run: cargo build --features tracing --verbose
+      if: matrix.features == 'tracing'
     
     - name: Run tests (default features)
       run: cargo test --verbose
       if: matrix.features == 'default'
     
-    - name: Run tests (no default features)
-      run: cargo test --no-default-features --verbose
-      if: matrix.features == 'no-default-features'
     
-    - name: Run tests (async feature)
-      run: cargo test --features async --verbose
-      if: matrix.features == 'async'
+    - name: Run tests (smol feature)
+      run: cargo test --no-default-features --features smol --verbose
+      if: matrix.features == 'smol'
     
-    - name: Run tests (parallel feature)
-      run: cargo test --features parallel --verbose
-      if: matrix.features == 'parallel'
+    - name: Run tests (async-std feature)
+      run: cargo test --no-default-features --features async-std --verbose
+      if: matrix.features == 'async-std'
     
-    - name: Run integration tests
-      run: cargo test --test integration_basic --verbose
-      if: matrix.features == 'default' && matrix.rust == 'stable'
+    - name: Run tests (view-model feature)
+      run: cargo test --features view-model --verbose
+      if: matrix.features == 'view-model'
+    
+    - name: Run tests (tracing feature)
+      run: cargo test --features tracing --verbose
+      if: matrix.features == 'tracing'
+    
 
   benchmark:
     name: Performance Benchmarks
@@ -106,16 +114,7 @@ jobs:
         key: ${{ runner.os }}-cargo-bench-${{ hashFiles('**/Cargo.lock') }}
     
     - name: Run benchmarks
-      run: |
-        chmod +x scripts/bench.sh
-        ./scripts/bench.sh
-    
-    - name: Upload benchmark results
-      uses: actions/upload-artifact@v4
-      with:
-        name: benchmark-results
-        path: benchmark_results/
-        retention-days: 30
+      run: cargo bench --features tokio
 
   coverage:
     name: Code Coverage
