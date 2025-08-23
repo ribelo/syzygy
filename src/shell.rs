@@ -16,7 +16,7 @@ use crate::effect_handler::EffectHandler;
 use tracing::{Level, debug, span, warn};
 
 /// Shell is generic over the effect handler `H` implementing AFIT for zero allocations
-
+///
 /// Configuration for Shell effect execution
 pub struct ShellConfig {
     /// Timeout for individual effect execution

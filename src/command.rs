@@ -2,6 +2,9 @@
 use crate::async_context::EffectContext;
 use smallvec::SmallVec;
 
+/// Type alias for inline effect futures
+pub type InlineEffectFn<Event> = Box<dyn FnOnce(EffectContext<Event>) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'static>> + Send + 'static>;
+
 pub mod executor;
 
 /// A step in a Command - events, effects, or coordination patterns
@@ -15,9 +18,7 @@ pub enum CommandStep<Event, Effect> {
     /// Parallel execution - effects run concurrently, all complete or fail together
     ParallelEffects(Vec<Effect>),
     /// Inline future execution - for simple futures that don't need a named effect
-    InlineFuture(
-        Box<dyn FnOnce(EffectContext<Event>) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'static>> + Send + 'static>
-    ),
+    InlineFuture(InlineEffectFn<Event>),
 }
 
 impl<Event, Effect> PartialEq for CommandStep<Event, Effect>
@@ -29,8 +30,8 @@ where
         match (self, other) {
             (Self::Event(a), Self::Event(b)) => a == b,
             (Self::Effect(a), Self::Effect(b)) => a == b,
-            (Self::SequentialEffects(a), Self::SequentialEffects(b)) => a == b,
-            (Self::ParallelEffects(a), Self::ParallelEffects(b)) => a == b,
+            (Self::SequentialEffects(a), Self::SequentialEffects(b)) 
+            | (Self::ParallelEffects(a), Self::ParallelEffects(b)) => a == b,
             // Inline futures are not comparable
             _ => false,
         }
@@ -162,42 +163,8 @@ impl<Event, Effect> Command<Event, Effect> {
         Self { outputs }
     }
 
-    /// Execute effects sequentially - each waits for the previous to complete
-    ///
-    /// Effects run one after another in the order provided. If any effect fails,
-    /// the sequence stops immediately (fail-fast semantics). This is ideal for
-    /// workflows where later effects depend on earlier ones succeeding.
-    ///
-    /// # Examples
-    /// ```rust,ignore
-    /// // Login → Fetch Data → Process → Save
-    /// Command::sequence([
-    ///     LoginUser { credentials },
-    ///     FetchUserData { user_id },
-    ///     ProcessData { data },
-    ///     SaveResults { results },
-    /// ])
-    /// ```
-    // Removed: use `sequence([Command::effect(...), ...])` for sequential effects
-
-    /// Create a Command that executes effects in parallel (concurrently)
-    ///
-    /// All effects will be spawned simultaneously and run concurrently.
-    /// The command succeeds when ALL effects complete successfully.
-    /// If any effect fails, the entire parallel execution fails.
-    ///
-    /// # Example
-    /// ```rust
-    /// # use syzygy::prelude::*;
-    /// # #[derive(Debug, Clone)] enum TestEffect { A, B, C }
-    /// let parallel_cmd = Command::<(), TestEffect>::effects([
-    ///     TestEffect::A,
-    ///     TestEffect::B,
-    ///     TestEffect::C,
-    /// ]);
-    /// // All three effects will run simultaneously
-    /// ```
-    // Removed: use `effects([...])` for parallel effects
+    // Sequential effects removed: use `sequence([Command::effect(...), ...])` for sequential effects
+    // Parallel effects removed: use `effects([...])` for parallel effects
 
     /// Combine multiple commands into one
     ///
@@ -286,10 +253,9 @@ impl<Event, Effect> Command<Event, Effect> {
         self.outputs
             .iter()
             .map(|o| match o {
-                CommandStep::Event(_) | CommandStep::Effect(_) => 1,
                 CommandStep::SequentialEffects(effects)
                 | CommandStep::ParallelEffects(effects) => effects.len(),
-                CommandStep::InlineFuture(_) => 1,
+                CommandStep::Event(_) | CommandStep::Effect(_) | CommandStep::InlineFuture(_) => 1,
             })
             .sum()
     }

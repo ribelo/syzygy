@@ -64,11 +64,11 @@ pub trait EffectHandler<Event, Effect, Resources>: Send + Sync + 'static {
     fn handle(&self, effect: Effect, resources: Arc<Resources>, ctx: EffectContext<Event>) -> Self::Fut;
 }
 
-/// Implementation for function pointers only (enforces purity)
-///
-/// This implementation only accepts function pointers, not closures or
-/// other callables. This ensures that effect handlers cannot capture
-/// environment variables, maintaining purity and testability.
+// Implementation for function pointers only (enforces purity)
+//
+// This implementation only accepts function pointers, not closures or
+// other callables. This ensures that effect handlers cannot capture
+// environment variables, maintaining purity and testability.
 
 /// Blanket implementation for any function-like handler. This enables free functions
 /// and zero-capture closures to act as effect handlers with zero overhead.
@@ -153,10 +153,10 @@ mod tests {
     async fn test_function_pointer_implements_effect_handler() {
         let resources = Arc::new(TestResources { multiplier: 2 });
         let ctx: EffectContext<TestEvent> = EffectContext::new(None);
-        
+
         // Verify function pointer implements the trait
         let handler: fn(TestEffect, Arc<TestResources>, EffectContext<TestEvent>) -> _ = test_effect_handler;
-        
+
         // This should compile and work
         handler.handle(
             TestEffect::Process { value: 5 },
@@ -164,15 +164,15 @@ mod tests {
             ctx,
         ).await;
     }
-    
+
     #[tokio::test]
     async fn test_effect_handler_execution() {
         use crossbeam_channel::unbounded;
-        
+
         let (tx, rx) = unbounded();
         let resources = Arc::new(TestResources { multiplier: 3 });
         let ctx = EffectContext::new(Some(tx));
-        
+
         // Execute through trait
         let handler: fn(TestEffect, Arc<TestResources>, EffectContext<TestEvent>) -> _ = test_effect_handler;
         handler.handle(
@@ -180,19 +180,19 @@ mod tests {
             resources,
             ctx,
         ).await;
-        
+
         // Verify event was sent
         let event = rx.try_recv().unwrap();
         match event {
             TestEvent::Processed { value } => assert_eq!(value, 21), // 7 * 3
         }
     }
-    
+
     #[test]
     fn test_function_pointer_compiles() {
         // This test verifies that function pointers can be used as effect handlers
         let _handler: fn(TestEffect, Arc<TestResources>, EffectContext<TestEvent>) -> _ = test_effect_handler;
-        
+
         // Verify the function pointer can be called directly
         // (We don't actually call it in the test to avoid async complexity)
     }

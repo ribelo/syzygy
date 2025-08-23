@@ -3,20 +3,29 @@ use crossbeam_channel::{Sender, Receiver, unbounded};
 use crate::app::App;
 use crate::command::Command;
 
+#[cfg(feature = "multi-model")]
+use crate::model_registry::ModelRegistry;
+
 #[cfg(feature = "tracing")]
 use tracing::{debug, span, Level};
 
-/// Core handles synchronous event processing and owns the application model.
+/// Core handles synchronous event processing and owns the application model(s).
 /// 
 /// Core is designed to be used on any thread, including UI threads, as it
 /// never blocks and all operations are synchronous. It processes events,
-/// updates the model, and returns Commands describing effects to execute.
+/// updates the model(s), and returns Commands describing effects to execute.
 pub struct Core<A: App> {
     /// The application instance
     app: A,
     
-    /// The application model - owned and mutable
+    /// The application model(s) - owned and mutable
+    /// 
+    /// When the "multi-model" feature is disabled (default), this stores a single model.
+    /// When the "multi-model" feature is enabled, this stores a ModelRegistry for multiple models.
+    #[cfg(not(feature = "multi-model"))]
     model: A::Model,
+    #[cfg(feature = "multi-model")]
+    model_registry: ModelRegistry,
     
     /// Queue of events to process
     event_queue: VecDeque<A::Event>,
@@ -34,13 +43,35 @@ pub struct Core<A: App> {
 impl<A: App> Core<A> {
     /// Create a new Core with specific app and model
     /// 
-    /// Note: This is the primary constructor. Users must provide both app and model instances.
+    /// Note: This is the primary constructor for single-model mode.
+    /// Users must provide both app and model instances.
+    #[cfg(not(feature = "multi-model"))]
     pub fn new(app: A, model: A::Model) -> (Self, Sender<A::Event>) {
         let (event_tx, event_rx) = unbounded();
         
         let core = Self {
             app,
             model,
+            event_queue: VecDeque::with_capacity(16), // Pre-size for typical usage
+            command_buffer: Vec::with_capacity(16),   // Pre-allocated command buffer
+            event_rx,
+            event_tx: event_tx.clone(),
+        };
+        
+        (core, event_tx)
+    }
+
+    /// Create a new Core with specific app and model registry
+    /// 
+    /// Note: This constructor is available when the "multi-model" feature is enabled.
+    /// Users must provide the app instance and a pre-configured model registry.
+    #[cfg(feature = "multi-model")]
+    pub fn new(app: A, model_registry: ModelRegistry) -> (Self, Sender<A::Event>) {
+        let (event_tx, event_rx) = unbounded();
+        
+        let core = Self {
+            app,
+            model_registry,
             event_queue: VecDeque::with_capacity(16), // Pre-size for typical usage
             command_buffer: Vec::with_capacity(16),   // Pre-allocated command buffer
             event_rx,

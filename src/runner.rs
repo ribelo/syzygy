@@ -33,7 +33,7 @@ impl Default for RunnerConfig {
 }
 
 /// Runner automatically orchestrates Core/Shell interaction
-/// 
+///
 /// This solves Grug's complaint about manual event loop orchestration.
 /// Instead of users manually calling poll_events → process → execute → tick,
 /// Runner handles the proper sequencing automatically.
@@ -52,7 +52,7 @@ impl<A: App, H> Runner<A, H> {
             config: RunnerConfig::default(),
         }
     }
-    
+
     /// Create a new Runner with custom configuration
     pub fn with_config(core: Core<A>, shell: Shell<A, H>, config: RunnerConfig) -> Self {
         Self {
@@ -61,9 +61,9 @@ impl<A: App, H> Runner<A, H> {
             config,
         }
     }
-    
+
     /// Run the event loop continuously
-    /// 
+    ///
     /// This will run until the shell is shut down or an error occurs.
     pub async fn run<S>(&mut self, spawner: S) -> Result<(), RunnerError>
     where
@@ -74,26 +74,26 @@ impl<A: App, H> Runner<A, H> {
     {
         loop {
             let did_work = self.tick(spawner.clone()).await?;
-            
+
             if !did_work {
                 self.config.runtime.sleep(self.config.idle_sleep).await;
             }
-            
+
             // Check if shell is closed
             if self.shell.task_stats().is_closed {
                 break;
             }
         }
-        
+
         Ok(())
     }
-    
+
     /// Run until a condition is met
-    /// 
+    ///
     /// Useful for testing or conditional execution.
     pub async fn run_until<F, S>(
-        &mut self, 
-        mut condition: F, 
+        &mut self,
+        mut condition: F,
         spawner: S
     ) -> Result<(), RunnerError>
     where
@@ -104,10 +104,10 @@ impl<A: App, H> Runner<A, H> {
         S: Spawn,
     {
         let start_time = std::time::Instant::now();
-        
+
         loop {
             let did_work = self.tick(spawner.clone()).await?;
-            
+
             // Check condition
             if condition(&self.core, &self.shell) {
                 if self.config.debug_logging {
@@ -115,23 +115,23 @@ impl<A: App, H> Runner<A, H> {
                 }
                 break;
             }
-            
+
             // Check timeout
             if let Some(max_duration) = self.config.max_run_duration
                 && start_time.elapsed() > max_duration {
                     return Err(RunnerError::Timeout);
                 }
-            
+
             if !did_work {
                 self.config.runtime.sleep(self.config.idle_sleep).await;
             }
         }
-        
+
         Ok(())
     }
-    
+
     /// Execute a single tick of the event loop
-    /// 
+    ///
     /// Returns true if work was done, false if idle.
     pub async fn tick<S>(&mut self, spawner: S) -> Result<bool, RunnerError>
     where
@@ -141,12 +141,12 @@ impl<A: App, H> Runner<A, H> {
         S: Spawn,
     {
         let mut did_work = false;
-        
+
         // Only poll external events initially if we have no queued work
         if !self.core.has_queued_events() {
             self.core.poll_external_events();
         }
-        
+
         // Process all events until stable (commands may generate more events)
         loop {
             // 1. Process any events in the queue
@@ -154,23 +154,23 @@ impl<A: App, H> Runner<A, H> {
             if commands.is_empty() {
                 break; // No more events to process
             }
-            
+
             did_work = true;
             if self.config.debug_logging {
                 println!("Runner: Processing {} commands", commands.len());
             }
-            
+
             // 3. Dispatch commands to Shell (may route events back to Core)
             for command in commands {
                 self.shell.dispatch(command).map_err(RunnerError::Shell)?;
             }
-            
+
             // Only poll external events between batches if we don't have queued work
             if !self.core.has_queued_events() {
                 self.core.poll_external_events();
             }
         }
-        
+
         // 4. Process effects in Shell
         let shell_work = self.shell.tick(spawner)
             .map_err(RunnerError::Shell)?;
@@ -180,40 +180,40 @@ impl<A: App, H> Runner<A, H> {
                 println!("Runner: Shell processed effects");
             }
         }
-        
+
         Ok(did_work)
     }
-    
+
     /// Get a reference to the Core
     pub fn core(&self) -> &Core<A> {
         &self.core
     }
-    
+
     /// Get a mutable reference to the Core
     pub fn core_mut(&mut self) -> &mut Core<A> {
         &mut self.core
     }
-    
+
     /// Get a reference to the Shell
     pub fn shell(&self) -> &Shell<A, H> {
         &self.shell
     }
-    
+
     /// Get a mutable reference to the Shell
     pub fn shell_mut(&mut self) -> &mut Shell<A, H> {
         &mut self.shell
     }
-    
+
     /// Get the runner configuration
     pub fn config(&self) -> &RunnerConfig {
         &self.config
     }
-    
+
     /// Update the runner configuration
     pub fn set_config(&mut self, config: RunnerConfig) {
         self.config = config;
     }
-    
+
     /// Shutdown the runner gracefully
     pub fn shutdown(&mut self) {
         self.shell.shutdown();
@@ -225,10 +225,10 @@ impl<A: App, H> Runner<A, H> {
 pub enum RunnerError {
     #[error("Core error: {0}")]
     Core(CoreError),
-    
+
     #[error("Shell error: {0}")]
     Shell(ShellError),
-    
+
     #[error("Runner timed out")]
     Timeout,
 }
@@ -237,26 +237,26 @@ pub enum RunnerError {
 mod tests {
     use super::*;
     use crate::prelude::*;
-    
+
     #[derive(Debug)]
     struct TestApp;
-    
+
     #[derive(Debug, Clone)]
     enum TestEvent {
         Ping,
         Pong,
     }
-    
+
     #[derive(Debug)]
     struct TestModel {
         count: i32,
     }
-    
+
     #[derive(Debug, Clone)]
     enum TestEffect {
         Log,
     }
-    
+
     impl App for TestApp {
         type Event = TestEvent;
         type Model = TestModel;
@@ -264,7 +264,7 @@ mod tests {
         type ViewModel = i32;
         type Effect = TestEffect;
         type Resources = ();
-        
+
         fn update(&self, event: Self::Event, model: &mut Self::Model) -> Command<Self::Event, Self::Effect> {
             match event {
                 TestEvent::Ping => {
@@ -277,13 +277,13 @@ mod tests {
                 }
             }
         }
-        
+
         #[cfg(feature = "view-model")]
         fn view(&self, model: &Self::Model) -> Self::ViewModel {
             model.count
         }
     }
-    
+
     #[cfg(feature = "tokio")]
     #[tokio::test]
     async fn test_runner_basic() {
@@ -291,21 +291,21 @@ mod tests {
             .app(TestApp)
             .model(TestModel { count: 0 })
             .build();
-        
+
         let event_sender = core.event_sender();
-        
+
         let mut runner = Runner::new(core, shell);
-        
+
         // Send an event
         event_sender.send(TestEvent::Ping).unwrap();
-        
+
         // Process one tick
         let did_work = runner.tick(crate::spawn::TokioSpawn).await.unwrap();
-        
+
         assert!(did_work);
         assert_eq!(runner.core().model().count, 2); // Ping -> Pong -> +2
     }
-    
+
     #[cfg(feature = "tokio")]
     #[tokio::test]
     async fn test_runner_until_condition() {
@@ -313,12 +313,12 @@ mod tests {
             .app(TestApp)
             .model(TestModel { count: 0 })
             .build();
-        
+
         let event_sender = core.event_sender();
-        
+
         let mut runner = Runner::with_config(
-            core, 
-            shell, 
+            core,
+            shell,
             RunnerConfig {
                 idle_sleep: Duration::from_millis(1),
                 max_run_duration: Some(Duration::from_secs(1)),
@@ -326,18 +326,18 @@ mod tests {
                 runtime: crate::timer::time(),
             }
         );
-        
+
         // Send multiple events
         for _ in 0..5 {
             event_sender.send(TestEvent::Ping).unwrap();
         }
-        
+
         // Run until count reaches 10
         runner.run_until(
             |core, _shell| core.model().count >= 10,
             crate::spawn::TokioSpawn
         ).await.unwrap();
-        
+
         assert_eq!(runner.core().model().count, 10);
     }
 }

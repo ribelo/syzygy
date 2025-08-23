@@ -208,6 +208,7 @@ where
 /// let spawner = spawner();
 /// runner.run_until(condition, spawner).await?;
 /// ```
+#[must_use]
 pub fn spawner() -> impl Spawn {
     #[cfg(feature = "tokio")]
     return TokioSpawn;

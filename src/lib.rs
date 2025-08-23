@@ -1,8 +1,8 @@
 //! # Syzygy
 //!
 //! Zero-overhead event-driven state management library for Rust applications.
-//! 
-//! Syzygy provides a zero-overhead implementation of The Elm Architecture (TEA) with 
+//!
+//! Syzygy provides a zero-overhead implementation of The Elm Architecture (TEA) with
 //! Core/Shell separation, enabling deterministic state management with async side effects.
 //!
 //! ## Runtime Support
@@ -110,39 +110,52 @@ pub mod timer;
 // Spawn adapters for different async runtimes
 pub mod spawn;
 
+// Storage system with UnsafeCell-based chains
+pub mod storage;
+
+// Model registry for multi-model storage (optional feature)
+#[cfg(feature = "multi-model")]
+pub mod model_registry;
+
 
 pub mod prelude {
     // Core trait
     pub use crate::app::App;
-    
+
     // EffectContext for controlled task spawning with safety guarantees
     pub use crate::async_context::EffectContext;
 
     // Command system
     pub use crate::command::{Command, CommandStep};
-    
+
 
     // Core/Shell architecture
     pub use crate::core::Core;
     pub use crate::shell::{Shell, ShellConfig};
     pub use crate::runner::{Runner, RunnerConfig, RunnerError};
-    
+
     // Effect handlers with AFIT
     pub use crate::effect_handler::EffectHandler;
-    
+
     // Timer abstractions for runtime neutrality
     pub use crate::timer::{Time, TimeoutError, time};
-    
-    // Spawn adapters for runtime neutrality  
+
+    // Spawn adapters for runtime neutrality
     pub use crate::spawn::{Spawn, TokioSpawn, SmolSpawn, AsyncStdSpawn, spawner};
-    
+
     // Task management
     pub use crate::task::{TaskTracker, TaskHandle, TaskId, TaskStats};
 
+    // Storage system
+    pub use crate::storage::{Chain, EmptyStorage, Storage, Contains};
 
     // Builder
     pub use crate::builder::{Syzygy, SyzygyBuilder};
 
     // Errors
     pub use crate::error::{CoreError, ShellError, CommandError};
+
+    // Multi-model storage (optional feature)
+    #[cfg(feature = "multi-model")]
+    pub use crate::model_registry::{ModelRegistry, Model, ModelGetter};
 }
