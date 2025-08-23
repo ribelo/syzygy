@@ -219,7 +219,7 @@ pub mod prelude {
     pub use crate::storage::{Chain, EmptyStorage, Storage, Contains};
 
     // Magic handler system
-    pub use crate::extract::{FromEventContext, FromEventContextMut, FromEffectContext, ModelRef, ResourceRef};
+    pub use crate::extract::{FromEventContext, FromEventContextMut, FromEffectContext, ModelRef, Resource};
     pub use crate::magic_handler::{EventMagicHandler, EffectMagicHandler, EventMagicHandlerExt, EffectMagicHandlerExt};
 
     // Builder

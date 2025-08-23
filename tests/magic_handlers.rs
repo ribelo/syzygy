@@ -3,7 +3,7 @@
 //! This test file verifies that the magic handler system works correctly
 //! with the current EventContext and EffectContext design.
 
-use syzygy::extract::{FromEventContext, FromEffectContext, ModelRef, ResourceRef};
+use syzygy::extract::{FromEventContext, FromEffectContext, ModelRef, Resource};
 use syzygy::magic_handler::{EventMagicHandler, EffectMagicHandler, EventMagicHandlerExt};
 use syzygy::event_context::EventContext;
 use syzygy::async_context::EffectContext;
@@ -97,7 +97,7 @@ fn test_event_with_single_extraction() {
     // Handler that extracts user model via ModelRef
     fn handler_with_model_ref(
         event: AppEvent,
-        user: ModelRef<UserModel>,
+        user: ModelRef<'_, UserModel>,
     ) -> Command<AppEvent, AppEffect> {
         match event {
             AppEvent::UserCreated { name } => {
@@ -130,8 +130,8 @@ fn test_event_with_multiple_extractions() {
     // Handler that extracts the same model multiple times
     fn handler_multi_extract(
         event: AppEvent,
-        user1: ModelRef<UserModel>,
-        user2: ModelRef<UserModel>,
+        user1: ModelRef<'_, UserModel>,
+        user2: ModelRef<'_, UserModel>,
     ) -> Command<AppEvent, AppEffect> {
         match event {
             AppEvent::ConfigUpdated { .. } => {
@@ -163,7 +163,7 @@ fn test_event_with_model_ref_extraction() {
     // Handler that extracts full model via ModelRef
     fn handler_with_model_ref(
         event: AppEvent,
-        user: ModelRef<UserModel>,
+        user: ModelRef<'_, UserModel>,
     ) -> Command<AppEvent, AppEffect> {
         match event {
             AppEvent::DataLoaded { .. } => {
@@ -256,7 +256,7 @@ async fn test_magic_handlers_with_real_workflow() {
     // Event handler that uses ModelRef
     fn update_handler(
         event: AppEvent,
-        user: ModelRef<UserModel>,
+        user: ModelRef<'_, UserModel>,
     ) -> Command<AppEvent, AppEffect> {
         match event {
             AppEvent::UserCreated { name } => {

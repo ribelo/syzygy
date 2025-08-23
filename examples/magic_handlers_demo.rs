@@ -49,11 +49,11 @@ enum AppEffect {
 /// Extract the current login count for operations
 struct LoginCount(u32);
 
-impl<Event, Effect, Storage> FromEventContext<Event, Effect, Storage> for LoginCount
+impl<'a, Event, Effect, Storage> FromEventContext<'a, Event, Effect, Storage> for LoginCount
 where
     Storage: syzygy::storage::Selector<UserModel, syzygy::storage::storage::Here>,
 {
-    fn from_context(ctx: &EventContext<Event, Effect, Storage>) -> Self {
+    fn from_context(ctx: &'a EventContext<Event, Effect, Storage>) -> Self {
         LoginCount(ctx.model::<UserModel, syzygy::storage::storage::Here>().login_count)
     }
 }
@@ -61,11 +61,11 @@ where
 /// Extract user name
 struct UserName(String);
 
-impl<Event, Effect, Storage> FromEventContext<Event, Effect, Storage> for UserName
+impl<'a, Event, Effect, Storage> FromEventContext<'a, Event, Effect, Storage> for UserName
 where
     Storage: syzygy::storage::Selector<UserModel, syzygy::storage::storage::Here>,
 {
-    fn from_context(ctx: &EventContext<Event, Effect, Storage>) -> Self {
+    fn from_context(ctx: &'a EventContext<Event, Effect, Storage>) -> Self {
         UserName(ctx.model::<UserModel, syzygy::storage::storage::Here>().name.clone())
     }
 }

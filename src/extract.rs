@@ -29,9 +29,9 @@ use crate::storage::Selector;
 ///     }
 /// }
 /// ```
-pub trait FromEventContext<Event, Effect, Storage> {
+pub trait FromEventContext<'a, Event, Effect, Storage> {
     /// Extract Self from an EventContext
-    fn from_context(ctx: &EventContext<Event, Effect, Storage>) -> Self;
+    fn from_context(ctx: &'a EventContext<Event, Effect, Storage>) -> Self;
 }
 
 /// Extract a value from an EventContext (mutable access)
@@ -53,9 +53,9 @@ pub trait FromEventContext<Event, Effect, Storage> {
 ///     }
 /// }
 /// ```
-pub trait FromEventContextMut<Event, Effect, Storage> {
+pub trait FromEventContextMut<'a, Event, Effect, Storage> {
     /// Extract Self from a mutable EventContext
-    fn from_context_mut(ctx: &mut EventContext<Event, Effect, Storage>) -> Self;
+    fn from_context_mut(ctx: &'a mut EventContext<Event, Effect, Storage>) -> Self;
 }
 
 /// Extract a value from an EffectContext
@@ -85,88 +85,96 @@ pub trait FromEffectContext<Event, Resources> {
 // Common Extractor Implementations
 // ============================================================================
 
-/// Wrapper for extracting a cloned model from EventContext
+/// Wrapper for extracting a borrowed model from EventContext
 ///
-/// This provides an ergonomic way to extract an entire model as an owned value.
-/// Useful when the handler needs to work with the full model data.
+/// This provides an ergonomic way to extract a reference to a model.
+/// The underlying model is NOT cloned.
 ///
 /// # Example
 /// ```rust,ignore
-/// fn handle_event(event: MyEvent, model: ModelRef<UserModel>) -> Command<Event, Effect> {
+/// fn handle_event(event: MyEvent, model: ModelRef<'_, UserModel>) -> Command<Event, Effect> {
 ///     println!("Current user: {}", model.0.name);
 ///     Command::none()
 /// }
 /// ```
-#[derive(Debug, Clone)]
-pub struct ModelRef<T>(pub T);
+#[derive(Debug, Copy, Clone)]
+pub struct ModelRef<'a, T>(pub &'a T);
 
-/// Wrapper for extracting a resource reference from EffectContext
+/// Wrapper for extracting a cloned resource from EffectContext
 ///
-/// This provides access to resources in the EffectContext.
-/// Since resources are stored in Arc, we can provide references.
+/// This provides an ergonomic way to extract an owned clone of a resource.
+/// Unlike models, resources can be cheaply cloned (e.g., Arcs or handles).
 ///
 /// # Example
 /// ```rust,ignore
-/// fn handle_effect(effect: MyEffect, db: ResourceRef<DatabaseResource>) -> impl Future<Output = ()> {
+/// fn handle_effect(effect: MyEffect, db: Resource<DatabaseResource>) -> impl Future<Output = ()> {
 ///     async move {
 ///         println!("Using database: {}", db.0.url);
 ///     }
 /// }
 /// ```
-#[derive(Debug)]
-pub struct ResourceRef<'a, T>(pub &'a T);
+#[derive(Debug, Clone)]
+pub struct Resource<T>(pub T);
 
-// Default implementations for ModelRef<T> - head position only for now
-impl<Event, Effect, Storage, T> FromEventContext<Event, Effect, Storage> for ModelRef<T>
+// Default implementation for ModelRef<'a, T> - borrows from context (no clone)
+impl<'a, Event, Effect, Storage, T> FromEventContext<'a, Event, Effect, Storage> for ModelRef<'a, T>
 where
     Storage: Selector<T, crate::storage::storage::Here>,
-    T: Clone,
 {
-    fn from_context(ctx: &EventContext<Event, Effect, Storage>) -> Self {
-        ModelRef(ctx.model::<T, crate::storage::storage::Here>().clone())
+    fn from_context(ctx: &'a EventContext<Event, Effect, Storage>) -> Self {
+        ModelRef(ctx.model::<T, crate::storage::storage::Here>())
     }
 }
 
-// Note: ResourceRef implementation commented out due to lifetime complexity.
-// Users should access resources directly in their effect handlers for now.
-// TODO: Implement ResourceRef properly or find alternative approach
+// Default implementation for Resource<T> - clones from context
+impl<Event, Resources, T> FromEffectContext<Event, Resources> for Resource<T>
+where
+    Resources: Selector<T, crate::storage::storage::Here>,
+    T: Clone,
+    Event: Send + 'static,
+    Resources: Send + Sync + 'static,
+{
+    fn from_context(ctx: &EffectContext<Event, Resources>) -> Self {
+        Resource(ctx.resource::<T, crate::storage::storage::Here>().clone())
+    }
+}
 
 // ============================================================================
 // Tuple Implementations for Multiple Extractions
 // ============================================================================
 
-impl<Event, Effect, Storage> FromEventContext<Event, Effect, Storage> for () {
-    fn from_context(_ctx: &EventContext<Event, Effect, Storage>) -> Self {
+impl<'a, Event, Effect, Storage> FromEventContext<'a, Event, Effect, Storage> for () {
+    fn from_context(_ctx: &'a EventContext<Event, Effect, Storage>) -> Self {
         ()
     }
 }
 
-impl<Event, Effect, Storage, A> FromEventContext<Event, Effect, Storage> for (A,)
+impl<'a, Event, Effect, Storage, A> FromEventContext<'a, Event, Effect, Storage> for (A,)
 where
-    A: FromEventContext<Event, Effect, Storage>,
+    A: FromEventContext<'a, Event, Effect, Storage>,
 {
-    fn from_context(ctx: &EventContext<Event, Effect, Storage>) -> Self {
+    fn from_context(ctx: &'a EventContext<Event, Effect, Storage>) -> Self {
         (A::from_context(ctx),)
     }
 }
 
-impl<Event, Effect, Storage, A, B> FromEventContext<Event, Effect, Storage> for (A, B)
+impl<'a, Event, Effect, Storage, A, B> FromEventContext<'a, Event, Effect, Storage> for (A, B)
 where
-    A: FromEventContext<Event, Effect, Storage>,
-    B: FromEventContext<Event, Effect, Storage>,
+    A: FromEventContext<'a, Event, Effect, Storage>,
+    B: FromEventContext<'a, Event, Effect, Storage>,
 {
-    fn from_context(ctx: &EventContext<Event, Effect, Storage>) -> Self {
+    fn from_context(ctx: &'a EventContext<Event, Effect, Storage>) -> Self {
         (A::from_context(ctx), B::from_context(ctx))
     }
 }
 
-impl<Event, Effect, Storage, A, B, C> FromEventContext<Event, Effect, Storage> for (A, B, C)
+impl<'a, Event, Effect, Storage, A, B, C> FromEventContext<'a, Event, Effect, Storage> for (A, B, C)
 where
-    A: FromEventContext<Event, Effect, Storage>,
-    B: FromEventContext<Event, Effect, Storage>,
-    C: FromEventContext<Event, Effect, Storage>,
+    A: FromEventContext<'a, Event, Effect, Storage>,
+    B: FromEventContext<'a, Event, Effect, Storage>,
+    C: FromEventContext<'a, Event, Effect, Storage>,
 {
-    fn from_context(ctx: &EventContext<Event, Effect, Storage>) -> Self {
+    fn from_context(ctx: &'a EventContext<Event, Effect, Storage>) -> Self {
         (
             A::from_context(ctx),
             B::from_context(ctx),
@@ -175,14 +183,14 @@ where
     }
 }
 
-impl<Event, Effect, Storage, A, B, C, D> FromEventContext<Event, Effect, Storage> for (A, B, C, D)
+impl<'a, Event, Effect, Storage, A, B, C, D> FromEventContext<'a, Event, Effect, Storage> for (A, B, C, D)
 where
-    A: FromEventContext<Event, Effect, Storage>,
-    B: FromEventContext<Event, Effect, Storage>,
-    C: FromEventContext<Event, Effect, Storage>,
-    D: FromEventContext<Event, Effect, Storage>,
+    A: FromEventContext<'a, Event, Effect, Storage>,
+    B: FromEventContext<'a, Event, Effect, Storage>,
+    C: FromEventContext<'a, Event, Effect, Storage>,
+    D: FromEventContext<'a, Event, Effect, Storage>,
 {
-    fn from_context(ctx: &EventContext<Event, Effect, Storage>) -> Self {
+    fn from_context(ctx: &'a EventContext<Event, Effect, Storage>) -> Self {
         (
             A::from_context(ctx),
             B::from_context(ctx),
@@ -193,17 +201,17 @@ where
 }
 
 // Mutable tuple implementations - limited due to Rust borrow rules
-impl<Event, Effect, Storage> FromEventContextMut<Event, Effect, Storage> for () {
-    fn from_context_mut(_ctx: &mut EventContext<Event, Effect, Storage>) -> Self {
+impl<'a, Event, Effect, Storage> FromEventContextMut<'a, Event, Effect, Storage> for () {
+    fn from_context_mut(_ctx: &'a mut EventContext<Event, Effect, Storage>) -> Self {
         ()
     }
 }
 
-impl<Event, Effect, Storage, A> FromEventContextMut<Event, Effect, Storage> for (A,)
+impl<'a, Event, Effect, Storage, A> FromEventContextMut<'a, Event, Effect, Storage> for (A,)
 where
-    A: FromEventContextMut<Event, Effect, Storage>,
+    A: FromEventContextMut<'a, Event, Effect, Storage>,
 {
-    fn from_context_mut(ctx: &mut EventContext<Event, Effect, Storage>) -> Self {
+    fn from_context_mut(ctx: &'a mut EventContext<Event, Effect, Storage>) -> Self {
         (A::from_context_mut(ctx),)
     }
 }
@@ -298,11 +306,11 @@ mod tests {
     // Example extractor that clones the counter value
     struct CounterValue(i32);
 
-    impl<Event, Effect, Storage> FromEventContext<Event, Effect, Storage> for CounterValue
+    impl<'a, Event, Effect, Storage> FromEventContext<'a, Event, Effect, Storage> for CounterValue
     where
         Storage: Selector<TestModel, crate::storage::storage::Here>,
     {
-        fn from_context(ctx: &EventContext<Event, Effect, Storage>) -> Self {
+        fn from_context(ctx: &'a EventContext<Event, Effect, Storage>) -> Self {
             CounterValue(ctx.model::<TestModel, crate::storage::storage::Here>().counter)
         }
     }
@@ -372,9 +380,9 @@ mod tests {
         assert_eq!(model_ref.0.counter, 123);
         assert_eq!(model_ref.0.name, "model_ref_test");
     }
-
+    
     #[test]
-    fn test_resource_ref_extraction() {
+    fn test_resource_extraction_via_wrapper() {
         use crate::async_context::EffectContext;
         use crate::storage::EmptyStorage;
         use std::sync::Arc;

@@ -1,8 +1,8 @@
 //! Test What Actually Works by Default
 //!
 //! This example tests what ACTUALLY works with the current default extractors.
-//! Since ModelRef<T> and ResourceRef<T> have no default implementations,
-//! this shows what can be used without custom extractors.
+//! ModelRef<'a, T> borrows from the context (no cloning), and Resource<T>
+//! provides an owned, cloned value of a resource when needed.
 
 use syzygy::prelude::*;
 use std::sync::Arc;
@@ -79,10 +79,10 @@ fn handle_with_unit(
     }
 }
 
-/// Handler with ModelRef extraction (this NOW WORKS by default!)
+/// Handler with ModelRef extraction (borrows model; no cloning)
 fn handle_with_model_ref(
     event: AppEvent,
-    user_model: ModelRef<UserModel>,  // ModelRef now works by default!
+    user_model: ModelRef<'_, UserModel>,  // Borrowed model
 ) -> Command<AppEvent, AppEffect> {
     match event {
         AppEvent::GetUser => {
@@ -129,7 +129,7 @@ async fn handle_effect_with_unit(
     }
 }
 
-/// Effect handler without resource extraction (ResourceRef has lifetime complexity)
+/// Effect handler without resource extraction (use Resource<T> when needed)
 async fn handle_effect_without_resource(
     effect: AppEffect,
 ) {
@@ -249,17 +249,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("\n🎯 What Actually Works by Default:");
     println!("   ✅ Event handlers with no extraction: WORKING");
     println!("   ✅ Event handlers with unit () extraction: WORKING");
-    println!("   ✅ Event handlers with ModelRef<T> extraction: WORKING");
+    println!("   ✅ Event handlers with ModelRef<'_, T> extraction: WORKING");
     println!("   ✅ Effect handlers with no extraction: WORKING"); 
     println!("   ✅ Effect handlers with unit () extraction: WORKING");
-    println!("   ⏳ Effect handlers with ResourceRef<T> extraction: PENDING (lifetime issues)");
+    println!("   ✅ Effect handlers can extract Resource<T> (cloned) when needed");
     println!("   ✅ Magic handler trait implementations: WORKING");
     println!("   ✅ EventContext integration: WORKING");
     println!("   ✅ EffectContext integration: WORKING");
     
     println!("\n🚀 What Now Works Out of the Box:");
-    println!("   ✅ ModelRef<T> - automatic model extraction from EventContext");
-    println!("   ⏳ ResourceRef<T> - pending due to lifetime complexity");
+    println!("   ✅ ModelRef<'_, T> - borrowed model extraction from EventContext");
     println!("   ✅ Magic handler system is mostly usable by default!");
     
     println!("\n📝 Conclusion:");

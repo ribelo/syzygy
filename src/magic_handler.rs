@@ -122,7 +122,7 @@ where
 impl<Event, Effect, Storage, F, T, R> EventMagicHandler<Event, Effect, Storage, (Event, T)> for F
 where
     F: FnOnce(Event, T) -> R,
-    T: FromEventContext<Event, Effect, Storage>,
+    T: for<'a> FromEventContext<'a, Event, Effect, Storage>,
 {
     type Output = R;
 
@@ -136,8 +136,8 @@ where
 impl<Event, Effect, Storage, F, A, B, R> EventMagicHandler<Event, Effect, Storage, (Event, A, B)> for F
 where
     F: FnOnce(Event, A, B) -> R,
-    A: FromEventContext<Event, Effect, Storage>,
-    B: FromEventContext<Event, Effect, Storage>,
+    A: for<'a> FromEventContext<'a, Event, Effect, Storage>,
+    B: for<'a> FromEventContext<'a, Event, Effect, Storage>,
 {
     type Output = R;
 
@@ -152,9 +152,9 @@ where
 impl<Event, Effect, Storage, F, A, B, C, R> EventMagicHandler<Event, Effect, Storage, (Event, A, B, C)> for F
 where
     F: FnOnce(Event, A, B, C) -> R,
-    A: FromEventContext<Event, Effect, Storage>,
-    B: FromEventContext<Event, Effect, Storage>,
-    C: FromEventContext<Event, Effect, Storage>,
+    A: for<'a> FromEventContext<'a, Event, Effect, Storage>,
+    B: for<'a> FromEventContext<'a, Event, Effect, Storage>,
+    C: for<'a> FromEventContext<'a, Event, Effect, Storage>,
 {
     type Output = R;
 
@@ -170,10 +170,10 @@ where
 impl<Event, Effect, Storage, F, A, B, C, D, R> EventMagicHandler<Event, Effect, Storage, (Event, A, B, C, D)> for F
 where
     F: FnOnce(Event, A, B, C, D) -> R,
-    A: FromEventContext<Event, Effect, Storage>,
-    B: FromEventContext<Event, Effect, Storage>,
-    C: FromEventContext<Event, Effect, Storage>,
-    D: FromEventContext<Event, Effect, Storage>,
+    A: for<'a> FromEventContext<'a, Event, Effect, Storage>,
+    B: for<'a> FromEventContext<'a, Event, Effect, Storage>,
+    C: for<'a> FromEventContext<'a, Event, Effect, Storage>,
+    D: for<'a> FromEventContext<'a, Event, Effect, Storage>,
 {
     type Output = R;
 
@@ -340,11 +340,11 @@ mod tests {
     // Example extractor
     struct CounterValue(i32);
 
-    impl<Event, Effect, Storage> FromEventContext<Event, Effect, Storage> for CounterValue
+    impl<'a, Event, Effect, Storage> FromEventContext<'a, Event, Effect, Storage> for CounterValue
     where
         Storage: crate::storage::Selector<TestModel, crate::storage::storage::Here>,
     {
-        fn from_context(ctx: &EventContext<Event, Effect, Storage>) -> Self {
+        fn from_context(ctx: &'a EventContext<Event, Effect, Storage>) -> Self {
             CounterValue(ctx.model::<TestModel, crate::storage::storage::Here>().counter)
         }
     }
