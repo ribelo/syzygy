@@ -1,13 +1,22 @@
 # Syzygy Multi-Model, Multi-Resource, Axum-like Handlers — Implementation Plan
 
+**❌ PLAN REJECTED BY CONSENSUS REVIEW ❌**
+
 This document outlines a comprehensive plan to introduce:
-- Multiple models (type-unique tuple “type-set”) with zero-cost extraction
+- Multiple models (type-unique tuple "type-set") with zero-cost extraction
 - Multiple resources (type-unique tuple) with zero-cost extraction
 - Axum-like declarative handlers for events and effects:
   - `on_event(E, M1, M2, ...)` — sync, returns `Command<E, Fx>`
   - `on_effect(Fx, R1, R2, ...)` — async, uses `EffectContext<E>`
 
-The design preserves Syzygy’s Core/Shell/Runner contracts and performance goals.
+**CONSENSUS REVIEW FINDINGS:**
+- **Grug Code Reviewer**: 1/10 - "Complexity for complexity's sake"
+- **Functional Pragmatist**: 4/10 - "Architecturally misguided" 
+- **Performance Engineer**: "Zero-cost claims are false"
+
+**PERFORMANCE IMPACT**: 2-5x slower event dispatch, +300-1000% compile time
+
+The design preserves Syzygy's Core/Shell/Runner contracts and performance goals.
 
 ---
 
@@ -392,11 +401,70 @@ Phase 5 — Docs and Migration
 
 ---
 
-## Timeline (suggested)
-- Week 1: Phase 1 (types/traits) + baseline tests
-- Week 2: Phase 2 (routers/app/builder) + unit tests
-- Week 3: Examples, docs, optional benches; internal adoption in one example app
-- Week 4: Ergonomic macros (optional) and public docs/migration guide
+## CONSENSUS ALTERNATIVE RECOMMENDATIONS
+
+### ✅ **KEEP CURRENT ARCHITECTURE**
+The existing TEA pattern is already excellent:
+```rust
+fn update(&self, event: Event, model: &mut Model) -> Command<Event, Effect>
+```
+
+**Current Performance** (measured):
+- Event dispatch: ~7-8ns per event
+- Command creation: ~5-7ns
+- Task spawning: ~4ns (24x faster than previous)
+- Compile time: Fast and reasonable
+
+### ✅ **SIMPLE MULTI-MODEL SOLUTION**
+Instead of complex tuple type-sets, use explicit structs:
+
+```rust
+struct AppState {
+    auth: AuthModel,
+    profile: ProfileModel,
+    settings: SettingsModel,
+}
+
+fn update(event: Event, state: &mut AppState) -> Command<Event, Effect> {
+    match event {
+        Event::Login(login_data) => {
+            state.auth.login(login_data);  // Clear, direct field access
+            Command::batch([
+                Command::effect(Effect::SendEmail { to: "admin@app.com" }),
+                Command::effect(Effect::LogActivity { user: state.auth.user_id }),
+            ])
+        }
+        Event::UpdateProfile(profile_data) => {
+            state.profile.update(profile_data);
+            Command::none()
+        }
+    }
+}
+```
+
+**Benefits:**
+- Zero runtime cost (direct field access)
+- Readable and maintainable
+- Easy to test and debug
+- Fast compilation
+- Clear data flow
+
+### ✅ **OPTIONAL ERGONOMIC ENHANCEMENTS** 
+If dependency injection is absolutely needed:
+- Keep TEA core for hot paths
+- Add optional helpers for non-critical paths only
+- Use explicit resource parameters, not magical extraction
+- Benchmark everything continuously
+
+---
+
+## ~~Timeline (suggested)~~
+~~- Week 1: Phase 1 (types/traits) + baseline tests~~
+~~- Week 2: Phase 2 (routers/app/builder) + unit tests~~
+~~- Week 3: Examples, docs, optional benches; internal adoption in one example app~~
+~~- Week 4: Ergonomic macros (optional) and public docs/migration guide~~
+
+**RECOMMENDATION**: Focus on documentation, examples, and incremental improvements to the existing excellent architecture.
 
 ---
 

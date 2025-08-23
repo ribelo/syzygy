@@ -13,6 +13,7 @@ tokio = ["dep:tokio", "dep:tokio-util"]
 smol = ["dep:smol", "dep:async-channel"]
 async-std = ["dep:async-std", "dep:async-channel"]
 view-model = []
+multi-model = []
 tracing = ["dep:tracing"]
 
 [dependencies]
