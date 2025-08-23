@@ -186,6 +186,10 @@ pub mod spawn;
 // Storage system with UnsafeCell-based chains
 pub mod storage;
 
+// Magic handler system for automatic parameter extraction
+pub mod extract;
+pub mod magic_handler;
+
 pub mod prelude {
     // Contexts for update and effect functions
     pub use crate::event_context::EventContext;
@@ -213,6 +217,10 @@ pub mod prelude {
 
     // Storage system
     pub use crate::storage::{Chain, EmptyStorage, Storage, Contains};
+
+    // Magic handler system
+    pub use crate::extract::{FromEventContext, FromEventContextMut, FromEffectContext, ModelRef, ResourceRef};
+    pub use crate::magic_handler::{EventMagicHandler, EffectMagicHandler, EventMagicHandlerExt, EffectMagicHandlerExt};
 
     // Builder
     pub use crate::builder::{Syzygy, SyzygyBuilder};

@@ -89,7 +89,7 @@ impl<'a, Event, Effect, Storage> EventContext<'a, Event, Effect, Storage> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::storage::{EmptyStorage, Storage};
+    use crate::storage::EmptyStorage;
 
     #[derive(Debug, Clone)]
     enum TestEvent {
