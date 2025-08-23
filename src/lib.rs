@@ -3,7 +3,7 @@
 //! Zero-overhead event-driven state management library for Rust applications.
 //!
 //! Syzygy provides a zero-overhead implementation of The Elm Architecture (TEA) with
-//! Core/Shell separation and a direct storage-based API, enabling deterministic state 
+//! Core/Shell separation and a direct storage-based API, enabling deterministic state
 //! management with async side effects and multi-model composition.
 //!
 //! ## Runtime Support
@@ -47,7 +47,7 @@
 //!
 //! - **🎯 Simplicity**: No traits to implement - just define update functions
 //! - **📊 Multi-Model**: Add multiple models at compile time with full type safety
-//! - **🔗 Composable**: Chain models and resources with zero-cost abstractions  
+//! - **🔗 Composable**: Chain models and resources with zero-cost abstractions
 //! - **⚡ Performance**: Direct storage access without runtime overhead
 //!
 //! ### Basic Usage
@@ -68,11 +68,11 @@
 //! }
 //!
 //! // Define your update function
-//! fn update(event: MyEvent, storage: &mut Storage<UserModel, Storage<ConfigModel, EmptyStorage>>) 
+//! fn update(event: MyEvent, storage: &mut Storage<UserModel, Storage<ConfigModel, EmptyStorage>>)
 //!     -> Command<MyEvent, MyEffect> {
 //!     let user: &mut UserModel = storage.get_mut();
 //!     let config: &mut ConfigModel = storage.get_mut();
-//!     
+//!
 //!     match event {
 //!         MyEvent::UpdateUser { name } => {
 //!             user.name = name;
@@ -88,10 +88,10 @@
 //! // Build your system
 //! let (core, shell) = Syzygy::builder::<MyEvent, MyEffect>()
 //!     .model(UserModel::default())
-//!     .model(ConfigModel::default()) 
+//!     .model(ConfigModel::default())
 //!     .update(update)
 //!     .build();
-//! 
+//!
 //! // Define your effect handler
 //! async fn handle_effects(effect: MyEffect, ctx: EffectContext<MyEvent>) {
 //!     match effect {
@@ -108,7 +108,7 @@
 //!         }
 //!     }
 //! }
-//! 
+//!
 //! // Set up the effect handler and run
 //! let shell = shell.with_effect_handler(handle_effects);
 //! let mut runner = Runner::new(core, shell);
@@ -160,10 +160,10 @@
 pub mod async_context;
 pub mod command;
 pub mod core;
+pub mod runner;
 pub mod shell;
 pub mod task;
 pub mod task_collector;
-pub mod runner;
 
 // Builder pattern
 pub mod builder;
@@ -192,16 +192,16 @@ pub mod magic_handler;
 
 pub mod prelude {
     // Contexts for update and effect functions
-    pub use crate::event_context::EventContext;
     pub use crate::async_context::EffectContext;
+    pub use crate::event_context::EventContext;
 
     // Command system
     pub use crate::command::{Command, CommandStep};
 
     // Core/Shell architecture
     pub use crate::core::{Core, UpdateFn};
-    pub use crate::shell::{Shell, ShellConfig};
     pub use crate::runner::{Runner, RunnerConfig, RunnerError};
+    pub use crate::shell::{Shell, ShellConfig};
 
     // Effect handlers with AFIT
     pub use crate::effect_handler::EffectHandler;
@@ -210,21 +210,21 @@ pub mod prelude {
     pub use crate::timer::{Time, TimeoutError, time};
 
     // Spawn adapters for runtime neutrality
-    pub use crate::spawn::{Spawn, TokioSpawn, SmolSpawn, AsyncStdSpawn, spawner};
+    pub use crate::spawn::{AsyncStdSpawn, SmolSpawn, Spawn, TokioSpawn, spawner};
 
     // Task management
-    pub use crate::task::{TaskTracker, TaskHandle, TaskId, TaskStats};
+    pub use crate::task::{TaskHandle, TaskId, TaskStats, TaskTracker};
 
     // Storage system
-    pub use crate::storage::{Chain, EmptyStorage, Storage, Contains};
+    pub use crate::storage::{Chain, Contains, EmptyStorage, Storage};
 
     // Magic handler system
-    pub use crate::extract::{FromEventContext, FromEventContextMut, FromEffectContext, ModelRef, Resource};
-    pub use crate::magic_handler::{EventMagicHandler, EffectMagicHandler, EventMagicHandlerExt, EffectMagicHandlerExt};
+    pub use crate::extract::{FromEventContext, ModelRef, ModelMut};
+    pub use crate::magic_handler::{EffectMagicHandler, EventMagicHandler, event_trigger};
 
     // Builder
     pub use crate::builder::{Syzygy, SyzygyBuilder};
 
     // Errors
-    pub use crate::error::{CoreError, ShellError, CommandError};
+    pub use crate::error::{CommandError, CoreError, ShellError};
 }

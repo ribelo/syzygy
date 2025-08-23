@@ -31,7 +31,7 @@ use crate::storage::Selector;
 /// ```
 pub struct EventContext<'a, Event, Effect, Storage> {
     /// Mutable reference to the model storage
-    storage: &'a mut Storage,
+    storage: &'a Storage,
     /// Phantom data to ensure correct type inference
     _phantom: std::marker::PhantomData<(Event, Effect)>,
 }
@@ -78,7 +78,7 @@ impl<'a, Event, Effect, Storage> EventContext<'a, Event, Effect, Storage> {
     /// let counter = ctx.model_mut::<CounterModel>();
     /// counter.count += 1;
     /// ```
-    pub fn model_mut<T, Index>(&mut self) -> &mut T
+    pub fn model_mut<T, Index>(&self) -> &mut T
     where
         Storage: Selector<T, Index>,
     {
@@ -106,7 +106,7 @@ mod tests {
         count: i32,
     }
 
-    #[derive(Debug, Default)]  
+    #[derive(Debug, Default)]
     struct UserModel {
         name: String,
     }
@@ -114,7 +114,7 @@ mod tests {
     #[test]
     fn test_event_context_single_model() {
         let mut storage = EmptyStorage.with_model(CounterModel { count: 5 });
-        let mut ctx = EventContext::<TestEvent, TestEffect, _>::new(&mut storage);
+        let ctx = EventContext::<TestEvent, TestEffect, _>::new(&mut storage);
 
         // Test immutable access
         let model: &CounterModel = ctx.model();
@@ -136,7 +136,7 @@ mod tests {
             .with_model(CounterModel { count: 10 })
             .with_model(UserModel { name: "Alice".to_string() });
 
-        let mut ctx = EventContext::<TestEvent, TestEffect, _>::new(&mut storage);
+        let ctx = EventContext::<TestEvent, TestEffect, _>::new(&mut storage);
 
         // Test accessing different model types
         let counter: &CounterModel = ctx.model();

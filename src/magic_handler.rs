@@ -4,11 +4,11 @@
 //! parameters from EventContext and EffectContext. Magic handlers enable clean,
 //! focused handler functions that only declare the data they need.
 
-use std::future::Future;
-use crate::extract::{FromEventContext, FromEffectContext};
-use crate::event_context::EventContext;
 use crate::async_context::EffectContext;
 use crate::command::Command;
+use crate::event_context::EventContext;
+use crate::extract::{FromEffectContext, FromEventContext};
+use std::future::Future;
 
 /// Magic handler trait for update functions with automatic parameter extraction
 ///
@@ -50,11 +50,13 @@ use crate::command::Command;
 /// // Usage
 /// let result = handle_user_created.call_with_event(event, &mut ctx);
 /// ```
-pub trait EventMagicHandler<Event, Effect, Storage, Args> {
-    type Output;
-
+pub trait EventMagicHandler<'a, Event, Effect, Storage, Args> {
     /// Call the handler with automatic parameter extraction from EventContext
-    fn call_with_event(self, event: Event, ctx: &mut EventContext<Event, Effect, Storage>) -> Self::Output;
+    fn call(
+        self,
+        event: Event,
+        ctx: &'a EventContext<Event, Effect, Storage>,
+    ) -> Command<Event, Effect>;
 }
 
 /// Magic handler trait for effect handlers with automatic parameter extraction
@@ -96,10 +98,9 @@ pub trait EventMagicHandler<Event, Effect, Storage, Args> {
 /// handle_save_user.call_with_effect(effect, ctx).await;
 /// ```
 pub trait EffectMagicHandler<Effect, Event, Resources, Args> {
-    type Output: Future<Output = ()>;
-
     /// Call the handler with automatic parameter extraction from EffectContext
-    fn call_with_effect(self, effect: Effect, ctx: EffectContext<Event, Resources>) -> Self::Output;
+    fn call(self, effect: Effect, ctx: EffectContext<Event, Resources>)
+    -> impl Future<Output = ()>;
 }
 
 // ============================================================================
@@ -107,82 +108,72 @@ pub trait EffectMagicHandler<Effect, Event, Resources, Args> {
 // ============================================================================
 
 // Handler with only event parameter (no extraction)
-impl<Event, Effect, Storage, F, R> EventMagicHandler<Event, Effect, Storage, (Event,)> for F
+impl<'a, Event, Effect, Storage, F> EventMagicHandler<'a, Event, Effect, Storage, ()> for F
 where
-    F: FnOnce(Event) -> R,
+    F: FnOnce(Event) -> Command<Event, Effect>,
 {
-    type Output = R;
-
-    fn call_with_event(self, event: Event, _ctx: &mut EventContext<Event, Effect, Storage>) -> Self::Output {
+    fn call(
+        self,
+        event: Event,
+        _ctx: &'a EventContext<Event, Effect, Storage>,
+    ) -> Command<Event, Effect> {
         self(event)
     }
 }
 
 // Handler with event + one extracted parameter
-impl<Event, Effect, Storage, F, T, R> EventMagicHandler<Event, Effect, Storage, (Event, T)> for F
+impl<'a, Event, Effect, Storage, F, T, I> EventMagicHandler<'a, Event, Effect, Storage, (T, I)> for F
 where
-    F: FnOnce(Event, T) -> R,
-    T: for<'a> FromEventContext<'a, Event, Effect, Storage>,
+    F: FnOnce(Event, T) -> Command<Event, Effect>,
+    T: FromEventContext<'a, Event, Effect, Storage, I>,
 {
-    type Output = R;
-
-    fn call_with_event(self, event: Event, ctx: &mut EventContext<Event, Effect, Storage>) -> Self::Output {
-        let a = T::from_context(ctx);
-        self(event, a)
+    fn call(
+        self,
+        event: Event,
+        ctx: &'a EventContext<Event, Effect, Storage>,
+    ) -> Command<Event, Effect> {
+        let t = T::from_context(ctx);
+        self(event, t)
     }
 }
 
 // Handler with event + two extracted parameters
-impl<Event, Effect, Storage, F, A, B, R> EventMagicHandler<Event, Effect, Storage, (Event, A, B)> for F
+impl<'a, Event, Effect, Storage, F, T1, I1, T2, I2>
+    EventMagicHandler<'a, Event, Effect, Storage, (T1, I1, T2, I2)> for F
 where
-    F: FnOnce(Event, A, B) -> R,
-    A: for<'a> FromEventContext<'a, Event, Effect, Storage>,
-    B: for<'a> FromEventContext<'a, Event, Effect, Storage>,
+    F: FnOnce(Event, T1, T2) -> Command<Event, Effect>,
+    T1: FromEventContext<'a, Event, Effect, Storage, I1>,
+    T2: FromEventContext<'a, Event, Effect, Storage, I2>,
 {
-    type Output = R;
-
-    fn call_with_event(self, event: Event, ctx: &mut EventContext<Event, Effect, Storage>) -> Self::Output {
-        let a = A::from_context(ctx);
-        let b = B::from_context(ctx);
-        self(event, a, b)
+    fn call(
+        self,
+        event: Event,
+        ctx: &'a EventContext<Event, Effect, Storage>,
+    ) -> Command<Event, Effect> {
+        let t1 = T1::from_context(ctx);
+        let t2 = T2::from_context(ctx);
+        self(event, t1, t2)
     }
 }
 
 // Handler with event + three extracted parameters
-impl<Event, Effect, Storage, F, A, B, C, R> EventMagicHandler<Event, Effect, Storage, (Event, A, B, C)> for F
+impl<'a, Event, Effect, Storage, F, T1, I1, T2, I2, T3, I3>
+    EventMagicHandler<'a, Event, Effect, Storage, (T1, I1, T2, I2, T3, I3)> for F
 where
-    F: FnOnce(Event, A, B, C) -> R,
-    A: for<'a> FromEventContext<'a, Event, Effect, Storage>,
-    B: for<'a> FromEventContext<'a, Event, Effect, Storage>,
-    C: for<'a> FromEventContext<'a, Event, Effect, Storage>,
+    F: FnOnce(Event, T1, T2, T3) -> Command<Event, Effect>,
+    T1: FromEventContext<'a, Event, Effect, Storage, I1>,
+    T2: FromEventContext<'a, Event, Effect, Storage, I2>,
+    T3: FromEventContext<'a, Event, Effect, Storage, I3>,
 {
-    type Output = R;
-
-    fn call_with_event(self, event: Event, ctx: &mut EventContext<Event, Effect, Storage>) -> Self::Output {
-        let a = A::from_context(ctx);
-        let b = B::from_context(ctx);
-        let c = C::from_context(ctx);
-        self(event, a, b, c)
-    }
-}
-
-// Handler with event + four extracted parameters
-impl<Event, Effect, Storage, F, A, B, C, D, R> EventMagicHandler<Event, Effect, Storage, (Event, A, B, C, D)> for F
-where
-    F: FnOnce(Event, A, B, C, D) -> R,
-    A: for<'a> FromEventContext<'a, Event, Effect, Storage>,
-    B: for<'a> FromEventContext<'a, Event, Effect, Storage>,
-    C: for<'a> FromEventContext<'a, Event, Effect, Storage>,
-    D: for<'a> FromEventContext<'a, Event, Effect, Storage>,
-{
-    type Output = R;
-
-    fn call_with_event(self, event: Event, ctx: &mut EventContext<Event, Effect, Storage>) -> Self::Output {
-        let a = A::from_context(ctx);
-        let b = B::from_context(ctx);
-        let c = C::from_context(ctx);
-        let d = D::from_context(ctx);
-        self(event, a, b, c, d)
+    fn call(
+        self,
+        event: Event,
+        ctx: &'a EventContext<Event, Effect, Storage>,
+    ) -> Command<Event, Effect> {
+        let t1 = T1::from_context(ctx);
+        let t2 = T2::from_context(ctx);
+        let t3 = T3::from_context(ctx);
+        self(event, t1, t2, t3)
     }
 }
 
@@ -191,133 +182,96 @@ where
 // ============================================================================
 
 // Handler with only effect parameter (no extraction)
-impl<Effect, Event, Resources, F, Fut> EffectMagicHandler<Effect, Event, Resources, (Effect,)> for F
+impl<Effect, Event, Resources, F, Fut> EffectMagicHandler<Effect, Event, Resources, ()> for F
 where
     F: FnOnce(Effect) -> Fut,
     Fut: Future<Output = ()>,
 {
-    type Output = Fut;
-
-    fn call_with_effect(self, effect: Effect, _ctx: EffectContext<Event, Resources>) -> Self::Output {
+    fn call(
+        self,
+        effect: Effect,
+        _ctx: EffectContext<Event, Resources>,
+    ) -> impl Future<Output = ()> {
         self(effect)
     }
 }
 
 // Handler with effect + one extracted parameter
-impl<Effect, Event, Resources, F, A, Fut> EffectMagicHandler<Effect, Event, Resources, (Effect, A)> for F
+impl<Effect, Event, Resources, F, T1, I1, Fut>
+    EffectMagicHandler<Effect, Event, Resources, (T1, I1)> for F
 where
-    F: FnOnce(Effect, A) -> Fut,
-    A: FromEffectContext<Event, Resources>,
+    F: FnOnce(Effect, T1) -> Fut,
+    T1: for<'a> FromEffectContext<'a, Event, Resources, I1>,
     Fut: Future<Output = ()>,
 {
-    type Output = Fut;
-
-    fn call_with_effect(self, effect: Effect, ctx: EffectContext<Event, Resources>) -> Self::Output {
-        let a = A::from_context(&ctx);
-        self(effect, a)
+    fn call(
+        self,
+        effect: Effect,
+        ctx: EffectContext<Event, Resources>,
+    ) -> impl Future<Output = ()> {
+        let t1 = T1::from_context(&ctx);
+        self(effect, t1)
     }
 }
 
 // Handler with effect + two extracted parameters
-impl<Effect, Event, Resources, F, A, B, Fut> EffectMagicHandler<Effect, Event, Resources, (Effect, A, B)> for F
+impl<Effect, Event, Resources, F, T1, I1, T2, I2, Fut>
+    EffectMagicHandler<Effect, Event, Resources, (T1, I1, T2, I2)> for F
 where
-    F: FnOnce(Effect, A, B) -> Fut,
-    A: FromEffectContext<Event, Resources>,
-    B: FromEffectContext<Event, Resources>,
+    F: FnOnce(Effect, T1, T2) -> Fut,
+    T1: for<'a> FromEffectContext<'a, Event, Resources, I1>,
+    T2: for<'a> FromEffectContext<'a, Event, Resources, I2>,
     Fut: Future<Output = ()>,
 {
-    type Output = Fut;
-
-    fn call_with_effect(self, effect: Effect, ctx: EffectContext<Event, Resources>) -> Self::Output {
-        let a = A::from_context(&ctx);
-        let b = B::from_context(&ctx);
-        self(effect, a, b)
+    fn call(
+        self,
+        effect: Effect,
+        ctx: EffectContext<Event, Resources>,
+    ) -> impl Future<Output = ()> {
+        let t1 = T1::from_context(&ctx);
+        let t2 = T2::from_context(&ctx);
+        self(effect, t1, t2)
     }
 }
 
 // Handler with effect + three extracted parameters
-impl<Effect, Event, Resources, F, A, B, C, Fut> EffectMagicHandler<Effect, Event, Resources, (Effect, A, B, C)> for F
+impl<Effect, Event, Resources, F, T1, I1, T2, I2, T3, I3, Fut>
+    EffectMagicHandler<Effect, Event, Resources, (T1, I1, T2, I2, T3, I3)> for F
 where
-    F: FnOnce(Effect, A, B, C) -> Fut,
-    A: FromEffectContext<Event, Resources>,
-    B: FromEffectContext<Event, Resources>,
-    C: FromEffectContext<Event, Resources>,
+    F: FnOnce(Effect, T1, T2, T3) -> Fut,
+    T1: for<'a> FromEffectContext<'a, Event, Resources, I1>,
+    T2: for<'a> FromEffectContext<'a, Event, Resources, I2>,
+    T3: for<'a> FromEffectContext<'a, Event, Resources, I3>,
     Fut: Future<Output = ()>,
 {
-    type Output = Fut;
-
-    fn call_with_effect(self, effect: Effect, ctx: EffectContext<Event, Resources>) -> Self::Output {
-        let a = A::from_context(&ctx);
-        let b = B::from_context(&ctx);
-        let c = C::from_context(&ctx);
-        self(effect, a, b, c)
+    fn call(
+        self,
+        effect: Effect,
+        ctx: EffectContext<Event, Resources>,
+    ) -> impl Future<Output = ()> {
+        let t1 = T1::from_context(&ctx);
+        let t2 = T2::from_context(&ctx);
+        let t3 = T3::from_context(&ctx);
+        self(effect, t1, t2, t3)
     }
 }
 
-// Handler with effect + four extracted parameters
-impl<Effect, Event, Resources, F, A, B, C, D, Fut> EffectMagicHandler<Effect, Event, Resources, (Effect, A, B, C, D)> for F
+pub fn event_trigger<'a, Event, Effect, Storage, Args, H>(
+    event: Event,
+    context: &'a EventContext<Event, Effect, Storage>,
+    handler: H,
+) -> Command<Event, Effect>
 where
-    F: FnOnce(Effect, A, B, C, D) -> Fut,
-    A: FromEffectContext<Event, Resources>,
-    B: FromEffectContext<Event, Resources>,
-    C: FromEffectContext<Event, Resources>,
-    D: FromEffectContext<Event, Resources>,
-    Fut: Future<Output = ()>,
+    H: EventMagicHandler<'a, Event, Effect, Storage, Args>,
 {
-    type Output = Fut;
-
-    fn call_with_effect(self, effect: Effect, ctx: EffectContext<Event, Resources>) -> Self::Output {
-        let a = A::from_context(&ctx);
-        let b = B::from_context(&ctx);
-        let c = C::from_context(&ctx);
-        let d = D::from_context(&ctx);
-        self(effect, a, b, c, d)
-    }
-}
-
-// ============================================================================
-// Convenience Extensions
-// ============================================================================
-
-/// Extension trait to provide ergonomic `.call_magic()` syntax
-pub trait EventMagicHandlerExt<Event, Effect, Storage, Args>: EventMagicHandler<Event, Effect, Storage, Args> {
-    /// Call the magic handler (convenience method)
-    fn call_magic(self, event: Event, ctx: &mut EventContext<Event, Effect, Storage>) -> Self::Output
-    where
-        Self: Sized,
-    {
-        self.call_with_event(event, ctx)
-    }
-}
-
-/// Extension trait for effect magic handlers
-pub trait EffectMagicHandlerExt<Effect, Event, Resources, Args>: EffectMagicHandler<Effect, Event, Resources, Args> {
-    /// Call the effect magic handler (convenience method)
-    fn call_magic(self, effect: Effect, ctx: EffectContext<Event, Resources>) -> Self::Output
-    where
-        Self: Sized,
-    {
-        self.call_with_effect(effect, ctx)
-    }
-}
-
-// Blanket implementations for all magic handlers
-impl<Event, Effect, Storage, Args, T> EventMagicHandlerExt<Event, Effect, Storage, Args> for T
-where
-    T: EventMagicHandler<Event, Effect, Storage, Args>,
-{
-}
-
-impl<Effect, Event, Resources, Args, T> EffectMagicHandlerExt<Effect, Event, Resources, Args> for T
-where
-    T: EffectMagicHandler<Effect, Event, Resources, Args>,
-{
+    handler.call(event, context)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::extract::FromEventContext;
+    use crate::extract::{FromEventContext, ModelMut};
+    use crate::prelude::ModelRef;
     use crate::storage::EmptyStorage;
 
     #[derive(Debug, Clone, Default)]
@@ -340,19 +294,10 @@ mod tests {
     // Example extractor
     struct CounterValue(i32);
 
-    impl<'a, Event, Effect, Storage> FromEventContext<'a, Event, Effect, Storage> for CounterValue
-    where
-        Storage: crate::storage::Selector<TestModel, crate::storage::storage::Here>,
-    {
-        fn from_context(ctx: &'a EventContext<Event, Effect, Storage>) -> Self {
-            CounterValue(ctx.model::<TestModel, crate::storage::storage::Here>().counter)
-        }
-    }
-
     #[test]
     fn test_event_only_handler() {
         let mut storage = EmptyStorage.with_model(TestModel::default());
-        let mut ctx = EventContext::<TestEvent, TestEffect, _>::new(&mut storage);
+        let ctx = EventContext::<TestEvent, TestEffect, _>::new(&mut storage);
 
         fn simple_handler(event: TestEvent) -> Command<TestEvent, TestEffect> {
             match event {
@@ -365,7 +310,7 @@ mod tests {
         }
 
         let event = TestEvent::Increment { by: 5 };
-        let _result = simple_handler.call_with_event(event, &mut ctx);
+        let _result = event_trigger(event, &ctx, simple_handler);
         // Test passes if it compiles and runs
     }
 
@@ -375,44 +320,55 @@ mod tests {
             counter: 42,
             name: "test".to_string(),
         });
-        let mut ctx = EventContext::<TestEvent, TestEffect, _>::new(&mut storage);
+        let ctx = EventContext::<TestEvent, TestEffect, _>::new(&mut storage);
 
         fn handler_with_extraction(
             event: TestEvent,
-            current: CounterValue,
+            current: ModelMut<'_, TestModel>,
         ) -> Command<TestEvent, TestEffect> {
             match event {
                 TestEvent::Increment { by } => {
-                    println!("Current: {}, incrementing by {}", current.0, by);
+                    println!("Current: {}, incrementing by {}", current.counter, by);
                     Command::none()
                 }
                 _ => Command::none(),
             }
         }
+        // THIS WOKRS
+        let _test_model = ModelMut::<TestModel>::from_context(&ctx);
 
         let event = TestEvent::Increment { by: 3 };
-        let _result = handler_with_extraction.call_with_event(event, &mut ctx);
+        // SO THIS ALSO SHOULD WORK
+        let _result = event_trigger(event, &ctx, handler_with_extraction);
         // Test passes if it compiles and runs
     }
 
     #[test]
     fn test_multiple_extractions() {
-        let mut storage = EmptyStorage.with_model(TestModel {
-            counter: 99,
-            name: "multi".to_string(),
-        });
-        let mut ctx = EventContext::<TestEvent, TestEffect, _>::new(&mut storage);
+        #[derive(Debug, Clone, Default)]
+        struct SecondModel {
+            value: i32,
+        }
+
+        let mut storage = EmptyStorage
+            .with_model(TestModel {
+                counter: 99,
+                name: "multi".to_string(),
+            })
+            .with_model(SecondModel { value: 42 });
+        let ctx = EventContext::<TestEvent, TestEffect, _>::new(&mut storage);
 
         fn handler_multi_extraction(
             event: TestEvent,
-            counter1: CounterValue,
-            counter2: CounterValue,
+            model1: ModelRef<'_, TestModel>,
+            model2: ModelRef<'_, SecondModel>,
         ) -> Command<TestEvent, TestEffect> {
             match event {
                 TestEvent::Increment { by } => {
-                    println!("Counter1: {}, Counter2: {}, incrementing by {}", 
-                            counter1.0, counter2.0, by);
-                    assert_eq!(counter1.0, counter2.0); // Should be same value
+                    println!(
+                        "Model1 counter: {}, Model2 value: {}, incrementing by {}",
+                        model1.counter, model2.value, by
+                    );
                     Command::none()
                 }
                 _ => Command::none(),
@@ -420,25 +376,7 @@ mod tests {
         }
 
         let event = TestEvent::Increment { by: 1 };
-        let _result = handler_multi_extraction.call_with_event(event, &mut ctx);
-        // Test passes if it compiles and runs
-    }
-
-    #[test]
-    fn test_magic_handler_extension() {
-        let mut storage = EmptyStorage.with_model(TestModel::default());
-        let mut ctx = EventContext::<TestEvent, TestEffect, _>::new(&mut storage);
-
-        fn test_handler(event: TestEvent) -> Command<TestEvent, TestEffect> {
-            println!("Handling event: {:?}", event);
-            Command::none()
-        }
-
-        let event = TestEvent::SetName { name: "test".to_string() };
-
-        // Test both call methods work
-        let _result1 = test_handler.call_with_event(event.clone(), &mut ctx);
-        let _result2 = test_handler.call_magic(event, &mut ctx);
+        let _result = event_trigger(event, &ctx, handler_multi_extraction);
         // Test passes if it compiles and runs
     }
 }

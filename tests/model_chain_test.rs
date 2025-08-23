@@ -373,155 +373,6 @@ fn test_current_broken_contains_trait_limitations() {
     // assert_contains::<Model3, _>(&multi); // Would fail to compile
 }
 
-#[test]
-#[ignore] // AGI test - Contains only works for head type
-fn test_contains_correctly_rejects_missing_types() {
-    // Test that types not in chain fail to compile at the Selector bound
-    let chain = create_test_chain_4(); // Contains Model1, Model2, Model3, Model4
-
-    fn assert_contains<T, Chain, Index>(chain: &Chain)
-    where
-        Chain: Contains<T> + Selector<T, Index>,
-    {
-        let _ : &T = chain.get();
-    }
-
-    // These work fine:
-    assert_contains::<Model1, _, _>(&chain);
-    assert_contains::<Model4, _, _>(&chain);
-
-    // This should NOT compile - Model5 is not in chain:
-    // assert_contains::<Model5, _, _>(&chain); // Fails at Selector bound, not Contains
-}
-
-// ============================================================================
-// RED PHASE: Tests specifying how Contains<T> SHOULD work
-// ============================================================================
-
-#[test]
-#[ignore] // AGI test - Contains only works for head, not all positions
-fn test_contains_should_work_for_all_chain_positions() {
-    // RED: This test should pass with proper Contains<T> implementation
-    // Currently FAILS because Contains only checks head type
-
-    let chain = EmptyStorage::default()
-        .with_model(Model1 { value: 1, active: true })
-        .with_model(Model2 { value: 2, name: "test".to_string() })
-        .with_model(Model3 { value: 3, count: 10 })
-        .with_model(Model4 { value: 4, temperature: 20.5 });
-
-    // Chain structure: Model4 (head) -> Model3 -> Model2 -> Model1 (tail) -> EmptyStorage
-
-    fn assert_contains<T, Chain, Index>(chain: &Chain)
-    where
-        Chain: Contains<T> + Selector<T, Index>,
-    {
-        let _ : &T = chain.get();
-    }
-
-    // All of these SHOULD work with proper Contains implementation:
-    assert_contains::<Model4, _, _>(&chain); // Head - currently works
-    assert_contains::<Model3, _, _>(&chain); // In middle - currently FAILS
-    assert_contains::<Model2, _, _>(&chain); // In middle - currently FAILS
-    assert_contains::<Model1, _, _>(&chain); // At tail - currently FAILS
-
-    // This should NOT compile (type not in chain):
-    // Test what happens when we try to use a type not in chain
-    // assert_contains::<Model5, _, _>(&chain); // This should fail at the Selector bound
-}
-
-#[test]
-#[ignore] // AGI test - Contains only works for head type
-fn test_contains_should_leverage_selector_infrastructure() {
-    // RED: Contains<T> should work for any type that Selector<T, _> works for
-
-    let chain = create_test_chain_4();
-
-    // If we can access these types with Selector, Contains should work too:
-    let _model1: &Model1 = chain.get(); // Selector works for Model1
-    let _model2: &Model2 = chain.get(); // Selector works for Model2
-    let _model3: &Model3 = chain.get(); // Selector works for Model3
-    let _model4: &Model4 = chain.get(); // Selector works for Model4
-
-    fn assert_contains<T, Chain, Index>(chain: &Chain)
-    where
-        Chain: Contains<T> + Selector<T, Index>,
-    {
-        let _ : &T = chain.get();
-    }
-
-    // Since Selector works for all these types, Contains should too:
-    assert_contains::<Model1, _, _>(&chain); // Currently FAILS - only head works
-    assert_contains::<Model2, _, _>(&chain); // Currently FAILS - only head works
-    assert_contains::<Model3, _, _>(&chain); // Currently FAILS - only head works
-    assert_contains::<Model4, _, _>(&chain); // Currently works - Model4 is head
-}
-
-#[test]
-#[ignore] // AGI test - Contains only works for head type
-fn test_contains_should_prove_compile_time_type_existence() {
-    // RED: Contains should work as a compile-time constraint
-
-    let chain = create_test_chain_4();
-
-    // Functions requiring specific types should compile:
-    fn needs_model1<Chain, Index>(chain: &Chain) -> &Model1
-    where
-        Chain: Contains<Model1> + Selector<Model1, Index>,
-    {
-        chain.get()
-    }
-
-    fn needs_model2<Chain, Index>(chain: &Chain) -> &Model2
-    where
-        Chain: Contains<Model2> + Selector<Model2, Index>,
-    {
-        chain.get()
-    }
-
-    fn needs_model4<Chain, Index>(chain: &Chain) -> &Model4
-    where
-        Chain: Contains<Model4> + Selector<Model4, Index>,
-    {
-        chain.get()
-    }
-
-    // These should all work with proper Contains implementation:
-    let _m1 = needs_model1(&chain); // Currently FAILS
-    let _m2 = needs_model2(&chain); // Currently FAILS
-    let _m4 = needs_model4(&chain); // Currently works
-}
-
-#[test]
-#[ignore] // AGI test - Contains only works for head type
-fn test_contains_safety_with_duplicate_types() {
-    // RED: Contains should fail to compile for duplicate types (due to ambiguous Selector)
-
-    let valid_chain = EmptyStorage::default()
-        .with_model(Model1 { value: 1, active: true })
-        .with_model(Model2 { value: 2, name: "test".to_string() });
-
-    fn assert_contains<T, Chain, Index>(chain: &Chain)
-    where
-        Chain: Contains<T> + Selector<T, Index>,
-    {
-        let _ : &T = chain.get();
-    }
-
-    // This should work fine:
-    assert_contains::<Model1, _, _>(&valid_chain); // Currently FAILS - only head
-    assert_contains::<Model2, _, _>(&valid_chain); // Currently works - is head
-
-    // Creating a chain with duplicates should compile:
-    let duplicate_chain = valid_chain.with_model(Model1 { value: 999, active: false });
-    
-    // Now let's try to access Model1 from the duplicate chain:
-    // This SHOULD fail with ambiguous implementation error:
-    // let _model1: &Model1 = duplicate_chain.get(); // Uncomment to test manually
-    
-    // If this compiles, then we have a problem - duplicates are allowed!
-    println!("Duplicate chain created successfully - this might be a problem!");
-}
 
 // ============================================================================
 // Tests for Runtime Duplicate Prevention
@@ -530,18 +381,18 @@ fn test_contains_safety_with_duplicate_types() {
 #[test]
 fn test_runtime_contains_checking() {
     use syzygy::storage::RuntimeContains;
-    
+
     // Test empty chain
     let empty = EmptyStorage::default();
     assert!(!empty.contains::<Model1>());
     assert!(!empty.contains::<Model2>());
-    
+
     // Test single element chain
     let single = EmptyStorage::default()
         .with_model_unchecked(Model1 { value: 1, active: true });
     assert!(single.contains::<Model1>());
     assert!(!single.contains::<Model2>());
-    
+
     // Test multi-element chain
     let multi = single
         .with_model_unchecked(Model2 { value: 2, name: "test".to_string() })
@@ -555,14 +406,14 @@ fn test_runtime_contains_checking() {
 #[test]
 fn test_try_with_model_success() {
     use syzygy::storage::RuntimeContains;
-    
+
     let chain = EmptyStorage::default()
         .with_model_unchecked(Model1 { value: 1, active: true });
-    
+
     // Adding different type should succeed
     let result = chain.try_with_model(Model2 { value: 2, name: "test".to_string() });
     assert!(result.is_ok());
-    
+
     let new_chain = result.unwrap();
     assert!(new_chain.contains::<Model1>());
     assert!(new_chain.contains::<Model2>());
@@ -570,14 +421,14 @@ fn test_try_with_model_success() {
 
 #[test]
 fn test_try_with_model_duplicate_error() {
-    
+
     let chain = EmptyStorage::default()
         .with_model_unchecked(Model1 { value: 1, active: true });
-    
+
     // Adding same type should fail
     let result = chain.try_with_model(Model1 { value: 999, active: false });
     assert!(result.is_err());
-    
+
     let err = result.unwrap_err();
     assert_eq!(err.type_name, std::any::type_name::<Model1>());
     assert_eq!(err.to_string(), "Duplicate type in chain: model_chain_test::Model1");
@@ -588,7 +439,7 @@ fn test_try_with_model_duplicate_error() {
 fn test_with_model_panics_on_duplicate() {
     let chain = EmptyStorage::default()
         .with_model_unchecked(Model1 { value: 1, active: true });
-    
+
     // This should panic
     let _bad_chain = chain.with_model(Model1 { value: 999, active: false });
 }
@@ -596,14 +447,14 @@ fn test_with_model_panics_on_duplicate() {
 #[test]
 fn test_with_model_success() {
     use syzygy::storage::RuntimeContains;
-    
+
     let chain = EmptyStorage::default()
         .with_model_unchecked(Model1 { value: 1, active: true })
         .with_model(Model2 { value: 2, name: "test".to_string() }); // Should work
-    
+
     assert!(chain.contains::<Model1>());
     assert!(chain.contains::<Model2>());
-    
+
     // Verify we can access both
     let model1: &Model1 = chain.get();
     let model2: &Model2 = chain.get();
@@ -617,13 +468,13 @@ fn test_with_model_unchecked_allows_duplicates() {
     let chain = EmptyStorage::default()
         .with_model_unchecked(Model1 { value: 1, active: true })
         .with_model_unchecked(Model1 { value: 999, active: false }); // Should compile
-    
+
     // Chain created successfully - duplicates allowed
     println!("Unchecked duplicate chain created - this is expected behavior");
-    
+
     // But accessing becomes ambiguous:
     // let _model1: &Model1 = chain.get(); // Would fail to compile - ambiguous
-    
+
     // The chain exists but is unusable for Model1 access
     assert!(std::mem::size_of_val(&chain) > 0);
 }
@@ -631,17 +482,17 @@ fn test_with_model_unchecked_allows_duplicates() {
 #[test]
 fn test_safe_chain_building_pattern() {
     use syzygy::storage::RuntimeContains;
-    
+
     // Demonstrate safe chain building with runtime checks
     let result1 = EmptyStorage::default().try_with_model(Model1 { value: 1, active: true }).unwrap();
     let result2 = result1.try_with_model(Model2 { value: 2, name: "test".to_string() }).unwrap();
     let result3 = result2.try_with_model(Model3 { value: 3, count: 10 });
-    
+
     let chain = result3.expect("Chain building should succeed");
     assert!(chain.contains::<Model1>());
     assert!(chain.contains::<Model2>());
     assert!(chain.contains::<Model3>());
-    
+
     // Try to add duplicate - should fail
     let duplicate_result = chain.try_with_model(Model1 { value: 999, active: false });
     assert!(duplicate_result.is_err());

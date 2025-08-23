@@ -6,8 +6,10 @@
 //! The extractors work with the current Syzygy EventContext and EffectContext designs,
 //! providing type-safe access to models and resources through the Storage system.
 
-use crate::event_context::EventContext;
+use std::ops::{Deref, DerefMut};
+
 use crate::async_context::EffectContext;
+use crate::event_context::EventContext;
 use crate::storage::Selector;
 
 /// Extract a value from an EventContext
@@ -29,33 +31,9 @@ use crate::storage::Selector;
 ///     }
 /// }
 /// ```
-pub trait FromEventContext<'a, Event, Effect, Storage> {
+pub trait FromEventContext<'ctx, Event, Effect, Storage, Index> {
     /// Extract Self from an EventContext
-    fn from_context(ctx: &'a EventContext<Event, Effect, Storage>) -> Self;
-}
-
-/// Extract a value from an EventContext (mutable access)
-///
-/// This trait enables extraction that requires mutable access to the EventContext.
-/// The extraction happens inside the magic handler's call method where mutable
-/// access is available.
-///
-/// # Example
-/// ```rust,ignore
-/// struct UserCountMut<'a>(&'a mut i32);
-///
-/// impl<Event, Effect, Storage> FromEventContextMut<Event, Effect, Storage> for UserCountMut<'_>
-/// where
-///     Storage: Selector<UserModel, syzygy::storage::storage::Here>,
-/// {
-///     fn from_context_mut(ctx: &mut EventContext<Event, Effect, Storage>) -> Self {
-///         UserCountMut(&mut ctx.model_mut::<UserModel, syzygy::storage::storage::Here>().count)
-///     }
-/// }
-/// ```
-pub trait FromEventContextMut<'a, Event, Effect, Storage> {
-    /// Extract Self from a mutable EventContext
-    fn from_context_mut(ctx: &'a mut EventContext<Event, Effect, Storage>) -> Self;
+    fn from_context(ctx: &'ctx EventContext<Event, Effect, Storage>) -> Self;
 }
 
 /// Extract a value from an EffectContext
@@ -76,9 +54,9 @@ pub trait FromEventContextMut<'a, Event, Effect, Storage> {
 ///     }
 /// }
 /// ```
-pub trait FromEffectContext<Event, Resources> {
+pub trait FromEffectContext<'ctx, Event, Resources, Index> {
     /// Extract Self from an EffectContext
-    fn from_context(ctx: &EffectContext<Event, Resources>) -> Self;
+    fn from_context(ctx: &'ctx EffectContext<Event, Resources>) -> Self;
 }
 
 // ============================================================================
@@ -97,9 +75,32 @@ pub trait FromEffectContext<Event, Resources> {
 ///     Command::none()
 /// }
 /// ```
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug)]
 pub struct ModelRef<'a, T>(pub &'a T);
 
+impl<'a, T> Deref for ModelRef<'a, T> {
+    type Target = T;
+
+    fn deref(&self) -> &Self::Target {
+        self.0
+    }
+}
+
+#[derive(Debug)]
+pub struct ModelMut<'a, T>(pub &'a mut T);
+
+impl<'a, T> Deref for ModelMut<'a, T> {
+    type Target = T;
+
+    fn deref(&self) -> &Self::Target {
+        self.0
+    }
+}
+impl<'a, T> DerefMut for ModelMut<'a, T> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.0
+    }
+}
 /// Wrapper for extracting a cloned resource from EffectContext
 ///
 /// This provides an ergonomic way to extract an owned clone of a resource.
@@ -117,170 +118,44 @@ pub struct ModelRef<'a, T>(pub &'a T);
 pub struct Resource<T>(pub T);
 
 // Default implementation for ModelRef<'a, T> - borrows from context (no clone)
-impl<'a, Event, Effect, Storage, T> FromEventContext<'a, Event, Effect, Storage> for ModelRef<'a, T>
+impl<'ctx, Event, Effect, Storage, T, I> FromEventContext<'ctx, Event, Effect, Storage, I>
+    for ModelRef<'ctx, T>
 where
-    Storage: Selector<T, crate::storage::storage::Here>,
+    Storage: Selector<T, I>,
 {
-    fn from_context(ctx: &'a EventContext<Event, Effect, Storage>) -> Self {
-        ModelRef(ctx.model::<T, crate::storage::storage::Here>())
+    fn from_context(ctx: &'ctx EventContext<Event, Effect, Storage>) -> Self {
+        ModelRef(ctx.model::<T, I>())
+    }
+}
+
+// Default implementation for ModelMut<'a, T> - borrows from context (no clone)
+impl<'ctx, Event, Effect, Storage, T, I> FromEventContext<'ctx, Event, Effect, Storage, I>
+    for ModelMut<'ctx, T>
+where
+    Storage: Selector<T, I>,
+{
+    fn from_context(ctx: &'ctx EventContext<Event, Effect, Storage>) -> Self {
+        ModelMut(ctx.model_mut::<T, I>())
     }
 }
 
 // Default implementation for Resource<T> - clones from context
-impl<Event, Resources, T> FromEffectContext<Event, Resources> for Resource<T>
+impl<'ctx, Event, Resources, T, I> FromEffectContext<'ctx, Event, Resources, I> for Resource<T>
 where
-    Resources: Selector<T, crate::storage::storage::Here>,
+    Resources: Selector<T, I>,
     T: Clone,
     Event: Send + 'static,
     Resources: Send + Sync + 'static,
 {
-    fn from_context(ctx: &EffectContext<Event, Resources>) -> Self {
-        Resource(ctx.resource::<T, crate::storage::storage::Here>().clone())
-    }
-}
-
-// ============================================================================
-// Tuple Implementations for Multiple Extractions
-// ============================================================================
-
-impl<'a, Event, Effect, Storage> FromEventContext<'a, Event, Effect, Storage> for () {
-    fn from_context(_ctx: &'a EventContext<Event, Effect, Storage>) -> Self {
-        ()
-    }
-}
-
-impl<'a, Event, Effect, Storage, A> FromEventContext<'a, Event, Effect, Storage> for (A,)
-where
-    A: FromEventContext<'a, Event, Effect, Storage>,
-{
-    fn from_context(ctx: &'a EventContext<Event, Effect, Storage>) -> Self {
-        (A::from_context(ctx),)
-    }
-}
-
-impl<'a, Event, Effect, Storage, A, B> FromEventContext<'a, Event, Effect, Storage> for (A, B)
-where
-    A: FromEventContext<'a, Event, Effect, Storage>,
-    B: FromEventContext<'a, Event, Effect, Storage>,
-{
-    fn from_context(ctx: &'a EventContext<Event, Effect, Storage>) -> Self {
-        (A::from_context(ctx), B::from_context(ctx))
-    }
-}
-
-impl<'a, Event, Effect, Storage, A, B, C> FromEventContext<'a, Event, Effect, Storage> for (A, B, C)
-where
-    A: FromEventContext<'a, Event, Effect, Storage>,
-    B: FromEventContext<'a, Event, Effect, Storage>,
-    C: FromEventContext<'a, Event, Effect, Storage>,
-{
-    fn from_context(ctx: &'a EventContext<Event, Effect, Storage>) -> Self {
-        (
-            A::from_context(ctx),
-            B::from_context(ctx),
-            C::from_context(ctx),
-        )
-    }
-}
-
-impl<'a, Event, Effect, Storage, A, B, C, D> FromEventContext<'a, Event, Effect, Storage> for (A, B, C, D)
-where
-    A: FromEventContext<'a, Event, Effect, Storage>,
-    B: FromEventContext<'a, Event, Effect, Storage>,
-    C: FromEventContext<'a, Event, Effect, Storage>,
-    D: FromEventContext<'a, Event, Effect, Storage>,
-{
-    fn from_context(ctx: &'a EventContext<Event, Effect, Storage>) -> Self {
-        (
-            A::from_context(ctx),
-            B::from_context(ctx),
-            C::from_context(ctx),
-            D::from_context(ctx),
-        )
-    }
-}
-
-// Mutable tuple implementations - limited due to Rust borrow rules
-impl<'a, Event, Effect, Storage> FromEventContextMut<'a, Event, Effect, Storage> for () {
-    fn from_context_mut(_ctx: &'a mut EventContext<Event, Effect, Storage>) -> Self {
-        ()
-    }
-}
-
-impl<'a, Event, Effect, Storage, A> FromEventContextMut<'a, Event, Effect, Storage> for (A,)
-where
-    A: FromEventContextMut<'a, Event, Effect, Storage>,
-{
-    fn from_context_mut(ctx: &'a mut EventContext<Event, Effect, Storage>) -> Self {
-        (A::from_context_mut(ctx),)
-    }
-}
-
-// Note: Multiple mutable extractions are complex due to borrow checker.
-// Users should use sequential extraction in their handlers instead.
-
-// EffectContext tuple implementations
-impl<Event, Resources> FromEffectContext<Event, Resources> for () {
-    fn from_context(_ctx: &EffectContext<Event, Resources>) -> Self {
-        ()
-    }
-}
-
-impl<Event, Resources, A> FromEffectContext<Event, Resources> for (A,)
-where
-    A: FromEffectContext<Event, Resources>,
-{
-    fn from_context(ctx: &EffectContext<Event, Resources>) -> Self {
-        (A::from_context(ctx),)
-    }
-}
-
-impl<Event, Resources, A, B> FromEffectContext<Event, Resources> for (A, B)
-where
-    A: FromEffectContext<Event, Resources>,
-    B: FromEffectContext<Event, Resources>,
-{
-    fn from_context(ctx: &EffectContext<Event, Resources>) -> Self {
-        (A::from_context(ctx), B::from_context(ctx))
-    }
-}
-
-impl<Event, Resources, A, B, C> FromEffectContext<Event, Resources> for (A, B, C)
-where
-    A: FromEffectContext<Event, Resources>,
-    B: FromEffectContext<Event, Resources>,
-    C: FromEffectContext<Event, Resources>,
-{
-    fn from_context(ctx: &EffectContext<Event, Resources>) -> Self {
-        (
-            A::from_context(ctx),
-            B::from_context(ctx),
-            C::from_context(ctx),
-        )
-    }
-}
-
-impl<Event, Resources, A, B, C, D> FromEffectContext<Event, Resources> for (A, B, C, D)
-where
-    A: FromEffectContext<Event, Resources>,
-    B: FromEffectContext<Event, Resources>,
-    C: FromEffectContext<Event, Resources>,
-    D: FromEffectContext<Event, Resources>,
-{
-    fn from_context(ctx: &EffectContext<Event, Resources>) -> Self {
-        (
-            A::from_context(ctx),
-            B::from_context(ctx),
-            C::from_context(ctx),
-            D::from_context(ctx),
-        )
+    fn from_context(ctx: &'ctx EffectContext<Event, Resources>) -> Self {
+        Resource(ctx.resource::<T, I>().clone())
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::storage::{Storage, EmptyStorage};
+    use crate::storage::EmptyStorage;
 
     #[derive(Debug, Clone, Default)]
     struct TestModel {
@@ -306,31 +181,11 @@ mod tests {
     // Example extractor that clones the counter value
     struct CounterValue(i32);
 
-    impl<'a, Event, Effect, Storage> FromEventContext<'a, Event, Effect, Storage> for CounterValue
-    where
-        Storage: Selector<TestModel, crate::storage::storage::Here>,
-    {
-        fn from_context(ctx: &'a EventContext<Event, Effect, Storage>) -> Self {
-            CounterValue(ctx.model::<TestModel, crate::storage::storage::Here>().counter)
-        }
-    }
-
     // Example resource extractor
     struct UrlValue(String);
 
-    impl<Event, Resources> FromEffectContext<Event, Resources> for UrlValue
-    where
-        Resources: Selector<TestResource, crate::storage::storage::Here>,
-        Event: Send + 'static,
-        Resources: Send + Sync + 'static,
-    {
-        fn from_context(ctx: &EffectContext<Event, Resources>) -> Self {
-            UrlValue(ctx.resource::<TestResource, crate::storage::storage::Here>().url.clone())
-        }
-    }
-
     #[test]
-    fn test_event_context_extraction() {
+    fn test_event_one_ref_extraction() {
         let mut storage = EmptyStorage.with_model(TestModel {
             counter: 42,
             name: "test".to_string(),
@@ -338,37 +193,31 @@ mod tests {
 
         let ctx = EventContext::<TestEvent, TestEffect, _>::new(&mut storage);
 
-        let counter_value = CounterValue::from_context(&ctx);
-        assert_eq!(counter_value.0, 42);
+        let test_model = ModelRef::<TestModel>::from_context(&ctx);
+        assert_eq!(test_model.counter, 42);
     }
 
     #[test]
-    fn test_tuple_extraction() {
-        let mut storage = EmptyStorage.with_model(TestModel {
-            counter: 99,
-            name: "tuple".to_string(),
-        });
+    fn test_event_two_ref_extraction() {
+        let mut storage = EmptyStorage
+            .with_model(TestModel {
+                counter: 99,
+                name: "tuple".to_string(),
+            })
+            .with_model(FirstModelType { value: 42 });
 
         let ctx = EventContext::<TestEvent, TestEffect, _>::new(&mut storage);
 
-        let (counter1, counter2): (CounterValue, CounterValue) = FromEventContext::from_context(&ctx);
-        assert_eq!(counter1.0, 99);
-        assert_eq!(counter2.0, 99);
+        // Extract two different model types from context
+        let test_model = ModelRef::<TestModel>::from_context(&ctx);
+        let first_model = ModelRef::<FirstModelType>::from_context(&ctx);
+
+        assert_eq!(test_model.counter, 99);
+        assert_eq!(first_model.value, 42);
     }
 
     #[test]
-    fn test_unit_extraction() {
-        let mut storage = EmptyStorage.with_model(TestModel::default());
-        let ctx = EventContext::<TestEvent, TestEffect, _>::new(&mut storage);
-
-        let _unit: () = FromEventContext::from_context(&ctx);
-        // Test passes if it compiles and runs
-    }
-
-    // Note: ModelRef implementation for TestModel is now provided by default generic implementation
-
-    #[test]
-    fn test_model_ref_extraction() {
+    fn test_event_one_mut_extraction() {
         let test_model = TestModel {
             counter: 123,
             name: "model_ref_test".to_string(),
@@ -376,25 +225,80 @@ mod tests {
         let mut storage = EmptyStorage.with_model(test_model.clone());
         let ctx = EventContext::<TestEvent, TestEffect, _>::new(&mut storage);
 
-        let model_ref = ModelRef::<TestModel>::from_context(&ctx);
-        assert_eq!(model_ref.0.counter, 123);
-        assert_eq!(model_ref.0.name, "model_ref_test");
+        let mut model_mut = ModelMut::<TestModel>::from_context(&ctx);
+        assert_eq!(model_mut.counter, 123);
+        assert_eq!(model_mut.name, "model_ref_test");
+
+        // Mutate the model
+        model_mut.counter = 456;
+        model_mut.name = "mutated_name".to_string();
+
+        // Verify the mutations
+        assert_eq!(model_mut.counter, 456);
+        assert_eq!(model_mut.name, "mutated_name");
     }
-    
+
     #[test]
-    fn test_resource_extraction_via_wrapper() {
-        use crate::async_context::EffectContext;
-        use crate::storage::EmptyStorage;
-        use std::sync::Arc;
+    fn test_event_two_mut_extraction() {
+        let mut storage = EmptyStorage
+            .with_model(TestModel {
+                counter: 99,
+                name: "tuple".to_string(),
+            })
+            .with_model(FirstModelType { value: 42 });
 
-        let resource = TestResource {
-            url: "https://example.com".to_string(),
-        };
-        let resources = Arc::new(EmptyStorage.with_model(resource));
+        let ctx = EventContext::<TestEvent, TestEffect, _>::new(&mut storage);
 
-        let ctx = EffectContext::<TestEvent, _>::new(None, resources);
-        let url_value = UrlValue::from_context(&ctx);
+        // Extract two different model types mutably from context
+        let mut test_model = ModelMut::<TestModel>::from_context(&ctx);
+        let mut first_model = ModelMut::<FirstModelType>::from_context(&ctx);
 
-        assert_eq!(url_value.0, "https://example.com");
+        // Verify initial values
+        assert_eq!(test_model.counter, 99);
+        assert_eq!(first_model.value, 42);
+
+        // Mutate both models
+        test_model.counter = 200;
+        test_model.name = "mutated".to_string();
+        first_model.value = 84;
+
+        // Verify mutations
+        assert_eq!(test_model.counter, 200);
+        assert_eq!(test_model.name, "mutated");
+        assert_eq!(first_model.value, 84);
+    }
+
+    #[test]
+    fn test_event_ref_and_mut_extraction() {
+        let mut storage = EmptyStorage
+            .with_model(TestModel {
+                counter: 100,
+                name: "original".to_string(),
+            })
+            .with_model(FirstModelType { value: 50 });
+
+        let ctx = EventContext::<TestEvent, TestEffect, _>::new(&mut storage);
+
+        // Extract one model as ref and another as mut
+        let test_model_ref = ModelRef::<TestModel>::from_context(&ctx);
+        let mut first_model_mut = ModelMut::<FirstModelType>::from_context(&ctx);
+
+        // Verify initial values
+        assert_eq!(test_model_ref.counter, 100);
+        assert_eq!(test_model_ref.name, "original");
+        assert_eq!(first_model_mut.value, 50);
+
+        // Mutate only the mutable model
+        first_model_mut.value = 150;
+
+        // Verify the ref model is unchanged and mut model is changed
+        assert_eq!(test_model_ref.counter, 100);
+        assert_eq!(test_model_ref.name, "original");
+        assert_eq!(first_model_mut.value, 150);
+    }
+
+    #[derive(Debug, Clone, Default)]
+    struct FirstModelType {
+        value: i32,
     }
 }
