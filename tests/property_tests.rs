@@ -8,6 +8,7 @@
 
 use proptest::prelude::*;
 use syzygy::prelude::*;
+use syzygy::event_context::EventContext;
 use std::panic;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -34,16 +35,13 @@ struct TestModel {
     history: Vec<i32>,
 }
 
-#[derive(Default)]
-struct TestApp;
+use syzygy::storage::{Storage, EmptyStorage};
 
-impl App for TestApp {
-    type Event = TestEvent;
-    type Model = TestModel;
-    type Effect = TestEffect;
-    type Resources = ();
-
-    fn update(&self, event: Self::Event, model: &mut Self::Model) -> Command<Self::Event, Self::Effect> {
+fn test_update(
+    event: TestEvent,
+    ctx: &mut EventContext<TestEvent, TestEffect, Storage<TestModel, EmptyStorage>>,
+) -> Command<TestEvent, TestEffect> {
+    let model: &mut TestModel = ctx.model_mut();
         match event {
             TestEvent::Increment => {
                 if model.counter < model.max_value {
@@ -95,7 +93,6 @@ impl App for TestApp {
                 Command::effect(TestEffect::Log(format!("Error: {msg}")))
             }
         }
-    }
 }
 
 // Strategy for generating arbitrary TestEvents
@@ -131,14 +128,25 @@ mod property_tests {
             event in test_event_strategy(),
             model in test_model_strategy(),
         ) {
-            let app = TestApp;
             
             // Call update twice with identical inputs
-            let mut model1 = model.clone();
-            let mut model2 = model.clone();
+            let model1 = model.clone();
+            let model2 = model.clone();
             
-            let command1 = app.update(event.clone(), &mut model1);
-            let command2 = app.update(event, &mut model2);
+            let mut storage1 = EmptyStorage.with_model(model1);
+            let mut storage2 = EmptyStorage.with_model(model2);
+            let command1 = {
+                let mut ctx = EventContext::new(&mut storage1);
+                test_update(event.clone(), &mut ctx)
+            };
+            let command2 = {
+                let mut ctx = EventContext::new(&mut storage2);
+                test_update(event, &mut ctx)
+            };
+            
+            // Get models back from storage
+            let model1: &TestModel = storage1.get();
+            let model2: &TestModel = storage2.get();
             
             // Models should be identical after identical operations
             prop_assert_eq!(model1, model2);
@@ -158,12 +166,18 @@ mod property_tests {
             event in test_event_strategy(),
             model in test_model_strategy(),
         ) {
-            let app = TestApp;
             let mut test_model = model;
             
             // Catch any panics
             let result = panic::catch_unwind(panic::AssertUnwindSafe(|| {
-                app.update(event, &mut test_model)
+                { 
+                    let mut storage = EmptyStorage.with_model(test_model);
+                    {
+            let mut ctx = EventContext::new(&mut storage);
+            test_update(event, &mut ctx)
+        };
+                    test_model = storage.get().clone();
+                }
             }));
             
             prop_assert!(result.is_ok(), "update() panicked on valid input");
@@ -175,11 +189,15 @@ mod property_tests {
             event in test_event_strategy(),
             model in test_model_strategy(),
         ) {
-            let app = TestApp;
             let mut test_model = model.clone();
             let original_max = test_model.max_value;
             
-            let _command = app.update(event, &mut test_model);
+            let mut storage = EmptyStorage.with_model(test_model);
+            let _command = {
+            let mut ctx = EventContext::new(&mut storage);
+            test_update(event, &mut ctx)
+        };
+            test_model = storage.get().clone();
             
             // Invariants that should always hold:
             
@@ -206,12 +224,16 @@ mod property_tests {
         fn command_composition_properties(
             events in proptest::collection::vec(test_event_strategy(), 1..5),
         ) {
-            let app = TestApp;
             let model = TestModel { counter: 0, max_value: 100, history: vec![] };
             
             // Generate commands from events
             let commands: Vec<_> = events.iter().map(|event| {
-                app.update(event.clone(), &mut model.clone())
+                { 
+                    let mut storage = EmptyStorage.with_model(model.clone());
+                    {
+            let mut ctx = EventContext::new(&mut storage);
+            test_update(event.clone(), &mut ctx))
+                }
             }).collect();
             
             // Test batch composition
@@ -237,10 +259,14 @@ mod property_tests {
             event in test_event_strategy(),
             model in test_model_strategy(),
         ) {
-            let app = TestApp;
             let mut test_model = model;
             
-            let command = app.update(event, &mut test_model);
+            let mut storage = EmptyStorage.with_model(test_model);
+            let command = {
+            let mut ctx = EventContext::new(&mut storage);
+            test_update(event, &mut ctx)
+        };
+            test_model = storage.get().clone();
             let original_len = command.len();
             
             // Filter out effects
@@ -275,13 +301,17 @@ mod property_tests {
             events in proptest::collection::vec(test_event_strategy(), 0..20),
             initial_model in test_model_strategy(),
         ) {
-            let app = TestApp;
             let mut model = initial_model.clone();
             let original_max = model.max_value;
             
             // Process sequence of events
             for event in events {
-                let _command = app.update(event, &mut model);
+                let mut storage = EmptyStorage.with_model(model);
+                let _command = {
+            let mut ctx = EventContext::new(&mut storage);
+            test_update(event, &mut ctx)
+        };
+                model = storage.get().clone();
                 
                 // Check invariants after each event
                 prop_assert!(model.counter >= 0, "Counter became negative");
@@ -303,10 +333,14 @@ mod command_monadic_properties {
             event in test_event_strategy(),
             model in test_model_strategy(),
         ) {
-            let app = TestApp;
             let mut test_model = model;
             
-            let base_command = app.update(event, &mut test_model);
+            let mut storage = EmptyStorage.with_model(test_model);
+            let base_command = {
+            let mut ctx = EventContext::new(&mut storage);
+            test_update(event, &mut ctx)
+        };
+            test_model = storage.get().clone();
             
             // Define transformations
             let f = |_outputs: &[CommandStep<TestEvent, TestEffect>]| {
@@ -330,10 +364,14 @@ mod command_monadic_properties {
             event in test_event_strategy(),
             model in test_model_strategy(),
         ) {
-            let app = TestApp;
             let mut test_model = model;
             
-            let command = app.update(event, &mut test_model);
+            let mut storage = EmptyStorage.with_model(test_model);
+            let command = {
+            let mut ctx = EventContext::new(&mut storage);
+            test_update(event, &mut ctx)
+        };
+            test_model = storage.get().clone();
             let original_len = command.len();
             
             // when(true) should be identity
@@ -353,10 +391,14 @@ mod command_monadic_properties {
             event in test_event_strategy(),
             model in test_model_strategy(),
         ) {
-            let app = TestApp;
             let mut test_model = model;
             
-            let command = app.update(event, &mut test_model);
+            let mut storage = EmptyStorage.with_model(test_model);
+            let command = {
+            let mut ctx = EventContext::new(&mut storage);
+            test_update(event, &mut ctx)
+        };
+            test_model = storage.get().clone();
             
             if !command.is_empty() {
                 let fallback = Command::effect(TestEffect::Log("fallback".to_string()));
@@ -373,10 +415,14 @@ mod command_monadic_properties {
             event in test_event_strategy(),
             model in test_model_strategy(),
         ) {
-            let app = TestApp;
             let mut test_model = model;
             
-            let cmd1 = app.update(event, &mut test_model);
+            let mut storage = EmptyStorage.with_model(test_model);
+            let cmd1 = {
+            let mut ctx = EventContext::new(&mut storage);
+            test_update(event, &mut ctx)
+        };
+            test_model = storage.get().clone();
             let cmd2 = Command::effect(TestEffect::Log("additional".to_string()));
             
             let combined = cmd1.clone().then(cmd2.clone());

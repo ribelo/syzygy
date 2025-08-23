@@ -3,7 +3,8 @@
 //! Zero-overhead event-driven state management library for Rust applications.
 //!
 //! Syzygy provides a zero-overhead implementation of The Elm Architecture (TEA) with
-//! Core/Shell separation, enabling deterministic state management with async side effects.
+//! Core/Shell separation and a direct storage-based API, enabling deterministic state 
+//! management with async side effects and multi-model composition.
 //!
 //! ## Runtime Support
 //!
@@ -39,7 +40,80 @@
 //!
 //! # Optional: tracing for debugging (zero overhead when disabled)
 //! syzygy = { version = "0.1", features = ["tracing"] }
-
+//!
+//! ## New Storage-Based API
+//!
+//! Syzygy uses a direct storage-based approach without the need for App traits. This provides:
+//!
+//! - **🎯 Simplicity**: No traits to implement - just define update functions
+//! - **📊 Multi-Model**: Add multiple models at compile time with full type safety
+//! - **🔗 Composable**: Chain models and resources with zero-cost abstractions  
+//! - **⚡ Performance**: Direct storage access without runtime overhead
+//!
+//! ### Basic Usage
+//!
+//! ```rust,ignore
+//! use syzygy::prelude::*;
+//!
+//! // Define your models
+//! #[derive(Debug, Default)]
+//! struct UserModel {
+//!     name: String,
+//!     email: String,
+//! }
+//!
+//! #[derive(Debug, Default)]
+//! struct ConfigModel {
+//!     theme: String,
+//! }
+//!
+//! // Define your update function
+//! fn update(event: MyEvent, storage: &mut Storage<UserModel, Storage<ConfigModel, EmptyStorage>>) 
+//!     -> Command<MyEvent, MyEffect> {
+//!     let user: &mut UserModel = storage.get_mut();
+//!     let config: &mut ConfigModel = storage.get_mut();
+//!     
+//!     match event {
+//!         MyEvent::UpdateUser { name } => {
+//!             user.name = name;
+//!             Command::effect(MyEffect::SaveUser)
+//!         }
+//!         MyEvent::ChangeTheme { theme } => {
+//!             config.theme = theme;
+//!             Command::effect(MyEffect::SaveConfig)
+//!         }
+//!     }
+//! }
+//!
+//! // Build your system
+//! let (core, shell) = Syzygy::builder::<MyEvent, MyEffect>()
+//!     .model(UserModel::default())
+//!     .model(ConfigModel::default()) 
+//!     .update(update)
+//!     .build();
+//! 
+//! // Define your effect handler
+//! async fn handle_effects(effect: MyEffect, ctx: EffectContext<MyEvent>) {
+//!     match effect {
+//!         MyEffect::SaveUser => {
+//!             println!("Saving user...");
+//!             // Perform async work
+//!             tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+//!             println!("User saved!");
+//!         }
+//!         MyEffect::SaveConfig => {
+//!             println!("Saving config...");
+//!             // Could send events back to Core if needed
+//!             // let _ = ctx.send_event(MyEvent::ConfigSaved);
+//!         }
+//!     }
+//! }
+//! 
+//! // Set up the effect handler and run
+//! let shell = shell.with_effect_handler(handle_effects);
+//! let mut runner = Runner::new(core, shell);
+//! ```
+//!
 //! ## Effect Composition Patterns
 //!
 //! Syzygy supports both parallel and sequential effect execution patterns:
@@ -81,12 +155,8 @@
 //! - ✅ Functional: Clean error handling, composable patterns
 //! - ✅ Zero-overhead: Built on existing Command structure
 //! - ✅ Error handling: Automatic failure propagation
-//!
-
-//! ```
 
 // Core modules
-pub mod app;
 pub mod async_context;
 pub mod command;
 pub mod core;
@@ -101,6 +171,9 @@ pub mod builder;
 // Effect handlers with AFIT
 pub mod effect_handler;
 
+// EventContext for synchronous update functions
+pub mod event_context;
+
 // Error handling
 pub mod error;
 
@@ -113,24 +186,16 @@ pub mod spawn;
 // Storage system with UnsafeCell-based chains
 pub mod storage;
 
-// Model registry for multi-model storage (optional feature)
-#[cfg(feature = "multi-model")]
-pub mod model_registry;
-
-
 pub mod prelude {
-    // Core trait
-    pub use crate::app::App;
-
-    // EffectContext for controlled task spawning with safety guarantees
+    // Contexts for update and effect functions
+    pub use crate::event_context::EventContext;
     pub use crate::async_context::EffectContext;
 
     // Command system
     pub use crate::command::{Command, CommandStep};
 
-
     // Core/Shell architecture
-    pub use crate::core::Core;
+    pub use crate::core::{Core, UpdateFn};
     pub use crate::shell::{Shell, ShellConfig};
     pub use crate::runner::{Runner, RunnerConfig, RunnerError};
 
@@ -154,8 +219,4 @@ pub mod prelude {
 
     // Errors
     pub use crate::error::{CoreError, ShellError, CommandError};
-
-    // Multi-model storage (optional feature)
-    #[cfg(feature = "multi-model")]
-    pub use crate::model_registry::{ModelRegistry, Model, ModelGetter};
 }

@@ -16,6 +16,7 @@ A zero-overhead state management library for Rust following The Elm Architecture
 
 ```rust
 use syzygy::prelude::*;
+use syzygy::event_context::EventContext;
 use std::collections::HashMap;
 
 // Define your events (what can happen)
@@ -42,75 +43,67 @@ enum AppEffect {
     Log { message: String },
 }
 
-// Implement the App trait
-#[derive(Default)]
-struct MyApp;
-
-impl App for MyApp {
-    type Event = AppEvent;
-    type Model = AppModel;
-    type Effect = AppEffect;
+// Update function (no trait needed!)
+fn my_update(event: AppEvent, ctx: &mut EventContext<AppEvent, AppEffect, Storage<AppModel, EmptyStorage>>) -> Command<AppEvent, AppEffect> {
+    let model: &mut AppModel = ctx.model_mut();
     
-    fn update(&self, event: Self::Event, model: &mut Self::Model) -> Command<Self::Event, Self::Effect> {
-        match event {
-            AppEvent::Increment => {
-                model.counter += 1;
-                Command::effect(AppEffect::Log { 
-                    message: format!("Counter: {}", model.counter) 
-                })
-            }
-            AppEvent::LoadData => {
-                model.is_loading = true;
-                Command::effect(AppEffect::HttpRequest { 
-                    url: "https://api.example.com/data".to_string() 
-                })
-            }
-            AppEvent::DataLoaded { data } => {
-                model.data = Some(data);
-                model.is_loading = false;
-                Command::none()
-            }
-            AppEvent::Error { message } => {
-                eprintln!("Error: {}", message);
-                model.is_loading = false;
-                Command::none()
-            }
+    match event {
+        AppEvent::Increment => {
+            model.counter += 1;
+            Command::effect(AppEffect::Log { 
+                message: format!("Counter: {}", model.counter) 
+            })
+        }
+        AppEvent::LoadData => {
+            model.is_loading = true;
+            Command::effect(AppEffect::HttpRequest { 
+                url: "https://api.example.com/data".to_string() 
+            })
+        }
+        AppEvent::DataLoaded { data } => {
+            model.data = Some(data);
+            model.is_loading = false;
+            Command::none()
+        }
+        AppEvent::Error { message } => {
+            eprintln!("Error: {}", message);
+            model.is_loading = false;
+            Command::none()
         }
     }
 }
 
 // Effect handler (converts effects to async operations)
-fn handle_effect(effect: AppEffect, ctx: syzygy::async_context::EffectContext<AppEvent>) 
-    -> futures_util::future::BoxFuture<'static, ()> 
-{
-    Box::pin(async move {
-        match effect {
-            AppEffect::HttpRequest { url } => {
-                println!("🌐 Fetching: {}", url);
-                // Simulate HTTP request
-                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-                
-                let _ = ctx.send_event(AppEvent::DataLoaded { 
-                    data: "Hello from API!".to_string() 
-                });
-            }
-            AppEffect::Log { message } => {
-                println!("📝 {}", message);
-            }
+async fn handle_effects(
+    effect: AppEffect,
+    ctx: syzygy::async_context::EffectContext<AppEvent, EmptyStorage>,
+) {
+    match effect {
+        AppEffect::HttpRequest { url } => {
+            println!("🌐 Fetching: {}", url);
+            // Simulate HTTP request
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            
+            let _ = ctx.send_event(AppEvent::DataLoaded { 
+                data: "Hello from API!".to_string() 
+            });
         }
-    })
+        AppEffect::Log { message } => {
+            println!("📝 {}", message);
+        }
+    }
 }
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Build the system (auto-wired by default)
-    let (core, shell) = Syzygy::builder()
-        .app(MyApp::default())
+    // Build the system using Storage-based API
+    let (core, shell) = Syzygy::builder::<AppEvent, AppEffect>()
         .model(AppModel::default())
-        .build();  // Shell automatically connected to Core
+        .update(my_update)
+        .build();
     
     // Set up the effect handler
-    let shell = shell.with_effect_handler(handle_effect);
+    let shell = shell.with_effect_handler(handle_effects);
     
     // Use Runner for automatic orchestration
     let mut runner = Runner::new(core, shell);

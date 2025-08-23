@@ -1,6 +1,7 @@
 use std::time::Duration;
 use std::collections::HashMap;
 use syzygy::prelude::*;
+use syzygy::event_context::EventContext;
 
 /// User-defined events for a simple todo app
 #[derive(Debug, Clone)]
@@ -74,17 +75,13 @@ impl Default for TodoModel {
     }
 }
 
-/// Application implementation
-#[derive(Default)]
-struct TodoApp;
+use syzygy::storage::{Storage, EmptyStorage};
 
-impl App for TodoApp {
-    type Event = TodoEvent;
-    type Model = TodoModel;
-    type Effect = TodoEffect;
-    type Resources = ();
-
-    fn update(&self, event: Self::Event, model: &mut Self::Model) -> Command<Self::Event, Self::Effect> {
+fn todo_update(
+    event: TodoEvent,
+    ctx: &mut EventContext<TodoEvent, TodoEffect, Storage<TodoModel, EmptyStorage>>,
+) -> Command<TodoEvent, TodoEffect> {
+    let model: &mut TodoModel = ctx.model_mut();
         match event {
             TodoEvent::AddTodo { text } => {
                 if text.trim().is_empty() {
@@ -201,15 +198,13 @@ impl App for TodoApp {
                 })
             }
         }
-    }
 }
 
 /// AFIT Effect handler - converts effects to async operations with zero-cost abstractions
 /// This is where users implement their own I/O logic using function pointers (no captures)
 async fn handle_effect(
     effect: TodoEffect,
-    _resources: std::sync::Arc<()>,
-    ctx: EffectContext<TodoEvent>,
+    ctx: EffectContext<TodoEvent, EmptyStorage>,
 ) {
     // No more boxing overhead! Pure AFIT implementation
         match effect {
@@ -292,9 +287,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("🚀 Starting Syzygy Todo App with User-Defined Effects");
     
     // Build the system (auto-wired by default)
-    let (core, shell) = Syzygy::builder::<TodoApp>()
-        .app(TodoApp)
+    let (core, shell) = Syzygy::builder::<TodoEvent, TodoEffect>()
         .model(TodoModel::default())
+        .update(todo_update)
         .build();
     
     // Set up the effect handler
@@ -335,9 +330,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("🚀 Starting Syzygy Todo App with User-Defined Effects (smol runtime)");
         
         // Build the system (auto-wired by default)
-        let (core, shell) = Syzygy::builder::<TodoApp>()
-            .app(TodoApp)
+        let (core, shell) = Syzygy::builder::<TodoEvent, TodoEffect>()
             .model(TodoModel::default())
+            .update(todo_update)
             .build();
         
         // Set up the effect handler
@@ -376,9 +371,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("🚀 Starting Syzygy Todo App with User-Defined Effects (async-std runtime)");
         
         // Build the system (auto-wired by default)
-        let (core, shell) = Syzygy::builder::<TodoApp>()
-            .app(TodoApp)
+        let (core, shell) = Syzygy::builder::<TodoEvent, TodoEffect>()
             .model(TodoModel::default())
+            .update(todo_update)
             .build();
         
         // Set up the effect handler

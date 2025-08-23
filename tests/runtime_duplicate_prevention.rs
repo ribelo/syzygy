@@ -21,12 +21,12 @@ pub struct TestModel3 {
 #[test]
 fn test_runtime_contains_checking() {
     // Test empty chain
-    let empty = EmptyStorage::default();
+    let empty = EmptyStorage;
     assert!(!empty.contains::<TestModel1>());
     assert!(!empty.contains::<TestModel2>());
     
     // Test single element chain
-    let single = EmptyStorage::default()
+    let single = EmptyStorage
         .with_model_unchecked(TestModel1 { value: 1 });
     assert!(single.contains::<TestModel1>());
     assert!(!single.contains::<TestModel2>());
@@ -42,7 +42,7 @@ fn test_runtime_contains_checking() {
 
 #[test]
 fn test_try_with_model_success() {
-    let chain = EmptyStorage::default()
+    let chain = EmptyStorage
         .with_model_unchecked(TestModel1 { value: 1 });
     
     // Adding different type should succeed
@@ -56,7 +56,7 @@ fn test_try_with_model_success() {
 
 #[test]
 fn test_try_with_model_duplicate_error() {
-    let chain = EmptyStorage::default()
+    let chain = EmptyStorage
         .with_model_unchecked(TestModel1 { value: 1 });
     
     // Adding same type should fail
@@ -71,7 +71,7 @@ fn test_try_with_model_duplicate_error() {
 #[test]
 #[should_panic(expected = "Duplicate type in chain")]
 fn test_with_model_panics_on_duplicate() {
-    let chain = EmptyStorage::default()
+    let chain = EmptyStorage
         .with_model_unchecked(TestModel1 { value: 1 });
     
     // This should panic
@@ -80,7 +80,7 @@ fn test_with_model_panics_on_duplicate() {
 
 #[test]
 fn test_with_model_success() {
-    let chain = EmptyStorage::default()
+    let chain = EmptyStorage
         .with_model_unchecked(TestModel1 { value: 1 })
         .with_model(TestModel2 { name: "test".to_string() }); // Should work
     
@@ -97,7 +97,7 @@ fn test_with_model_success() {
 #[test]
 fn test_with_model_unchecked_allows_duplicates() {
     // Unchecked version should allow duplicates (but they become unusable)
-    let chain = EmptyStorage::default()
+    let chain = EmptyStorage
         .with_model_unchecked(TestModel1 { value: 1 })
         .with_model_unchecked(TestModel1 { value: 999 }); // Should compile
     
@@ -114,7 +114,7 @@ fn test_with_model_unchecked_allows_duplicates() {
 #[test]
 fn test_safe_chain_building_with_try() {
     // Build chain safely with proper error handling
-    let result1 = EmptyStorage::default().try_with_model(TestModel1 { value: 1 }).unwrap();
+    let result1 = EmptyStorage.try_with_model(TestModel1 { value: 1 }).unwrap();
     let result2 = result1.try_with_model(TestModel2 { name: "test".to_string() }).unwrap();
     let result3 = result2.try_with_model(TestModel3 { count: 10 });
     
@@ -131,7 +131,7 @@ fn test_safe_chain_building_with_try() {
 #[test]
 fn test_safe_chain_building_with_panics() {
     // Build chain with panic on duplicates
-    let chain = EmptyStorage::default()
+    let chain = EmptyStorage
         .with_model(TestModel1 { value: 1 })         // First one is fine
         .with_model(TestModel2 { name: "test".to_string() }) // Different type is fine
         .with_model(TestModel3 { count: 10 });       // Different type is fine
@@ -152,9 +152,9 @@ fn test_safe_chain_building_with_panics() {
 #[test]
 fn test_nochain_methods() {
     // Test that NoChain has all the necessary methods
-    let chain1 = EmptyStorage::default().with_model(TestModel1 { value: 1 });
-    let chain2 = EmptyStorage::default().with_model_unchecked(TestModel1 { value: 1 });
-    let chain3 = EmptyStorage::default().try_with_model(TestModel1 { value: 1 }).unwrap();
+    let chain1 = EmptyStorage.with_model(TestModel1 { value: 1 });
+    let chain2 = EmptyStorage.with_model_unchecked(TestModel1 { value: 1 });
+    let chain3 = EmptyStorage.try_with_model(TestModel1 { value: 1 }).unwrap();
     
     // All should work the same for NoChain since it's empty
     assert!(chain1.contains::<TestModel1>());

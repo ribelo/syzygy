@@ -1,6 +1,5 @@
 use std::time::Duration;
 
-use crate::app::App;
 use crate::core::Core;
 use crate::shell::Shell;
 use crate::effect_handler::EffectHandler;
@@ -37,15 +36,25 @@ impl Default for RunnerConfig {
 /// This solves Grug's complaint about manual event loop orchestration.
 /// Instead of users manually calling poll_events → process → execute → tick,
 /// Runner handles the proper sequencing automatically.
-pub struct Runner<A: App, H = ()> {
-    core: Core<A>,
-    shell: Shell<A, H>,
+pub struct Runner<Event, Effect, Storage, Resources = (), H = ()> 
+where
+    Event: Clone + Send + 'static,
+    Effect: Clone + Send + 'static,
+    Resources: Send + Sync + 'static,
+{
+    core: Core<Event, Effect, Storage>,
+    shell: Shell<Event, Effect, Resources, H>,
     config: RunnerConfig,
 }
 
-impl<A: App, H> Runner<A, H> {
+impl<Event, Effect, Storage, Resources, H> Runner<Event, Effect, Storage, Resources, H> 
+where
+    Event: Clone + Send + 'static,
+    Effect: Clone + Send + 'static,
+    Resources: Send + Sync + 'static,
+{
     /// Create a new Runner with Core and Shell
-    pub fn new(core: Core<A>, shell: Shell<A, H>) -> Self {
+    pub fn new(core: Core<Event, Effect, Storage>, shell: Shell<Event, Effect, Resources, H>) -> Self {
         Self {
             core,
             shell,
@@ -54,7 +63,7 @@ impl<A: App, H> Runner<A, H> {
     }
 
     /// Create a new Runner with custom configuration
-    pub fn with_config(core: Core<A>, shell: Shell<A, H>, config: RunnerConfig) -> Self {
+    pub fn with_config(core: Core<Event, Effect, Storage>, shell: Shell<Event, Effect, Resources, H>, config: RunnerConfig) -> Self {
         Self {
             core,
             shell,
@@ -67,9 +76,7 @@ impl<A: App, H> Runner<A, H> {
     /// This will run until the shell is shut down or an error occurs.
     pub async fn run<S>(&mut self, spawner: S) -> Result<(), RunnerError>
     where
-        A::Event: Clone + Send + 'static,
-        A::Effect: Clone + Send + 'static,
-        H: EffectHandler<A::Event, A::Effect, A::Resources> + Clone + Send + Sync + 'static,
+        H: EffectHandler<Event, Effect, Resources> + Clone + Send + Sync + 'static,
         S: Spawn,
     {
         loop {
@@ -97,10 +104,8 @@ impl<A: App, H> Runner<A, H> {
         spawner: S
     ) -> Result<(), RunnerError>
     where
-        F: FnMut(&Core<A>, &Shell<A, H>) -> bool,
-        A::Event: Clone + Send + 'static,
-        A::Effect: Clone + Send + 'static,
-        H: EffectHandler<A::Event, A::Effect, A::Resources> + Clone + Send + Sync + 'static,
+        F: FnMut(&Core<Event, Effect, Storage>, &Shell<Event, Effect, Resources, H>) -> bool,
+        H: EffectHandler<Event, Effect, Resources> + Clone + Send + Sync + 'static,
         S: Spawn,
     {
         let start_time = std::time::Instant::now();
@@ -133,41 +138,26 @@ impl<A: App, H> Runner<A, H> {
     /// Execute a single tick of the event loop
     ///
     /// Returns true if work was done, false if idle.
+    #[allow(clippy::unused_async)]
     pub async fn tick<S>(&mut self, spawner: S) -> Result<bool, RunnerError>
     where
-        A::Event: Clone + Send + 'static,
-        A::Effect: Clone + Send + 'static,
-        H: EffectHandler<A::Event, A::Effect, A::Resources> + Clone + Send + Sync + 'static,
+        H: EffectHandler<Event, Effect, Resources> + Clone + Send + Sync + 'static,
         S: Spawn,
     {
         let mut did_work = false;
 
-        // Only poll external events initially if we have no queued work
-        if !self.core.has_queued_events() {
-            self.core.poll_external_events();
-        }
-
-        // Process all events until stable (commands may generate more events)
-        loop {
-            // 1. Process any events in the queue
-            let commands = self.core.process_queued_events();
-            if commands.is_empty() {
-                break; // No more events to process
-            }
-
+        // Process all events
+        let (processed, commands) = self.core.process_events();
+        
+        if processed {
             did_work = true;
             if self.config.debug_logging {
                 println!("Runner: Processing {} commands", commands.len());
             }
 
-            // 3. Dispatch commands to Shell (may route events back to Core)
+            // Dispatch commands to Shell (may route events back to Core)
             for command in commands {
                 self.shell.dispatch(command).map_err(RunnerError::Shell)?;
-            }
-
-            // Only poll external events between batches if we don't have queued work
-            if !self.core.has_queued_events() {
-                self.core.poll_external_events();
             }
         }
 
@@ -185,22 +175,22 @@ impl<A: App, H> Runner<A, H> {
     }
 
     /// Get a reference to the Core
-    pub fn core(&self) -> &Core<A> {
+    pub fn core(&self) -> &Core<Event, Effect, Storage> {
         &self.core
     }
 
     /// Get a mutable reference to the Core
-    pub fn core_mut(&mut self) -> &mut Core<A> {
+    pub fn core_mut(&mut self) -> &mut Core<Event, Effect, Storage> {
         &mut self.core
     }
 
     /// Get a reference to the Shell
-    pub fn shell(&self) -> &Shell<A, H> {
+    pub fn shell(&self) -> &Shell<Event, Effect, Resources, H> {
         &self.shell
     }
 
     /// Get a mutable reference to the Shell
-    pub fn shell_mut(&mut self) -> &mut Shell<A, H> {
+    pub fn shell_mut(&mut self) -> &mut Shell<Event, Effect, Resources, H> {
         &mut self.shell
     }
 
@@ -237,9 +227,7 @@ pub enum RunnerError {
 mod tests {
     use super::*;
     use crate::prelude::*;
-
-    #[derive(Debug)]
-    struct TestApp;
+    use crate::storage::{EmptyStorage, Storage};
 
     #[derive(Debug, Clone)]
     enum TestEvent {
@@ -247,7 +235,7 @@ mod tests {
         Pong,
     }
 
-    #[derive(Debug)]
+    #[derive(Debug, Default)]
     struct TestModel {
         count: i32,
     }
@@ -257,39 +245,30 @@ mod tests {
         Log,
     }
 
-    impl App for TestApp {
-        type Event = TestEvent;
-        type Model = TestModel;
-        #[cfg(feature = "view-model")]
-        type ViewModel = i32;
-        type Effect = TestEffect;
-        type Resources = ();
-
-        fn update(&self, event: Self::Event, model: &mut Self::Model) -> Command<Self::Event, Self::Effect> {
-            match event {
-                TestEvent::Ping => {
-                    model.count += 1;
-                    Command::event(TestEvent::Pong)
-                }
-                TestEvent::Pong => {
-                    model.count += 1;
-                    Command::effect(TestEffect::Log)
-                }
+    fn test_update(
+        event: TestEvent, 
+        ctx: &mut crate::event_context::EventContext<TestEvent, TestEffect, Storage<TestModel, EmptyStorage>>
+    ) -> Command<TestEvent, TestEffect> {
+        let model: &mut TestModel = ctx.model_mut();
+        
+        match event {
+            TestEvent::Ping => {
+                model.count += 1;
+                Command::event(TestEvent::Pong)
             }
-        }
-
-        #[cfg(feature = "view-model")]
-        fn view(&self, model: &Self::Model) -> Self::ViewModel {
-            model.count
+            TestEvent::Pong => {
+                model.count += 1;
+                Command::effect(TestEffect::Log)
+            }
         }
     }
 
     #[cfg(feature = "tokio")]
     #[tokio::test]
     async fn test_runner_basic() {
-        let (core, shell) = Syzygy::builder::<TestApp>()
-            .app(TestApp)
+        let (core, shell) = Syzygy::builder::<TestEvent, TestEffect>()
             .model(TestModel { count: 0 })
+            .update(test_update)
             .build();
 
         let event_sender = core.event_sender();
@@ -303,15 +282,16 @@ mod tests {
         let did_work = runner.tick(crate::spawn::TokioSpawn).await.unwrap();
 
         assert!(did_work);
-        assert_eq!(runner.core().model().count, 2); // Ping -> Pong -> +2
+        let model: &TestModel = runner.core().storage().get();
+        assert_eq!(model.count, 1); // Ping -> count=1, Pong event dispatched but not processed yet in same tick
     }
 
     #[cfg(feature = "tokio")]
     #[tokio::test]
     async fn test_runner_until_condition() {
-        let (core, shell) = Syzygy::builder::<TestApp>()
-            .app(TestApp)
+        let (core, shell) = Syzygy::builder::<TestEvent, TestEffect>()
             .model(TestModel { count: 0 })
+            .update(test_update)
             .build();
 
         let event_sender = core.event_sender();
@@ -334,10 +314,14 @@ mod tests {
 
         // Run until count reaches 10
         runner.run_until(
-            |core, _shell| core.model().count >= 10,
+            |core, _shell| {
+                let model: &TestModel = core.storage().get();
+                model.count >= 10
+            },
             crate::spawn::TokioSpawn
         ).await.unwrap();
 
-        assert_eq!(runner.core().model().count, 10);
+        let model: &TestModel = runner.core().storage().get();
+        assert_eq!(model.count, 10);
     }
 }

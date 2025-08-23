@@ -6,6 +6,7 @@
 
 use syzygy::prelude::*;
 use syzygy::command::CommandStep;
+use syzygy::event_context::EventContext;
 
 #[derive(Debug, Clone, PartialEq)]
 enum UserEvent {
@@ -25,22 +26,19 @@ enum UserEffect {
     LogActivity { activity: String },
 }
 
-#[derive(Default)]
-struct UserApp;
-
 #[derive(Debug, Default)]
 struct UserModel {
     current_user: Option<u32>,
     authenticated: bool,
 }
 
-impl App for UserApp {
-    type Event = UserEvent;
-    type Model = UserModel;
-    type Effect = UserEffect;
-    type Resources = ();
+use syzygy::storage::{Storage, EmptyStorage};
 
-    fn update(&self, event: Self::Event, model: &mut Self::Model) -> Command<Self::Event, Self::Effect> {
+fn user_update(
+    event: UserEvent,
+    ctx: &mut EventContext<UserEvent, UserEffect, Storage<UserModel, EmptyStorage>>,
+) -> Command<UserEvent, UserEffect> {
+    let model: &mut UserModel = ctx.model_mut();
         match event {
             UserEvent::Login { username } => {
                 Command::effect(UserEffect::ValidateCredentials { username })
@@ -84,24 +82,23 @@ impl App for UserApp {
                 })
             }
         }
-    }
 }
 
 fn main() {
     println!("Command Domain-Specific Operations Demo");
     println!("======================================");
     
-    let app = UserApp;
-    let mut model = UserModel { 
+    let mut storage = syzygy::storage::EmptyStorage.with_model(UserModel { 
         authenticated: true, 
         current_user: Some(123) 
-    };
+    });
     
     // Create a complex command
-    let command = app.update(UserEvent::UpdateProfile { 
+    let mut ctx = EventContext::new(&mut storage);
+    let command = user_update(UserEvent::UpdateProfile { 
         user_id: 123, 
         data: "New profile data".to_string() 
-    }, &mut model);
+    }, &mut ctx);
     
     println!("\n1. Command Analysis:");
     println!("   Total outputs: {}", command.len());
@@ -128,7 +125,6 @@ fn main() {
                     println!("     {}.{}: {:?}", i + 1, j + 1, effect);
                 }
             }
-            CommandStep::InlineFuture(_) => println!("   {}: InlineFuture", i + 1),
         }
     }
     

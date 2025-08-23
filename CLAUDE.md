@@ -89,6 +89,7 @@ syzygy::spawn::spawner().spawn(my_work());
 
 ```rust
 use syzygy::prelude::*;
+use syzygy::event_context::EventContext;
 
 // Define your app
 #[derive(Default)]
@@ -117,34 +118,30 @@ struct MyModel {
     data: String,
 }
 
-// Implement App trait
-impl App for MyApp {
-    type Event = MyEvent;
-    type Model = MyModel;
-    type Effect = MyEffect;
-
-    fn update(&self, event: Self::Event, model: &mut Self::Model) -> Command<Self::Event, Self::Effect> {
-        match event {
-            MyEvent::UserClicked => {
-                model.count += 1;
-                Command::effect(MyEffect::LogMessage {
-                    text: format!("Count: {}", model.count)
-                })
-            }
-            MyEvent::ValidationError { message } => {
-                // Handle error events like any other event
-                eprintln!("Error: {}", message);
-                Command::none()
-            }
-            _ => Command::none()
+// Update function (no trait needed!)
+fn my_update(event: MyEvent, ctx: &mut EventContext<MyEvent, MyEffect, Storage<MyModel, EmptyStorage>>) -> Command<MyEvent, MyEffect> {
+    let model: &mut MyModel = ctx.model_mut();
+    
+    match event {
+        MyEvent::UserClicked => {
+            model.count += 1;
+            Command::effect(MyEffect::LogMessage {
+                text: format!("Count: {}", model.count)
+            })
         }
+        MyEvent::ValidationError { message } => {
+            // Handle error events like any other event
+            eprintln!("Error: {}", message);
+            Command::none()
+        }
+        _ => Command::none()
     }
 }
 
 // Build the system
-let (core, shell) = Syzygy::builder()
-    .app(MyApp::default())
+let (core, shell) = Syzygy::builder::<MyEvent, MyEffect>()
     .model(MyModel::default())
+    .update(my_update)
     .build();
 
 // Set up effect handler
@@ -201,22 +198,20 @@ fn update(&self, event: Event, model: &mut Model) -> Command<Event, Effect> {
 The EffectContext provides safe, high-performance task spawning:
 
 ```rust
-fn handle_effects(effect: MyEffect, ctx: EffectContext<MyEvent>) -> BoxFuture<'static, ()> {
-    Box::pin(async move {
-        match effect {
-            MyEffect::HttpRequest { url } => {
-                // Spawn tasks safely - all will be cancelled on context drop
-                ctx.spawn(async move {
-                    let response = reqwest::get(&url).await.unwrap();
-                    let data = response.text().await.unwrap();
-                    let _ = ctx.send_event(MyEvent::DataReceived { data });
-                }).unwrap();
-            }
-            MyEffect::LogMessage { text } => {
-                println!("{}", text);
-            }
+async fn handle_effects(effect: MyEffect, ctx: EffectContext<MyEvent, EmptyStorage>) {
+    match effect {
+        MyEffect::HttpRequest { url } => {
+            // Spawn tasks safely - all will be cancelled on context drop
+            ctx.spawn(async move {
+                let response = reqwest::get(&url).await.unwrap();
+                let data = response.text().await.unwrap();
+                let _ = ctx.send_event(MyEvent::DataReceived { data });
+            }).unwrap();
         }
-    })
+        MyEffect::LogMessage { text } => {
+            println!("{}", text);
+        }
+    }
 }
 ```
 
@@ -252,12 +247,13 @@ mod tests {
 
     #[test]
     fn test_event_processing() {
-        let app = MyApp::default();
-        let mut model = MyModel::default();
+        let mut storage = EmptyStorage.with_model(MyModel::default());
         let event = MyEvent::UserClicked;
 
-        let command = app.update(event, &mut model);
+        let mut ctx = EventContext::new(&mut storage);
+        let command = my_update(event, &mut ctx);
 
+        let model: &MyModel = storage.get();
         assert_eq!(model.count, 1);
         // Check command contains expected effects/events
     }

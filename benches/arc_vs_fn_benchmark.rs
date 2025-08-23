@@ -53,7 +53,7 @@ fn benchmark_arc_cloning(c: &mut Criterion) {
         b.iter(|| {
             let cloned = Arc::clone(&handler);
             black_box(cloned);
-        })
+        });
     });
 }
 
@@ -76,7 +76,7 @@ fn benchmark_effect_execution(c: &mut Criterion) {
             let effect_clone = effect.clone();
             let future = cloned_handler(effect_clone, ctx);
             black_box(future);
-        })
+        });
     });
     
     // Benchmark function pointer (zero overhead)
@@ -85,7 +85,7 @@ fn benchmark_effect_execution(c: &mut Criterion) {
             let effect_clone = effect.clone();
             let future = fn_handler(effect_clone, ctx);
             black_box(future);
-        })
+        });
     });
     
     group.finish();
@@ -98,7 +98,7 @@ fn benchmark_batch_effects(c: &mut Criterion) {
     let effects: Vec<BenchEffect> = (0..100)
         .map(|i| BenchEffect {
             id: i,
-            data: format!("batch_data_{}", i),
+            data: format!("batch_data_{i}"),
         })
         .collect();
     
@@ -115,7 +115,7 @@ fn benchmark_batch_effects(c: &mut Criterion) {
                 let future = cloned_handler(effect_clone, ctx);
                 black_box(future);
             }
-        })
+        });
     });
     
     // Batch processing with function pointer
@@ -126,7 +126,7 @@ fn benchmark_batch_effects(c: &mut Criterion) {
                 let future = fn_handler(effect_clone, ctx);
                 black_box(future);
             }
-        })
+        });
     });
     
     group.finish();
@@ -155,7 +155,7 @@ fn benchmark_memory_access_patterns(c: &mut Criterion) {
             // The actual function call through Arc indirection
             let future = cloned(effect_clone, ctx);
             black_box(future);
-        })
+        });
     });
     
     // Direct function call (zero indirection)  
@@ -164,7 +164,7 @@ fn benchmark_memory_access_patterns(c: &mut Criterion) {
             let effect_clone = effect.clone();
             let future = fn_handler(effect_clone, ctx);
             black_box(future);
-        })
+        });
     });
     
     group.finish();
@@ -183,7 +183,7 @@ fn benchmark_concurrent_access(c: &mut Criterion) {
                 .map(|_| Arc::clone(&arc_handler))
                 .collect();
             black_box(handlers);
-        })
+        });
     });
     
     group.finish();

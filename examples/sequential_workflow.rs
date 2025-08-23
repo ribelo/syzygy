@@ -25,9 +25,6 @@ use syzygy::prelude::*;
 use std::time::Duration;
 use tokio::time::sleep;
 
-#[derive(Default)]
-struct WorkflowApp;
-
 #[derive(Debug, Clone)]
 enum WorkflowEvent {
     StartUserOnboarding { username: String, password: String },
@@ -64,63 +61,66 @@ struct WorkflowModel {
     errors: Vec<String>,
 }
 
-impl App for WorkflowApp {
-    type Event = WorkflowEvent;
-    type Model = WorkflowModel;
-    type Effect = WorkflowEffect;
-    type Resources = ();
+use syzygy::storage::{Storage, EmptyStorage};
 
-    fn update(&self, event: Self::Event, model: &mut Self::Model) -> Command<Self::Event, Self::Effect> {
-        match event {
-            WorkflowEvent::StartUserOnboarding { username, password } => {
-                println!("🚀 Starting user onboarding for: {}", username);
-                
-                // This is the key innovation: sequential effects with fail-fast error handling
-                // If any step fails, the entire pipeline stops automatically
-                Command::sequence([
-                    Command::effect(WorkflowEffect::LoginUser { 
-                        username: username.clone(), 
-                        password,
-                    }),
-                    Command::effect(WorkflowEffect::FetchUserData { 
-                        user_id: 42, // In real app, this would come from login result
-                    }),
-                    Command::effect(WorkflowEffect::FetchAddressData { 
-                        user_id: 42,
-                    }),
-                    Command::effect(WorkflowEffect::MakeASandwichForUser { 
-                        user_id: 42, 
-                        preferences: "Turkey and swiss".to_string(),
-                    }),
-                ])
-            }
+fn workflow_update(
+    event: WorkflowEvent, 
+    ctx: &mut EventContext<WorkflowEvent, WorkflowEffect, Storage<WorkflowModel, EmptyStorage>>
+) -> Command<WorkflowEvent, WorkflowEffect> {
+    let model: &mut WorkflowModel = ctx.model_mut();
+    
+    match event {
+        WorkflowEvent::StartUserOnboarding { username, password } => {
+            println!("🚀 Starting user onboarding for: {}", username);
             
-            WorkflowEvent::ErrorOccurred { message } => {
-                println!("❌ Error: {}", message);
-                model.errors.push(message);
-                Command::none()
-            }
+            // This is the key innovation: sequential effects with fail-fast error handling
+            // If any step fails, the entire pipeline stops automatically
+            Command::sequence([
+                Command::effect(WorkflowEffect::LoginUser { 
+                    username: username.clone(), 
+                    password,
+                }),
+                Command::effect(WorkflowEffect::FetchUserData { 
+                    user_id: 42, // In real app, this would come from login result
+                }),
+                Command::effect(WorkflowEffect::FetchAddressData { 
+                    user_id: 42,
+                }),
+                Command::effect(WorkflowEffect::MakeASandwichForUser { 
+                    user_id: 42, 
+                    preferences: "Turkey and swiss".to_string(),
+                }),
+            ])
+        }
+        
+        WorkflowEvent::ErrorOccurred { message } => {
+            println!("❌ Error: {}", message);
+            model.errors.push(message);
+            Command::none()
+        }
+        
+        WorkflowEvent::OnboardingComplete { user_id } => {
+            println!("✅ Onboarding complete for user {}", user_id);
+            model.user_id = Some(user_id);
             
-            WorkflowEvent::OnboardingComplete { user_id } => {
-                println!("✅ Onboarding complete for user {}", user_id);
-                model.user_id = Some(user_id);
-                
-                // After successful onboarding, fetch additional data 
-                // Since we removed parallel coordination, we'll use individual effects
-                // (In a real app, you might batch these or use a different pattern)
-                println!("📊 Fetching additional user data...");
-                Command::batch([
-                    Command::effect(WorkflowEffect::FetchUserProfile { user_id }),
-                    Command::effect(WorkflowEffect::FetchUserNotifications { user_id }),
-                    Command::effect(WorkflowEffect::FetchUserPreferences { user_id }),
-                ])
-            }
+            // After successful onboarding, fetch additional data 
+            // Since we removed parallel coordination, we'll use individual effects
+            // (In a real app, you might batch these or use a different pattern)
+            println!("📊 Fetching additional user data...");
+            Command::batch([
+                Command::effect(WorkflowEffect::FetchUserProfile { user_id }),
+                Command::effect(WorkflowEffect::FetchUserNotifications { user_id }),
+                Command::effect(WorkflowEffect::FetchUserPreferences { user_id }),
+            ])
         }
     }
 }
 
 /// Mock effect handler that simulates realistic async operations
-async fn create_effect_handler(effect: WorkflowEffect, _resources: std::sync::Arc<()>, ctx: EffectContext<WorkflowEvent>) {
+async fn create_effect_handler(
+    effect: WorkflowEffect,
+    ctx: EffectContext<WorkflowEvent, EmptyStorage>,
+) {
             match effect {
                 WorkflowEffect::LoginUser { username, password: _ } => {
                     println!("🔐 Logging in user: {}", username);
@@ -174,9 +174,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!();
     
     // Build the application
-    let (core, shell) = Syzygy::builder()
-        .app(WorkflowApp)
+    let (core, shell) = Syzygy::builder::<WorkflowEvent, WorkflowEffect>()
         .model(WorkflowModel::default())
+        .update(workflow_update)
         .build();
 
     let shell = shell.with_effect_handler(create_effect_handler);

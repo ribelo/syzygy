@@ -8,9 +8,6 @@ use syzygy::prelude::*;
 use syzygy::spawn::spawner;
 use std::time::Duration;
 
-#[derive(Debug, Default)]
-struct TestApp;
-
 #[derive(Debug, Clone)]
 enum TestEvent {
     Start,
@@ -29,13 +26,13 @@ enum TestEffect {
     Delay(Duration),
 }
 
-impl App for TestApp {
-    type Event = TestEvent;
-    type Model = TestModel;
-    type Effect = TestEffect;
-    type Resources = ();
+use syzygy::storage::{Storage, EmptyStorage};
 
-    fn update(&self, event: Self::Event, model: &mut Self::Model) -> Command<Self::Event, Self::Effect> {
+fn test_update(
+    event: TestEvent,
+    ctx: &mut EventContext<TestEvent, TestEffect, Storage<TestModel, EmptyStorage>>,
+) -> Command<TestEvent, TestEffect> {
+    let model: &mut TestModel = ctx.model_mut();
         match event {
             TestEvent::Start => {
                 model.step = 1;
@@ -50,10 +47,9 @@ impl App for TestApp {
                 Command::none()
             }
         }
-    }
 }
 
-async fn test_effect_handler(effect: TestEffect, _resources: std::sync::Arc<()>, ctx: EffectContext<TestEvent>) {
+async fn test_effect_handler(effect: TestEffect, ctx: EffectContext<TestEvent, EmptyStorage>) {
     match effect {
         TestEffect::Delay(duration) => {
             // Use runtime-neutral sleep
@@ -75,15 +71,12 @@ async fn test_effect_handler(effect: TestEffect, _resources: std::sync::Arc<()>,
 #[cfg(feature = "tokio")]
 #[tokio::test]
 async fn test_tokio_runtime() {
-    let (core, shell) = Syzygy::builder::<TestApp>()
-        .app(TestApp)
+    let (core, shell) = Syzygy::builder::<TestEvent, TestEffect>()
         .model(TestModel::default())
-        .resources(())
+        .update(test_update)
         .build();
     
-    let shell = shell.with_effect_handler(|effect, _resources, ctx| {
-        Box::pin(test_effect_handler(effect, _resources, ctx))
-    });
+    let shell = shell.with_effect_handler(test_effect_handler);
     
     let mut runner = Runner::new(core, shell);
     let event_sender = runner.core().event_sender();
@@ -106,15 +99,12 @@ async fn test_tokio_runtime() {
 #[test]
 fn test_smol_runtime() {
     smol::block_on(async {
-        let (core, shell) = Syzygy::builder::<TestApp>()
-            .app(TestApp)
+        let (core, shell) = Syzygy::builder::<TestEvent, TestEffect>()
             .model(TestModel::default())
-            .resources(())
+            .update(test_update)
             .build();
         
-        let shell = shell.with_effect_handler(|effect, ctx| {
-            Box::pin(test_effect_handler(effect, ctx))
-        });
+        let shell = shell.with_effect_handler(test_effect_handler);
         
         let mut runner = Runner::new(core, shell);
         let event_sender = runner.core().event_sender();
@@ -138,15 +128,12 @@ fn test_smol_runtime() {
 #[test]
 fn test_async_std_runtime() {
     async_std::task::block_on(async {
-        let (core, shell) = Syzygy::builder::<TestApp>()
-            .app(TestApp)
+        let (core, shell) = Syzygy::builder::<TestEvent, TestEffect>()
             .model(TestModel::default())
-            .resources(())
+            .update(test_update)
             .build();
         
-        let shell = shell.with_effect_handler(|effect, ctx| {
-            Box::pin(test_effect_handler(effect, ctx))
-        });
+        let shell = shell.with_effect_handler(test_effect_handler);
         
         let mut runner = Runner::new(core, shell);
         let event_sender = runner.core().event_sender();
@@ -170,15 +157,12 @@ fn test_async_std_runtime() {
 #[cfg(feature = "tokio")]
 #[tokio::test]
 async fn test_auto_spawn_adapter() {
-    let (core, shell) = Syzygy::builder::<TestApp>()
-        .app(TestApp)
+    let (core, shell) = Syzygy::builder::<TestEvent, TestEffect>()
         .model(TestModel::default())
-        .resources(())
+        .update(test_update)
         .build();
     
-    let shell = shell.with_effect_handler(|effect, _resources, ctx| {
-        Box::pin(test_effect_handler(effect, _resources, ctx))
-    });
+    let shell = shell.with_effect_handler(test_effect_handler);
     
     let mut runner = Runner::new(core, shell);
     let event_sender = runner.core().event_sender();
@@ -203,15 +187,12 @@ async fn test_auto_spawn_adapter() {
 #[test]
 fn test_auto_spawn_with_smol() {
     smol::block_on(async {
-        let (core, shell) = Syzygy::builder::<TestApp>()
-            .app(TestApp)
+        let (core, shell) = Syzygy::builder::<TestEvent, TestEffect>()
             .model(TestModel::default())
-            .resources(())
+            .update(test_update)
             .build();
         
-        let shell = shell.with_effect_handler(|effect, ctx| {
-            Box::pin(test_effect_handler(effect, ctx))
-        });
+        let shell = shell.with_effect_handler(test_effect_handler);
         
         let mut runner = Runner::new(core, shell);
         let event_sender = runner.core().event_sender();

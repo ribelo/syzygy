@@ -38,12 +38,6 @@ where
                 }
                 // If no event sender, just drop the event (for testing scenarios)
             }
-            CommandStep::InlineFuture(closure) => {
-                _effect_count += 1;
-                effect_sender
-                    .send(CommandStep::InlineFuture(closure))
-                    .map_err(|_| CommandError::CommandPanic("Effect channel closed".to_string()))?;
-            }
             CommandStep::Effect(effect) => {
                 _effect_count += 1;
                 #[cfg(feature = "tracing")]

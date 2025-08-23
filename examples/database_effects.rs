@@ -74,17 +74,13 @@ struct AppModel {
     last_error: Option<String>,
 }
 
-/// App implementation
-#[derive(Default)]
-struct DatabaseApp;
+use syzygy::storage::{Storage, EmptyStorage};
 
-impl App for DatabaseApp {
-    type Event = AppEvent;
-    type Model = AppModel;
-    type Effect = AppEffect;
-    type Resources = AppResources;
-
-    fn update(&self, event: Self::Event, model: &mut Self::Model) -> Command<Self::Event, Self::Effect> {
+fn database_update(
+    event: AppEvent,
+    ctx: &mut EventContext<AppEvent, AppEffect, Storage<AppModel, EmptyStorage>>,
+) -> Command<AppEvent, AppEffect> {
+    let model: &mut AppModel = ctx.model_mut();
         match event {
             AppEvent::LoadUser { user_id } => {
                 // Check if we already have the user in local state
@@ -140,32 +136,26 @@ impl App for DatabaseApp {
                 })
             }
         }
-    }
 }
 
 /// Effect handler - receives all data through parameters
 /// NO STATE CAPTURE - this is the key lesson from Crux!
-/// Resources provide clean access to typed dependencies via Arc for 'static compatibility
-fn handle_effects(effect: AppEffect, resources: std::sync::Arc<AppResources>, ctx: EffectContext<AppEvent>) -> futures_util::future::BoxFuture<'static, ()> {
-    // Resources are already in Arc - can move directly into async block
-    
-    Box::pin(async move {
+async fn handle_effects(
+    effect: AppEffect,
+    ctx: EffectContext<AppEvent, Storage<AppResources, EmptyStorage>>,
+) {
         match effect {
             AppEffect::GetUser { user_id, table } => {
                 println!("🔍 Getting user {} from table {}", user_id, table);
                 
-                // Use resources for database configuration
-                println!("📊 Using DB: {} (max_conn: {}, timeout: {}ms)", 
-                    resources.database_url, resources.max_connections, resources.timeout_ms);
-                
-                // Simulate database query with resource-provided timeout
+                // Simulate database query 
                 #[cfg(feature = "tokio")]
-                tokio::time::sleep(Duration::from_millis(resources.timeout_ms / 50)).await;
+                tokio::time::sleep(Duration::from_millis(100)).await;
                 #[cfg(not(feature = "tokio"))]
-                async_std::task::sleep(Duration::from_millis(resources.timeout_ms / 50)).await;
+                async_std::task::sleep(Duration::from_millis(100)).await;
                 
-                // Simulate database lookup - resources provide connection info
-                match simulate_database_get(&table, user_id, &*resources).await {
+                // Simulate database lookup
+                match simulate_database_get(&table, user_id).await {
                     Ok(Some(user)) => {
                         // Success - send user loaded event
                         let _ = ctx.send_event(AppEvent::UserLoaded { user_id, user });
@@ -195,8 +185,8 @@ fn handle_effects(effect: AppEffect, resources: std::sync::Arc<AppResources>, ct
                 #[cfg(not(feature = "tokio"))]
                 async_std::task::sleep(Duration::from_millis(150)).await;
                 
-                // Simulate database save with resource configuration
-                match simulate_database_save(&table, &user, &*resources).await {
+                // Simulate database save
+                match simulate_database_save(&table, &user).await {
                     Ok(()) => {
                         let _ = ctx.send_event(AppEvent::UserSaved { user_id: user.id });
                         println!("✅ User {} saved", user.id);
@@ -212,8 +202,7 @@ fn handle_effects(effect: AppEffect, resources: std::sync::Arc<AppResources>, ct
             }
 
             AppEffect::ConnectDatabase { connection_string } => {
-                println!("🔌 Connecting to database: {} (from resources: {})", 
-                    connection_string, resources.database_url);
+                println!("🔌 Connecting to database: {}", connection_string);
                 
                 #[cfg(feature = "tokio")]
                 tokio::time::sleep(Duration::from_millis(200)).await;
@@ -227,12 +216,11 @@ fn handle_effects(effect: AppEffect, resources: std::sync::Arc<AppResources>, ct
             AppEffect::Log { message } => {
                 println!("📝 {}", message);
             }
-        }
-    })
+    }
 }
 
 /// Simulated database operations - in real app these would be SQLx, Diesel, etc.
-async fn simulate_database_get(_table: &str, user_id: u32, resources: &AppResources) -> Result<Option<User>, String> {
+async fn simulate_database_get(_table: &str, user_id: u32) -> Result<Option<User>, String> {
     // Simulate some users existing
     match user_id {
         1 => Ok(Some(User {
@@ -245,12 +233,12 @@ async fn simulate_database_get(_table: &str, user_id: u32, resources: &AppResour
             name: "Bob".to_string(),
             email: "bob@example.com".to_string(),
         })),
-        999 => Err(format!("Database connection timeout ({}ms)", resources.timeout_ms)), // Simulate error
+        999 => Err("Database connection timeout".to_string()), // Simulate error
         _ => Ok(None), // User not found
     }
 }
 
-async fn simulate_database_save(_table: &str, user: &User, _resources: &AppResources) -> Result<(), String> {
+async fn simulate_database_save(_table: &str, user: &User) -> Result<(), String> {
     // Simulate validation
     if user.name.is_empty() {
         return Err("Name cannot be empty".to_string());
@@ -295,10 +283,10 @@ async fn run_demo() -> Result<(), Box<dyn std::error::Error>> {
     let resources = AppResources::new();
 
     // Build the system with resources
-    let (core, shell) = Syzygy::builder()
-        .app(DatabaseApp::default())
+    let (core, shell) = Syzygy::builder::<AppEvent, AppEffect>()
         .model(AppModel::default())
-        .resources(resources)
+        .resource(resources)
+        .update(database_update)
         .build();
         
     let shell = shell.with_effect_handler(handle_effects);

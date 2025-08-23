@@ -6,6 +6,7 @@
 use std::time::Duration;
 use syzygy::prelude::*;
 use syzygy::spawn::spawner;
+use syzygy::event_context::EventContext;
 
 #[derive(Debug, Default)]
 struct TimeoutModel {
@@ -28,16 +29,13 @@ enum TimeoutEffect {
     SlowOperation { delay_ms: u64 },
 }
 
-#[derive(Default)]
-struct TimeoutApp;
+use syzygy::storage::{Storage, EmptyStorage};
 
-impl App for TimeoutApp {
-    type Event = TimeoutEvent;
-    type Model = TimeoutModel;
-    type Effect = TimeoutEffect;
-    type Resources = ();
-    
-    fn update(&self, event: TimeoutEvent, model: &mut TimeoutModel) -> Command<TimeoutEvent, TimeoutEffect> {
+fn timeout_update(
+    event: TimeoutEvent,
+    ctx: &mut EventContext<TimeoutEvent, TimeoutEffect, Storage<TimeoutModel, EmptyStorage>>,
+) -> Command<TimeoutEvent, TimeoutEffect> {
+    let model: &mut TimeoutModel = ctx.model_mut();
         match event {
             TimeoutEvent::StartSlowOperation => {
                 model.is_loading = true;
@@ -75,12 +73,10 @@ impl App for TimeoutApp {
                 Command::effect(TimeoutEffect::SlowOperation { delay_ms: 50 })
             }
         }
-    }
 }
 
 // Effect handler that implements manual timeout detection
-fn timeout_aware_effect_handler(effect: TimeoutEffect, _resources: std::sync::Arc<()>, ctx: EffectContext<TimeoutEvent>) -> futures_util::future::BoxFuture<'static, ()> {
-    Box::pin(async move {
+async fn timeout_aware_effect_handler(effect: TimeoutEffect, ctx: EffectContext<TimeoutEvent, EmptyStorage>) {
         match effect {
             TimeoutEffect::SlowOperation { delay_ms } => {
                 let operation_future = async move {
@@ -102,17 +98,15 @@ fn timeout_aware_effect_handler(effect: TimeoutEffect, _resources: std::sync::Ar
                 }
             }
         }
-    })
 }
 
 /// Test that timeout events are properly emitted and handled
 #[cfg(feature = "tokio")]
 #[tokio::test]
 async fn test_timeout_event_pattern() {
-    let (core, shell) = Syzygy::builder::<TimeoutApp>()
-        .app(TimeoutApp)
+    let (core, shell) = Syzygy::builder::<TimeoutEvent, TimeoutEffect>()
         .model(TimeoutModel::default())
-        .resources(())
+        .update(timeout_update)
         .build();
     
     let event_sender = core.event_sender();

@@ -6,11 +6,10 @@
 //!
 //! Key design principles:
 //! - Only function pointers can implement EffectHandler (no captures/closures)
-//! - Resources are passed explicitly via Arc<Resources>
+//! - Resources are accessed via EffectContext
 //! - Zero-cost abstractions with compile-time verification
 
 use std::future::Future;
-use std::sync::Arc;
 use crate::async_context::EffectContext;
 
 /// AFIT-based trait for handling effects with zero-cost abstractions
@@ -30,12 +29,11 @@ use crate::async_context::EffectContext;
 /// ```rust,ignore
 /// async fn handle_http_effect(
 ///     effect: HttpEffect,
-///     resources: Arc<MyResources>,
-///     ctx: EffectContext<MyEvent>
+///     ctx: EffectContext<MyEvent, MyResources>
 /// ) {
 ///     match effect {
 ///         HttpEffect::Get { url } => {
-///             let client = &resources.http_client;
+///             let client = ctx.resource::<HttpClient>();
 ///             match client.get(&url).send().await {
 ///                 Ok(response) => {
 ///                     let data = response.text().await.unwrap();
@@ -61,7 +59,7 @@ pub trait EffectHandler<Event, Effect, Resources>: Send + Sync + 'static {
     /// This returns a concrete future type, allowing zero-cost monomorphization
     /// without boxing. The future is required to be `Send + 'static` to support
     /// multi-threaded runtimes and optional timeout wrapping.
-    fn handle(&self, effect: Effect, resources: Arc<Resources>, ctx: EffectContext<Event>) -> Self::Fut;
+    fn handle(&self, effect: Effect, ctx: EffectContext<Event, Resources>) -> Self::Fut;
 }
 
 // Implementation for function pointers only (enforces purity)
@@ -77,13 +75,13 @@ where
     Event: Send + 'static,
     Effect: Send + 'static,
     Resources: Send + Sync + 'static,
-    F: Fn(Effect, Arc<Resources>, EffectContext<Event>) -> Fut + Send + Sync + 'static,
+    F: Fn(Effect, EffectContext<Event, Resources>) -> Fut + Send + Sync + 'static,
     Fut: Future<Output = ()> + Send + 'static,
 {
     type Fut = Fut;
 
-    fn handle(&self, effect: Effect, resources: Arc<Resources>, ctx: EffectContext<Event>) -> Self::Fut {
-        (self)(effect, resources, ctx)
+    fn handle(&self, effect: Effect, ctx: EffectContext<Event, Resources>) -> Self::Fut {
+        (self)(effect, ctx)
     }
 }
 
@@ -95,7 +93,7 @@ where
     Resources: Send + Sync + 'static,
 {
     type Fut = std::future::Ready<()>;
-    fn handle(&self, _effect: Effect, _resources: Arc<Resources>, _ctx: EffectContext<Event>) -> Self::Fut {
+    fn handle(&self, _effect: Effect, _ctx: EffectContext<Event, Resources>) -> Self::Fut {
         std::future::ready(())
     }
 }
@@ -109,7 +107,7 @@ where
     Event: Send + 'static,
     Effect: Send + 'static,
     Resources: Send + Sync + 'static,
-    F: Fn(Effect, Arc<Resources>, EffectContext<Event>) -> Fut + Send + Sync + 'static,
+    F: Fn(Effect, EffectContext<Event, Resources>) -> Fut + Send + Sync + 'static,
     Fut: Future<Output = ()> + Send + 'static,
 {
     f
@@ -135,14 +133,14 @@ mod tests {
         multiplier: i32,
     }
 
-    // Test effect handler as function pointer
+    // Test effect handler as function pointer  
     async fn test_effect_handler(
         effect: TestEffect,
-        resources: Arc<TestResources>,
-        ctx: EffectContext<TestEvent>,
+        ctx: EffectContext<TestEvent, crate::storage::Storage<TestResources, crate::storage::EmptyStorage>>,
     ) {
         match effect {
             TestEffect::Process { value } => {
+                let resources: &TestResources = ctx.resource();
                 let result = value * resources.multiplier;
                 let _ = ctx.send_event(TestEvent::Processed { value: result });
             }
@@ -151,16 +149,16 @@ mod tests {
 
     #[tokio::test]
     async fn test_function_pointer_implements_effect_handler() {
-        let resources = Arc::new(TestResources { multiplier: 2 });
-        let ctx: EffectContext<TestEvent> = EffectContext::new(None);
+        use crate::storage::{EmptyStorage, Storage};
+        let storage = EmptyStorage.with_model(TestResources { multiplier: 2 });
+        let ctx: EffectContext<TestEvent, Storage<TestResources, EmptyStorage>> = EffectContext::new(None, Arc::new(storage));
 
         // Verify function pointer implements the trait
-        let handler: fn(TestEffect, Arc<TestResources>, EffectContext<TestEvent>) -> _ = test_effect_handler;
+        let handler: fn(TestEffect, EffectContext<TestEvent, Storage<TestResources, EmptyStorage>>) -> _ = test_effect_handler;
 
         // This should compile and work
         handler.handle(
             TestEffect::Process { value: 5 },
-            resources,
             ctx,
         ).await;
     }
@@ -168,16 +166,16 @@ mod tests {
     #[tokio::test]
     async fn test_effect_handler_execution() {
         use crossbeam_channel::unbounded;
+        use crate::storage::{EmptyStorage, Storage};
 
         let (tx, rx) = unbounded();
-        let resources = Arc::new(TestResources { multiplier: 3 });
-        let ctx = EffectContext::new(Some(tx));
+        let storage = EmptyStorage.with_model(TestResources { multiplier: 3 });
+        let ctx = EffectContext::new(Some(tx), Arc::new(storage));
 
         // Execute through trait
-        let handler: fn(TestEffect, Arc<TestResources>, EffectContext<TestEvent>) -> _ = test_effect_handler;
+        let handler: fn(TestEffect, EffectContext<TestEvent, Storage<TestResources, EmptyStorage>>) -> _ = test_effect_handler;
         handler.handle(
             TestEffect::Process { value: 7 },
-            resources,
             ctx,
         ).await;
 
@@ -190,8 +188,9 @@ mod tests {
 
     #[test]
     fn test_function_pointer_compiles() {
+        use crate::storage::{EmptyStorage, Storage};
         // This test verifies that function pointers can be used as effect handlers
-        let _handler: fn(TestEffect, Arc<TestResources>, EffectContext<TestEvent>) -> _ = test_effect_handler;
+        let _handler: fn(TestEffect, EffectContext<TestEvent, Storage<TestResources, EmptyStorage>>) -> _ = test_effect_handler;
 
         // Verify the function pointer can be called directly
         // (We don't actually call it in the test to avoid async complexity)

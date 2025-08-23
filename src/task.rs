@@ -141,19 +141,9 @@ impl TaskTracker {
         Ok(self.tasks[&task_id].clone())
     }
 
-    /// Spawn multiple tasks in batch with zero-cost spawning (no boxing)
-    ///
-    /// NOTE: This is a placeholder for future zero-cost batch implementation.
-    /// The type system complexity makes this challenging, so for Phase 1 we'll
-    /// focus on individual zero-cost spawning which provides most of the benefit.
-    pub fn spawn_batch_direct_placeholder(&mut self) {
-        // TODO: Implement zero-cost batch spawning
-        // For now, use multiple spawn_direct calls for zero-cost spawning
-    }
 
     /// Spawn multiple tasks in batch with single mutex lock (legacy boxed API)
     ///
-    /// DEPRECATED: Use spawn_batch_direct for zero-cost batch spawning.
     /// This is more efficient than multiple individual spawn calls as it only
     /// requires one TaskTracker lock for the entire batch.
     pub fn spawn_batch<SpawnFn>(

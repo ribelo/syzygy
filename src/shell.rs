@@ -2,7 +2,6 @@ use crossbeam_channel::{Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use crate::app::App;
 use crate::async_context::EffectContext;
 use crate::command::{Command, CommandStep};
 use crate::command::executor::route_command;
@@ -15,8 +14,6 @@ use crate::effect_handler::EffectHandler;
 #[cfg(feature = "tracing")]
 use tracing::{Level, debug, span, warn};
 
-/// Shell is generic over the effect handler `H` implementing AFIT for zero allocations
-///
 /// Configuration for Shell effect execution
 pub struct ShellConfig {
     /// Timeout for individual effect execution
@@ -77,38 +74,52 @@ impl Default for ShellConfig {
 /// - Managing async tasks with TaskTracker
 /// - Bridging sync Core with async world
 /// - Routing events back to Core from command execution
-/// - Providing Resources to effect handlers
+/// - Providing Resources to effect handlers via Storage
 ///
 /// The Shell works alongside Core rather than owning it, giving users
 /// maximum flexibility in how they structure their applications.
-pub struct Shell<A: App, H = ()> {
+/// Resources are stored using the same Storage pattern as Core's models.
+pub struct Shell<Event, Effect, Resources = crate::storage::EmptyStorage, H = ()> 
+where
+    Event: Clone + Send + 'static,
+    Effect: Clone + Send + 'static,
+    Resources: Send + Sync + 'static,
+{
     /// Task tracker for managing async effects (wrapped for sharing with EffectContext)
-    task_tracker: Arc<Mutex<TaskTracker>>,
+    pub(crate) task_tracker: Arc<Mutex<TaskTracker>>,
 
     /// Channel for receiving command outputs (effects)
-    effect_rx: Receiver<CommandStep<A::Event, A::Effect>>,
-    effect_tx: Sender<CommandStep<A::Event, A::Effect>>,
+    pub(crate) effect_rx: Receiver<CommandStep<Event, Effect>>,
+    pub(crate) effect_tx: Sender<CommandStep<Event, Effect>>,
 
     /// Channel for sending events back to Core
-    event_tx: Option<Sender<A::Event>>,
+    pub(crate) event_tx: Option<Sender<Event>>,
 
-    /// Resources shared with effect handlers
-    resources: Option<Arc<A::Resources>>,
+    /// Resources shared with effect handlers (always Arc-wrapped for thread safety)
+    pub(crate) resources: Arc<Resources>,
 
     /// User-provided effect handler (AFIT, zero-alloc). Default is `()` which is a noop handler.
-    effect_handler: H,
+    pub(crate) effect_handler: H,
 
     /// Configuration for error handling and timeouts
-    config: ShellConfig,
+    pub(crate) config: ShellConfig,
 }
 
-impl<A: App> Default for Shell<A> {
+impl<Event, Effect> Default for Shell<Event, Effect, crate::storage::EmptyStorage, ()> 
+where
+    Event: Clone + Send + 'static,
+    Effect: Clone + Send + 'static,
+{
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<A: App> Shell<A, ()> {
+impl<Event, Effect> Shell<Event, Effect, crate::storage::EmptyStorage, ()> 
+where
+    Event: Clone + Send + 'static,
+    Effect: Clone + Send + 'static,
+{
     /// Create a new Shell with default configuration
     #[must_use]
     pub fn new() -> Self {
@@ -129,17 +140,25 @@ impl<A: App> Shell<A, ()> {
             effect_rx,
             effect_tx,
             event_tx: None,
-            resources: None,
+            resources: Arc::new(crate::storage::EmptyStorage),
             effect_handler: (),
             config,
         }
     }
 }
 
-impl<A: App, H> Shell<A, H> {
+impl<Event, Effect, Resources, H> Shell<Event, Effect, Resources, H> 
+where
+    Event: Clone + Send + 'static,
+    Effect: Clone + Send + 'static,
+    Resources: Send + Sync + 'static,
+{
     /// Create a new Shell with custom configuration and explicit handler
     #[must_use]
-    pub fn with_config_and_handler(config: ShellConfig, handler: H) -> Self {
+    pub fn with_config_and_handler(config: ShellConfig, handler: H) -> Self 
+    where 
+        Resources: Default,
+    {
         // Create channel based on configuration
         let (effect_tx, effect_rx) = match config.effect_channel_capacity {
             Some(capacity) => crossbeam_channel::bounded(capacity),
@@ -151,7 +170,7 @@ impl<A: App, H> Shell<A, H> {
             effect_rx,
             effect_tx,
             event_tx: None,
-            resources: None,
+            resources: Arc::new(Resources::default()),
             effect_handler: handler,
             config,
         }
@@ -159,7 +178,7 @@ impl<A: App, H> Shell<A, H> {
 
     /// Replace the effect handler with a new AFIT handler (type-changing method)
     #[must_use]
-    pub fn with_effect_handler<H2>(self, handler: H2) -> Shell<A, H2> {
+    pub fn with_effect_handler<H2>(self, handler: H2) -> Shell<Event, Effect, Resources, H2> {
         Shell {
             task_tracker: self.task_tracker,
             effect_rx: self.effect_rx,
@@ -171,25 +190,56 @@ impl<A: App, H> Shell<A, H> {
         }
     }
 
-    /// Set the resources for effect handlers
+    /// Set the resources storage for effect handlers
+    /// 
+    /// This replaces the entire resource storage. For adding individual resources,
+    /// use the builder pattern with .resource() method.
     #[must_use]
-    pub fn with_resources(mut self, resources: A::Resources) -> Self {
-        self.resources = Some(Arc::new(resources));
+    pub fn with_resources(mut self, resources: Resources) -> Self {
+        self.resources = Arc::new(resources);
         self
+    }
+
+    /// Get an immutable reference to a specific resource by type
+    ///
+    /// This provides direct access to resources stored in the Shell.
+    /// Resources are always immutable through this API - if you need
+    /// mutability, the resource itself should provide interior mutability
+    /// (e.g., using Arc<Mutex<>>, RwLock, RefCell, atomic types, etc.).
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// // For read-only resources (most common case)
+    /// let http_client: &HttpClient = shell.resource();
+    /// 
+    /// // For resources needing mutability
+    /// struct Cache {
+    ///     data: Arc<Mutex<HashMap<String, String>>>,
+    /// }
+    /// let cache: &Cache = shell.resource();
+    /// // Use cache.data.lock() when you need to mutate
+    /// ```
+    #[must_use]
+    pub fn resource<T, Index>(&self) -> &T
+    where
+        Resources: crate::storage::Selector<T, Index>,
+    {
+        // Resources are Arc-wrapped, so we deref to get to the Storage
+        self.resources.get()
     }
 
     /// Set the event sender for routing events back to Core
     ///
     /// This allows Commands executed by Shell to send events back to Core for processing.
     #[must_use]
-    pub fn with_event_sender(mut self, event_sender: Sender<A::Event>) -> Self {
+    pub fn with_event_sender(mut self, event_sender: Sender<Event>) -> Self {
         self.event_tx = Some(event_sender);
         self
     }
 
     /// Get an effect sender for executing effects
     #[must_use]
-    pub fn effect_sender(&self) -> Sender<CommandStep<A::Event, A::Effect>> {
+    pub fn effect_sender(&self) -> Sender<CommandStep<Event, Effect>> {
         self.effect_tx.clone()
     }
 
@@ -202,12 +252,8 @@ impl<A: App, H> Shell<A, H> {
     /// Command processing is now synchronous - async effect execution happens in tick().
     pub fn dispatch(
         &mut self,
-        command: Command<A::Event, A::Effect>,
-    ) -> Result<(), ShellError>
-    where
-        A::Event: Clone + Send + 'static,
-        A::Effect: Clone + Send + 'static,
-    {
+        command: Command<Event, Effect>,
+    ) -> Result<(), ShellError> {
         #[cfg(feature = "tracing")]
         debug!("Executing command");
 
@@ -233,12 +279,11 @@ impl<A: App, H> Shell<A, H> {
     ///
     /// This processes any pending effects with timeout and panic handling.
     /// Returns true if there was work to do, false if idle.
+    #[allow(clippy::needless_pass_by_value)]
     pub fn tick<S>(&mut self, spawner: S) -> Result<bool, ShellError>
     where
         S: crate::spawn::Spawn,
-        H: EffectHandler<A::Event, A::Effect, A::Resources> + Clone + Send + Sync + 'static,
-        A::Event: Clone + Send + 'static,
-        A::Effect: Clone + Send + 'static,
+        H: EffectHandler<Event, Effect, Resources> + Clone + Send + Sync + 'static,
     {
         #[cfg(feature = "tracing")]
         let _span = span!(Level::DEBUG, "shell_tick").entered();
@@ -252,116 +297,19 @@ impl<A: App, H> Shell<A, H> {
                 CommandStep::Effect(effect) => {
                     did_work = true;
                     _effect_count += 1;
-
-                    #[cfg(feature = "tracing")]
-                    debug!("Processing effect");
-
-                    if let Some(resources) = &self.resources {
-                        let resources = Arc::clone(resources);
-                        let ctx = EffectContext::with_runtime(self.event_tx.clone(), self.config.runtime);
-                        let handler = self.effect_handler.clone();
-                        let runtime = self.config.runtime;
-                        let timeout = self.config.effect_timeout;
-
-                        match timeout {
-                            Some(dur) => {
-                                spawner.spawn(async move {
-                                    let fut = handler.handle(effect, resources, ctx);
-                                    let _ = runtime.timeout(dur, Box::pin(fut)).await;
-                                });
-                            }
-                            None => {
-                                spawner.spawn(async move {
-                                    handler.handle(effect, resources, ctx).await;
-                                });
-                            }
-                        }
-                    }
-                }
-                CommandStep::InlineFuture(closure) => {
-                    did_work = true;
-                    _effect_count += 1;
-
-                    let event_tx = self.event_tx.clone();
-                    let runtime = self.config.runtime;
-                    let timeout = self.config.effect_timeout;
-                    let fut = closure;
-
-                    // Build a future that runs the inline task with timeout handling
-                    let inline = async move {
-                        let ctx = EffectContext::with_runtime(event_tx, runtime);
-                        match timeout {
-                            Some(dur) => {
-                                let _ = runtime.timeout(dur, fut(ctx)).await;
-                            }
-                            None => {
-                                fut(ctx).await;
-                            }
-                        }
-                    };
-                    spawner.spawn(inline);
+                    self.spawn_single_effect(effect, &spawner);
                 }
                 CommandStep::SequentialEffects(effects) => {
                     did_work = true;
                     _effect_count += effects.len();
-
-                    if let Some(resources) = &self.resources {
-                        let resources = Arc::clone(resources);
-                        let event_tx = self.event_tx.clone();
-                        let runtime = self.config.runtime;
-                        let timeout = self.config.effect_timeout;
-                        let handler = self.effect_handler.clone();
-
-                        let seq_future = async move {
-                            let ctx = EffectContext::with_runtime(event_tx, runtime);
-                            for effect in effects {
-                                match timeout {
-                                    Some(dur) => {
-                                        let _ = runtime
-                                            .timeout(dur, Box::pin(handler.handle(effect, Arc::clone(&resources), ctx.clone())))
-                                            .await;
-                                    }
-                                    None => {
-                                        handler.handle(effect, Arc::clone(&resources), ctx.clone()).await;
-                                    }
-                                }
-                            }
-                        };
-                        spawner.spawn(seq_future);
-                    }
+                    self.spawn_sequential_effects(effects, &spawner);
                 }
                 CommandStep::ParallelEffects(effects) => {
                     did_work = true;
                     _effect_count += effects.len();
-
-                    if let Some(resources) = &self.resources {
-                        let resources = Arc::clone(resources);
-                        let event_tx = self.event_tx.clone();
-                        let runtime = self.config.runtime;
-                        let timeout = self.config.effect_timeout;
-                        let handler = self.effect_handler.clone();
-
-                        for effect in effects {
-                            let resources = Arc::clone(&resources);
-                            let ctx = EffectContext::with_runtime(event_tx.clone(), runtime);
-                            match timeout {
-                                Some(dur) => {
-                                    let h = handler.clone();
-                                    spawner.spawn(async move {
-                                        let _ = runtime.timeout(dur, Box::pin(h.handle(effect, resources, ctx))).await;
-                                    });
-                                }
-                                None => {
-                                    let h = handler.clone();
-                                    spawner.spawn(async move {
-                                        h.handle(effect, resources, ctx).await;
-                                    });
-                                }
-                            }
-                        }
-                    }
+                    self.spawn_parallel_effects(effects, &spawner);
                 }
-                _ => {
+                CommandStep::Event(_) => {
                     // Other command outputs should be handled by Core
                     // This shouldn't happen in normal operation
                 }
@@ -369,14 +317,7 @@ impl<A: App, H> Shell<A, H> {
         }
 
         // Cleanup finished tasks
-        let (_cleaned_count, _active_count) = if let Ok(mut tracker) = self.task_tracker.lock() {
-            let cleaned = tracker.active_count();
-            tracker.cleanup_finished();
-            let active = tracker.active_count();
-            (cleaned, active)
-        } else {
-            (0, 0)
-        };
+        let (_cleaned_count, _active_count) = self.cleanup_finished_tasks();
 
         #[cfg(feature = "tracing")]
         if did_work {
@@ -391,7 +332,106 @@ impl<A: App, H> Shell<A, H> {
         Ok(did_work)
     }
 
-    // Removed: boxed protected future path; handled inline to avoid allocations in common case
+    /// Spawn a single effect with optional timeout
+    fn spawn_single_effect<S>(&self, effect: Effect, spawner: &S)
+    where
+        S: crate::spawn::Spawn,
+        H: EffectHandler<Event, Effect, Resources> + Clone + Send + Sync + 'static,
+    {
+        #[cfg(feature = "tracing")]
+        debug!("Processing effect");
+
+        let resources = Arc::clone(&self.resources);
+        let ctx = EffectContext::with_runtime(self.event_tx.clone(), self.config.runtime, resources.clone());
+        let handler = self.effect_handler.clone();
+        let runtime = self.config.runtime;
+        let timeout = self.config.effect_timeout;
+
+        match timeout {
+            Some(dur) => {
+                spawner.spawn(async move {
+                    let fut = handler.handle(effect, ctx);
+                    let _ = runtime.timeout(dur, Box::pin(fut)).await;
+                });
+            }
+            None => {
+                spawner.spawn(async move {
+                    handler.handle(effect, ctx).await;
+                });
+            }
+        }
+    }
+
+    /// Spawn effects in sequential order with optional timeout
+    fn spawn_sequential_effects<S>(&self, effects: Vec<Effect>, spawner: &S)
+    where
+        S: crate::spawn::Spawn,
+        H: EffectHandler<Event, Effect, Resources> + Clone + Send + Sync + 'static,
+    {
+        let resources = Arc::clone(&self.resources);
+        let event_tx = self.event_tx.clone();
+        let runtime = self.config.runtime;
+        let timeout = self.config.effect_timeout;
+        let handler = self.effect_handler.clone();
+
+        let seq_future = async move {
+            let ctx = EffectContext::with_runtime(event_tx, runtime, resources.clone());
+            for effect in effects {
+                match timeout {
+                    Some(dur) => {
+                        let _ = runtime
+                            .timeout(dur, Box::pin(handler.handle(effect, ctx.clone())))
+                            .await;
+                    }
+                    None => {
+                        handler.handle(effect, ctx.clone()).await;
+                    }
+                }
+            }
+        };
+        spawner.spawn(seq_future);
+    }
+
+    /// Spawn effects in parallel with optional timeout
+    fn spawn_parallel_effects<S>(&self, effects: Vec<Effect>, spawner: &S)
+    where
+        S: crate::spawn::Spawn,
+        H: EffectHandler<Event, Effect, Resources> + Clone + Send + Sync + 'static,
+    {
+        let resources = Arc::clone(&self.resources);
+        let event_tx = self.event_tx.clone();
+        let runtime = self.config.runtime;
+        let timeout = self.config.effect_timeout;
+        let handler = self.effect_handler.clone();
+
+        for effect in effects {
+            let resources = Arc::clone(&resources);
+            let ctx = EffectContext::with_runtime(event_tx.clone(), runtime, resources.clone());
+            if let Some(dur) = timeout {
+                let h = handler.clone();
+                spawner.spawn(async move {
+                    let _ = runtime.timeout(dur, Box::pin(h.handle(effect, ctx))).await;
+                });
+            } else {
+                let h = handler.clone();
+                spawner.spawn(async move {
+                    h.handle(effect, ctx).await;
+                });
+            }
+        }
+    }
+
+    /// Clean up finished tasks and return (cleaned_count, active_count)
+    fn cleanup_finished_tasks(&self) -> (usize, usize) {
+        if let Ok(mut tracker) = self.task_tracker.lock() {
+            let cleaned = tracker.active_count();
+            tracker.cleanup_finished();
+            let active = tracker.active_count();
+            (cleaned, active)
+        } else {
+            (0, 0)
+        }
+    }
 
     /// Get task tracker statistics
     #[must_use]
@@ -461,10 +501,6 @@ impl<A: App, H> Shell<A, H> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::command::Command;
-
-    #[derive(Debug, Default)]
-    struct TestApp;
 
     #[derive(Debug, Clone)]
     #[allow(dead_code)]
@@ -472,48 +508,148 @@ mod tests {
         Dummy, // Just for the shell test - not actually used
     }
 
-    #[derive(Debug, Default)]
-    struct TestModel {
-        count: i32,
-    }
-
     #[derive(Debug, Clone)]
+    #[allow(dead_code)]
     enum TestEffect {
         Log,
     }
 
-    impl App for TestApp {
-        type Event = TestEvent;
-        type Model = TestModel;
-        #[cfg(feature = "view-model")]
-        type ViewModel = i32;
-        type Effect = TestEffect;
-        type Resources = ();
+    #[test]
+    fn test_shell_creation() {
+        let shell = Shell::<TestEvent, TestEffect>::new();
 
-        fn update(
-            &self,
-            event: Self::Event,
-            model: &mut Self::Model,
-        ) -> Command<Self::Event, Self::Effect> {
-            match event {
-                TestEvent::Dummy => {
-                    model.count += 1;
-                    Command::effect(TestEffect::Log)
+        assert_eq!(shell.task_stats().active_tasks, 0);
+        assert!(!shell.task_stats().is_closed);
+    }
+
+    #[test]
+    fn test_shell_resource_access() {
+        use crate::storage::{EmptyStorage, Storage};
+        use crate::builder::Syzygy;
+
+        // Define a simple read-only resource
+        #[derive(Debug)]
+        struct HttpClient {
+            base_url: String,
+        }
+
+        impl HttpClient {
+            fn new() -> Self {
+                Self {
+                    base_url: "https://api.example.com".to_string(),
                 }
             }
         }
 
-        #[cfg(feature = "view-model")]
-        fn view(&self, model: &Self::Model) -> Self::ViewModel {
-            model.count
-        }
+        // Create shell using builder pattern
+        let (_core, shell) = Syzygy::builder::<TestEvent, ()>()
+            .model(()) // Need at least one model for Core
+            .resource(HttpClient::new())
+            .update(|_event: TestEvent, _ctx: &mut crate::event_context::EventContext<TestEvent, (), Storage<(), EmptyStorage>>| crate::command::Command::none())
+            .build();
+
+        // Test resource access
+        let client: &HttpClient = shell.resource();
+        assert_eq!(client.base_url, "https://api.example.com");
+
+        // Test type inference
+        let client_inferred: &HttpClient = shell.resource();
+        assert_eq!(client_inferred.base_url, "https://api.example.com");
     }
 
     #[test]
-    fn test_shell_creation() {
-        let shell = Shell::<TestApp>::new();
+    fn test_shell_multiple_resources() {
+        use crate::storage::{EmptyStorage, Storage};
+        use crate::builder::Syzygy;
 
-        assert_eq!(shell.task_stats().active_tasks, 0);
-        assert!(!shell.task_stats().is_closed);
+        // Define multiple resource types
+        #[derive(Debug)]
+        struct HttpClient {
+            base_url: String,
+        }
+
+        #[derive(Debug)]
+        struct Database {
+            connection_string: String,
+        }
+
+        #[derive(Debug)]
+        struct FileSystem {
+            root_path: String,
+        }
+
+        // Create shell with multiple resources using builder
+        let (_core, shell) = Syzygy::builder::<TestEvent, ()>()
+            .model(()) // Need at least one model for Core
+            .resource(HttpClient { 
+                base_url: "https://api.example.com".to_string() 
+            })
+            .resource(Database { 
+                connection_string: "postgres://localhost".to_string() 
+            })
+            .resource(FileSystem { 
+                root_path: "/var/data".to_string() 
+            })
+            .update(|_event: TestEvent, _ctx: &mut crate::event_context::EventContext<TestEvent, (), Storage<(), EmptyStorage>>| crate::command::Command::none())
+            .build();
+
+        // Test accessing different resource types
+        let client: &HttpClient = shell.resource();
+        assert_eq!(client.base_url, "https://api.example.com");
+
+        let db: &Database = shell.resource();
+        assert_eq!(db.connection_string, "postgres://localhost");
+
+        let fs: &FileSystem = shell.resource();
+        assert_eq!(fs.root_path, "/var/data");
+    }
+
+    #[test]
+    fn test_shell_resource_with_interior_mutability() {
+        use crate::storage::{EmptyStorage, Storage};
+        use crate::builder::Syzygy;
+        use std::sync::{Arc, Mutex};
+        use std::collections::HashMap;
+
+        // Resource that needs interior mutability
+        #[derive(Debug)]
+        struct Cache {
+            data: Arc<Mutex<HashMap<String, String>>>,
+        }
+
+        impl Cache {
+            fn new() -> Self {
+                Self {
+                    data: Arc::new(Mutex::new(HashMap::new())),
+                }
+            }
+
+            fn insert(&self, key: String, value: String) {
+                self.data.lock().unwrap().insert(key, value);
+            }
+
+            fn get(&self, key: &str) -> Option<String> {
+                self.data.lock().unwrap().get(key).cloned()
+            }
+        }
+
+        // Create shell with cache resource using builder
+        let (_core, shell) = Syzygy::builder::<TestEvent, ()>()
+            .model(()) // Need at least one model for Core
+            .resource(Cache::new())
+            .update(|_event: TestEvent, _ctx: &mut crate::event_context::EventContext<TestEvent, (), Storage<(), EmptyStorage>>| crate::command::Command::none())
+            .build();
+
+        // Access cache resource (immutable reference)
+        let cache: &Cache = shell.resource();
+
+        // Use interior mutability to modify cache
+        cache.insert("key1".to_string(), "value1".to_string());
+        cache.insert("key2".to_string(), "value2".to_string());
+
+        // Verify data was stored
+        assert_eq!(cache.get("key1"), Some("value1".to_string()));
+        assert_eq!(cache.get("key2"), Some("value2".to_string()));
+        assert_eq!(cache.get("nonexistent"), None);
     }
 }

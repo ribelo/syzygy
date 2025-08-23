@@ -4,12 +4,9 @@
 //! work correctly with actual effect execution and coordination semantics.
 
 use syzygy::prelude::*;
-use std::sync::Mutex;
+use syzygy::event_context::EventContext;
 use std::time::{Duration, Instant};
 use tokio::time::sleep;
-
-#[derive(Default)]
-struct CompositionApp;
 
 #[derive(Debug, Clone)]
 enum CompositionEvent {
@@ -31,13 +28,13 @@ struct CompositionModel {
     completed_steps: Vec<String>,
 }
 
-impl App for CompositionApp {
-    type Event = CompositionEvent;
-    type Model = CompositionModel;
-    type Effect = CompositionEffect;
-    type Resources = ();
+use syzygy::storage::{Storage, EmptyStorage};
 
-    fn update(&self, event: Self::Event, model: &mut Self::Model) -> Command<Self::Event, Self::Effect> {
+fn composition_update(
+    event: CompositionEvent,
+    ctx: &mut EventContext<CompositionEvent, CompositionEffect, Storage<CompositionModel, EmptyStorage>>,
+) -> Command<CompositionEvent, CompositionEffect> {
+    let model: &mut CompositionModel = ctx.model_mut();
         match event {
             CompositionEvent::StartWorkflow => {
                 model.events.push("Workflow started".to_string());
@@ -58,12 +55,10 @@ impl App for CompositionApp {
                 Command::none()
             }
         }
-    }
 }
 
 /// Test effect handler - no state capture, just executes effects
-fn create_effect_handler(effect: CompositionEffect, _resources: std::sync::Arc<()>, ctx: EffectContext<CompositionEvent>) -> futures_util::future::BoxFuture<'static, ()> {
-    Box::pin(async move {
+async fn create_effect_handler(effect: CompositionEffect, ctx: EffectContext<CompositionEvent, EmptyStorage>) {
         match effect {
             CompositionEffect::DelayedLog { message, delay_ms } => {
                 sleep(Duration::from_millis(delay_ms)).await;
@@ -79,16 +74,14 @@ fn create_effect_handler(effect: CompositionEffect, _resources: std::sync::Arc<(
                 let _ = ctx.send_event(CompositionEvent::StepCompleted(message));
             }
         }
-    })
 }
 
 #[tokio::test]
 async fn test_sequential_effects_execution_order() {
     // Build the system - no state capture needed!
-    let (core, shell) = Syzygy::builder()
-        .app(CompositionApp)
+    let (core, shell) = Syzygy::builder::<CompositionEvent, CompositionEffect>()
         .model(CompositionModel::default())
-        .resources(())
+        .update(composition_update)
         .build();
 
     let shell = shell.with_effect_handler(create_effect_handler);
@@ -132,10 +125,9 @@ async fn test_sequential_effects_execution_order() {
 
 #[tokio::test]
 async fn test_mixed_coordination_patterns() {
-    let (core, shell) = Syzygy::builder()
-        .app(CompositionApp)
+    let (core, shell) = Syzygy::builder::<CompositionEvent, CompositionEffect>()
         .model(CompositionModel::default())
-        .resources(())
+        .update(composition_update)
         .build();
 
     let shell = shell.with_effect_handler(create_effect_handler);

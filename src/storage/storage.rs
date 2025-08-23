@@ -97,7 +97,7 @@ pub struct DuplicateTypeError {
 
 impl DuplicateTypeError {
     /// Create a new error for type T
-    pub fn new<T: 'static>() -> Self {
+    #[must_use] pub fn new<T: 'static>() -> Self {
         Self {
             type_name: std::any::type_name::<T>(),
         }
@@ -167,18 +167,56 @@ where
 }
 
 // ============================================================================
+// Storage Builder Trait
+// ============================================================================
+
+/// Trait for types that can have models added to them
+pub trait StorageBuilder<T> {
+    /// The type after adding a model
+    type Output;
+    
+    /// Add a model with runtime duplicate checking
+    fn with_model(self, model: T) -> Self::Output;
+}
+
+// ============================================================================
 // Builder Methods
 // ============================================================================
+
+// Implement StorageBuilder for EmptyStorage
+impl<T> StorageBuilder<T> for EmptyStorage {
+    type Output = Storage<T, EmptyStorage>;
+    
+    fn with_model(self, model: T) -> Self::Output {
+        Storage {
+            head: UnsafeCell::new(model),
+            tail: self,
+        }
+    }
+}
+
+// Implement StorageBuilder for Storage
+impl<T: 'static, Head, Tail> StorageBuilder<T> for Storage<Head, Tail> 
+where
+    Self: RuntimeContains,
+{
+    type Output = Storage<T, Self>;
+    
+    fn with_model(self, model: T) -> Self::Output {
+        assert!(!self.contains::<T>(), "{}", DuplicateTypeError::new::<T>());
+        Storage {
+            head: UnsafeCell::new(model),
+            tail: self,
+        }
+    }
+}
 
 impl EmptyStorage {
     /// Start a new chain with a single value
     ///
     /// Since EmptyStorage is empty, this never has duplicates so no runtime check needed.
     pub fn with_model<T>(self, head: T) -> Storage<T, EmptyStorage> {
-        Storage {
-            head: UnsafeCell::new(head),
-            tail: EmptyStorage,
-        }
+        StorageBuilder::with_model(self, head)
     }
 
     /// Start a new chain with a single value (alias for with_model)
@@ -265,8 +303,7 @@ impl<Head, Tail> Storage<Head, Tail> {
     where
         Self: RuntimeContains,
     {
-        self.try_with_model(value)
-            .unwrap_or_else(|err| panic!("{}", err))
+        StorageBuilder::with_model(self, value)
     }
 
     /// Try to add a value to the front of the chain with runtime duplicate checking

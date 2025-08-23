@@ -4,12 +4,10 @@
 //! are actually executing in parallel because each effect spawns its own task.
 
 use syzygy::prelude::*;
+use syzygy::event_context::EventContext;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::time::sleep;
-
-#[derive(Default)]
-struct SequentialApp;
 
 #[derive(Debug, Clone)]
 enum SequentialEvent {
@@ -30,13 +28,12 @@ struct SequentialResources {
     execution_log: Arc<Mutex<Vec<(u32, Instant, Instant)>>>,
 }
 
-impl App for SequentialApp {
-    type Event = SequentialEvent;
-    type Model = SequentialModel;
-    type Effect = SequentialEffect;
-    type Resources = SequentialResources;
+use syzygy::storage::{Storage, EmptyStorage};
 
-    fn update(&self, event: Self::Event, _model: &mut Self::Model) -> Command<Self::Event, Self::Effect> {
+fn sequential_update(
+    event: SequentialEvent,
+    _ctx: &mut EventContext<SequentialEvent, SequentialEffect, Storage<SequentialModel, EmptyStorage>>,
+) -> Command<SequentialEvent, SequentialEffect> {
         match event {
             SequentialEvent::StartSequence => {
                 // These should execute in order: Step 1, then Step 2, then Step 3
@@ -48,27 +45,24 @@ impl App for SequentialApp {
                 ])
             }
         }
-    }
 }
 
 /// Effect handler that records when each effect starts and completes
 /// Uses Resources for clean dependency injection - no state capture!
-fn sequential_effect_handler(
+async fn sequential_effect_handler(
     effect: SequentialEffect, 
-    resources: Arc<SequentialResources>, 
-    _ctx: EffectContext<SequentialEvent>
-) -> futures_util::future::BoxFuture<'static, ()> {
-    Box::pin(async move {
-        let start_time = Instant::now();
-        
-        match effect {
-            SequentialEffect::Step { id, duration_ms } => {
-                sleep(Duration::from_millis(duration_ms)).await;
-                let end_time = Instant::now();
-                resources.execution_log.lock().unwrap().push((id, start_time, end_time));
-            }
+    ctx: EffectContext<SequentialEvent, Storage<SequentialResources, EmptyStorage>>
+) {
+    let start_time = Instant::now();
+    let resources: &SequentialResources = ctx.resource();
+    
+    match effect {
+        SequentialEffect::Step { id, duration_ms } => {
+            sleep(Duration::from_millis(duration_ms)).await;
+            let end_time = Instant::now();
+            resources.execution_log.lock().unwrap().push((id, start_time, end_time));
         }
-    })
+    }
 }
 
 #[tokio::test]
@@ -79,10 +73,10 @@ async fn test_sequential_effects_are_actually_sequential() {
         execution_log: execution_log.clone(),
     };
 
-    let (core, shell) = Syzygy::builder()
-        .app(SequentialApp)
+    let (core, shell) = Syzygy::builder::<SequentialEvent, SequentialEffect>()
         .model(SequentialModel::default())
-        .resources(resources)
+        .resource(resources)
+        .update(sequential_update)
         .build();
 
     let shell = shell.with_effect_handler(sequential_effect_handler);
@@ -147,10 +141,10 @@ async fn test_parallel_baseline_for_comparison() {
         execution_log: execution_log.clone(),
     };
 
-    let (core, shell) = Syzygy::builder()
-        .app(SequentialApp)
+    let (core, shell) = Syzygy::builder::<SequentialEvent, SequentialEffect>()
         .model(SequentialModel::default())
-        .resources(resources)
+        .resource(resources)
+        .update(sequential_update)
         .build();
 
     let shell = shell.with_effect_handler(sequential_effect_handler);

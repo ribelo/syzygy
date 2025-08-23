@@ -1,9 +1,5 @@
 // trimmed public testing helpers; no external Sender used here anymore
-use crate::async_context::EffectContext;
 use smallvec::SmallVec;
-
-/// Type alias for inline effect futures
-pub type InlineEffectFn<Event> = Box<dyn FnOnce(EffectContext<Event>) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'static>> + Send + 'static>;
 
 pub mod executor;
 
@@ -17,8 +13,6 @@ pub enum CommandStep<Event, Effect> {
     SequentialEffects(Vec<Effect>),
     /// Parallel execution - effects run concurrently, all complete or fail together
     ParallelEffects(Vec<Effect>),
-    /// Inline future execution - for simple futures that don't need a named effect
-    InlineFuture(InlineEffectFn<Event>),
 }
 
 impl<Event, Effect> PartialEq for CommandStep<Event, Effect>
@@ -32,7 +26,6 @@ where
             (Self::Effect(a), Self::Effect(b)) => a == b,
             (Self::SequentialEffects(a), Self::SequentialEffects(b)) 
             | (Self::ParallelEffects(a), Self::ParallelEffects(b)) => a == b,
-            // Inline futures are not comparable
             _ => false,
         }
     }
@@ -49,7 +42,6 @@ where
             Self::Effect(x) => f.debug_tuple("Effect").field(x).finish(),
             Self::SequentialEffects(v) => f.debug_tuple("SequentialEffects").field(v).finish(),
             Self::ParallelEffects(v) => f.debug_tuple("ParallelEffects").field(v).finish(),
-            Self::InlineFuture(_) => f.write_str("InlineFuture(<closure>)"),
         }
     }
 }
@@ -88,7 +80,6 @@ where
                 CommandStep::Effect(fx) => CommandStep::Effect(fx.clone()),
                 CommandStep::SequentialEffects(v) => CommandStep::SequentialEffects(v.clone()),
                 CommandStep::ParallelEffects(v) => CommandStep::ParallelEffects(v.clone()),
-                CommandStep::InlineFuture(_) => panic!("Cannot clone Command containing InlineFuture"),
             };
             outputs.push(cloned);
         }
@@ -145,23 +136,6 @@ impl<Event, Effect> Command<Event, Effect> {
         Self { outputs }
     }
 
-    /// Create a command from an inline future (simple effect without naming)
-    ///
-    /// This stores a boxed closure that will be executed by the Shell. It has
-    /// a small allocation cost, but keeps developer experience simple when
-    /// prototyping or when a named effect is unnecessary.
-    pub fn future<Fut, F>(f: F) -> Self
-    where
-        F: FnOnce(EffectContext<Event>) -> Fut + Send + 'static,
-        Fut: std::future::Future<Output = ()> + Send + 'static,
-    {
-        let mut outputs = SmallVec::new();
-        let boxed = Box::new(move |ctx: EffectContext<Event>| -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'static>> {
-            Box::pin(f(ctx))
-        });
-        outputs.push(CommandStep::InlineFuture(boxed));
-        Self { outputs }
-    }
 
     // Sequential effects removed: use `sequence([Command::effect(...), ...])` for sequential effects
     // Parallel effects removed: use `effects([...])` for parallel effects
@@ -208,9 +182,6 @@ impl<Event, Effect> Command<Event, Effect> {
                 CommandStep::Effect(effect) => outputs.push(CommandStep::Effect(effect)),
                 CommandStep::SequentialEffects(effects) => outputs.push(CommandStep::SequentialEffects(effects)),
                 CommandStep::ParallelEffects(effects) => outputs.push(CommandStep::ParallelEffects(effects)),
-                CommandStep::InlineFuture(_) => {
-                    // Inline futures cannot change event type safely; drop them in map_event
-                }
             }
         }
         Command { outputs }
@@ -233,7 +204,6 @@ impl<Event, Effect> Command<Event, Effect> {
                 CommandStep::ParallelEffects(effects) => {
                     CommandStep::ParallelEffects(effects.into_iter().map(&mut f).collect())
                 }
-                CommandStep::InlineFuture(closure) => CommandStep::InlineFuture(closure),
             };
             outputs.push(new_output);
         }
@@ -255,7 +225,7 @@ impl<Event, Effect> Command<Event, Effect> {
             .map(|o| match o {
                 CommandStep::SequentialEffects(effects)
                 | CommandStep::ParallelEffects(effects) => effects.len(),
-                CommandStep::Event(_) | CommandStep::Effect(_) | CommandStep::InlineFuture(_) => 1,
+                CommandStep::Event(_) | CommandStep::Effect(_) => 1,
             })
             .sum()
     }
@@ -420,9 +390,6 @@ impl<Event, Effect> Command<Event, Effect> {
                     CommandStep::Event(event) => {
                         all_events.push(event);
                     }
-                    CommandStep::InlineFuture(_) => {
-                        // Inline futures cannot be sequenced across effect handler; execute immediately as events do
-                    }
                 }
             }
         }
@@ -469,7 +436,6 @@ impl<Event, Effect> Command<Event, Effect> {
                 | CommandStep::ParallelEffects(coordinated_effects) => {
                     effects.extend(coordinated_effects);
                 }
-                CommandStep::InlineFuture(_) => {}
             }
         }
 
@@ -496,7 +462,7 @@ impl<Event, Effect> Command<Event, Effect> {
                 CommandStep::Effect(_) => count += 1,
                 CommandStep::SequentialEffects(effects)
                 | CommandStep::ParallelEffects(effects) => count += effects.len(),
-                CommandStep::Event(_) | CommandStep::InlineFuture(_) => {}
+                CommandStep::Event(_) => {}
             }
         }
         count
@@ -569,9 +535,6 @@ impl<Event, Effect> Command<Event, Effect> {
                 CommandStep::Effect(effect) => outputs.push(CommandStep::Effect(effect)),
                 CommandStep::SequentialEffects(effects) => outputs.push(CommandStep::SequentialEffects(effects)),
                 CommandStep::ParallelEffects(effects) => outputs.push(CommandStep::ParallelEffects(effects)),
-                CommandStep::InlineFuture(_) => {
-                    // Drop inline futures when mapping event type
-                }
             }
         }
 
@@ -601,7 +564,6 @@ impl<Event, Effect> Command<Event, Effect> {
                         effects.into_iter().map(&mut f).collect();
                     CommandStep::ParallelEffects(mapped_effects?)
                 }
-                CommandStep::InlineFuture(closure) => CommandStep::InlineFuture(closure),
             };
             outputs.push(new_output);
         }
@@ -652,8 +614,7 @@ impl<Event, Effect> Command<Event, Effect> {
             CommandStep::Event(event) => predicate(event),
             CommandStep::Effect(_)
             | CommandStep::SequentialEffects(_)
-            | CommandStep::ParallelEffects(_)
-            | CommandStep::InlineFuture(_) => true, // Always keep effects and coordination
+            | CommandStep::ParallelEffects(_) => true, // Always keep effects and coordination
         });
     }
 
@@ -674,8 +635,7 @@ impl<Event, Effect> Command<Event, Effect> {
             CommandStep::Effect(effect) => predicate(effect),
             CommandStep::Event(_)
             | CommandStep::SequentialEffects(_)
-            | CommandStep::ParallelEffects(_)
-            | CommandStep::InlineFuture(_) => true, // Always keep events and coordinated effects
+            | CommandStep::ParallelEffects(_) => true, // Always keep events and coordinated effects
         });
     }
 
@@ -718,7 +678,7 @@ impl<Event, Effect> Command<Event, Effect> {
                 | CommandStep::ParallelEffects(coordinated_effects) => {
                     effects.extend(coordinated_effects);
                 }
-                CommandStep::Event(_) | CommandStep::InlineFuture(_) => {}
+                CommandStep::Event(_) => {}
             }
         }
         effects
@@ -1302,7 +1262,6 @@ mod tests {
                 CommandStep::Effect(_) => count += 10,
                 CommandStep::SequentialEffects(_) => count += 100,
                 CommandStep::ParallelEffects(_) => count += 200,
-                CommandStep::InlineFuture(_) => {}
             }
         }
         assert_eq!(count, 12); // 2 events + 1 effect = 1 + 10 + 1 = 12

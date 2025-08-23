@@ -18,9 +18,6 @@ enum DemoEffect {
     ProcessData { data: String },
 }
 
-#[derive(Default)]
-struct DemoApp;
-
 #[derive(Debug, Default)]
 struct DemoModel {
     user_authenticated: bool,
@@ -28,13 +25,13 @@ struct DemoModel {
     data: Option<String>,
 }
 
-impl App for DemoApp {
-    type Event = DemoEvent;
-    type Model = DemoModel;
-    type Effect = DemoEffect;
-    type Resources = ();
+use syzygy::storage::{Storage, EmptyStorage};
 
-    fn update(&self, event: Self::Event, model: &mut Self::Model) -> Command<Self::Event, Self::Effect> {
+fn demo_update(
+    event: DemoEvent, 
+    ctx: &mut EventContext<DemoEvent, DemoEffect, Storage<DemoModel, EmptyStorage>>
+) -> Command<DemoEvent, DemoEffect> {
+    let model: &mut DemoModel = ctx.model_mut();
         match event {
             DemoEvent::UserClicked => {
                 // Demonstrate monadic composition with conditional logic
@@ -89,21 +86,20 @@ impl App for DemoApp {
                 })
             }
         }
-    }
 }
 
 fn main() {
     println!("Monadic Command Composition Demo");
     println!("=================================");
     
-    let app = DemoApp;
-    let mut model = DemoModel {
+    let mut storage = syzygy::storage::EmptyStorage.with_model(DemoModel {
         user_authenticated: true,
         ..Default::default()
-    };
+    });
     
     // Demonstrate complex monadic composition
-    let command = app.update(DemoEvent::UserClicked, &mut model);
+    let mut ctx = EventContext::new(&mut storage);
+    let command = demo_update(DemoEvent::UserClicked, &mut ctx);
     
     println!("Command created with {} outputs:", command.len());
         for (i, output) in command.into_iter().enumerate() {
@@ -122,15 +118,15 @@ fn main() {
                     println!("    {}.{}: {:?}", i + 1, j + 1, effect);
                 }
             }
-            CommandStep::InlineFuture(_) => println!("  {}: InlineFuture", i + 1),
         }
     }
     
     // Demonstrate data processing with filtering
-    let mut model2 = DemoModel::default();
-    let command2 = app.update(DemoEvent::DataLoaded { 
+    let mut storage2 = syzygy::storage::EmptyStorage.with_model(DemoModel::default());
+    let mut ctx2 = EventContext::new(&mut storage2);
+    let command2 = demo_update(DemoEvent::DataLoaded { 
         data: "test data".to_string() 
-    }, &mut model2);
+    }, &mut ctx2);
     
     println!("\nData processing command with {} outputs:", command2.len());
     for (i, output) in command2.into_iter().enumerate() {
@@ -149,7 +145,6 @@ fn main() {
                     println!("    {}.{}: {:?}", i + 1, j + 1, effect);
                 }
             }
-            CommandStep::InlineFuture(_) => println!("  {}: InlineFuture", i + 1),
         }
     }
     

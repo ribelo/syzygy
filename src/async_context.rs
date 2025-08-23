@@ -15,7 +15,7 @@ use crate::error::ShellError;
 use crate::timer::{Time, time};
 use smallvec::SmallVec;
 
-/// EffectContext provides controlled task spawning within effect handlers
+/// EffectContext provides controlled task spawning and resource access within effect handlers
 /// 
 /// This context ensures all spawned tasks are tracked and properly cleaned up
 /// when the effect handler completes. Key features:
@@ -23,16 +23,19 @@ use smallvec::SmallVec;
 /// - Uses tokio::AbortHandle for hard task cancellation with tokio runtime
 /// - Cooperative cancellation for other runtimes (best effort)
 /// - High performance: 24x faster spawning than previous implementation
+/// - Type-safe resource access via `resource()` method
 /// 
 /// SAFETY GUARANTEE: All tasks spawned through this context will be
 /// cancelled when the context is dropped, preventing memory safety issues.
-pub struct EffectContext<Event> {
+pub struct EffectContext<Event, Resources = crate::storage::EmptyStorage> {
     /// Channel to send events back to Core
     event_tx: Option<Sender<Event>>,
     /// Runtime implementation for time operations  
     runtime: Time,
     /// Task group for safe cancellation on drop
     task_group: Arc<TaskGroup>,
+    /// Resources available to effect handlers
+    resources: Arc<Resources>,
 }
 
 /// Task group that tracks spawned tasks for safe cleanup
@@ -92,16 +95,21 @@ impl Drop for TaskGroup {
     }
 }
 
-impl<Event> EffectContext<Event> 
+impl<Event, Resources> EffectContext<Event, Resources> 
 where
     Event: Send + 'static,
+    Resources: Send + Sync + 'static,
 {
     /// Create a new EffectContext with runtime detection
-    #[must_use] pub fn new(event_tx: Option<Sender<Event>>) -> Self {
+    #[must_use] pub fn new(
+        event_tx: Option<Sender<Event>>,
+        resources: Arc<Resources>,
+    ) -> Self {
         Self {
             event_tx,
             runtime: time(),
             task_group: Arc::new(TaskGroup::new()),
+            resources,
         }
     }
     
@@ -109,11 +117,13 @@ where
     #[must_use] pub fn with_runtime(
         event_tx: Option<Sender<Event>>,
         runtime: Time,
+        resources: Arc<Resources>,
     ) -> Self {
         Self {
             event_tx,
             runtime,
             task_group: Arc::new(TaskGroup::new()),
+            resources,
         }
     }
     
@@ -218,14 +228,34 @@ where
     #[must_use] pub fn runtime(&self) -> Time {
         self.runtime
     }
+
+    /// Get immutable reference to a specific resource by type
+    ///
+    /// This is a convenience method that delegates to the resources' get() method.
+    /// The type must exist in the resources chain for this to compile.
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// let client: &HttpClient = ctx.resource();
+    /// // Or with explicit type:
+    /// let client = ctx.resource::<HttpClient>();
+    /// ```
+    #[must_use]
+    pub fn resource<T, Index>(&self) -> &T
+    where
+        Resources: crate::storage::Selector<T, Index>,
+    {
+        self.resources.get()
+    }
 }
 
-impl<Event> Clone for EffectContext<Event> {
+impl<Event, Resources> Clone for EffectContext<Event, Resources> {
     fn clone(&self) -> Self {
         Self {
             event_tx: self.event_tx.clone(),
             runtime: self.runtime,
             task_group: Arc::clone(&self.task_group), // Share the same task group for cleanup
+            resources: Arc::clone(&self.resources),
         }
     }
 }
@@ -237,7 +267,9 @@ mod tests {
     #[cfg(feature = "tokio")]
     #[tokio::test]
     async fn test_async_context_zero_cost() {
-        let ctx: EffectContext<()> = EffectContext::new(None);
+        use crate::storage::EmptyStorage;
+        let resources = Arc::new(EmptyStorage);
+        let ctx: EffectContext<()> = EffectContext::new(None, resources);
         
         // Test zero-cost spawn (returns immediately)
         let _id1 = ctx.spawn(async {}).unwrap();
@@ -250,7 +282,9 @@ mod tests {
     #[cfg(feature = "tokio")]
     #[tokio::test]
     async fn test_batch_spawn() {
-        let ctx: EffectContext<()> = EffectContext::new(None);
+        use crate::storage::EmptyStorage;
+        let resources = Arc::new(EmptyStorage);
+        let ctx: EffectContext<()> = EffectContext::new(None, resources);
         
         // Test batch spawning
         let futures = (0..5).map(|_| async {});
@@ -262,9 +296,11 @@ mod tests {
     
     #[test]
     fn test_context_creation_performance() {
+        use crate::storage::EmptyStorage;
         // Test that context creation is fast (no heavy initialization)
         for _ in 0..1000 {
-            let _ctx: EffectContext<()> = EffectContext::new(None);
+            let resources = Arc::new(EmptyStorage);
+            let _ctx: EffectContext<()> = EffectContext::new(None, resources);
         }
         // This test doesn't spawn anything, so no runtime required
     }

@@ -4,12 +4,10 @@
 //! correctly runs effects concurrently, not sequentially.
 
 use syzygy::prelude::*;
+use syzygy::event_context::EventContext;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::time::sleep;
-
-#[derive(Default)]
-struct ParallelApp;
 
 #[derive(Debug, Clone)]
 enum ParallelEvent {
@@ -30,13 +28,12 @@ struct ParallelResources {
     execution_log: Arc<Mutex<Vec<(u32, Instant, Instant)>>>,
 }
 
-impl App for ParallelApp {
-    type Event = ParallelEvent;
-    type Model = ParallelModel;
-    type Effect = ParallelEffect;
-    type Resources = ParallelResources;
+use syzygy::storage::{Storage, EmptyStorage};
 
-    fn update(&self, event: Self::Event, _model: &mut Self::Model) -> Command<Self::Event, Self::Effect> {
+fn parallel_update(
+    event: ParallelEvent,
+    _ctx: &mut EventContext<ParallelEvent, ParallelEffect, Storage<ParallelModel, EmptyStorage>>,
+) -> Command<ParallelEvent, ParallelEffect> {
         match event {
             ParallelEvent::StartParallel => {
                 // These should execute in parallel: all starting at the same time
@@ -48,27 +45,24 @@ impl App for ParallelApp {
                 ])
             }
         }
-    }
 }
 
 /// Effect handler that records when each effect starts and completes
 /// Uses Resources for clean dependency injection - no state capture!
-fn parallel_effect_handler(
+async fn parallel_effect_handler(
     effect: ParallelEffect, 
-    resources: Arc<ParallelResources>, 
-    _ctx: EffectContext<ParallelEvent>
-) -> futures_util::future::BoxFuture<'static, ()> {
-    Box::pin(async move {
-        let start_time = Instant::now();
-        
-        match effect {
-            ParallelEffect::Step { id, duration_ms } => {
-                sleep(Duration::from_millis(duration_ms)).await;
-                let end_time = Instant::now();
-                resources.execution_log.lock().unwrap().push((id, start_time, end_time));
-            }
+    ctx: EffectContext<ParallelEvent, Storage<ParallelResources, EmptyStorage>>
+) {
+    let start_time = Instant::now();
+    let resources: &ParallelResources = ctx.resource();
+    
+    match effect {
+        ParallelEffect::Step { id, duration_ms } => {
+            sleep(Duration::from_millis(duration_ms)).await;
+            let end_time = Instant::now();
+            resources.execution_log.lock().unwrap().push((id, start_time, end_time));
         }
-    })
+    }
 }
 
 #[tokio::test]
@@ -79,10 +73,10 @@ async fn test_parallel_effects_are_actually_parallel() {
         execution_log: execution_log.clone(),
     };
 
-    let (core, shell) = Syzygy::builder()
-        .app(ParallelApp)
+    let (core, shell) = Syzygy::builder::<ParallelEvent, ParallelEffect>()
         .model(ParallelModel::default())
-        .resources(resources)
+        .resource(resources)
+        .update(parallel_update)
         .build();
 
     let shell = shell.with_effect_handler(parallel_effect_handler);
@@ -160,10 +154,10 @@ async fn test_mixed_sequential_and_parallel() {
         execution_log: execution_log.clone(),
     };
 
-    let (core, shell) = Syzygy::builder()
-        .app(ParallelApp)
+    let (core, shell) = Syzygy::builder::<ParallelEvent, ParallelEffect>()
         .model(ParallelModel::default())
-        .resources(resources)
+        .resource(resources)
+        .update(parallel_update)
         .build();
 
     let shell = shell.with_effect_handler(parallel_effect_handler);

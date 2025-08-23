@@ -80,7 +80,6 @@ fn bench_command_iteration(c: &mut Criterion) {
                     CommandStep::Effect(_) => 1,
                     CommandStep::SequentialEffects(effects) => effects.len(),
                     CommandStep::ParallelEffects(effects) => effects.len(),
-                    CommandStep::InlineFuture(_) => 1,
                 };
             }
             black_box(count)
@@ -96,7 +95,6 @@ fn bench_command_iteration(c: &mut Criterion) {
                     CommandStep::Effect(_) => 1,
                     CommandStep::SequentialEffects(effects) => effects.len(),
                     CommandStep::ParallelEffects(effects) => effects.len(),
-                    CommandStep::InlineFuture(_) => 1,
                 };
             }
             black_box(count)

@@ -9,6 +9,7 @@ use std::time::Duration;
 use tokio::time::sleep;
 
 use syzygy::async_context::EffectContext;
+use syzygy::storage::EmptyStorage;
 
 /// Test that tasks are cancelled when EffectContext is dropped
 #[cfg(feature = "tokio")]
@@ -20,7 +21,7 @@ async fn test_tasks_cancelled_on_context_drop() {
     
     // Create scope to control context lifetime
     {
-        let ctx: EffectContext<()> = EffectContext::new(None);
+        let ctx: EffectContext<(), EmptyStorage> = EffectContext::new(None, std::sync::Arc::new(EmptyStorage));
         
         let task_started_clone = task_started.clone();
         let task_completed_clone = task_completed.clone();
@@ -75,7 +76,7 @@ async fn test_multiple_tasks_cancelled_on_drop() {
     
     // Create scope for context lifetime
     {
-        let ctx: EffectContext<()> = EffectContext::new(None);
+        let ctx: EffectContext<(), EmptyStorage> = EffectContext::new(None, std::sync::Arc::new(EmptyStorage));
         
         // Spawn multiple long-running tasks
         for i in 0..TASK_COUNT {
@@ -119,7 +120,7 @@ async fn test_no_use_after_free_on_context_drop() {
     
     // Create scope for context lifetime
     {
-        let ctx: EffectContext<()> = EffectContext::new(None);
+        let ctx: EffectContext<(), EmptyStorage> = EffectContext::new(None, std::sync::Arc::new(EmptyStorage));
         
         let shared_data_clone = shared_data.clone();
         let access_count_clone = access_count.clone();
@@ -168,7 +169,7 @@ async fn test_batch_spawned_tasks_cancelled_on_drop() {
     let tasks_completed = Arc::new(AtomicU32::new(0));
     
     {
-        let ctx: EffectContext<()> = EffectContext::new(None);
+        let ctx: EffectContext<(), EmptyStorage> = EffectContext::new(None, std::sync::Arc::new(EmptyStorage));
         
         let tasks_started_clone = tasks_started.clone();
         let tasks_completed_clone = tasks_completed.clone();
@@ -212,7 +213,7 @@ async fn test_cloned_context_task_safety() {
     let task2_completed = Arc::new(AtomicBool::new(false));
     
     let cloned_ctx = {
-        let ctx: EffectContext<()> = EffectContext::new(None);
+        let ctx: EffectContext<(), EmptyStorage> = EffectContext::new(None, std::sync::Arc::new(EmptyStorage));
         let cloned_ctx = ctx.clone();
         
         // Spawn task from original context

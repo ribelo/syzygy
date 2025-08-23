@@ -570,7 +570,6 @@ fn test_try_with_model_success() {
 
 #[test]
 fn test_try_with_model_duplicate_error() {
-    use syzygy::storage::{RuntimeContains, DuplicateTypeError};
     
     let chain = EmptyStorage::default()
         .with_model_unchecked(Model1 { value: 1, active: true });
