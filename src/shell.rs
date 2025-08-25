@@ -83,7 +83,7 @@ pub struct Shell<Event, Effect, Resources = crate::storage::EmptyStorage, H = ()
 where
     Event: Clone + Send + 'static,
     Effect: Clone + Send + 'static,
-    Resources: Send + Sync + 'static,
+    Resources: Clone + Send + Sync + 'static,
 {
     /// Task tracker for managing async effects (wrapped for sharing with EffectContext)
     pub(crate) task_tracker: Arc<Mutex<TaskTracker>>,
@@ -95,8 +95,8 @@ where
     /// Channel for sending events back to Core
     pub(crate) event_tx: Option<Sender<Event>>,
 
-    /// Resources shared with effect handlers (always Arc-wrapped for thread safety)
-    pub(crate) resources: Arc<Resources>,
+    /// Resources shared with effect handlers (user controls Arc wrapping)
+    pub(crate) resources: Resources,
 
     /// User-provided effect handler (AFIT, zero-alloc). Default is `()` which is a noop handler.
     pub(crate) effect_handler: H,
@@ -140,7 +140,7 @@ where
             effect_rx,
             effect_tx,
             event_tx: None,
-            resources: Arc::new(crate::storage::EmptyStorage),
+            resources: crate::storage::EmptyStorage,
             effect_handler: (),
             config,
         }
@@ -151,7 +151,7 @@ impl<Event, Effect, Resources, H> Shell<Event, Effect, Resources, H>
 where
     Event: Clone + Send + 'static,
     Effect: Clone + Send + 'static,
-    Resources: Send + Sync + 'static,
+    Resources: Clone + Send + Sync + 'static,
 {
     /// Create a new Shell with custom configuration and explicit handler
     #[must_use]
@@ -170,7 +170,7 @@ where
             effect_rx,
             effect_tx,
             event_tx: None,
-            resources: Arc::new(Resources::default()),
+            resources: Resources::default(),
             effect_handler: handler,
             config,
         }
@@ -196,7 +196,7 @@ where
     /// use the builder pattern with .resource() method.
     #[must_use]
     pub fn with_resources(mut self, resources: Resources) -> Self {
-        self.resources = Arc::new(resources);
+        self.resources = resources;
         self
     }
 
@@ -341,8 +341,7 @@ where
         #[cfg(feature = "tracing")]
         debug!("Processing effect");
 
-        let resources = Arc::clone(&self.resources);
-        let ctx = EffectContext::with_runtime(self.event_tx.clone(), self.config.runtime, resources.clone());
+        let ctx = EffectContext::with_runtime(self.event_tx.clone(), self.config.runtime, self.resources.clone());
         let handler = self.effect_handler.clone();
         let runtime = self.config.runtime;
         let timeout = self.config.effect_timeout;
@@ -368,14 +367,14 @@ where
         S: crate::spawn::Spawn,
         H: EffectHandler<Event, Effect, Resources> + Clone + Send + Sync + 'static,
     {
-        let resources = Arc::clone(&self.resources);
+        let resources = self.resources.clone();
         let event_tx = self.event_tx.clone();
         let runtime = self.config.runtime;
         let timeout = self.config.effect_timeout;
         let handler = self.effect_handler.clone();
 
         let seq_future = async move {
-            let ctx = EffectContext::with_runtime(event_tx, runtime, resources.clone());
+            let ctx = EffectContext::with_runtime(event_tx, runtime, resources);
             for effect in effects {
                 match timeout {
                     Some(dur) => {
@@ -398,14 +397,13 @@ where
         S: crate::spawn::Spawn,
         H: EffectHandler<Event, Effect, Resources> + Clone + Send + Sync + 'static,
     {
-        let resources = Arc::clone(&self.resources);
+        let resources = self.resources.clone();
         let event_tx = self.event_tx.clone();
         let runtime = self.config.runtime;
         let timeout = self.config.effect_timeout;
         let handler = self.effect_handler.clone();
 
         for effect in effects {
-            let resources = Arc::clone(&resources);
             let ctx = EffectContext::with_runtime(event_tx.clone(), runtime, resources.clone());
             if let Some(dur) = timeout {
                 let h = handler.clone();
@@ -528,7 +526,7 @@ mod tests {
         use crate::builder::Syzygy;
 
         // Define a simple read-only resource
-        #[derive(Debug)]
+        #[derive(Debug, Clone)]
         struct HttpClient {
             base_url: String,
         }
@@ -563,17 +561,17 @@ mod tests {
         use crate::builder::Syzygy;
 
         // Define multiple resource types
-        #[derive(Debug)]
+        #[derive(Debug, Clone)]
         struct HttpClient {
             base_url: String,
         }
 
-        #[derive(Debug)]
+        #[derive(Debug, Clone)]
         struct Database {
             connection_string: String,
         }
 
-        #[derive(Debug)]
+        #[derive(Debug, Clone)]
         struct FileSystem {
             root_path: String,
         }
@@ -612,7 +610,7 @@ mod tests {
         use std::collections::HashMap;
 
         // Resource that needs interior mutability
-        #[derive(Debug)]
+        #[derive(Debug, Clone)]
         struct Cache {
             data: Arc<Mutex<HashMap<String, String>>>,
         }

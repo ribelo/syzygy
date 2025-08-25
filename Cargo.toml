@@ -15,6 +15,8 @@ async-std = ["dep:async-std", "dep:async-channel"]
 view-model = []
 multi-model = []
 tracing = ["dep:tracing"]
+magic-compilation-test = []
+manual-compilation-test = []
 
 [dependencies]
 # Core dependencies
@@ -35,6 +37,9 @@ async-channel = { version = "2.3", optional = true }
 # Tracing dependencies
 tracing = { version = "0.1", optional = true }
 
+# Macro dependencies
+syzygy_macros = { path = "syzygy_macros" }
+
 [dev-dependencies]
 cfg-if = "1.0.0"
 criterion = { version = "0.5", features = ["html_reports"] }
@@ -51,6 +56,8 @@ indexmap = "2.0"
 ahash = "0.8"
 proptest = "1.4"
 tokio-test = "0.4"
+rand = "0.8"
+syzygy_macros = { path = "syzygy_macros" }
 
 # BDD tests removed - were using outdated API incompatible with current architecture
 
@@ -119,6 +126,22 @@ harness = false
 
 [[bench]]
 name = "command_performance"
+harness = false
+
+[[bench]]
+name = "event_handler_map_benchmark"
+harness = false
+
+[[bench]]
+name = "magic_handler_benchmark"
+harness = false
+
+[[bench]]
+name = "magic_effect_benchmark"
+harness = false
+
+[[bench]]
+name = "real_magic_dispatch_benchmark"
 harness = false
 
 

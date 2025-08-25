@@ -64,7 +64,7 @@ fn handle_simple_event(event: AppEvent) -> Command<AppEvent, AppEffect> {
 /// Handler that extracts a single model
 fn handle_with_user_model(
     event: AppEvent,
-    user: ModelRef<'_, UserModel>,
+    user: &UserModel,
 ) -> Command<AppEvent, AppEffect> {
     match event {
         AppEvent::UserLogin { email } => {
@@ -90,8 +90,8 @@ fn handle_with_user_model(
 /// Handler that extracts multiple models
 fn handle_with_multiple_models(
     event: AppEvent,
-    user: ModelRef<'_, UserModel>,
-    config: ModelRef<'_, ConfigModel>,
+    user: &UserModel,
+    config: &ConfigModel,
 ) -> Command<AppEvent, AppEffect> {
     match event {
         AppEvent::UpdateConfig { debug_mode } => {
@@ -111,7 +111,7 @@ fn handle_with_multiple_models(
 /// Handler using mutable model reference
 fn handle_with_mutable_model(
     event: AppEvent,
-    mut user: ModelMut<'_, UserModel>,
+    user: &mut UserModel,
 ) -> Command<AppEvent, AppEffect> {
     match event {
         AppEvent::UserLogin { email } => {
@@ -191,9 +191,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("✨ Magic Handler Demonstration Complete!\n");
     println!("🎯 Key Features Demonstrated:");
     println!("   ✅ Simple event handlers (no extraction)");
-    println!("   ✅ Single model extraction with ModelRef");
+    println!("   ✅ Single model extraction with &T");
     println!("   ✅ Multiple model extraction");
-    println!("   ✅ Mutable model access with ModelMut");
+    println!("   ✅ Mutable model access with &mut T");
     println!("   ✅ Type-safe extraction with compile-time verification");
     println!("   ✅ Zero-overhead parameter injection");
 

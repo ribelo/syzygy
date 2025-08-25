@@ -140,6 +140,17 @@ fn database_update(
 
 /// Effect handler - receives all data through parameters
 /// NO STATE CAPTURE - this is the key lesson from Crux!
+// Example magic effect handler demonstrating pure resource extraction
+async fn handle_log_with_config(
+    log_effect: AppEffect, // In practice, you'd extract the variant struct
+    resources: AppResources, // Pure T extraction - no wrapper needed!
+) {
+    if let AppEffect::Log { message } = log_effect {
+        println!("[{}] {} (timeout: {}ms)", 
+                 resources.database_url, message, resources.timeout_ms);
+    }
+}
+
 async fn handle_effects(
     effect: AppEffect,
     ctx: EffectContext<AppEvent, Storage<AppResources, EmptyStorage>>,

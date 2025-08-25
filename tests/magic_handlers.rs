@@ -5,7 +5,6 @@
 
 use syzygy::command::Command;
 use syzygy::event_context::EventContext;
-use syzygy::extract::{ModelRef, ModelMut};
 use syzygy::magic_handler::event_trigger;
 use syzygy::storage::EmptyStorage;
 
@@ -80,10 +79,10 @@ fn test_event_with_single_extraction() {
 
     let ctx = EventContext::<AppEvent, AppEffect, _>::new(&mut storage);
 
-    // Handler that extracts user model via ModelRef
+    // Handler that extracts user model via &T
     fn handler_with_model_ref(
         event: AppEvent,
-        user: ModelRef<'_, UserModel>,
+        user: &UserModel,
     ) -> Command<AppEvent, AppEffect> {
         match event {
             AppEvent::UserCreated { name } => {
@@ -124,8 +123,8 @@ fn test_event_with_multiple_extractions() {
     // Handler that extracts different model types
     fn handler_multi_extract(
         event: AppEvent,
-        user: ModelRef<'_, UserModel>,
-        config: ModelRef<'_, ConfigModel>,
+        user: &UserModel,
+        config: &ConfigModel,
     ) -> Command<AppEvent, AppEffect> {
         match event {
             AppEvent::ConfigUpdated { .. } => {
@@ -160,7 +159,7 @@ fn test_event_with_model_mut_extraction() {
     // Handler that extracts mutable model reference
     fn handler_with_model_mut(
         event: AppEvent,
-        user: ModelMut<'_, UserModel>,
+        user: &mut UserModel,
     ) -> Command<AppEvent, AppEffect> {
         match event {
             AppEvent::DataLoaded { .. } => {
@@ -228,8 +227,8 @@ fn test_magic_handlers_integration() {
     // Event handler that uses both models
     fn update_handler(
         event: AppEvent,
-        user: ModelRef<'_, UserModel>,
-        config: ModelRef<'_, ConfigModel>,
+        user: &UserModel,
+        config: &ConfigModel,
     ) -> Command<AppEvent, AppEffect> {
         match event {
             AppEvent::UserCreated { name } => {

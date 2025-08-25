@@ -107,16 +107,16 @@ impl<Event, Effect> Command<Event, Effect> {
     }
 
     /// Create a command that emits a single event
-    pub fn event(event: Event) -> Self {
+    pub fn event(event: impl Into<Event>) -> Self {
         let mut outputs = SmallVec::new();
-        outputs.push(CommandStep::Event(event));
+        outputs.push(CommandStep::Event(event.into()));
         Self { outputs }
     }
 
     /// Create a command that requests a single effect
-    pub fn effect(effect: Effect) -> Self {
+    pub fn effect(effect: impl Into<Effect>) -> Self {
         let mut outputs = SmallVec::new();
-        outputs.push(CommandStep::Effect(effect));
+        outputs.push(CommandStep::Effect(effect.into()));
         Self { outputs }
     }
 
@@ -735,6 +735,16 @@ mod tests {
         Z,
     }
 
+    // Helper functions for test code
+    fn test_event(event: TestEvent) -> Command<TestEvent, TestEffect> {
+        Command::event(event)
+    }
+
+    fn test_effect(effect: TestEffect) -> Command<TestEvent, TestEffect> {
+        Command::effect(effect)
+    }
+
+
     #[test]
     fn test_empty_command() {
         let cmd = Command::<TestEvent, TestEffect>::none();
@@ -783,8 +793,8 @@ mod tests {
 
     #[test]
     fn test_batch_commands() {
-        let cmd1 = Command::event(TestEvent::A);
-        let cmd2 = Command::effect(TestEffect::X);
+        let cmd1 = test_event(TestEvent::A);
+        let cmd2 = test_effect(TestEffect::X);
         let cmd3 = Command::events([TestEvent::B, TestEvent::C]);
 
         let combined = Command::batch([cmd1, cmd2, cmd3]);
@@ -824,8 +834,8 @@ mod tests {
 
     #[test]
     fn test_append() {
-        let cmd1 = Command::event(TestEvent::A);
-        let cmd2 = Command::effect(TestEffect::X);
+        let cmd1 = test_event(TestEvent::A);
+        let cmd2 = test_effect(TestEffect::X);
 
         let combined = cmd1.append(cmd2);
         let outputs: Vec<_> = combined.into_iter().collect();
@@ -843,10 +853,10 @@ mod tests {
     fn test_smallvec_performance() {
         // Commands with ≤4 outputs should not allocate
         let cmd = Command::batch([
-            Command::event(TestEvent::A),
-            Command::event(TestEvent::B),
-            Command::effect(TestEffect::X),
-            Command::effect(TestEffect::Y),
+            test_event(TestEvent::A),
+            test_event(TestEvent::B),
+            test_effect(TestEffect::X),
+            test_effect(TestEffect::Y),
         ]);
 
         assert_eq!(cmd.len(), 4);
@@ -862,9 +872,9 @@ mod tests {
         let cmd_with_output =
             Command::<TestEvent, TestEffect>::event(TestEvent::A).and_then(|outputs| {
                 if outputs.is_empty() {
-                    Command::event(TestEvent::B)
+                    test_event(TestEvent::B)
                 } else {
-                    Command::effect(TestEffect::X)
+                    test_effect(TestEffect::X)
                 }
             });
 
@@ -881,9 +891,9 @@ mod tests {
         // Test with empty command
         let empty_cmd = Command::<TestEvent, TestEffect>::none().and_then(|outputs| {
             if outputs.is_empty() {
-                Command::event(TestEvent::B)
+                test_event(TestEvent::B)
             } else {
-                Command::effect(TestEffect::X)
+                test_effect(TestEffect::X)
             }
         });
 
@@ -911,7 +921,7 @@ mod tests {
     fn test_or_else() {
         // Test with non-empty command
         let non_empty = Command::<TestEvent, TestEffect>::event(TestEvent::A)
-            .or_else(Command::effect(TestEffect::X));
+            .or_else(test_effect(TestEffect::X));
 
         assert_eq!(non_empty.len(), 1);
         let outputs: Vec<_> = non_empty.into_iter().collect();
@@ -919,7 +929,7 @@ mod tests {
 
         // Test with empty command
         let empty =
-            Command::<TestEvent, TestEffect>::none().or_else(Command::effect(TestEffect::X));
+            Command::<TestEvent, TestEffect>::none().or_else(test_effect(TestEffect::X));
 
         assert_eq!(empty.len(), 1);
         let outputs: Vec<_> = empty.into_iter().collect();
@@ -929,10 +939,10 @@ mod tests {
     #[test]
     fn test_filter() {
         let cmd = Command::<TestEvent, TestEffect>::batch([
-            Command::event(TestEvent::A),
-            Command::effect(TestEffect::X),
-            Command::event(TestEvent::B),
-            Command::effect(TestEffect::Y),
+            test_event(TestEvent::A),
+            test_effect(TestEffect::X),
+            test_event(TestEvent::B),
+            test_effect(TestEffect::Y),
         ]);
 
         // Filter to only keep events
@@ -967,7 +977,7 @@ mod tests {
     #[test]
     fn test_then() {
         let cmd1 = Command::<TestEvent, TestEffect>::event(TestEvent::A);
-        let cmd2 = Command::effect(TestEffect::X);
+        let cmd2 = test_effect(TestEffect::X);
 
         let combined = cmd1.then(cmd2);
         assert_eq!(combined.len(), 2);
@@ -986,21 +996,21 @@ mod tests {
     fn test_monadic_composition_chain() {
         // Test complex chaining of multiple monadic methods
         let complex_cmd = Command::<TestEvent, TestEffect>::batch([
-            Command::event(TestEvent::A),
-            Command::event(TestEvent::B),
-            Command::effect(TestEffect::Z), // This will be filtered out
+            test_event(TestEvent::A),
+            test_event(TestEvent::B),
+            test_effect(TestEffect::Z), // This will be filtered out
         ])
         .filter(|output| !matches!(output, CommandStep::Effect(TestEffect::Z)))
         .and_then(|outputs| {
             if outputs.len() >= 2 {
-                Command::effect(TestEffect::X)
+                test_effect(TestEffect::X)
             } else {
                 Command::none()
             }
         })
         .when(true)
-        .or_else(Command::event(TestEvent::C))
-        .then(Command::effect(TestEffect::Y));
+        .or_else(test_event(TestEvent::C))
+        .then(test_effect(TestEffect::Y));
 
         // Should have: TestEvent::A, TestEvent::B, TestEffect::X, TestEffect::Y
         assert_eq!(complex_cmd.len(), 4);
@@ -1021,8 +1031,8 @@ mod tests {
     fn test_monadic_methods_preserve_smallvec_optimization() {
         // Test that monadic methods don't break SmallVec inline optimization
         let cmd = Command::<TestEvent, TestEffect>::event(TestEvent::A)
-            .then(Command::event(TestEvent::B))
-            .then(Command::effect(TestEffect::X))
+            .then(test_event(TestEvent::B))
+            .then(test_effect(TestEffect::X))
             .when(true);
 
         assert_eq!(cmd.len(), 3);
@@ -1033,10 +1043,10 @@ mod tests {
     #[test]
     fn test_partition_outputs() {
         let command = Command::batch([
-            Command::event(TestEvent::A),
-            Command::effect(TestEffect::X),
-            Command::event(TestEvent::B),
-            Command::effect(TestEffect::Y),
+            test_event(TestEvent::A),
+            test_effect(TestEffect::X),
+            test_event(TestEvent::B),
+            test_effect(TestEffect::Y),
         ]);
 
         let (events, effects) = command.partition_outputs();
@@ -1050,9 +1060,9 @@ mod tests {
     #[test]
     fn test_count_events_and_effects() {
         let command = Command::batch([
-            Command::event(TestEvent::A),
-            Command::effect(TestEffect::X),
-            Command::event(TestEvent::B),
+            test_event(TestEvent::A),
+            test_effect(TestEffect::X),
+            test_event(TestEvent::B),
         ]);
 
         assert_eq!(command.count_events(), 2);
@@ -1066,9 +1076,9 @@ mod tests {
     #[test]
     fn test_find_event_and_effect() {
         let command = Command::batch([
-            Command::event(TestEvent::A),
-            Command::effect(TestEffect::X),
-            Command::event(TestEvent::B),
+            test_event(TestEvent::A),
+            test_effect(TestEffect::X),
+            test_event(TestEvent::B),
         ]);
 
         // Find existing event
@@ -1091,9 +1101,9 @@ mod tests {
     #[test]
     fn test_try_map_event_success() {
         let command = Command::batch([
-            Command::event(TestEvent::A),
-            Command::effect(TestEffect::X),
-            Command::event(TestEvent::B),
+            test_event(TestEvent::A),
+            test_effect(TestEffect::X),
+            test_event(TestEvent::B),
         ]);
 
         let result: Result<Command<TestEvent, TestEffect>, &str> =
@@ -1116,7 +1126,7 @@ mod tests {
     #[test]
     fn test_try_map_event_failure() {
         let command: Command<TestEvent, TestEffect> =
-            Command::batch([Command::event(TestEvent::A), Command::event(TestEvent::B)]);
+            Command::batch([test_event(TestEvent::A), test_event(TestEvent::B)]);
 
         let result: Result<Command<TestEvent, TestEffect>, &str> =
             command.try_map_event(|event| match event {
@@ -1132,7 +1142,7 @@ mod tests {
     #[test]
     fn test_iter_non_consuming() {
         let command =
-            Command::batch([Command::event(TestEvent::A), Command::effect(TestEffect::X)]);
+            Command::batch([test_event(TestEvent::A), test_effect(TestEffect::X)]);
 
         // Use iter() without consuming
         let count = command.iter().count();
@@ -1146,15 +1156,15 @@ mod tests {
 
     #[test]
     fn test_has_events_and_effects() {
-        let events_only: Command<TestEvent, TestEffect> = Command::event(TestEvent::A);
+        let events_only: Command<TestEvent, TestEffect> = test_event(TestEvent::A);
         assert!(events_only.has_events());
         assert!(!events_only.has_effects());
 
-        let effects_only: Command<TestEvent, TestEffect> = Command::effect(TestEffect::X);
+        let effects_only: Command<TestEvent, TestEffect> = test_effect(TestEffect::X);
         assert!(!effects_only.has_events());
         assert!(effects_only.has_effects());
 
-        let mixed = Command::batch([Command::event(TestEvent::A), Command::effect(TestEffect::X)]);
+        let mixed = Command::batch([test_event(TestEvent::A), test_effect(TestEffect::X)]);
         assert!(mixed.has_events());
         assert!(mixed.has_effects());
 
@@ -1166,10 +1176,10 @@ mod tests {
     #[test]
     fn test_retain_events() {
         let mut command = Command::batch([
-            Command::event(TestEvent::A),
-            Command::effect(TestEffect::X),
-            Command::event(TestEvent::B),
-            Command::effect(TestEffect::Y),
+            test_event(TestEvent::A),
+            test_effect(TestEffect::X),
+            test_event(TestEvent::B),
+            test_effect(TestEffect::Y),
         ]);
 
         // Retain only TestEvent::A
@@ -1186,10 +1196,10 @@ mod tests {
     #[test]
     fn test_retain_effects() {
         let mut command = Command::batch([
-            Command::event(TestEvent::A),
-            Command::effect(TestEffect::X),
-            Command::event(TestEvent::B),
-            Command::effect(TestEffect::Y),
+            test_event(TestEvent::A),
+            test_effect(TestEffect::X),
+            test_event(TestEvent::B),
+            test_effect(TestEffect::Y),
         ]);
 
         // Retain only TestEffect::X
@@ -1206,9 +1216,9 @@ mod tests {
     #[test]
     fn test_into_events() {
         let command = Command::batch([
-            Command::event(TestEvent::A),
-            Command::effect(TestEffect::X),
-            Command::event(TestEvent::B),
+            test_event(TestEvent::A),
+            test_effect(TestEffect::X),
+            test_event(TestEvent::B),
         ]);
 
         let events = command.into_events();
@@ -1218,9 +1228,9 @@ mod tests {
     #[test]
     fn test_into_effects() {
         let command = Command::batch([
-            Command::event(TestEvent::A),
-            Command::effect(TestEffect::X),
-            Command::effect(TestEffect::Y),
+            test_event(TestEvent::A),
+            test_effect(TestEffect::X),
+            test_effect(TestEffect::Y),
         ]);
 
         let effects = command.into_effects();
@@ -1230,8 +1240,8 @@ mod tests {
     #[test]
     fn test_into_events_empty() {
         let command = Command::batch([
-            Command::effect(TestEffect::X),
-            Command::effect(TestEffect::Y),
+            test_effect(TestEffect::X),
+            test_effect(TestEffect::Y),
         ]);
 
         let events: Vec<TestEvent> = command.into_events();
@@ -1240,7 +1250,7 @@ mod tests {
 
     #[test]
     fn test_into_effects_empty() {
-        let command = Command::batch([Command::event(TestEvent::A), Command::event(TestEvent::B)]);
+        let command = Command::batch([test_event(TestEvent::A), test_event(TestEvent::B)]);
 
         let effects: Vec<TestEffect> = command.into_effects();
         assert!(effects.is_empty());
@@ -1249,9 +1259,9 @@ mod tests {
     #[test]
     fn test_into_iterator_for_reference() {
         let command = Command::batch([
-            Command::event(TestEvent::A),
-            Command::effect(TestEffect::X),
-            Command::event(TestEvent::B),
+            test_event(TestEvent::A),
+            test_effect(TestEffect::X),
+            test_event(TestEvent::B),
         ]);
 
         // Test &Command iteration without consuming
@@ -1288,7 +1298,7 @@ mod tests {
 
     #[test]
     fn test_sequence_single_effect() {
-        let cmd = Command::<TestEvent, TestEffect>::sequence([Command::effect(TestEffect::X)]);
+        let cmd = Command::<TestEvent, TestEffect>::sequence([test_effect(TestEffect::X)]);
 
         assert_eq!(cmd.len(), 1);
         assert!(cmd.has_effects());
@@ -1301,9 +1311,9 @@ mod tests {
     #[test]
     fn test_sequence_multiple_effects() {
         let cmd = Command::<TestEvent, TestEffect>::sequence([
-            Command::effect(TestEffect::X),
-            Command::effect(TestEffect::Y),
-            Command::effect(TestEffect::Z),
+            test_effect(TestEffect::X),
+            test_effect(TestEffect::Y),
+            test_effect(TestEffect::Z),
         ]);
 
         assert_eq!(cmd.len(), 3);
@@ -1317,9 +1327,9 @@ mod tests {
     #[test]
     fn test_sequence_mixed_commands() {
         let cmd = Command::<TestEvent, TestEffect>::sequence([
-            Command::effect(TestEffect::X),
-            Command::batch([Command::event(TestEvent::A), Command::effect(TestEffect::Y)]),
-            Command::effect(TestEffect::Z),
+            test_effect(TestEffect::X),
+            Command::batch([test_event(TestEvent::A), test_effect(TestEffect::Y)]),
+            test_effect(TestEffect::Z),
         ]);
 
         assert_eq!(cmd.len(), 4); // X, A, Y, Z
@@ -1335,10 +1345,10 @@ mod tests {
     fn test_sequence_mixed_items_into_command() {
         // Mix events and effects directly as Commands
         let cmd = Command::<TestEvent, TestEffect>::sequence([
-            Command::effect(TestEffect::X),
-            Command::event(TestEvent::A),
-            Command::effect(TestEffect::Y),
-            Command::effect(TestEffect::Z),
+            test_effect(TestEffect::X),
+            test_event(TestEvent::A),
+            test_effect(TestEffect::Y),
+            test_effect(TestEffect::Z),
         ]);
 
         assert_eq!(cmd.len(), 4); // X, A, Y, Z
@@ -1356,9 +1366,9 @@ mod tests {
     fn test_sequence_preserves_smallvec_optimization() {
         // Test that sequences with ≤4 effects stay inline
         let cmd = Command::<TestEvent, TestEffect>::sequence([
-            Command::effect(TestEffect::X),
-            Command::effect(TestEffect::Y),
-            Command::effect(TestEffect::Z),
+            test_effect(TestEffect::X),
+            test_effect(TestEffect::Y),
+            test_effect(TestEffect::Z),
         ]);
 
         assert_eq!(cmd.len(), 3);
@@ -1370,12 +1380,12 @@ mod tests {
     fn test_sequence_integration_with_monadic_methods() {
         // Test that sequential effects work well with existing monadic composition
         let cmd = Command::<TestEvent, TestEffect>::sequence([
-            Command::effect(TestEffect::X),
-            Command::effect(TestEffect::Y),
+            test_effect(TestEffect::X),
+            test_effect(TestEffect::Y),
         ])
-        .then(Command::event(TestEvent::A))
+        .then(test_event(TestEvent::A))
         .when(true)
-        .or_else(Command::effect(TestEffect::Z));
+        .or_else(test_effect(TestEffect::Z));
 
         assert_eq!(cmd.len(), 3); // X, Y, A
         assert_eq!(cmd.count_effects(), 2);

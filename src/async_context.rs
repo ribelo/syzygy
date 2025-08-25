@@ -34,8 +34,8 @@ pub struct EffectContext<Event, Resources = crate::storage::EmptyStorage> {
     runtime: Time,
     /// Task group for safe cancellation on drop
     task_group: Arc<TaskGroup>,
-    /// Resources available to effect handlers
-    resources: Arc<Resources>,
+    /// Resources available to effect handlers (stored directly, user controls Arc/Mutex)
+    resources: Resources,
 }
 
 /// Task group that tracks spawned tasks for safe cleanup
@@ -98,12 +98,12 @@ impl Drop for TaskGroup {
 impl<Event, Resources> EffectContext<Event, Resources> 
 where
     Event: Send + 'static,
-    Resources: Send + Sync + 'static,
+    Resources: Clone + Send + Sync + 'static,
 {
     /// Create a new EffectContext with runtime detection
     #[must_use] pub fn new(
         event_tx: Option<Sender<Event>>,
-        resources: Arc<Resources>,
+        resources: Resources,
     ) -> Self {
         Self {
             event_tx,
@@ -117,7 +117,7 @@ where
     #[must_use] pub fn with_runtime(
         event_tx: Option<Sender<Event>>,
         runtime: Time,
-        resources: Arc<Resources>,
+        resources: Resources,
     ) -> Self {
         Self {
             event_tx,
@@ -247,15 +247,34 @@ where
     {
         self.resources.get()
     }
+
+    /// Get a clone of the event sender if available
+    /// 
+    /// This is useful for magic handlers that need to send events
+    /// but don't need the full EffectContext.
+    /// 
+    /// # Example
+    /// ```rust,ignore
+    /// if let Some(sender) = ctx.event_sender() {
+    ///     sender.send(MyEvent::Completed);
+    /// }
+    /// ```
+    #[must_use]
+    pub fn event_sender(&self) -> Option<Sender<Event>> {
+        self.event_tx.clone()
+    }
 }
 
-impl<Event, Resources> Clone for EffectContext<Event, Resources> {
+impl<Event, Resources> Clone for EffectContext<Event, Resources> 
+where
+    Resources: Clone,
+{
     fn clone(&self) -> Self {
         Self {
             event_tx: self.event_tx.clone(),
             runtime: self.runtime,
             task_group: Arc::clone(&self.task_group), // Share the same task group for cleanup
-            resources: Arc::clone(&self.resources),
+            resources: self.resources.clone(), // User-controlled clone semantics
         }
     }
 }
@@ -268,7 +287,7 @@ mod tests {
     #[tokio::test]
     async fn test_async_context_zero_cost() {
         use crate::storage::EmptyStorage;
-        let resources = Arc::new(EmptyStorage);
+        let resources = EmptyStorage;
         let ctx: EffectContext<()> = EffectContext::new(None, resources);
         
         // Test zero-cost spawn (returns immediately)
@@ -283,7 +302,7 @@ mod tests {
     #[tokio::test]
     async fn test_batch_spawn() {
         use crate::storage::EmptyStorage;
-        let resources = Arc::new(EmptyStorage);
+        let resources = EmptyStorage;
         let ctx: EffectContext<()> = EffectContext::new(None, resources);
         
         // Test batch spawning
@@ -299,7 +318,7 @@ mod tests {
         use crate::storage::EmptyStorage;
         // Test that context creation is fast (no heavy initialization)
         for _ in 0..1000 {
-            let resources = Arc::new(EmptyStorage);
+            let resources = EmptyStorage;
             let _ctx: EffectContext<()> = EffectContext::new(None, resources);
         }
         // This test doesn't spawn anything, so no runtime required

@@ -40,7 +40,7 @@ pub struct Runner<Event, Effect, Storage, Resources = (), H = ()>
 where
     Event: Clone + Send + 'static,
     Effect: Clone + Send + 'static,
-    Resources: Send + Sync + 'static,
+    Resources: Clone + Send + Sync + 'static,
 {
     core: Core<Event, Effect, Storage>,
     shell: Shell<Event, Effect, Resources, H>,
@@ -51,7 +51,7 @@ impl<Event, Effect, Storage, Resources, H> Runner<Event, Effect, Storage, Resour
 where
     Event: Clone + Send + 'static,
     Effect: Clone + Send + 'static,
-    Resources: Send + Sync + 'static,
+    Resources: Clone + Send + Sync + 'static,
 {
     /// Create a new Runner with Core and Shell
     pub fn new(core: Core<Event, Effect, Storage>, shell: Shell<Event, Effect, Resources, H>) -> Self {

@@ -219,8 +219,15 @@ pub mod prelude {
     pub use crate::storage::{Chain, Contains, EmptyStorage, Storage};
 
     // Magic handler system
-    pub use crate::extract::{FromEventContext, ModelRef, ModelMut};
-    pub use crate::magic_handler::{EffectMagicHandler, EventMagicHandler, event_trigger};
+    pub use crate::extract::{FromEventContext, FromEffectContext, EventSender};
+    pub use crate::magic_handler::{EffectMagicHandler, EventMagicHandler, UnitHandler, event_trigger};
+
+    // Magic handler macros
+    pub use crate::event_magic_handler;
+    pub use crate::effect_magic_handler;
+
+    // Derive macros
+    pub use syzygy_macros::MagicVariants;
 
     // Builder
     pub use crate::builder::{Syzygy, SyzygyBuilder};

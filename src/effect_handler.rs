@@ -116,7 +116,6 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Arc;
 
     #[derive(Debug, Clone)]
     enum TestEvent {
@@ -128,7 +127,7 @@ mod tests {
         Process { value: i32 },
     }
 
-    #[derive(Default)]
+    #[derive(Default, Clone)]
     struct TestResources {
         multiplier: i32,
     }
@@ -151,7 +150,7 @@ mod tests {
     async fn test_function_pointer_implements_effect_handler() {
         use crate::storage::{EmptyStorage, Storage};
         let storage = EmptyStorage.with_model(TestResources { multiplier: 2 });
-        let ctx: EffectContext<TestEvent, Storage<TestResources, EmptyStorage>> = EffectContext::new(None, Arc::new(storage));
+        let ctx: EffectContext<TestEvent, Storage<TestResources, EmptyStorage>> = EffectContext::new(None, storage);
 
         // Verify function pointer implements the trait
         let handler: fn(TestEffect, EffectContext<TestEvent, Storage<TestResources, EmptyStorage>>) -> _ = test_effect_handler;
@@ -170,7 +169,7 @@ mod tests {
 
         let (tx, rx) = unbounded();
         let storage = EmptyStorage.with_model(TestResources { multiplier: 3 });
-        let ctx = EffectContext::new(Some(tx), Arc::new(storage));
+        let ctx = EffectContext::new(Some(tx), storage);
 
         // Execute through trait
         let handler: fn(TestEffect, EffectContext<TestEvent, Storage<TestResources, EmptyStorage>>) -> _ = test_effect_handler;

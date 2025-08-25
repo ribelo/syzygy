@@ -69,10 +69,10 @@ fn handle_simple(event: AppEvent) -> Command<AppEvent, AppEffect> {
     }
 }
 
-/// Handler with ModelRef extraction
+/// Handler with &T extraction
 fn handle_with_model_ref(
     event: AppEvent,
-    user: ModelRef<'_, UserModel>,
+    user: &UserModel,
 ) -> Command<AppEvent, AppEffect> {
     match event {
         AppEvent::GetUser => {
@@ -89,10 +89,10 @@ fn handle_with_model_ref(
     }
 }
 
-/// Handler with ModelMut extraction
+/// Handler with &mut T extraction
 fn handle_with_model_mut(
     event: AppEvent,
-    mut user: ModelMut<'_, UserModel>,
+    user: &mut UserModel,
 ) -> Command<AppEvent, AppEffect> {
     match event {
         AppEvent::UpdateUser { name } => {
@@ -108,8 +108,8 @@ fn handle_with_model_mut(
 /// Handler with multiple model extractions
 fn handle_with_multiple_models(
     event: AppEvent,
-    user: ModelRef<'_, UserModel>,
-    config: ModelRef<'_, ConfigModel>,
+    user: &UserModel,
+    config: &ConfigModel,
 ) -> Command<AppEvent, AppEffect> {
     match event {
         AppEvent::BatchProcess => {
@@ -162,14 +162,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let command = event_trigger(event, &event_ctx, handle_simple);
     println!("   Generated {} effects\n", command.into_iter().count());
 
-    // Test 2: Handler with ModelRef
-    println!("2️⃣ Handler with ModelRef extraction:");
+    // Test 2: Handler with &T
+    println!("2️⃣ Handler with &T extraction:");
     let event = AppEvent::GetUser;
     let command = event_trigger(event, &event_ctx, handle_with_model_ref);
     println!("   Generated {} effects\n", command.into_iter().count());
 
-    // Test 3: Handler with ModelMut
-    println!("3️⃣ Handler with ModelMut extraction:");
+    // Test 3: Handler with &mut T
+    println!("3️⃣ Handler with &mut T extraction:");
     let event = AppEvent::UpdateUser {
         name: "Bob".to_string(),
     };
@@ -185,8 +185,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("✅ All Default Extractors Working!");
     println!("\n🎯 Successfully Tested:");
     println!("   ✅ Event-only handlers");
-    println!("   ✅ ModelRef<T> extraction (immutable)");
-    println!("   ✅ ModelMut<T> extraction (mutable)");
+    println!("   ✅ &T extraction (immutable)");
+    println!("   ✅ &mut T extraction (mutable)");
     println!("   ✅ Multiple model extraction");
     println!("   ✅ Type-safe extraction");
     println!("   ✅ Zero-overhead parameter injection");
