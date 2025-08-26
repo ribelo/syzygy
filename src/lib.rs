@@ -216,7 +216,7 @@ pub mod prelude {
     pub use crate::task::{TaskHandle, TaskId, TaskStats, TaskTracker};
 
     // Storage system
-    pub use crate::storage::{Chain, Contains, EmptyStorage, Storage};
+    pub use crate::storage::{Contains, EmptyStorage, Storage};
 
     // Magic handler system
     pub use crate::extract::{FromEventContext, FromEffectContext, EventSender};

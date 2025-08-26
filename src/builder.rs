@@ -1,6 +1,6 @@
 use crate::core::{Core, UpdateFn};
 use crate::shell::Shell;
-use crate::storage::{EmptyStorage, Storage, StorageBuilder};
+use crate::storage::{EmptyStorage, StorageBuilder};
 
 /// Simple builder for creating Syzygy systems
 pub struct SyzygyBuilder<Event, Effect, ModelStorage = EmptyStorage, ResourceStorage = EmptyStorage> 
