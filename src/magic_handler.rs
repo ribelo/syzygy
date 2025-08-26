@@ -140,7 +140,7 @@ macro_rules! impl_effect_magic_handler {
 // Suppress non_snake_case warnings for generated macro parameter names  
 #[allow(non_snake_case)]
 mod magic_handler_impls {
-    use super::*;
+    use super::{EventMagicHandler, UnitHandler, Command, EventContext, FromEventContext};
     
     impl_event_magic_handler!();
     impl_event_magic_handler!(T1, I1);
@@ -163,7 +163,7 @@ mod magic_handler_impls {
 
 #[allow(non_snake_case)]
 mod effect_magic_handler_impls {
-    use super::*;
+    use super::{EffectMagicHandler, Future, EffectContext, FromEffectContext};
     
     impl_effect_magic_handler!();
     impl_effect_magic_handler!(T1, I1);
