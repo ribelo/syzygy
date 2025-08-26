@@ -129,15 +129,7 @@ name = "command_performance"
 harness = false
 
 [[bench]]
-name = "event_handler_map_benchmark"
-harness = false
-
-[[bench]]
 name = "magic_handler_benchmark"
-harness = false
-
-[[bench]]
-name = "magic_effect_benchmark"
 harness = false
 
 [[bench]]

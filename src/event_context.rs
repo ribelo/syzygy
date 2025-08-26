@@ -78,7 +78,7 @@ impl<'a, Event, Effect, Storage> EventContext<'a, Event, Effect, Storage> {
     /// let counter = ctx.model_mut::<CounterModel>();
     /// counter.count += 1;
     /// ```
-    pub fn model_mut<T, Index>(&self) -> &mut T
+    #[must_use] pub fn model_mut<T, Index>(&self) -> &mut T
     where
         Storage: Selector<T, Index>,
     {
