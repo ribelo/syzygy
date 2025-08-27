@@ -1,11 +1,10 @@
 //! Example demonstrating the new resource Storage API
-//! 
+//!
 //! This example shows how to use multiple resources with the Storage pattern,
 //! similar to how models work in Core.
 
-use std::sync::Arc;
-use syzygy::prelude::*;
 use syzygy::event_context::EventContext;
+use syzygy::prelude::*;
 
 #[derive(Debug, Clone)]
 enum AppEvent {
@@ -62,11 +61,9 @@ fn app_update(
     let model: &mut AppModel = ctx.model_mut();
 
     match event {
-        AppEvent::FetchData => {
-            Command::effect(AppEffect::HttpGet {
-                url: "/data".to_string(),
-            })
-        }
+        AppEvent::FetchData => Command::effect(AppEffect::HttpGet {
+            url: "/data".to_string(),
+        }),
         AppEvent::SaveConfig { theme } => {
             model.theme = theme.clone();
             Command::effect(AppEffect::WriteFile {
@@ -95,9 +92,9 @@ async fn handle_effects(
             // Access HttpClient resource from storage
             let client: &HttpClient = ctx.resource();
             let full_url = format!("{}{}", client.base_url, url);
-            
+
             println!("Fetching data from: {full_url}");
-            
+
             // Simulate HTTP request
             let data = format!("Data from {full_url}");
             let _ = ctx.send_event(AppEvent::DataFetched { data });
@@ -106,10 +103,10 @@ async fn handle_effects(
             // Access FileSystem resource from storage
             let fs: &FileSystem = ctx.resource();
             let full_path = format!("{}/{}", fs.base_path, path);
-            
+
             println!("Writing to file: {full_path}");
             println!("Content: {content}");
-            
+
             // Simulate file write
             let _ = ctx.send_event(AppEvent::ConfigSaved);
         }
@@ -124,8 +121,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Build the system using the new resource API
     let (core, shell) = Syzygy::builder::<AppEvent, AppEffect>()
         .model(AppModel::default())
-        .resource(HttpClient::new())    // Add HttpClient resource
-        .resource(FileSystem::new())    // Add FileSystem resource  
+        .resource(HttpClient::new()) // Add HttpClient resource
+        .resource(FileSystem::new()) // Add FileSystem resource
         .update(app_update)
         .build();
 
@@ -139,7 +136,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Shell resource access:");
     let http_client: &HttpClient = runner.shell().resource();
     println!("HTTP client base URL: {}", http_client.base_url);
-    
+
     let filesystem: &FileSystem = runner.shell().resource();
     println!("Filesystem base path: {}", filesystem.base_path);
     println!();
@@ -152,7 +149,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Run a few ticks to process the events
     println!("\nProcessing events...\n");
-    
+
     for i in 0..5 {
         let did_work = runner.tick(syzygy::spawn::spawner()).await?;
         if did_work {
@@ -166,15 +163,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Check final model state using both APIs
     let model_via_storage: &AppModel = runner.core().storage().get();
     let model_via_direct: &AppModel = runner.core().model();
-    
+
     println!("\nFinal model state (via storage API):");
     println!("Data: {}", model_via_storage.data);
     println!("Theme: {}", model_via_storage.theme);
-    
+
     println!("\nFinal model state (via new model API):");
     println!("Data: {}", model_via_direct.data);
     println!("Theme: {}", model_via_direct.theme);
-    
+
     // Verify both APIs return the same data
     assert_eq!(model_via_storage.data, model_via_direct.data);
     assert_eq!(model_via_storage.theme, model_via_direct.theme);

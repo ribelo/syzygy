@@ -1,12 +1,12 @@
 //! Integration tests for runtime neutrality
-//! 
+//!
 //! These tests verify that Syzygy works correctly with different async runtimes.
 //! We test each runtime explicitly to ensure compatibility, though tokio is the
 //! primary/recommended runtime for production use.
 
+use std::time::Duration;
 use syzygy::prelude::*;
 use syzygy::spawn::spawner;
-use std::time::Duration;
 
 #[derive(Debug, Clone)]
 enum TestEvent {
@@ -26,27 +26,27 @@ enum TestEffect {
     Delay(Duration),
 }
 
-use syzygy::storage::{Storage, EmptyStorage};
+use syzygy::storage::{EmptyStorage, Storage};
 
 fn test_update(
     event: TestEvent,
     ctx: &mut EventContext<TestEvent, TestEffect, Storage<TestModel, EmptyStorage>>,
 ) -> Command<TestEvent, TestEffect> {
     let model: &mut TestModel = ctx.model_mut();
-        match event {
-            TestEvent::Start => {
-                model.step = 1;
-                Command::effect(TestEffect::Delay(Duration::from_millis(10)))
-            }
-            TestEvent::Work => {
-                model.step = 2;
-                Command::event(TestEvent::Complete)
-            }
-            TestEvent::Complete => {
-                model.completed = true;
-                Command::none()
-            }
+    match event {
+        TestEvent::Start => {
+            model.step = 1;
+            Command::effect(TestEffect::Delay(Duration::from_millis(10)))
         }
+        TestEvent::Work => {
+            model.step = 2;
+            Command::event(TestEvent::Complete)
+        }
+        TestEvent::Complete => {
+            model.completed = true;
+            Command::none()
+        }
+    }
 }
 
 async fn test_effect_handler(effect: TestEffect, ctx: EffectContext<TestEvent, EmptyStorage>) {
@@ -55,13 +55,13 @@ async fn test_effect_handler(effect: TestEffect, ctx: EffectContext<TestEvent, E
             // Use runtime-neutral sleep
             #[cfg(feature = "tokio")]
             tokio::time::sleep(duration).await;
-            
+
             #[cfg(all(feature = "smol", not(feature = "tokio")))]
             smol::Timer::after(duration).await;
-            
+
             #[cfg(all(feature = "async-std", not(feature = "tokio"), not(feature = "smol")))]
             async_std::task::sleep(duration).await;
-            
+
             // Send event back using AsyncContext
             let _ = ctx.send_event(TestEvent::Work);
         }
@@ -75,21 +75,24 @@ async fn test_tokio_runtime() {
         .model(TestModel::default())
         .update(test_update)
         .build();
-    
+
     let shell = shell.with_effect_handler(test_effect_handler);
-    
+
     let mut runner = Runner::new(core, shell);
     let event_sender = runner.core().event_sender();
-    
+
     // Start the test sequence
     event_sender.send(TestEvent::Start).unwrap();
-    
+
     // Run until completed - using spawn adapter
-    runner.run_until(
-        |core, _shell| core.model().completed,
-        syzygy::spawn::TokioSpawn
-    ).await.unwrap();
-    
+    runner
+        .run_until(
+            |core, _shell| core.model().completed,
+            syzygy::spawn::TokioSpawn,
+        )
+        .await
+        .unwrap();
+
     // Verify the sequence completed
     assert_eq!(runner.core().model().step, 2);
     assert!(runner.core().model().completed);
@@ -103,21 +106,24 @@ fn test_smol_runtime() {
             .model(TestModel::default())
             .update(test_update)
             .build();
-        
+
         let shell = shell.with_effect_handler(test_effect_handler);
-        
+
         let mut runner = Runner::new(core, shell);
         let event_sender = runner.core().event_sender();
-        
+
         // Start the test sequence
         event_sender.send(TestEvent::Start).unwrap();
-        
+
         // Run until completed - using spawn adapter
-        runner.run_until(
-            |core, _shell| core.model().completed,
-            syzygy::spawn::SmolSpawn
-        ).await.unwrap();
-        
+        runner
+            .run_until(
+                |core, _shell| core.model().completed,
+                syzygy::spawn::SmolSpawn,
+            )
+            .await
+            .unwrap();
+
         // Verify the sequence completed
         assert_eq!(runner.core().model().step, 2);
         assert!(runner.core().model().completed);
@@ -132,21 +138,24 @@ fn test_async_std_runtime() {
             .model(TestModel::default())
             .update(test_update)
             .build();
-        
+
         let shell = shell.with_effect_handler(test_effect_handler);
-        
+
         let mut runner = Runner::new(core, shell);
         let event_sender = runner.core().event_sender();
-        
+
         // Start the test sequence
         event_sender.send(TestEvent::Start).unwrap();
-        
+
         // Run until completed - using spawn adapter
-        runner.run_until(
-            |core, _shell| core.model().completed,
-            syzygy::spawn::AsyncStdSpawn
-        ).await.unwrap();
-        
+        runner
+            .run_until(
+                |core, _shell| core.model().completed,
+                syzygy::spawn::AsyncStdSpawn,
+            )
+            .await
+            .unwrap();
+
         // Verify the sequence completed
         assert_eq!(runner.core().model().step, 2);
         assert!(runner.core().model().completed);
@@ -161,25 +170,28 @@ async fn test_auto_spawn_adapter() {
         .model(TestModel::default())
         .update(test_update)
         .build();
-    
+
     let shell = shell.with_effect_handler(test_effect_handler);
-    
+
     let mut runner = Runner::new(core, shell);
     let event_sender = runner.core().event_sender();
-    
+
     // Start the test sequence
     event_sender.send(TestEvent::Start).unwrap();
-    
+
     // Run until completed - using auto spawn detection
-    runner.run_until(
-        |core, _shell| core.model().completed,
-        spawner() // This should automatically use tokio since it's enabled
-    ).await.unwrap();
-    
+    runner
+        .run_until(
+            |core, _shell| core.model().completed,
+            spawner(), // This should automatically use tokio since it's enabled
+        )
+        .await
+        .unwrap();
+
     // Verify the sequence completed
     assert_eq!(runner.core().model().step, 2);
     assert!(runner.core().model().completed);
-    
+
     println!("✅ Auto-spawn adapter works correctly with tokio runtime");
 }
 
@@ -191,23 +203,23 @@ fn test_auto_spawn_with_smol() {
             .model(TestModel::default())
             .update(test_update)
             .build();
-        
+
         let shell = shell.with_effect_handler(test_effect_handler);
-        
+
         let mut runner = Runner::new(core, shell);
         let event_sender = runner.core().event_sender();
-        
+
         event_sender.send(TestEvent::Start).unwrap();
-        
+
         // Auto-spawn should detect and use smol
-        runner.run_until(
-            |core, _shell| core.model().completed,
-            spawner()
-        ).await.unwrap();
-        
+        runner
+            .run_until(|core, _shell| core.model().completed, spawner())
+            .await
+            .unwrap();
+
         assert_eq!(runner.core().model().step, 2);
         assert!(runner.core().model().completed);
-        
+
         println!("✅ Auto-spawn adapter works correctly with smol runtime");
     });
 }
@@ -219,9 +231,9 @@ fn test_auto_spawn_with_smol() {
 #[cfg(feature = "tokio")]
 #[tokio::test]
 async fn test_timer_abstraction() {
-    use syzygy::timer::time;
     use std::time::Instant;
-    
+    use syzygy::timer::time;
+
     // Test sleep function
     let runtime = time();
     let start = Instant::now();
@@ -229,25 +241,27 @@ async fn test_timer_abstraction() {
     let elapsed = start.elapsed();
     assert!(elapsed >= Duration::from_millis(40)); // Allow some variance
     assert!(elapsed < Duration::from_millis(100));
-    
-    // Test timeout function  
-    let quick_future = Box::pin(async {  });
+
+    // Test timeout function
+    let quick_future = Box::pin(async {});
     let result = runtime.timeout(Duration::from_secs(1), quick_future).await;
     assert!(result.is_ok());
-    
+
     let slow_future = Box::pin(async {
         tokio::time::sleep(Duration::from_millis(100)).await;
     });
-    let result = runtime.timeout(Duration::from_millis(50), slow_future).await;
+    let result = runtime
+        .timeout(Duration::from_millis(50), slow_future)
+        .await;
     assert!(result.is_err());
 }
 
-/// Test that config runtime settings survive cloning 
+/// Test that config runtime settings survive cloning
 #[cfg(feature = "tokio")]
 #[test]
 fn test_config_runtime_preserved_after_clone() {
     use syzygy::prelude::*;
-    
+
     // Test RunnerConfig cloning preserves runtime setting
     #[cfg(feature = "smol")]
     {
@@ -258,7 +272,7 @@ fn test_config_runtime_preserved_after_clone() {
         let cloned = config.clone();
         assert!(matches!(cloned.runtime, syzygy::timer::Time::Smol));
     }
-    
+
     // Test ShellConfig cloning preserves runtime setting
     #[cfg(feature = "smol")]
     {
@@ -269,7 +283,7 @@ fn test_config_runtime_preserved_after_clone() {
         let cloned = config.clone();
         assert!(matches!(cloned.runtime, syzygy::timer::Time::Smol));
     }
-    
+
     // Test with tokio since we know it's enabled in this test
     let config = RunnerConfig {
         runtime: syzygy::timer::Time::Tokio,

@@ -376,15 +376,38 @@ impl_bulk_extract!(T1, I1, T2, I2, T3, I3, T4, I4);
 impl_bulk_extract!(T1, I1, T2, I2, T3, I3, T4, I4, T5, I5);
 impl_bulk_extract!(T1, I1, T2, I2, T3, I3, T4, I4, T5, I5, T6, I6);
 impl_bulk_extract!(T1, I1, T2, I2, T3, I3, T4, I4, T5, I5, T6, I6, T7, I7);
-impl_bulk_extract!(T1, I1, T2, I2, T3, I3, T4, I4, T5, I5, T6, I6, T7, I7, T8, I8);
-impl_bulk_extract!(T1, I1, T2, I2, T3, I3, T4, I4, T5, I5, T6, I6, T7, I7, T8, I8, T9, I9);
-impl_bulk_extract!(T1, I1, T2, I2, T3, I3, T4, I4, T5, I5, T6, I6, T7, I7, T8, I8, T9, I9, T10, I10);
-impl_bulk_extract!(T1, I1, T2, I2, T3, I3, T4, I4, T5, I5, T6, I6, T7, I7, T8, I8, T9, I9, T10, I10, T11, I11);
-impl_bulk_extract!(T1, I1, T2, I2, T3, I3, T4, I4, T5, I5, T6, I6, T7, I7, T8, I8, T9, I9, T10, I10, T11, I11, T12, I12);
-impl_bulk_extract!(T1, I1, T2, I2, T3, I3, T4, I4, T5, I5, T6, I6, T7, I7, T8, I8, T9, I9, T10, I10, T11, I11, T12, I12, T13, I13);
-impl_bulk_extract!(T1, I1, T2, I2, T3, I3, T4, I4, T5, I5, T6, I6, T7, I7, T8, I8, T9, I9, T10, I10, T11, I11, T12, I12, T13, I13, T14, I14);
-impl_bulk_extract!(T1, I1, T2, I2, T3, I3, T4, I4, T5, I5, T6, I6, T7, I7, T8, I8, T9, I9, T10, I10, T11, I11, T12, I12, T13, I13, T14, I14, T15, I15);
-impl_bulk_extract!(T1, I1, T2, I2, T3, I3, T4, I4, T5, I5, T6, I6, T7, I7, T8, I8, T9, I9, T10, I10, T11, I11, T12, I12, T13, I13, T14, I14, T15, I15, T16, I16);
+impl_bulk_extract!(
+    T1, I1, T2, I2, T3, I3, T4, I4, T5, I5, T6, I6, T7, I7, T8, I8
+);
+impl_bulk_extract!(
+    T1, I1, T2, I2, T3, I3, T4, I4, T5, I5, T6, I6, T7, I7, T8, I8, T9, I9
+);
+impl_bulk_extract!(
+    T1, I1, T2, I2, T3, I3, T4, I4, T5, I5, T6, I6, T7, I7, T8, I8, T9, I9, T10, I10
+);
+impl_bulk_extract!(
+    T1, I1, T2, I2, T3, I3, T4, I4, T5, I5, T6, I6, T7, I7, T8, I8, T9, I9, T10, I10, T11, I11
+);
+impl_bulk_extract!(
+    T1, I1, T2, I2, T3, I3, T4, I4, T5, I5, T6, I6, T7, I7, T8, I8, T9, I9, T10, I10, T11, I11,
+    T12, I12
+);
+impl_bulk_extract!(
+    T1, I1, T2, I2, T3, I3, T4, I4, T5, I5, T6, I6, T7, I7, T8, I8, T9, I9, T10, I10, T11, I11,
+    T12, I12, T13, I13
+);
+impl_bulk_extract!(
+    T1, I1, T2, I2, T3, I3, T4, I4, T5, I5, T6, I6, T7, I7, T8, I8, T9, I9, T10, I10, T11, I11,
+    T12, I12, T13, I13, T14, I14
+);
+impl_bulk_extract!(
+    T1, I1, T2, I2, T3, I3, T4, I4, T5, I5, T6, I6, T7, I7, T8, I8, T9, I9, T10, I10, T11, I11,
+    T12, I12, T13, I13, T14, I14, T15, I15
+);
+impl_bulk_extract!(
+    T1, I1, T2, I2, T3, I3, T4, I4, T5, I5, T6, I6, T7, I7, T8, I8, T9, I9, T10, I10, T11, I11,
+    T12, I12, T13, I13, T14, I14, T15, I15, T16, I16
+);
 
 #[cfg(test)]
 mod tests {
@@ -407,7 +430,7 @@ mod tests {
 
     #[test]
     fn test_bulk_extract_single() {
-        let storage = EmptyStorage::default().with_model(Model1 { value: 42 });
+        let storage = EmptyStorage.with_model(Model1 { value: 42 });
 
         let (m1,): (&Model1,) = storage.extract_bulk();
         assert_eq!(m1.value, 42);
@@ -415,7 +438,7 @@ mod tests {
 
     #[test]
     fn test_bulk_extract_two() {
-        let storage = EmptyStorage::default()
+        let storage = EmptyStorage
             .with_model(Model1 { value: 42 })
             .with_model(Model2 {
                 value: "hello".to_string(),
@@ -433,7 +456,7 @@ mod tests {
 
     #[test]
     fn test_bulk_extract_mut_two() {
-        let storage = EmptyStorage::default()
+        let storage = EmptyStorage
             .with_model(Model1 { value: 42 })
             .with_model(Model2 {
                 value: "hello".to_string(),

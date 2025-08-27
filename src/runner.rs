@@ -1,10 +1,10 @@
 use std::time::Duration;
 
 use crate::core::Core;
-use crate::shell::Shell;
 use crate::effect_handler::EffectHandler;
+use crate::error::{CoreError, ShellError};
+use crate::shell::Shell;
 use crate::spawn::Spawn;
-use crate::error::{ShellError, CoreError};
 use crate::timer::{Time, time};
 
 /// Configuration for the Runner
@@ -36,7 +36,7 @@ impl Default for RunnerConfig {
 /// This solves Grug's complaint about manual event loop orchestration.
 /// Instead of users manually calling poll_events → process → execute → tick,
 /// Runner handles the proper sequencing automatically.
-pub struct Runner<Event, Effect, Storage, Resources = (), H = ()> 
+pub struct Runner<Event, Effect, Storage, Resources = (), H = ()>
 where
     Event: Clone + Send + 'static,
     Effect: Clone + Send + 'static,
@@ -47,14 +47,17 @@ where
     config: RunnerConfig,
 }
 
-impl<Event, Effect, Storage, Resources, H> Runner<Event, Effect, Storage, Resources, H> 
+impl<Event, Effect, Storage, Resources, H> Runner<Event, Effect, Storage, Resources, H>
 where
     Event: Clone + Send + 'static,
     Effect: Clone + Send + 'static,
     Resources: Clone + Send + Sync + 'static,
 {
     /// Create a new Runner with Core and Shell
-    pub fn new(core: Core<Event, Effect, Storage>, shell: Shell<Event, Effect, Resources, H>) -> Self {
+    pub fn new(
+        core: Core<Event, Effect, Storage>,
+        shell: Shell<Event, Effect, Resources, H>,
+    ) -> Self {
         Self {
             core,
             shell,
@@ -63,7 +66,11 @@ where
     }
 
     /// Create a new Runner with custom configuration
-    pub fn with_config(core: Core<Event, Effect, Storage>, shell: Shell<Event, Effect, Resources, H>, config: RunnerConfig) -> Self {
+    pub fn with_config(
+        core: Core<Event, Effect, Storage>,
+        shell: Shell<Event, Effect, Resources, H>,
+        config: RunnerConfig,
+    ) -> Self {
         Self {
             core,
             shell,
@@ -98,11 +105,7 @@ where
     /// Run until a condition is met
     ///
     /// Useful for testing or conditional execution.
-    pub async fn run_until<F, S>(
-        &mut self,
-        mut condition: F,
-        spawner: S
-    ) -> Result<(), RunnerError>
+    pub async fn run_until<F, S>(&mut self, mut condition: F, spawner: S) -> Result<(), RunnerError>
     where
         F: FnMut(&Core<Event, Effect, Storage>, &Shell<Event, Effect, Resources, H>) -> bool,
         H: EffectHandler<Event, Effect, Resources> + Clone + Send + Sync + 'static,
@@ -123,9 +126,10 @@ where
 
             // Check timeout
             if let Some(max_duration) = self.config.max_run_duration
-                && start_time.elapsed() > max_duration {
-                    return Err(RunnerError::Timeout);
-                }
+                && start_time.elapsed() > max_duration
+            {
+                return Err(RunnerError::Timeout);
+            }
 
             if !did_work {
                 self.config.runtime.sleep(self.config.idle_sleep).await;
@@ -148,7 +152,7 @@ where
 
         // Process all events
         let (processed, commands) = self.core.process_events();
-        
+
         if processed {
             did_work = true;
             if self.config.debug_logging {
@@ -162,8 +166,7 @@ where
         }
 
         // 4. Process effects in Shell
-        let shell_work = self.shell.tick(spawner)
-            .map_err(RunnerError::Shell)?;
+        let shell_work = self.shell.tick(spawner).map_err(RunnerError::Shell)?;
         if shell_work {
             did_work = true;
             if self.config.debug_logging {
@@ -246,11 +249,15 @@ mod tests {
     }
 
     fn test_update(
-        event: TestEvent, 
-        ctx: &mut crate::event_context::EventContext<TestEvent, TestEffect, Storage<TestModel, EmptyStorage>>
+        event: TestEvent,
+        ctx: &mut crate::event_context::EventContext<
+            TestEvent,
+            TestEffect,
+            Storage<TestModel, EmptyStorage>,
+        >,
     ) -> Command<TestEvent, TestEffect> {
         let model: &mut TestModel = ctx.model_mut();
-        
+
         match event {
             TestEvent::Ping => {
                 model.count += 1;
@@ -304,7 +311,7 @@ mod tests {
                 max_run_duration: Some(Duration::from_secs(1)),
                 debug_logging: false,
                 runtime: crate::timer::time(),
-            }
+            },
         );
 
         // Send multiple events
@@ -313,13 +320,16 @@ mod tests {
         }
 
         // Run until count reaches 10
-        runner.run_until(
-            |core, _shell| {
-                let model: &TestModel = core.storage().get();
-                model.count >= 10
-            },
-            crate::spawn::TokioSpawn
-        ).await.unwrap();
+        runner
+            .run_until(
+                |core, _shell| {
+                    let model: &TestModel = core.storage().get();
+                    model.count >= 10
+                },
+                crate::spawn::TokioSpawn,
+            )
+            .await
+            .unwrap();
 
         let model: &TestModel = runner.core().storage().get();
         assert_eq!(model.count, 10);

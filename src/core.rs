@@ -1,4 +1,4 @@
-use crate::{command::Command, storage::Selector, event_context::EventContext};
+use crate::{command::Command, event_context::EventContext, storage::Selector};
 use crossbeam_channel::{Receiver, Sender, unbounded};
 use std::collections::VecDeque;
 
@@ -337,10 +337,7 @@ mod tests {
             ctx: &mut EventContext<
                 TestEvent,
                 TestEffect,
-                Storage<
-                    ConfigModel,
-                    Storage<UserModel, Storage<CounterModel, EmptyStorage>>,
-                >,
+                Storage<ConfigModel, Storage<UserModel, Storage<CounterModel, EmptyStorage>>>,
             >,
         ) -> Command<TestEvent, TestEffect> {
             // Just update the counter for simplicity

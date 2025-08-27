@@ -24,7 +24,7 @@ where
         match (self, other) {
             (Self::Event(a), Self::Event(b)) => a == b,
             (Self::Effect(a), Self::Effect(b)) => a == b,
-            (Self::SequentialEffects(a), Self::SequentialEffects(b)) 
+            (Self::SequentialEffects(a), Self::SequentialEffects(b))
             | (Self::ParallelEffects(a), Self::ParallelEffects(b)) => a == b,
             _ => false,
         }
@@ -136,7 +136,6 @@ impl<Event, Effect> Command<Event, Effect> {
         Self { outputs }
     }
 
-
     // Sequential effects removed: use `sequence([Command::effect(...), ...])` for sequential effects
     // Parallel effects removed: use `effects([...])` for parallel effects
 
@@ -167,16 +166,17 @@ impl<Event, Effect> Command<Event, Effect> {
     ///     Command::parallel([Effect::C, Effect::D]),  // Parallel effects
     ///     Command::effect(Effect::E),    // Individual effect
     /// ]);
-    /// 
-    /// let optimized = cmd.flatten(); 
+    ///
+    /// let optimized = cmd.flatten();
     /// // Results in: ParallelEffects([A, B, C, D, E]) - all merged for parallel execution
     /// ```
+    #[must_use]
     pub fn flatten(self) -> Self {
         let mut events = Vec::new();
         let mut parallel_effects = Vec::new();
         let mut sequential_effects = Vec::new();
         let mut has_sequential = false;
-        
+
         // Collect all outputs by type, merging similar coordination patterns
         for output in self.outputs {
             match output {
@@ -196,17 +196,21 @@ impl<Event, Effect> Command<Event, Effect> {
                 }
             }
         }
-        
+
         // Rebuild optimized command
         let mut optimized_outputs = SmallVec::new();
-        
+
         // Add events first (they execute immediately)
         for event in events {
             optimized_outputs.push(CommandStep::Event(event));
         }
-        
+
         // Add effects based on coordination requirements
-        match (has_sequential, !parallel_effects.is_empty(), !sequential_effects.is_empty()) {
+        match (
+            has_sequential,
+            !parallel_effects.is_empty(),
+            !sequential_effects.is_empty(),
+        ) {
             // Only parallel effects
             (false, true, false) => {
                 optimized_outputs.push(CommandStep::ParallelEffects(parallel_effects));
@@ -230,8 +234,10 @@ impl<Event, Effect> Command<Event, Effect> {
                 // No effects to optimize
             }
         }
-        
-        Self { outputs: optimized_outputs }
+
+        Self {
+            outputs: optimized_outputs,
+        }
     }
 
     /// Append another command to this one
@@ -243,10 +249,7 @@ impl<Event, Effect> Command<Event, Effect> {
 
     /// Extend this command with additional outputs
     #[must_use]
-    pub fn extend(
-        mut self,
-        outputs: impl IntoIterator<Item = CommandStep<Event, Effect>>,
-    ) -> Self {
+    pub fn extend(mut self, outputs: impl IntoIterator<Item = CommandStep<Event, Effect>>) -> Self {
         self.outputs.extend(outputs);
         self
     }
@@ -261,8 +264,12 @@ impl<Event, Effect> Command<Event, Effect> {
             match output {
                 CommandStep::Event(event) => outputs.push(CommandStep::Event(f(event))),
                 CommandStep::Effect(effect) => outputs.push(CommandStep::Effect(effect)),
-                CommandStep::SequentialEffects(effects) => outputs.push(CommandStep::SequentialEffects(effects)),
-                CommandStep::ParallelEffects(effects) => outputs.push(CommandStep::ParallelEffects(effects)),
+                CommandStep::SequentialEffects(effects) => {
+                    outputs.push(CommandStep::SequentialEffects(effects))
+                }
+                CommandStep::ParallelEffects(effects) => {
+                    outputs.push(CommandStep::ParallelEffects(effects))
+                }
             }
         }
         Command { outputs }
@@ -304,8 +311,9 @@ impl<Event, Effect> Command<Event, Effect> {
         self.outputs
             .iter()
             .map(|o| match o {
-                CommandStep::SequentialEffects(effects)
-                | CommandStep::ParallelEffects(effects) => effects.len(),
+                CommandStep::SequentialEffects(effects) | CommandStep::ParallelEffects(effects) => {
+                    effects.len()
+                }
                 CommandStep::Event(_) | CommandStep::Effect(_) => 1,
             })
             .sum()
@@ -489,7 +497,6 @@ impl<Event, Effect> Command<Event, Effect> {
 
         Self { outputs }
     }
-
 }
 
 // Domain-specific collection operations
@@ -541,8 +548,9 @@ impl<Event, Effect> Command<Event, Effect> {
         for output in &self.outputs {
             match output {
                 CommandStep::Effect(_) => count += 1,
-                CommandStep::SequentialEffects(effects)
-                | CommandStep::ParallelEffects(effects) => count += effects.len(),
+                CommandStep::SequentialEffects(effects) | CommandStep::ParallelEffects(effects) => {
+                    count += effects.len()
+                }
                 CommandStep::Event(_) => {}
             }
         }
@@ -614,8 +622,12 @@ impl<Event, Effect> Command<Event, Effect> {
             match output {
                 CommandStep::Event(event) => outputs.push(CommandStep::Event(f(event)?)),
                 CommandStep::Effect(effect) => outputs.push(CommandStep::Effect(effect)),
-                CommandStep::SequentialEffects(effects) => outputs.push(CommandStep::SequentialEffects(effects)),
-                CommandStep::ParallelEffects(effects) => outputs.push(CommandStep::ParallelEffects(effects)),
+                CommandStep::SequentialEffects(effects) => {
+                    outputs.push(CommandStep::SequentialEffects(effects))
+                }
+                CommandStep::ParallelEffects(effects) => {
+                    outputs.push(CommandStep::ParallelEffects(effects))
+                }
             }
         }
 
@@ -825,7 +837,6 @@ mod tests {
         Command::effect(effect)
     }
 
-
     #[test]
     fn test_empty_command() {
         let cmd = Command::<TestEvent, TestEffect>::none();
@@ -1009,8 +1020,7 @@ mod tests {
         assert_eq!(outputs, vec![CommandStep::Event(TestEvent::A)]);
 
         // Test with empty command
-        let empty =
-            Command::<TestEvent, TestEffect>::none().or_else(test_effect(TestEffect::X));
+        let empty = Command::<TestEvent, TestEffect>::none().or_else(test_effect(TestEffect::X));
 
         assert_eq!(empty.len(), 1);
         let outputs: Vec<_> = empty.into_iter().collect();
@@ -1222,8 +1232,7 @@ mod tests {
 
     #[test]
     fn test_iter_non_consuming() {
-        let command =
-            Command::batch([test_event(TestEvent::A), test_effect(TestEffect::X)]);
+        let command = Command::batch([test_event(TestEvent::A), test_effect(TestEffect::X)]);
 
         // Use iter() without consuming
         let count = command.iter().count();
@@ -1320,10 +1329,7 @@ mod tests {
 
     #[test]
     fn test_into_events_empty() {
-        let command = Command::batch([
-            test_effect(TestEffect::X),
-            test_effect(TestEffect::Y),
-        ]);
+        let command = Command::batch([test_effect(TestEffect::X), test_effect(TestEffect::Y)]);
 
         let events: Vec<TestEvent> = command.into_events();
         assert!(events.is_empty());
@@ -1490,11 +1496,11 @@ mod tests {
     fn test_flatten_only_events() {
         let cmd = Command::<TestEvent, TestEffect>::events([TestEvent::A, TestEvent::B]);
         let flattened = cmd.flatten();
-        
+
         assert_eq!(flattened.len(), 2);
         assert_eq!(flattened.count_events(), 2);
         assert_eq!(flattened.count_effects(), 0);
-        
+
         let events = flattened.into_events();
         assert_eq!(events, vec![TestEvent::A, TestEvent::B]);
     }
@@ -1507,14 +1513,14 @@ mod tests {
             test_effect(TestEffect::Z),
         ]);
         let flattened = cmd.flatten();
-        
+
         assert_eq!(flattened.len(), 3);
         assert_eq!(flattened.count_effects(), 3);
-        
+
         // Should be consolidated into a single ParallelEffects step
         let outputs: Vec<_> = flattened.into_iter().collect();
         assert_eq!(outputs.len(), 1);
-        
+
         match &outputs[0] {
             CommandStep::ParallelEffects(effects) => {
                 assert_eq!(effects, &vec![TestEffect::X, TestEffect::Y, TestEffect::Z]);
@@ -1530,10 +1536,10 @@ mod tests {
             Command::parallel([TestEffect::Y, TestEffect::Z]),
         ]);
         let flattened = cmd.flatten();
-        
+
         assert_eq!(flattened.len(), 3);
         assert_eq!(flattened.count_effects(), 3);
-        
+
         let effects = flattened.into_effects();
         assert_eq!(effects, vec![TestEffect::X, TestEffect::Y, TestEffect::Z]);
     }
@@ -1545,14 +1551,14 @@ mod tests {
             test_effect(TestEffect::Y),
         ]);
         let flattened = cmd.flatten();
-        
+
         assert_eq!(flattened.len(), 2);
         assert_eq!(flattened.count_effects(), 2);
-        
+
         // Should maintain sequential coordination
         let outputs: Vec<_> = flattened.into_iter().collect();
         assert_eq!(outputs.len(), 1);
-        
+
         match &outputs[0] {
             CommandStep::SequentialEffects(effects) => {
                 assert_eq!(effects, &vec![TestEffect::X, TestEffect::Y]);
@@ -1570,18 +1576,18 @@ mod tests {
             Command::parallel([TestEffect::Y, TestEffect::Z]),
         ]);
         let flattened = cmd.flatten();
-        
+
         assert_eq!(flattened.len(), 5); // A, B, X, Y, Z
         assert_eq!(flattened.count_events(), 2);
         assert_eq!(flattened.count_effects(), 3);
-        
+
         let outputs: Vec<_> = flattened.into_iter().collect();
         assert_eq!(outputs.len(), 3); // 2 events + 1 parallel effects group
-        
+
         // Events should come first
         assert!(matches!(outputs[0], CommandStep::Event(TestEvent::A)));
         assert!(matches!(outputs[1], CommandStep::Event(TestEvent::B)));
-        
+
         // Effects should be grouped
         match &outputs[2] {
             CommandStep::ParallelEffects(effects) => {
@@ -1594,19 +1600,19 @@ mod tests {
     #[test]
     fn test_flatten_sequential_takes_precedence() {
         let cmd = Command::<TestEvent, TestEffect>::batch([
-            test_effect(TestEffect::X),                    // Parallel by default
+            test_effect(TestEffect::X),                      // Parallel by default
             Command::sequence([test_effect(TestEffect::Y)]), // Sequential
-            Command::parallel([TestEffect::Z]),            // Parallel
+            Command::parallel([TestEffect::Z]),              // Parallel
         ]);
         let flattened = cmd.flatten();
-        
+
         // Clone to test both effects and structure
         let effects = flattened.clone().into_effects();
         assert_eq!(effects, vec![TestEffect::Y, TestEffect::X, TestEffect::Z]);
-        
+
         let outputs: Vec<_> = flattened.into_iter().collect();
         assert_eq!(outputs.len(), 1);
-        
+
         match &outputs[0] {
             CommandStep::SequentialEffects(_) => {
                 // Correct - sequential coordination preserved
@@ -1623,7 +1629,7 @@ mod tests {
             test_effect(TestEffect::Y),
         ]);
         let flattened = cmd.flatten();
-        
+
         // Should still be inline after flattening (2 outputs: 1 event + 1 parallel effects)
         assert!(!flattened.outputs.spilled());
         assert_eq!(flattened.outputs.len(), 2);

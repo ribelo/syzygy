@@ -52,7 +52,7 @@ fn handle_simple(event: AppEvent) -> Command<AppEvent, AppEffect> {
             })
         }
         AppEvent::UpdateUser { name } => {
-            println!("📝 Updating user to: {}", name);
+            println!("📝 Updating user to: {name}");
             Command::effect(AppEffect::SaveToDb { name })
         }
         AppEvent::BatchProcess => {
@@ -70,10 +70,7 @@ fn handle_simple(event: AppEvent) -> Command<AppEvent, AppEffect> {
 }
 
 /// Handler with &T extraction
-fn handle_with_model_ref(
-    event: AppEvent,
-    user: &UserModel,
-) -> Command<AppEvent, AppEffect> {
+fn handle_with_model_ref(event: AppEvent, user: &UserModel) -> Command<AppEvent, AppEffect> {
     match event {
         AppEvent::GetUser => {
             println!("🔍 Getting user: {} (count: {})", user.name, user.count);
@@ -90,10 +87,7 @@ fn handle_with_model_ref(
 }
 
 /// Handler with &mut T extraction
-fn handle_with_model_mut(
-    event: AppEvent,
-    user: &mut UserModel,
-) -> Command<AppEvent, AppEffect> {
+fn handle_with_model_mut(event: AppEvent, user: &mut UserModel) -> Command<AppEvent, AppEffect> {
     match event {
         AppEvent::UpdateUser { name } => {
             println!("📝 Mutating user from {} to {}", user.name, name);

@@ -6,4 +6,7 @@
 pub mod storage;
 
 // Re-export commonly used types
-pub use storage::{Storage, Selector, EmptyStorage, Contains, RuntimeContains, StorageBuilder, BulkExtract, BulkExtractMut};
+pub use storage::{
+    BulkExtract, BulkExtractMut, Contains, EmptyStorage, RuntimeContains, Selector, Storage,
+    StorageBuilder,
+};

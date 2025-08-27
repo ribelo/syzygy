@@ -3,12 +3,12 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use crate::async_context::EffectContext;
-use crate::command::{Command, CommandStep};
 use crate::command::executor::route_command;
+use crate::command::{Command, CommandStep};
 use crate::error::ShellError;
 use crate::task::{TaskStats, TaskTracker};
 use crate::timer::{Time, time};
- 
+
 use crate::effect_handler::EffectHandler;
 
 #[cfg(feature = "tracing")]
@@ -79,7 +79,7 @@ impl Default for ShellConfig {
 /// The Shell works alongside Core rather than owning it, giving users
 /// maximum flexibility in how they structure their applications.
 /// Resources are stored using the same Storage pattern as Core's models.
-pub struct Shell<Event, Effect, Resources = crate::storage::EmptyStorage, H = ()> 
+pub struct Shell<Event, Effect, Resources = crate::storage::EmptyStorage, H = ()>
 where
     Event: Clone + Send + 'static,
     Effect: Clone + Send + 'static,
@@ -105,7 +105,7 @@ where
     pub(crate) config: ShellConfig,
 }
 
-impl<Event, Effect> Default for Shell<Event, Effect, crate::storage::EmptyStorage, ()> 
+impl<Event, Effect> Default for Shell<Event, Effect, crate::storage::EmptyStorage, ()>
 where
     Event: Clone + Send + 'static,
     Effect: Clone + Send + 'static,
@@ -115,7 +115,7 @@ where
     }
 }
 
-impl<Event, Effect> Shell<Event, Effect, crate::storage::EmptyStorage, ()> 
+impl<Event, Effect> Shell<Event, Effect, crate::storage::EmptyStorage, ()>
 where
     Event: Clone + Send + 'static,
     Effect: Clone + Send + 'static,
@@ -147,7 +147,7 @@ where
     }
 }
 
-impl<Event, Effect, Resources, H> Shell<Event, Effect, Resources, H> 
+impl<Event, Effect, Resources, H> Shell<Event, Effect, Resources, H>
 where
     Event: Clone + Send + 'static,
     Effect: Clone + Send + 'static,
@@ -155,8 +155,8 @@ where
 {
     /// Create a new Shell with custom configuration and explicit handler
     #[must_use]
-    pub fn with_config_and_handler(config: ShellConfig, handler: H) -> Self 
-    where 
+    pub fn with_config_and_handler(config: ShellConfig, handler: H) -> Self
+    where
         Resources: Default,
     {
         // Create channel based on configuration
@@ -191,7 +191,7 @@ where
     }
 
     /// Set the resources storage for effect handlers
-    /// 
+    ///
     /// This replaces the entire resource storage. For adding individual resources,
     /// use the builder pattern with .resource() method.
     #[must_use]
@@ -211,7 +211,7 @@ where
     /// ```rust,ignore
     /// // For read-only resources (most common case)
     /// let http_client: &HttpClient = shell.resource();
-    /// 
+    ///
     /// // For resources needing mutability
     /// struct Cache {
     ///     data: Arc<Mutex<HashMap<String, String>>>,
@@ -250,10 +250,7 @@ where
     /// - Events go back to Core via event channel
     ///
     /// Command processing is now synchronous - async effect execution happens in tick().
-    pub fn dispatch(
-        &mut self,
-        command: Command<Event, Effect>,
-    ) -> Result<(), ShellError> {
+    pub fn dispatch(&mut self, command: Command<Event, Effect>) -> Result<(), ShellError> {
         #[cfg(feature = "tracing")]
         debug!("Executing command");
 
@@ -341,7 +338,11 @@ where
         #[cfg(feature = "tracing")]
         debug!("Processing effect");
 
-        let ctx = EffectContext::with_runtime(self.event_tx.clone(), self.config.runtime, self.resources.clone());
+        let ctx = EffectContext::with_runtime(
+            self.event_tx.clone(),
+            self.config.runtime,
+            self.resources.clone(),
+        );
         let handler = self.effect_handler.clone();
         let runtime = self.config.runtime;
         let timeout = self.config.effect_timeout;
@@ -522,8 +523,8 @@ mod tests {
 
     #[test]
     fn test_shell_resource_access() {
-        use crate::storage::{EmptyStorage, Storage};
         use crate::builder::Syzygy;
+        use crate::storage::{EmptyStorage, Storage};
 
         // Define a simple read-only resource
         #[derive(Debug, Clone)]
@@ -543,7 +544,14 @@ mod tests {
         let (_core, shell) = Syzygy::builder::<TestEvent, ()>()
             .model(()) // Need at least one model for Core
             .resource(HttpClient::new())
-            .update(|_event: TestEvent, _ctx: &mut crate::event_context::EventContext<TestEvent, (), Storage<(), EmptyStorage>>| crate::command::Command::none())
+            .update(
+                |_event: TestEvent,
+                 _ctx: &mut crate::event_context::EventContext<
+                    TestEvent,
+                    (),
+                    Storage<(), EmptyStorage>,
+                >| crate::command::Command::none(),
+            )
             .build();
 
         // Test resource access
@@ -557,8 +565,8 @@ mod tests {
 
     #[test]
     fn test_shell_multiple_resources() {
-        use crate::storage::{EmptyStorage, Storage};
         use crate::builder::Syzygy;
+        use crate::storage::{EmptyStorage, Storage};
 
         // Define multiple resource types
         #[derive(Debug, Clone)]
@@ -579,16 +587,23 @@ mod tests {
         // Create shell with multiple resources using builder
         let (_core, shell) = Syzygy::builder::<TestEvent, ()>()
             .model(()) // Need at least one model for Core
-            .resource(HttpClient { 
-                base_url: "https://api.example.com".to_string() 
+            .resource(HttpClient {
+                base_url: "https://api.example.com".to_string(),
             })
-            .resource(Database { 
-                connection_string: "postgres://localhost".to_string() 
+            .resource(Database {
+                connection_string: "postgres://localhost".to_string(),
             })
-            .resource(FileSystem { 
-                root_path: "/var/data".to_string() 
+            .resource(FileSystem {
+                root_path: "/var/data".to_string(),
             })
-            .update(|_event: TestEvent, _ctx: &mut crate::event_context::EventContext<TestEvent, (), Storage<(), EmptyStorage>>| crate::command::Command::none())
+            .update(
+                |_event: TestEvent,
+                 _ctx: &mut crate::event_context::EventContext<
+                    TestEvent,
+                    (),
+                    Storage<(), EmptyStorage>,
+                >| crate::command::Command::none(),
+            )
             .build();
 
         // Test accessing different resource types
@@ -604,10 +619,10 @@ mod tests {
 
     #[test]
     fn test_shell_resource_with_interior_mutability() {
-        use crate::storage::{EmptyStorage, Storage};
         use crate::builder::Syzygy;
-        use std::sync::{Arc, Mutex};
+        use crate::storage::{EmptyStorage, Storage};
         use std::collections::HashMap;
+        use std::sync::{Arc, Mutex};
 
         // Resource that needs interior mutability
         #[derive(Debug, Clone)]
@@ -635,7 +650,14 @@ mod tests {
         let (_core, shell) = Syzygy::builder::<TestEvent, ()>()
             .model(()) // Need at least one model for Core
             .resource(Cache::new())
-            .update(|_event: TestEvent, _ctx: &mut crate::event_context::EventContext<TestEvent, (), Storage<(), EmptyStorage>>| crate::command::Command::none())
+            .update(
+                |_event: TestEvent,
+                 _ctx: &mut crate::event_context::EventContext<
+                    TestEvent,
+                    (),
+                    Storage<(), EmptyStorage>,
+                >| crate::command::Command::none(),
+            )
             .build();
 
         // Access cache resource (immutable reference)

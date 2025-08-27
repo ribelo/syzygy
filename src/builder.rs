@@ -3,7 +3,7 @@ use crate::shell::Shell;
 use crate::storage::{EmptyStorage, StorageBuilder};
 
 /// Simple builder for creating Syzygy systems
-pub struct SyzygyBuilder<Event, Effect, ModelStorage = EmptyStorage, ResourceStorage = EmptyStorage> 
+pub struct SyzygyBuilder<Event, Effect, ModelStorage = EmptyStorage, ResourceStorage = EmptyStorage>
 where
     Event: Clone + Send + 'static,
     Effect: Clone + Send + 'static,
@@ -13,13 +13,13 @@ where
     resources: ResourceStorage,
 }
 
-impl<Event, Effect> SyzygyBuilder<Event, Effect> 
+impl<Event, Effect> SyzygyBuilder<Event, Effect>
 where
     Event: Clone + Send + 'static,
     Effect: Clone + Send + 'static,
 {
     /// Create a new builder with empty storage
-    #[must_use] 
+    #[must_use]
     pub fn new() -> Self {
         Self {
             update_fn: None,
@@ -30,7 +30,8 @@ where
 }
 
 // Single implementation that works with all storage combinations
-impl<Event, Effect, ModelStorage, ResourceStorage> SyzygyBuilder<Event, Effect, ModelStorage, ResourceStorage>
+impl<Event, Effect, ModelStorage, ResourceStorage>
+    SyzygyBuilder<Event, Effect, ModelStorage, ResourceStorage>
 where
     Event: Clone + Send + 'static,
     Effect: Clone + Send + 'static,
@@ -38,7 +39,10 @@ where
 {
     /// Add a model to the storage chain
     #[must_use]
-    pub fn model<M: 'static>(self, model: M) -> SyzygyBuilder<Event, Effect, <ModelStorage as StorageBuilder<M>>::Output, ResourceStorage> 
+    pub fn model<M: 'static>(
+        self,
+        model: M,
+    ) -> SyzygyBuilder<Event, Effect, <ModelStorage as StorageBuilder<M>>::Output, ResourceStorage>
     where
         ModelStorage: StorageBuilder<M>,
     {
@@ -51,7 +55,10 @@ where
 
     /// Add a resource to the resource storage chain
     #[must_use]
-    pub fn resource<R: Send + Sync + 'static>(self, resource: R) -> SyzygyBuilder<Event, Effect, ModelStorage, <ResourceStorage as StorageBuilder<R>>::Output> 
+    pub fn resource<R: Send + Sync + 'static>(
+        self,
+        resource: R,
+    ) -> SyzygyBuilder<Event, Effect, ModelStorage, <ResourceStorage as StorageBuilder<R>>::Output>
     where
         ResourceStorage: StorageBuilder<R>,
     {
@@ -70,8 +77,15 @@ where
     }
 
     /// Build the system with auto-wired Shell connected to Core's event channel
-    pub fn build(self) -> (Core<Event, Effect, ModelStorage>, Shell<Event, Effect, ResourceStorage>) {
-        let update_fn = self.update_fn.expect("Update function must be provided before building");
+    pub fn build(
+        self,
+    ) -> (
+        Core<Event, Effect, ModelStorage>,
+        Shell<Event, Effect, ResourceStorage>,
+    ) {
+        let update_fn = self
+            .update_fn
+            .expect("Update function must be provided before building");
 
         let (core, event_tx) = Core::new(update_fn, self.storage);
         let shell = Self::build_shell_with_resources_and_event_tx(self.resources, Some(event_tx));
@@ -80,28 +94,35 @@ where
     }
 
     /// Build the system with manual wiring
-    pub fn build_manual(self) -> (Core<Event, Effect, ModelStorage>, Shell<Event, Effect, ResourceStorage>) {
-        let update_fn = self.update_fn.expect("Update function must be provided before building");
+    pub fn build_manual(
+        self,
+    ) -> (
+        Core<Event, Effect, ModelStorage>,
+        Shell<Event, Effect, ResourceStorage>,
+    ) {
+        let update_fn = self
+            .update_fn
+            .expect("Update function must be provided before building");
 
         let (core, _event_tx) = Core::new(update_fn, self.storage);
         let shell = Self::build_shell_with_resources_and_event_tx(self.resources, None);
 
         (core, shell)
     }
-    
+
     /// Internal helper to build shell with resources and optional event sender
     fn build_shell_with_resources_and_event_tx(
-        resources: ResourceStorage, 
-        event_tx: Option<crossbeam_channel::Sender<Event>>
+        resources: ResourceStorage,
+        event_tx: Option<crossbeam_channel::Sender<Event>>,
     ) -> Shell<Event, Effect, ResourceStorage> {
+        use crate::shell::ShellConfig;
+        use crate::task::TaskTracker;
         use crossbeam_channel::unbounded;
         use std::sync::{Arc, Mutex};
-        use crate::task::TaskTracker;
-        use crate::shell::ShellConfig;
-        
+
         let config = ShellConfig::default();
         let (effect_tx, effect_rx) = unbounded();
-        
+
         Shell {
             task_tracker: Arc::new(Mutex::new(TaskTracker::new())),
             effect_rx,
@@ -114,7 +135,7 @@ where
     }
 }
 
-impl<Event, Effect> Default for SyzygyBuilder<Event, Effect> 
+impl<Event, Effect> Default for SyzygyBuilder<Event, Effect>
 where
     Event: Clone + Send + 'static,
     Effect: Clone + Send + 'static,
@@ -129,8 +150,8 @@ pub struct Syzygy;
 
 impl Syzygy {
     /// Create a new builder for the given Event and Effect types
-    #[must_use] 
-    pub fn builder<Event, Effect>() -> SyzygyBuilder<Event, Effect> 
+    #[must_use]
+    pub fn builder<Event, Effect>() -> SyzygyBuilder<Event, Effect>
     where
         Event: Clone + Send + 'static,
         Effect: Clone + Send + 'static,
@@ -161,8 +182,12 @@ mod tests {
     }
 
     fn test_update(
-        event: TestEvent, 
-        ctx: &mut crate::event_context::EventContext<TestEvent, TestEffect, Storage<TestModel, EmptyStorage>>
+        event: TestEvent,
+        ctx: &mut crate::event_context::EventContext<
+            TestEvent,
+            TestEffect,
+            Storage<TestModel, EmptyStorage>,
+        >,
     ) -> Command<TestEvent, TestEffect> {
         match event {
             TestEvent::Increment => {
@@ -192,14 +217,18 @@ mod tests {
             name: String,
         }
 
-        #[derive(Debug, Default)]  
+        #[derive(Debug, Default)]
         struct ConfigModel {
             theme: String,
         }
 
         fn multi_update(
-            event: TestEvent, 
-            ctx: &mut crate::event_context::EventContext<TestEvent, TestEffect, Storage<ConfigModel, Storage<UserModel, EmptyStorage>>>
+            event: TestEvent,
+            ctx: &mut crate::event_context::EventContext<
+                TestEvent,
+                TestEffect,
+                Storage<ConfigModel, Storage<UserModel, EmptyStorage>>,
+            >,
         ) -> Command<TestEvent, TestEffect> {
             match event {
                 TestEvent::Increment => {
@@ -211,23 +240,27 @@ mod tests {
                         let config: &mut ConfigModel = ctx.model_mut();
                         config.theme = "dark".to_string();
                     }
-                    
+
                     Command::effect(TestEffect::Log)
                 }
             }
         }
 
         let (mut core, _shell) = Syzygy::builder::<TestEvent, TestEffect>()
-            .model(UserModel { name: "Alice".to_string() })
-            .model(ConfigModel { theme: "light".to_string() })
+            .model(UserModel {
+                name: "Alice".to_string(),
+            })
+            .model(ConfigModel {
+                theme: "light".to_string(),
+            })
             .update(multi_update)
             .build();
 
         core.handle_event(TestEvent::Increment);
-        
+
         let user: &UserModel = core.storage().get();
         let config: &ConfigModel = core.storage().get();
-        
+
         assert_eq!(user.name, "Updated");
         assert_eq!(config.theme, "dark");
     }

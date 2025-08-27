@@ -1,5 +1,5 @@
 //! Tests for multi-model functionality
-//! 
+//!
 //! These tests are only compiled when the "multi-model" feature is enabled.
 
 #![cfg(feature = "multi-model")]
@@ -66,7 +66,11 @@ impl App for MultiModelApp {
     type Effect = TestEffect;
     type Resources = ();
 
-    fn update(&self, event: Self::Event, _model: &mut Self::Model) -> Command<Self::Event, Self::Effect> {
+    fn update(
+        &self,
+        event: Self::Event,
+        _model: &mut Self::Model,
+    ) -> Command<Self::Event, Self::Effect> {
         // In multi-model mode, the actual model access would happen differently
         // For now, just return appropriate effects based on the event
         match event {
@@ -251,11 +255,11 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "At least one model must be added before building in multi-model mode")]
+    #[should_panic(
+        expected = "At least one model must be added before building in multi-model mode"
+    )]
     fn test_builder_requires_models() {
-        let _system = Syzygy::builder()
-            .app(MultiModelApp::default())
-            .build(); // Should panic - no models added
+        let _system = Syzygy::builder().app(MultiModelApp::default()).build(); // Should panic - no models added
     }
 }
 
@@ -270,7 +274,7 @@ struct FirstModel {
     value: i32,
 }
 
-#[derive(Debug, Clone, Default)] 
+#[derive(Debug, Clone, Default)]
 struct SecondModel {
     name: String,
 }
@@ -290,28 +294,28 @@ fn test_reference_extraction_bug_second_model() {
     // BUG TEST: Create storage with FirstModel at Here and SecondModel at There<Here>
     let mut storage = EmptyStorage
         .with_model(FirstModel { value: 42 })
-        .with_model(SecondModel { name: "test".to_string() });
-    
+        .with_model(SecondModel {
+            name: "test".to_string(),
+        });
+
     let mut ctx = EventContext::<RefTestEvent, RefTestEffect, _>::new(&mut storage);
-    
+
     // Handler that tries to extract SecondModel by reference
     // This will get wrong data because &SecondModel assumes Here position
     // but SecondModel is actually at There<Here> position
     fn handler_with_second_model(
         event: RefTestEvent,
-        second: &SecondModel,  // BUG: assumes SecondModel is at Here
+        second: &SecondModel, // BUG: assumes SecondModel is at Here
     ) -> Command<RefTestEvent, RefTestEffect> {
         match event {
-            RefTestEvent::Process => {
-                Command::effect(RefTestEffect::Log { 
-                    message: format!("Second model name: {}", second.name) 
-                })
-            }
+            RefTestEvent::Process => Command::effect(RefTestEffect::Log {
+                message: format!("Second model name: {}", second.name),
+            }),
         }
     }
-    
+
     let event = RefTestEvent::Process;
-    
+
     // This compiles but will likely access wrong data or panic
     let _command = handler_with_second_model.call_with_event(event, &mut ctx);
 }
@@ -321,24 +325,24 @@ fn test_reference_extraction_first_model_works() {
     // Create storage with FirstModel at Here and SecondModel at There<Here>
     let mut storage = EmptyStorage
         .with_model(FirstModel { value: 99 })
-        .with_model(SecondModel { name: "working".to_string() });
-    
+        .with_model(SecondModel {
+            name: "working".to_string(),
+        });
+
     let mut ctx = EventContext::<RefTestEvent, RefTestEffect, _>::new(&mut storage);
-    
+
     // Handler that extracts FirstModel by reference - this should work
     fn handler_with_first_model(
         event: RefTestEvent,
         first: &FirstModel,
     ) -> Command<RefTestEvent, RefTestEffect> {
         match event {
-            RefTestEvent::Process => {
-                Command::effect(RefTestEffect::Log { 
-                    message: format!("First model value: {}", first.value) 
-                })
-            }
+            RefTestEvent::Process => Command::effect(RefTestEffect::Log {
+                message: format!("First model value: {}", first.value),
+            }),
         }
     }
-    
+
     let event = RefTestEvent::Process;
     let _command = handler_with_first_model.call_with_event(event, &mut ctx);
 }
@@ -346,18 +350,20 @@ fn test_reference_extraction_first_model_works() {
 #[test]
 fn test_correct_manual_model_access() {
     use syzygy::storage::storage::{Here, There};
-    
+
     // Show the CORRECT way to access models at different positions
     let mut storage = EmptyStorage
         .with_model(FirstModel { value: 123 })
-        .with_model(SecondModel { name: "manual".to_string() });
-    
+        .with_model(SecondModel {
+            name: "manual".to_string(),
+        });
+
     let ctx = EventContext::<RefTestEvent, RefTestEffect, _>::new(&mut storage);
-    
+
     // Correct manual access with proper position types
     let first: &FirstModel = ctx.model::<FirstModel, Here>();
     let second: &SecondModel = ctx.model::<SecondModel, There<Here>>();
-    
+
     assert_eq!(first.value, 123);
     assert_eq!(second.name, "manual");
 }

@@ -1,9 +1,6 @@
 use proc_macro::TokenStream;
 use quote::quote;
-use syn::{
-    parse_macro_input, DeriveInput, Data, Fields, Error,
-};
-
+use syn::{parse_macro_input, Data, DeriveInput, Error, Fields};
 
 /// Derive macro for generating magic handler variants
 ///
@@ -53,7 +50,7 @@ pub fn derive_magic_variants(input: TokenStream) -> TokenStream {
                     variant,
                     format!("MagicVariants does not support named variants like `{} {{ ... }}`. Use tuple variants like `{}(YourStruct)` where YourStruct is already defined.", variant_name, variant_name)
                 ).to_compile_error().into();
-            },
+            }
             Fields::Unit => {
                 // Unit variants
                 variant_structs.push(quote! {
@@ -73,7 +70,7 @@ pub fn derive_magic_variants(input: TokenStream) -> TokenStream {
                 from_impls.push(quote! {
                     impl TryFrom<#enum_name> for #variant_name {
                         type Error = &'static str;
-                        
+
                         fn try_from(event: #enum_name) -> Result<Self, Self::Error> {
                             match event {
                                 #enum_name::#variant_name => Ok(Self),
@@ -82,13 +79,13 @@ pub fn derive_magic_variants(input: TokenStream) -> TokenStream {
                         }
                     }
                 });
-            },
+            }
             Fields::Unnamed(fields) => {
                 if fields.unnamed.len() == 1 {
                     // Single tuple variant - assume the struct is already defined
                     // Just generate the From implementation
                     let inner_type = &fields.unnamed[0].ty;
-                    
+
                     // Generate From implementation: struct -> enum (for Command::effect)
                     from_impls.push(quote! {
                         impl From<#inner_type> for #enum_name {
@@ -102,7 +99,7 @@ pub fn derive_magic_variants(input: TokenStream) -> TokenStream {
                     from_impls.push(quote! {
                         impl TryFrom<#enum_name> for #inner_type {
                             type Error = &'static str;
-                            
+
                             fn try_from(event: #enum_name) -> Result<Self, Self::Error> {
                                 match event {
                                     #enum_name::#variant_name(inner) => Ok(inner),
@@ -112,7 +109,10 @@ pub fn derive_magic_variants(input: TokenStream) -> TokenStream {
                         }
                     });
                 } else {
-                    panic!("MagicVariants only supports single-field tuple variants: {}(Type)", variant_name);
+                    panic!(
+                        "MagicVariants only supports single-field tuple variants: {}(Type)",
+                        variant_name
+                    );
                 }
             }
         }

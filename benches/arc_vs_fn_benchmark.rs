@@ -4,8 +4,8 @@
 //! vs function pointers for effect handlers in Syzygy's Shell implementation.
 
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
-use std::sync::Arc;
 use futures_util::future::BoxFuture;
+use std::sync::Arc;
 
 // Simulated effect and event types for benchmarking
 #[derive(Clone)]
@@ -14,7 +14,7 @@ struct BenchEffect {
     data: String,
 }
 
-#[derive(Clone)]  
+#[derive(Clone)]
 struct BenchEvent {
     result: String,
 }
@@ -30,25 +30,26 @@ impl MockAsyncContext {
 }
 
 // Arc-based handler (current implementation)
-type ArcHandler = Arc<dyn Fn(BenchEffect, MockAsyncContext) -> BoxFuture<'static, ()> + Send + Sync>;
+type ArcHandler =
+    Arc<dyn Fn(BenchEffect, MockAsyncContext) -> BoxFuture<'static, ()> + Send + Sync>;
 
 // Function pointer handler (proposed optimization)
 type FnHandler = fn(BenchEffect, MockAsyncContext) -> BoxFuture<'static, ()>;
 
-// Sample effect handler implementation 
+// Sample effect handler implementation
 fn sample_effect_handler(effect: BenchEffect, ctx: MockAsyncContext) -> BoxFuture<'static, ()> {
     Box::pin(async move {
         // Simulate some work
         let _result = format!("Processed effect {}: {}", effect.id, effect.data);
-        let _ = ctx.send_event(BenchEvent { 
-            result: "completed".to_string() 
+        let _ = ctx.send_event(BenchEvent {
+            result: "completed".to_string(),
         });
     })
 }
 
 fn benchmark_arc_cloning(c: &mut Criterion) {
     let handler: ArcHandler = Arc::new(sample_effect_handler);
-    
+
     c.bench_function("arc_clone_only", |b| {
         b.iter(|| {
             let cloned = Arc::clone(&handler);
@@ -60,15 +61,15 @@ fn benchmark_arc_cloning(c: &mut Criterion) {
 fn benchmark_effect_execution(c: &mut Criterion) {
     let arc_handler: ArcHandler = Arc::new(sample_effect_handler);
     let fn_handler: FnHandler = sample_effect_handler;
-    
+
     let effect = BenchEffect {
         id: 42,
         data: "test_data".to_string(),
     };
     let ctx = MockAsyncContext;
-    
+
     let mut group = c.benchmark_group("effect_execution");
-    
+
     // Benchmark Arc-based handler (with clone overhead)
     group.bench_function("arc_handler", |b| {
         b.iter(|| {
@@ -78,7 +79,7 @@ fn benchmark_effect_execution(c: &mut Criterion) {
             black_box(future);
         });
     });
-    
+
     // Benchmark function pointer (zero overhead)
     group.bench_function("fn_handler", |b| {
         b.iter(|| {
@@ -87,25 +88,25 @@ fn benchmark_effect_execution(c: &mut Criterion) {
             black_box(future);
         });
     });
-    
+
     group.finish();
 }
 
 fn benchmark_batch_effects(c: &mut Criterion) {
     let arc_handler: ArcHandler = Arc::new(sample_effect_handler);
     let fn_handler: FnHandler = sample_effect_handler;
-    
+
     let effects: Vec<BenchEffect> = (0..100)
         .map(|i| BenchEffect {
             id: i,
             data: format!("batch_data_{i}"),
         })
         .collect();
-    
+
     let ctx = MockAsyncContext;
-    
+
     let mut group = c.benchmark_group("batch_effects");
-    
+
     // Batch processing with Arc (current implementation)
     group.bench_function("arc_batch", |b| {
         b.iter(|| {
@@ -117,7 +118,7 @@ fn benchmark_batch_effects(c: &mut Criterion) {
             }
         });
     });
-    
+
     // Batch processing with function pointer
     group.bench_function("fn_batch", |b| {
         b.iter(|| {
@@ -128,22 +129,22 @@ fn benchmark_batch_effects(c: &mut Criterion) {
             }
         });
     });
-    
+
     group.finish();
 }
 
 fn benchmark_memory_access_patterns(c: &mut Criterion) {
     let arc_handler: ArcHandler = Arc::new(sample_effect_handler);
     let fn_handler: FnHandler = sample_effect_handler;
-    
+
     let effect = BenchEffect {
         id: 1,
         data: "memory_test".to_string(),
     };
     let ctx = MockAsyncContext;
-    
+
     let mut group = c.benchmark_group("memory_patterns");
-    
+
     // Measure the cost of Arc indirection
     group.bench_function("arc_indirection", |b| {
         b.iter(|| {
@@ -151,14 +152,14 @@ fn benchmark_memory_access_patterns(c: &mut Criterion) {
             // where we clone the Arc for each effect execution
             let cloned = Arc::clone(&arc_handler);
             let effect_clone = effect.clone();
-            
+
             // The actual function call through Arc indirection
             let future = cloned(effect_clone, ctx);
             black_box(future);
         });
     });
-    
-    // Direct function call (zero indirection)  
+
+    // Direct function call (zero indirection)
     group.bench_function("fn_direct", |b| {
         b.iter(|| {
             let effect_clone = effect.clone();
@@ -166,26 +167,24 @@ fn benchmark_memory_access_patterns(c: &mut Criterion) {
             black_box(future);
         });
     });
-    
+
     group.finish();
 }
 
 fn benchmark_concurrent_access(c: &mut Criterion) {
     let arc_handler: ArcHandler = Arc::new(sample_effect_handler);
-    
+
     let mut group = c.benchmark_group("concurrent_access");
-    
+
     // Simulate concurrent Arc cloning (potential cache line contention)
     group.bench_function("arc_concurrent_clone", |b| {
         b.iter(|| {
             // Simulate multiple concurrent clones
-            let handlers: Vec<_> = (0..4)
-                .map(|_| Arc::clone(&arc_handler))
-                .collect();
+            let handlers: Vec<_> = (0..4).map(|_| Arc::clone(&arc_handler)).collect();
             black_box(handlers);
         });
     });
-    
+
     group.finish();
 }
 

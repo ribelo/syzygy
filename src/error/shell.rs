@@ -5,22 +5,22 @@ use std::fmt;
 pub enum ShellError {
     /// Task tracker is closed (no new tasks can be spawned)
     TaskTrackerClosed,
-    
+
     /// Task tracker mutex was poisoned
     TaskTrackerPoisoned,
-    
+
     /// Event channel is closed
     EventChannelClosed,
-    
+
     /// Effect execution failed
     EffectFailed(String),
-    
+
     /// Invalid state transition attempted
     InvalidStateTransition(String),
-    
+
     /// Task spawn failed
     TaskSpawnFailed(String),
-    
+
     /// Command execution failed
     CommandExecutionFailed(String),
 }

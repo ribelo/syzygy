@@ -69,7 +69,7 @@ macro_rules! impl_event_magic_handler {
             }
         }
     };
-    
+
     // Recursive case: generate impl for N parameters
     ($($T:ident, $I:ident),+) => {
         impl<'a, Variant, Event, Effect, Storage, F, $($T, $I),+>
@@ -113,7 +113,7 @@ macro_rules! impl_effect_magic_handler {
             }
         }
     };
-    
+
     // Recursive case: generate impl for N parameters
     ($($T:ident, $I:ident),+) => {
         impl<Variant, Effect, Event, Resources, F, $($T, $I),+ , Fut>
@@ -137,11 +137,11 @@ macro_rules! impl_effect_magic_handler {
 }
 
 // Generate implementations for 0-16 parameters (covers all practical use cases)
-// Suppress non_snake_case warnings for generated macro parameter names  
+// Suppress non_snake_case warnings for generated macro parameter names
 #[allow(non_snake_case)]
 mod magic_handler_impls {
-    use super::{EventMagicHandler, UnitHandler, Command, EventContext, FromEventContext};
-    
+    use super::{Command, EventContext, EventMagicHandler, FromEventContext, UnitHandler};
+
     impl_event_magic_handler!();
     impl_event_magic_handler!(T1, I1);
     impl_event_magic_handler!(T1, I1, T2, I2);
@@ -150,21 +150,44 @@ mod magic_handler_impls {
     impl_event_magic_handler!(T1, I1, T2, I2, T3, I3, T4, I4, T5, I5);
     impl_event_magic_handler!(T1, I1, T2, I2, T3, I3, T4, I4, T5, I5, T6, I6);
     impl_event_magic_handler!(T1, I1, T2, I2, T3, I3, T4, I4, T5, I5, T6, I6, T7, I7);
-    impl_event_magic_handler!(T1, I1, T2, I2, T3, I3, T4, I4, T5, I5, T6, I6, T7, I7, T8, I8);
-    impl_event_magic_handler!(T1, I1, T2, I2, T3, I3, T4, I4, T5, I5, T6, I6, T7, I7, T8, I8, T9, I9);
-    impl_event_magic_handler!(T1, I1, T2, I2, T3, I3, T4, I4, T5, I5, T6, I6, T7, I7, T8, I8, T9, I9, T10, I10);
-    impl_event_magic_handler!(T1, I1, T2, I2, T3, I3, T4, I4, T5, I5, T6, I6, T7, I7, T8, I8, T9, I9, T10, I10, T11, I11);
-    impl_event_magic_handler!(T1, I1, T2, I2, T3, I3, T4, I4, T5, I5, T6, I6, T7, I7, T8, I8, T9, I9, T10, I10, T11, I11, T12, I12);
-    impl_event_magic_handler!(T1, I1, T2, I2, T3, I3, T4, I4, T5, I5, T6, I6, T7, I7, T8, I8, T9, I9, T10, I10, T11, I11, T12, I12, T13, I13);
-    impl_event_magic_handler!(T1, I1, T2, I2, T3, I3, T4, I4, T5, I5, T6, I6, T7, I7, T8, I8, T9, I9, T10, I10, T11, I11, T12, I12, T13, I13, T14, I14);
-    impl_event_magic_handler!(T1, I1, T2, I2, T3, I3, T4, I4, T5, I5, T6, I6, T7, I7, T8, I8, T9, I9, T10, I10, T11, I11, T12, I12, T13, I13, T14, I14, T15, I15);
-    impl_event_magic_handler!(T1, I1, T2, I2, T3, I3, T4, I4, T5, I5, T6, I6, T7, I7, T8, I8, T9, I9, T10, I10, T11, I11, T12, I12, T13, I13, T14, I14, T15, I15, T16, I16);
+    impl_event_magic_handler!(
+        T1, I1, T2, I2, T3, I3, T4, I4, T5, I5, T6, I6, T7, I7, T8, I8
+    );
+    impl_event_magic_handler!(
+        T1, I1, T2, I2, T3, I3, T4, I4, T5, I5, T6, I6, T7, I7, T8, I8, T9, I9
+    );
+    impl_event_magic_handler!(
+        T1, I1, T2, I2, T3, I3, T4, I4, T5, I5, T6, I6, T7, I7, T8, I8, T9, I9, T10, I10
+    );
+    impl_event_magic_handler!(
+        T1, I1, T2, I2, T3, I3, T4, I4, T5, I5, T6, I6, T7, I7, T8, I8, T9, I9, T10, I10, T11, I11
+    );
+    impl_event_magic_handler!(
+        T1, I1, T2, I2, T3, I3, T4, I4, T5, I5, T6, I6, T7, I7, T8, I8, T9, I9, T10, I10, T11, I11,
+        T12, I12
+    );
+    impl_event_magic_handler!(
+        T1, I1, T2, I2, T3, I3, T4, I4, T5, I5, T6, I6, T7, I7, T8, I8, T9, I9, T10, I10, T11, I11,
+        T12, I12, T13, I13
+    );
+    impl_event_magic_handler!(
+        T1, I1, T2, I2, T3, I3, T4, I4, T5, I5, T6, I6, T7, I7, T8, I8, T9, I9, T10, I10, T11, I11,
+        T12, I12, T13, I13, T14, I14
+    );
+    impl_event_magic_handler!(
+        T1, I1, T2, I2, T3, I3, T4, I4, T5, I5, T6, I6, T7, I7, T8, I8, T9, I9, T10, I10, T11, I11,
+        T12, I12, T13, I13, T14, I14, T15, I15
+    );
+    impl_event_magic_handler!(
+        T1, I1, T2, I2, T3, I3, T4, I4, T5, I5, T6, I6, T7, I7, T8, I8, T9, I9, T10, I10, T11, I11,
+        T12, I12, T13, I13, T14, I14, T15, I15, T16, I16
+    );
 }
 
 #[allow(non_snake_case)]
 mod effect_magic_handler_impls {
-    use super::{EffectMagicHandler, Future, EffectContext, FromEffectContext};
-    
+    use super::{EffectContext, EffectMagicHandler, FromEffectContext, Future};
+
     impl_effect_magic_handler!();
     impl_effect_magic_handler!(T1, I1);
     impl_effect_magic_handler!(T1, I1, T2, I2);
@@ -173,15 +196,38 @@ mod effect_magic_handler_impls {
     impl_effect_magic_handler!(T1, I1, T2, I2, T3, I3, T4, I4, T5, I5);
     impl_effect_magic_handler!(T1, I1, T2, I2, T3, I3, T4, I4, T5, I5, T6, I6);
     impl_effect_magic_handler!(T1, I1, T2, I2, T3, I3, T4, I4, T5, I5, T6, I6, T7, I7);
-    impl_effect_magic_handler!(T1, I1, T2, I2, T3, I3, T4, I4, T5, I5, T6, I6, T7, I7, T8, I8);
-    impl_effect_magic_handler!(T1, I1, T2, I2, T3, I3, T4, I4, T5, I5, T6, I6, T7, I7, T8, I8, T9, I9);
-    impl_effect_magic_handler!(T1, I1, T2, I2, T3, I3, T4, I4, T5, I5, T6, I6, T7, I7, T8, I8, T9, I9, T10, I10);
-    impl_effect_magic_handler!(T1, I1, T2, I2, T3, I3, T4, I4, T5, I5, T6, I6, T7, I7, T8, I8, T9, I9, T10, I10, T11, I11);
-    impl_effect_magic_handler!(T1, I1, T2, I2, T3, I3, T4, I4, T5, I5, T6, I6, T7, I7, T8, I8, T9, I9, T10, I10, T11, I11, T12, I12);
-    impl_effect_magic_handler!(T1, I1, T2, I2, T3, I3, T4, I4, T5, I5, T6, I6, T7, I7, T8, I8, T9, I9, T10, I10, T11, I11, T12, I12, T13, I13);
-    impl_effect_magic_handler!(T1, I1, T2, I2, T3, I3, T4, I4, T5, I5, T6, I6, T7, I7, T8, I8, T9, I9, T10, I10, T11, I11, T12, I12, T13, I13, T14, I14);
-    impl_effect_magic_handler!(T1, I1, T2, I2, T3, I3, T4, I4, T5, I5, T6, I6, T7, I7, T8, I8, T9, I9, T10, I10, T11, I11, T12, I12, T13, I13, T14, I14, T15, I15);
-    impl_effect_magic_handler!(T1, I1, T2, I2, T3, I3, T4, I4, T5, I5, T6, I6, T7, I7, T8, I8, T9, I9, T10, I10, T11, I11, T12, I12, T13, I13, T14, I14, T15, I15, T16, I16);
+    impl_effect_magic_handler!(
+        T1, I1, T2, I2, T3, I3, T4, I4, T5, I5, T6, I6, T7, I7, T8, I8
+    );
+    impl_effect_magic_handler!(
+        T1, I1, T2, I2, T3, I3, T4, I4, T5, I5, T6, I6, T7, I7, T8, I8, T9, I9
+    );
+    impl_effect_magic_handler!(
+        T1, I1, T2, I2, T3, I3, T4, I4, T5, I5, T6, I6, T7, I7, T8, I8, T9, I9, T10, I10
+    );
+    impl_effect_magic_handler!(
+        T1, I1, T2, I2, T3, I3, T4, I4, T5, I5, T6, I6, T7, I7, T8, I8, T9, I9, T10, I10, T11, I11
+    );
+    impl_effect_magic_handler!(
+        T1, I1, T2, I2, T3, I3, T4, I4, T5, I5, T6, I6, T7, I7, T8, I8, T9, I9, T10, I10, T11, I11,
+        T12, I12
+    );
+    impl_effect_magic_handler!(
+        T1, I1, T2, I2, T3, I3, T4, I4, T5, I5, T6, I6, T7, I7, T8, I8, T9, I9, T10, I10, T11, I11,
+        T12, I12, T13, I13
+    );
+    impl_effect_magic_handler!(
+        T1, I1, T2, I2, T3, I3, T4, I4, T5, I5, T6, I6, T7, I7, T8, I8, T9, I9, T10, I10, T11, I11,
+        T12, I12, T13, I13, T14, I14
+    );
+    impl_effect_magic_handler!(
+        T1, I1, T2, I2, T3, I3, T4, I4, T5, I5, T6, I6, T7, I7, T8, I8, T9, I9, T10, I10, T11, I11,
+        T12, I12, T13, I13, T14, I14, T15, I15
+    );
+    impl_effect_magic_handler!(
+        T1, I1, T2, I2, T3, I3, T4, I4, T5, I5, T6, I6, T7, I7, T8, I8, T9, I9, T10, I10, T11, I11,
+        T12, I12, T13, I13, T14, I14, T15, I15, T16, I16
+    );
 }
 
 // ============================================================================
@@ -250,9 +296,9 @@ macro_rules! effect_magic_handler {
 
 #[cfg(test)]
 mod tests {
-    use syzygy_macros::MagicVariants;
     use super::*;
     use crate::storage::EmptyStorage;
+    use syzygy_macros::MagicVariants;
 
     #[derive(Debug, Clone, Default)]
     struct TestModel {

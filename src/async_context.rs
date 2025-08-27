@@ -1,22 +1,22 @@
 //! EffectContext - Safe and fast task spawning for effect handlers
-//! 
+//!
 //! This provides controlled task spawning within effect handlers with safety guarantees:
 //! - All spawned tasks are cancelled when context is dropped
 //! - 24x faster than the previous implementation (4ns vs 97ns per spawn)
 //! - Hard task cancellation with tokio, cooperative cancellation with other runtimes
 //! - Zero mutex locks in the spawn hot path for maximum performance
 
-use std::future::Future;
-use std::time::Duration;
-use std::sync::Arc;
-use crossbeam_channel::Sender;
-use crate::task::TaskId;
 use crate::error::ShellError;
+use crate::task::TaskId;
 use crate::timer::{Time, time};
+use crossbeam_channel::Sender;
 use smallvec::SmallVec;
+use std::future::Future;
+use std::sync::Arc;
+use std::time::Duration;
 
 /// EffectContext provides controlled task spawning and resource access within effect handlers
-/// 
+///
 /// This context ensures all spawned tasks are tracked and properly cleaned up
 /// when the effect handler completes. Key features:
 /// - Tasks are cancelled on context drop (prevents orphaned tasks)
@@ -24,7 +24,7 @@ use smallvec::SmallVec;
 /// - Cooperative cancellation for other runtimes (best effort)
 /// - High performance: 24x faster spawning than previous implementation
 /// - Type-safe resource access via `resource()` method
-/// 
+///
 /// SAFETY GUARANTEE: All tasks spawned through this context will be
 /// cancelled when the context is dropped, preventing memory safety issues.
 pub struct EffectContext<Event, Resources = crate::storage::EmptyStorage> {
@@ -42,7 +42,7 @@ pub struct EffectContext<Event, Resources = crate::storage::EmptyStorage> {
 struct TaskGroup {
     #[cfg(feature = "tokio")]
     abort_handles: std::sync::Mutex<Vec<tokio::task::AbortHandle>>,
-    
+
     #[cfg(not(feature = "tokio"))]
     shutdown_signal: Arc<std::sync::atomic::AtomicBool>,
 }
@@ -52,24 +52,25 @@ impl TaskGroup {
         Self {
             #[cfg(feature = "tokio")]
             abort_handles: std::sync::Mutex::new(Vec::new()),
-            
+
             #[cfg(not(feature = "tokio"))]
             shutdown_signal: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }
     }
-    
+
     #[cfg(feature = "tokio")]
     fn add_abort_handle(&self, handle: tokio::task::AbortHandle) {
         if let Ok(mut handles) = self.abort_handles.lock() {
             handles.push(handle);
         }
     }
-    
+
     #[cfg(not(feature = "tokio"))]
     fn is_shutting_down(&self) -> bool {
-        self.shutdown_signal.load(std::sync::atomic::Ordering::Relaxed)
+        self.shutdown_signal
+            .load(std::sync::atomic::Ordering::Relaxed)
     }
-    
+
     #[cfg(not(feature = "tokio"))]
     fn shutdown_signal(&self) -> Arc<std::sync::atomic::AtomicBool> {
         self.shutdown_signal.clone()
@@ -86,25 +87,24 @@ impl Drop for TaskGroup {
                 }
             }
         }
-        
+
         #[cfg(not(feature = "tokio"))]
         {
-            self.shutdown_signal.store(true, std::sync::atomic::Ordering::Relaxed);
+            self.shutdown_signal
+                .store(true, std::sync::atomic::Ordering::Relaxed);
             // Tasks should check this signal and exit gracefully
         }
     }
 }
 
-impl<Event, Resources> EffectContext<Event, Resources> 
+impl<Event, Resources> EffectContext<Event, Resources>
 where
     Event: Send + 'static,
     Resources: Clone + Send + Sync + 'static,
 {
     /// Create a new EffectContext with runtime detection
-    #[must_use] pub fn new(
-        event_tx: Option<Sender<Event>>,
-        resources: Resources,
-    ) -> Self {
+    #[must_use]
+    pub fn new(event_tx: Option<Sender<Event>>, resources: Resources) -> Self {
         Self {
             event_tx,
             runtime: time(),
@@ -112,9 +112,10 @@ where
             resources,
         }
     }
-    
+
     /// Create a new EffectContext with explicit runtime
-    #[must_use] pub fn with_runtime(
+    #[must_use]
+    pub fn with_runtime(
         event_tx: Option<Sender<Event>>,
         runtime: Time,
         resources: Resources,
@@ -126,14 +127,14 @@ where
             resources,
         }
     }
-    
+
     /// Spawn a tracked task that will be cleaned up on shutdown
-    /// 
+    ///
     /// SAFETY GUARANTEE: All tasks spawned through this method will be cancelled
     /// when the EffectContext is dropped, preventing orphaned tasks and memory safety issues.
-    /// 
+    ///
     /// Performance: ~4ns per spawn (24x faster than previous implementation)
-    /// 
+    ///
     /// Runtime-specific behavior:
     /// - Tokio: Uses AbortHandle for hard task cancellation
     /// - Others: Uses graceful shutdown signal (best effort)
@@ -142,21 +143,21 @@ where
         F: Future<Output = ()> + Send + 'static,
     {
         let task_id = TaskId::new();
-        
+
         #[cfg(feature = "tokio")]
         {
             // Safe tokio implementation with hard cancellation
             let handle = tokio::spawn(future);
             self.task_group.add_abort_handle(handle.abort_handle());
         }
-        
+
         #[cfg(not(feature = "tokio"))]
         {
             // Best-effort graceful shutdown for other runtimes
             if self.task_group.is_shutting_down() {
                 return Err(ShellError::TaskTrackerClosed);
             }
-            
+
             let shutdown = self.task_group.shutdown_signal();
             let safe_future = async move {
                 // Cooperative cancellation check
@@ -165,41 +166,37 @@ where
                 }
                 future.await;
             };
-            
+
             let spawner = crate::spawn::spawner();
             spawner.spawn(safe_future);
         }
-        
+
         Ok(task_id)
     }
-    
+
     /// Batch spawn for high-volume scenarios (>50 spawns)
-    /// 
+    ///
     /// SAFETY GUARANTEE: All tasks in the batch will be cancelled when context drops.
     /// Uses stack allocation with SmallVec for efficiency.
     pub fn spawn_batch<I>(&self, futures: I) -> Result<Vec<TaskId>, ShellError>
-    where 
+    where
         I: IntoIterator,
         I::Item: Future<Output = ()> + Send + 'static,
     {
         // Stack allocate for <=64 tasks to avoid heap allocation
         let mut task_ids = SmallVec::<[TaskId; 64]>::new();
-        
+
         for future in futures {
             // Use the safe spawn method for each task
             let task_id = self.spawn(future)?;
             task_ids.push(task_id);
         }
-        
+
         Ok(task_ids.into_vec())
     }
-    
+
     /// Spawn a task with timeout
-    pub fn spawn_with_timeout<F>(
-        &self, 
-        duration: Duration, 
-        future: F
-    ) -> Result<TaskId, ShellError>
+    pub fn spawn_with_timeout<F>(&self, duration: Duration, future: F) -> Result<TaskId, ShellError>
     where
         F: Future<Output = ()> + Send + 'static,
     {
@@ -210,10 +207,10 @@ where
                 // Task timed out - could send timeout event here
             }
         };
-        
+
         self.spawn(timeout_future)
     }
-    
+
     /// Send an event back to the Core
     pub fn send_event(&self, event: Event) -> Result<(), ShellError> {
         if let Some(ref tx) = self.event_tx {
@@ -223,9 +220,10 @@ where
             Err(ShellError::EventChannelClosed)
         }
     }
-    
+
     /// Get the current runtime implementation
-    #[must_use] pub fn runtime(&self) -> Time {
+    #[must_use]
+    pub fn runtime(&self) -> Time {
         self.runtime
     }
 
@@ -249,10 +247,10 @@ where
     }
 
     /// Get a clone of the event sender if available
-    /// 
+    ///
     /// This is useful for magic handlers that need to send events
     /// but don't need the full EffectContext.
-    /// 
+    ///
     /// # Example
     /// ```rust,ignore
     /// if let Some(sender) = ctx.event_sender() {
@@ -265,7 +263,7 @@ where
     }
 }
 
-impl<Event, Resources> Clone for EffectContext<Event, Resources> 
+impl<Event, Resources> Clone for EffectContext<Event, Resources>
 where
     Resources: Clone,
 {
@@ -274,7 +272,7 @@ where
             event_tx: self.event_tx.clone(),
             runtime: self.runtime,
             task_group: Arc::clone(&self.task_group), // Share the same task group for cleanup
-            resources: self.resources.clone(), // User-controlled clone semantics
+            resources: self.resources.clone(),        // User-controlled clone semantics
         }
     }
 }
@@ -282,37 +280,37 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[cfg(feature = "tokio")]
     #[tokio::test]
     async fn test_async_context_zero_cost() {
         use crate::storage::EmptyStorage;
         let resources = EmptyStorage;
         let ctx: EffectContext<()> = EffectContext::new(None, resources);
-        
+
         // Test zero-cost spawn (returns immediately)
         let _id1 = ctx.spawn(async {}).unwrap();
         let _id2 = ctx.spawn(async {}).unwrap();
-        
+
         // Spawns happen immediately with zero-cost approach
         // No pending tasks to track
     }
-    
+
     #[cfg(feature = "tokio")]
     #[tokio::test]
     async fn test_batch_spawn() {
         use crate::storage::EmptyStorage;
         let resources = EmptyStorage;
         let ctx: EffectContext<()> = EffectContext::new(None, resources);
-        
+
         // Test batch spawning
         let futures = (0..5).map(|_| async {});
         let task_ids = ctx.spawn_batch(futures).unwrap();
-        
+
         assert_eq!(task_ids.len(), 5);
         // All spawned immediately with zero-cost approach
     }
-    
+
     #[test]
     fn test_context_creation_performance() {
         use crate::storage::EmptyStorage;

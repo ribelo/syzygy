@@ -5,10 +5,10 @@ use std::fmt;
 pub enum CommandError {
     /// Command panicked during execution
     CommandPanic(String),
-    
+
     /// Command execution was cancelled
     Cancelled,
-    
+
     /// Command timed out
     Timeout,
 }

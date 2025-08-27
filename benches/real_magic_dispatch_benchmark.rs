@@ -1,17 +1,23 @@
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
-use syzygy::prelude::*;
+use criterion::{Criterion, black_box, criterion_group, criterion_main};
 use std::sync::Arc;
+use syzygy::prelude::*;
 use tokio::sync::Mutex;
 
 // Test resources
 #[derive(Debug, Clone)]
-struct HttpClient { base_url: String }
-
-#[derive(Debug, Clone)] 
-struct DatabaseConnection { connection_string: String }
+struct HttpClient {
+    base_url: String,
+}
 
 #[derive(Debug, Clone)]
-struct Logger { level: String }
+struct DatabaseConnection {
+    connection_string: String,
+}
+
+#[derive(Debug, Clone)]
+struct Logger {
+    level: String,
+}
 
 // Test effects
 #[derive(Debug, Clone)]
@@ -24,10 +30,7 @@ enum TestEffect {
 
 type TestResources = Storage<
     Arc<Mutex<HttpClient>>,
-    Storage<
-        Arc<Mutex<DatabaseConnection>>,
-        Storage<Arc<Mutex<Logger>>, EmptyStorage>
-    >
+    Storage<Arc<Mutex<DatabaseConnection>>, Storage<Arc<Mutex<Logger>>, EmptyStorage>>,
 >;
 
 fn create_test_resources() -> TestResources {
@@ -57,19 +60,13 @@ async fn magic_fetch_handler(
     tokio::task::yield_now().await;
 }
 
-async fn magic_save_handler(
-    _data: TestEffect,
-    db: Arc<Mutex<DatabaseConnection>>,
-) {
+async fn magic_save_handler(_data: TestEffect, db: Arc<Mutex<DatabaseConnection>>) {
     let database = db.lock().await;
     black_box(&*database);
     tokio::task::yield_now().await;
 }
 
-async fn magic_log_handler(
-    _data: TestEffect,
-    logger: Arc<Mutex<Logger>>,
-) {
+async fn magic_log_handler(_data: TestEffect, logger: Arc<Mutex<Logger>>) {
     let log = logger.lock().await;
     black_box(&*log);
     tokio::task::yield_now().await;
@@ -90,28 +87,19 @@ async fn magic_complex_handler(
 
 // === MANUAL HANDLERS (explicit resource extraction) ===
 
-async fn manual_fetch_handler(
-    _data: TestEffect,
-    http: &Arc<Mutex<HttpClient>>,
-) {
+async fn manual_fetch_handler(_data: TestEffect, http: &Arc<Mutex<HttpClient>>) {
     let client = http.lock().await;
     black_box(&*client);
     tokio::task::yield_now().await;
 }
 
-async fn manual_save_handler(
-    _data: TestEffect,
-    db: &Arc<Mutex<DatabaseConnection>>,
-) {
+async fn manual_save_handler(_data: TestEffect, db: &Arc<Mutex<DatabaseConnection>>) {
     let database = db.lock().await;
     black_box(&*database);
     tokio::task::yield_now().await;
 }
 
-async fn manual_log_handler(
-    _data: TestEffect,
-    logger: &Arc<Mutex<Logger>>,
-) {
+async fn manual_log_handler(_data: TestEffect, logger: &Arc<Mutex<Logger>>) {
     let log = logger.lock().await;
     black_box(&*log);
     tokio::task::yield_now().await;
@@ -189,14 +177,21 @@ fn rt() -> tokio::runtime::Runtime {
 
 fn bench_dispatch_overhead(c: &mut Criterion) {
     let mut group = c.benchmark_group("dispatch_overhead");
-    
+
     let effects = vec![
         TestEffect::FetchUserData { user_id: 1 },
-        TestEffect::SaveToDatabase { data: "test".to_string() },
-        TestEffect::LogMessage { message: "test".to_string() },
-        TestEffect::ComplexOperation { id: 1, data: "test".to_string() },
+        TestEffect::SaveToDatabase {
+            data: "test".to_string(),
+        },
+        TestEffect::LogMessage {
+            message: "test".to_string(),
+        },
+        TestEffect::ComplexOperation {
+            id: 1,
+            data: "test".to_string(),
+        },
     ];
-    
+
     // Magic dispatch
     group.bench_function("magic_dispatch", |b| {
         let rt = rt();
@@ -204,35 +199,35 @@ fn bench_dispatch_overhead(c: &mut Criterion) {
             rt.block_on(async {
                 let resources = create_test_resources();
                 let ctx = EffectContext::<(), TestResources>::new(None, resources);
-                
+
                 for effect in &effects {
                     magic_dispatch(effect.clone(), ctx.clone()).await;
                 }
             });
         });
     });
-    
-    // Manual dispatch  
+
+    // Manual dispatch
     group.bench_function("manual_dispatch", |b| {
         let rt = rt();
         b.iter(|| {
             rt.block_on(async {
                 let resources = create_test_resources();
                 let ctx = EffectContext::<(), TestResources>::new(None, resources);
-                
+
                 for effect in &effects {
                     manual_dispatch(effect.clone(), &ctx).await;
                 }
             });
         });
     });
-    
+
     group.finish();
 }
 
 fn bench_single_effect_dispatch(c: &mut Criterion) {
     let mut group = c.benchmark_group("single_effect");
-    
+
     // Simple effect
     group.bench_function("magic_simple", |b| {
         let rt = rt();
@@ -241,12 +236,12 @@ fn bench_single_effect_dispatch(c: &mut Criterion) {
                 let resources = create_test_resources();
                 let ctx = EffectContext::<(), TestResources>::new(None, resources);
                 let effect = TestEffect::FetchUserData { user_id: 1 };
-                
+
                 magic_dispatch(effect, ctx).await;
             });
         });
     });
-    
+
     group.bench_function("manual_simple", |b| {
         let rt = rt();
         b.iter(|| {
@@ -254,12 +249,12 @@ fn bench_single_effect_dispatch(c: &mut Criterion) {
                 let resources = create_test_resources();
                 let ctx = EffectContext::<(), TestResources>::new(None, resources);
                 let effect = TestEffect::FetchUserData { user_id: 1 };
-                
+
                 manual_dispatch(effect, &ctx).await;
             });
         });
     });
-    
+
     // Complex effect
     group.bench_function("magic_complex", |b| {
         let rt = rt();
@@ -267,32 +262,38 @@ fn bench_single_effect_dispatch(c: &mut Criterion) {
             rt.block_on(async {
                 let resources = create_test_resources();
                 let ctx = EffectContext::<(), TestResources>::new(None, resources);
-                let effect = TestEffect::ComplexOperation { id: 1, data: "test".to_string() };
-                
+                let effect = TestEffect::ComplexOperation {
+                    id: 1,
+                    data: "test".to_string(),
+                };
+
                 magic_dispatch(effect, ctx).await;
             });
         });
     });
-    
+
     group.bench_function("manual_complex", |b| {
         let rt = rt();
         b.iter(|| {
             rt.block_on(async {
                 let resources = create_test_resources();
                 let ctx = EffectContext::<(), TestResources>::new(None, resources);
-                let effect = TestEffect::ComplexOperation { id: 1, data: "test".to_string() };
-                
+                let effect = TestEffect::ComplexOperation {
+                    id: 1,
+                    data: "test".to_string(),
+                };
+
                 manual_dispatch(effect, &ctx).await;
             });
         });
     });
-    
+
     group.finish();
 }
 
 fn bench_resource_extraction_patterns(c: &mut Criterion) {
     let mut group = c.benchmark_group("resource_extraction");
-    
+
     // Test different resource extraction patterns
     group.bench_function("single_resource_magic", |b| {
         let rt = rt();
@@ -301,14 +302,14 @@ fn bench_resource_extraction_patterns(c: &mut Criterion) {
                 let resources = create_test_resources();
                 let ctx = EffectContext::<(), TestResources>::new(None, resources);
                 let effect = TestEffect::FetchUserData { user_id: 1 };
-                
+
                 // Simulate magic extraction (clone cost)
                 let http: &Arc<Mutex<HttpClient>> = ctx.resource();
                 magic_fetch_handler(effect, http.clone()).await;
             });
         });
     });
-    
+
     group.bench_function("single_resource_manual", |b| {
         let rt = rt();
         b.iter(|| {
@@ -316,14 +317,14 @@ fn bench_resource_extraction_patterns(c: &mut Criterion) {
                 let resources = create_test_resources();
                 let ctx = EffectContext::<(), TestResources>::new(None, resources);
                 let effect = TestEffect::FetchUserData { user_id: 1 };
-                
+
                 // Manual extraction (reference cost)
                 let http: &Arc<Mutex<HttpClient>> = ctx.resource();
                 manual_fetch_handler(effect, http).await;
             });
         });
     });
-    
+
     group.finish();
 }
 

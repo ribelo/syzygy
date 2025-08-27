@@ -1,10 +1,10 @@
-use std::future::Future;
-use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
-use std::sync::Arc;
-use futures_util::future::BoxFuture;
 use crate::error::ShellError;
 use crate::spawn::Spawn;
+use futures_util::future::BoxFuture;
+use std::collections::HashMap;
+use std::future::Future;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
 /// Unique identifier for spawned tasks
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -39,11 +39,13 @@ impl TaskHandle {
         (handle, is_finished)
     }
 
-    #[must_use] pub fn id(&self) -> TaskId {
+    #[must_use]
+    pub fn id(&self) -> TaskId {
         self.id
     }
 
-    #[must_use] pub fn is_finished(&self) -> bool {
+    #[must_use]
+    pub fn is_finished(&self) -> bool {
         self.is_finished.load(Ordering::Relaxed)
     }
 }
@@ -68,7 +70,8 @@ pub struct TaskTracker {
 }
 
 impl TaskTracker {
-    #[must_use] pub fn new() -> Self {
+    #[must_use]
+    pub fn new() -> Self {
         Self {
             tasks: HashMap::new(),
             active_count: AtomicUsize::new(0),
@@ -114,7 +117,11 @@ impl TaskTracker {
     ///
     /// DEPRECATED: Use spawn_direct for zero-cost spawning.
     /// The spawn_fn should match your runtime's spawn function signature
-    pub fn spawn<F, Fut, SpawnFn>(&mut self, spawn_fn: SpawnFn, future: Fut) -> Result<TaskHandle, ShellError>
+    pub fn spawn<F, Fut, SpawnFn>(
+        &mut self,
+        spawn_fn: SpawnFn,
+        future: Fut,
+    ) -> Result<TaskHandle, ShellError>
     where
         F: Future<Output = ()> + Send + 'static,
         Fut: FnOnce(Arc<AtomicBool>) -> F,
@@ -141,7 +148,6 @@ impl TaskTracker {
         Ok(self.tasks[&task_id].clone())
     }
 
-
     /// Spawn multiple tasks in batch with single mutex lock (legacy boxed API)
     ///
     /// This is more efficient than multiple individual spawn calls as it only
@@ -149,7 +155,7 @@ impl TaskTracker {
     pub fn spawn_batch<SpawnFn>(
         &mut self,
         spawn_fn: &SpawnFn,
-        futures: Vec<(TaskId, BoxFuture<'static, ()>)>
+        futures: Vec<(TaskId, BoxFuture<'static, ()>)>,
     ) -> Result<Vec<TaskHandle>, ShellError>
     where
         SpawnFn: Fn(BoxFuture<'static, ()>) + ?Sized,
@@ -183,7 +189,8 @@ impl TaskTracker {
         }
 
         // Single atomic increment for the entire batch
-        self.active_count.fetch_add(handles.len(), Ordering::Relaxed);
+        self.active_count
+            .fetch_add(handles.len(), Ordering::Relaxed);
 
         Ok(handles)
     }
@@ -243,10 +250,12 @@ mod tests {
         // Mock spawn function that does nothing
         let spawn_fn = |_future| {};
 
-        let handle = tracker.spawn(spawn_fn, |is_finished| async move {
-            // Simulate task completion
-            is_finished.store(true, Ordering::Relaxed);
-        }).unwrap();
+        let handle = tracker
+            .spawn(spawn_fn, |is_finished| async move {
+                // Simulate task completion
+                is_finished.store(true, Ordering::Relaxed);
+            })
+            .unwrap();
 
         assert_eq!(tracker.active_count(), 1);
 

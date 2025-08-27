@@ -80,10 +80,7 @@ fn test_event_with_single_extraction() {
     let ctx = EventContext::<AppEvent, AppEffect, _>::new(&mut storage);
 
     // Handler that extracts user model via &T
-    fn handler_with_model_ref(
-        event: AppEvent,
-        user: &UserModel,
-    ) -> Command<AppEvent, AppEffect> {
+    fn handler_with_model_ref(event: AppEvent, user: &UserModel) -> Command<AppEvent, AppEffect> {
         match event {
             AppEvent::UserCreated { name } => {
                 let message = format!(
@@ -203,7 +200,7 @@ fn test_magic_handler_flexibility() {
     let command = event_trigger(event, &ctx, test_handler);
     let steps: Vec<_> = command.into_iter().collect();
     assert_eq!(steps.len(), 1);
-    
+
     // Test passes if it compiles and runs without error
 }
 
@@ -254,6 +251,6 @@ fn test_magic_handlers_integration() {
 
     let steps: Vec<_> = command.into_iter().collect();
     assert_eq!(steps.len(), 1);
-    
+
     // Test passes if workflow completes successfully
 }

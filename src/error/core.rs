@@ -5,7 +5,7 @@ use std::fmt;
 pub enum CoreError {
     /// Event channel is closed (system is shutting down)
     ChannelClosed,
-    
+
     /// Event channel is full (for bounded channels)
     ChannelFull,
 }

@@ -1,4 +1,4 @@
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
+use criterion::{Criterion, black_box, criterion_group, criterion_main};
 use syzygy::prelude::*;
 
 // Test models for benchmarking
@@ -58,14 +58,8 @@ type TestStorage = Storage<
     UserModel,
     Storage<
         ConfigModel,
-        Storage<
-            CacheModel,
-            Storage<
-                MetricsModel,
-                Storage<SessionModel, EmptyStorage>
-            >
-        >
-    >
+        Storage<CacheModel, Storage<MetricsModel, Storage<SessionModel, EmptyStorage>>>,
+    >,
 >;
 
 fn create_test_storage() -> TestStorage {
@@ -111,11 +105,11 @@ make_handler!(magic_handler_one, user: &UserModel);
 make_handler!(magic_handler_two, user: &UserModel, config: &ConfigModel);
 make_handler!(magic_handler_three, user: &UserModel, config: &ConfigModel, cache: &CacheModel);
 make_handler!(magic_handler_mixed, user: &mut UserModel, config: &ConfigModel);
-make_handler!(magic_handler_complex, 
-    user: &mut UserModel, 
-    config: &ConfigModel, 
-    cache: &CacheModel, 
-    metrics: &MetricsModel, 
+make_handler!(magic_handler_complex,
+    user: &mut UserModel,
+    config: &ConfigModel,
+    cache: &CacheModel,
+    metrics: &MetricsModel,
     session: &SessionModel
 );
 
@@ -130,19 +124,26 @@ fn manual_handler_two(user: &UserModel, config: &ConfigModel) -> Command<TestEve
     Command::none()
 }
 
-fn manual_handler_three(user: &UserModel, config: &ConfigModel, cache: &CacheModel) -> Command<TestEvent, TestEffect> {
+fn manual_handler_three(
+    user: &UserModel,
+    config: &ConfigModel,
+    cache: &CacheModel,
+) -> Command<TestEvent, TestEffect> {
     black_box((user, config, cache));
     Command::none()
 }
 
-fn manual_handler_mixed(user: &mut UserModel, config: &ConfigModel) -> Command<TestEvent, TestEffect> {
+fn manual_handler_mixed(
+    user: &mut UserModel,
+    config: &ConfigModel,
+) -> Command<TestEvent, TestEffect> {
     black_box((user, config));
     Command::none()
 }
 
 fn manual_handler_complex(
     user: &mut UserModel,
-    config: &ConfigModel, 
+    config: &ConfigModel,
     cache: &CacheModel,
     metrics: &MetricsModel,
     session: &SessionModel,
@@ -155,23 +156,26 @@ fn manual_handler_complex(
 
 fn bench_one_param(c: &mut Criterion) {
     let mut group = c.benchmark_group("one_parameter");
-    
+
     // Magic handler benchmark using update-style wrapper
     group.bench_function("magic_handler", |b| {
         b.iter(|| {
             let mut storage = create_test_storage();
             let ctx = EventContext::<TestEvent, TestEffect, _>::new(&mut storage);
-            
+
             // Wrap the magic handler to match update signature
             fn update_wrapper(
-                _event: TestEvent, 
-                ctx: &mut EventContext<TestEvent, TestEffect, TestStorage>
+                _event: TestEvent,
+                ctx: &mut EventContext<TestEvent, TestEffect, TestStorage>,
             ) -> Command<TestEvent, TestEffect> {
                 let user: &UserModel = ctx.model();
                 magic_handler_one(user)
             }
-            
-            let event = TestEvent::UpdateUser { id: 1, name: "test".to_string() };
+
+            let event = TestEvent::UpdateUser {
+                id: 1,
+                name: "test".to_string(),
+            };
             let result = update_wrapper(event, &mut EventContext::new(&mut storage));
             black_box(result)
         });
@@ -187,29 +191,32 @@ fn bench_one_param(c: &mut Criterion) {
             black_box(result)
         });
     });
-    
+
     group.finish();
 }
 
 fn bench_two_params(c: &mut Criterion) {
     let mut group = c.benchmark_group("two_parameters");
-    
+
     // Magic handler benchmark
     group.bench_function("magic_handler", |b| {
         b.iter(|| {
             let mut storage = create_test_storage();
-            
+
             // Wrap the magic handler to match update signature
             fn update_wrapper(
-                _event: TestEvent, 
-                ctx: &mut EventContext<TestEvent, TestEffect, TestStorage>
+                _event: TestEvent,
+                ctx: &mut EventContext<TestEvent, TestEffect, TestStorage>,
             ) -> Command<TestEvent, TestEffect> {
                 let user: &UserModel = ctx.model();
                 let config: &ConfigModel = ctx.model();
                 magic_handler_two(user, config)
             }
-            
-            let event = TestEvent::UpdateUser { id: 1, name: "test".to_string() };
+
+            let event = TestEvent::UpdateUser {
+                id: 1,
+                name: "test".to_string(),
+            };
             let result = update_wrapper(event, &mut EventContext::new(&mut storage));
             black_box(result)
         });
@@ -226,30 +233,33 @@ fn bench_two_params(c: &mut Criterion) {
             black_box(result)
         });
     });
-    
+
     group.finish();
 }
 
 fn bench_three_params(c: &mut Criterion) {
     let mut group = c.benchmark_group("three_parameters");
-    
+
     // Magic handler benchmark
     group.bench_function("magic_handler", |b| {
         b.iter(|| {
             let mut storage = create_test_storage();
-            
+
             // Wrap the magic handler to match update signature
             fn update_wrapper(
-                _event: TestEvent, 
-                ctx: &mut EventContext<TestEvent, TestEffect, TestStorage>
+                _event: TestEvent,
+                ctx: &mut EventContext<TestEvent, TestEffect, TestStorage>,
             ) -> Command<TestEvent, TestEffect> {
                 let user: &UserModel = ctx.model();
                 let config: &ConfigModel = ctx.model();
                 let cache: &CacheModel = ctx.model();
                 magic_handler_three(user, config, cache)
             }
-            
-            let event = TestEvent::UpdateUser { id: 1, name: "test".to_string() };
+
+            let event = TestEvent::UpdateUser {
+                id: 1,
+                name: "test".to_string(),
+            };
             let result = update_wrapper(event, &mut EventContext::new(&mut storage));
             black_box(result)
         });
@@ -267,29 +277,32 @@ fn bench_three_params(c: &mut Criterion) {
             black_box(result)
         });
     });
-    
+
     group.finish();
 }
 
 fn bench_mixed_refs(c: &mut Criterion) {
     let mut group = c.benchmark_group("mixed_references");
-    
+
     // Magic handler benchmark
     group.bench_function("magic_handler", |b| {
         b.iter(|| {
             let mut storage = create_test_storage();
-            
+
             // Wrap the magic handler to match update signature
             fn update_wrapper(
-                _event: TestEvent, 
-                ctx: &mut EventContext<TestEvent, TestEffect, TestStorage>
+                _event: TestEvent,
+                ctx: &mut EventContext<TestEvent, TestEffect, TestStorage>,
             ) -> Command<TestEvent, TestEffect> {
                 let user: &mut UserModel = ctx.model_mut();
                 let config: &ConfigModel = ctx.model();
                 magic_handler_mixed(user, config)
             }
-            
-            let event = TestEvent::UpdateUser { id: 1, name: "test".to_string() };
+
+            let event = TestEvent::UpdateUser {
+                id: 1,
+                name: "test".to_string(),
+            };
             let result = update_wrapper(event, &mut EventContext::new(&mut storage));
             black_box(result)
         });
@@ -306,22 +319,22 @@ fn bench_mixed_refs(c: &mut Criterion) {
             black_box(result)
         });
     });
-    
+
     group.finish();
 }
 
 fn bench_complex_params(c: &mut Criterion) {
     let mut group = c.benchmark_group("five_parameters");
-    
+
     // Magic handler benchmark
     group.bench_function("magic_handler", |b| {
         b.iter(|| {
             let mut storage = create_test_storage();
-            
+
             // Wrap the magic handler to match update signature
             fn update_wrapper(
-                _event: TestEvent, 
-                ctx: &mut EventContext<TestEvent, TestEffect, TestStorage>
+                _event: TestEvent,
+                ctx: &mut EventContext<TestEvent, TestEffect, TestStorage>,
             ) -> Command<TestEvent, TestEffect> {
                 let user: &mut UserModel = ctx.model_mut();
                 let config: &ConfigModel = ctx.model();
@@ -330,14 +343,17 @@ fn bench_complex_params(c: &mut Criterion) {
                 let session: &SessionModel = ctx.model();
                 magic_handler_complex(user, config, cache, metrics, session)
             }
-            
-            let event = TestEvent::UpdateUser { id: 1, name: "test".to_string() };
+
+            let event = TestEvent::UpdateUser {
+                id: 1,
+                name: "test".to_string(),
+            };
             let result = update_wrapper(event, &mut EventContext::new(&mut storage));
             black_box(result)
         });
     });
 
-    // Manual extraction benchmark  
+    // Manual extraction benchmark
     group.bench_function("manual_extraction", |b| {
         b.iter(|| {
             let mut storage = create_test_storage();
@@ -351,35 +367,38 @@ fn bench_complex_params(c: &mut Criterion) {
             black_box(result)
         });
     });
-    
+
     group.finish();
 }
 
 fn bench_extraction_overhead_only(c: &mut Criterion) {
     let mut group = c.benchmark_group("extraction_overhead_only");
-    
+
     // Magic handler benchmark - just the extraction without any work
     group.bench_function("magic_extraction_5_params", |b| {
         b.iter(|| {
             let mut storage = create_test_storage();
-            
+
             // Wrap the magic handler to match update signature - minimal work
             fn update_wrapper(
-                _event: TestEvent, 
-                ctx: &mut EventContext<TestEvent, TestEffect, TestStorage>
+                _event: TestEvent,
+                ctx: &mut EventContext<TestEvent, TestEffect, TestStorage>,
             ) -> Command<TestEvent, TestEffect> {
                 let user: &mut UserModel = ctx.model_mut();
                 let config: &ConfigModel = ctx.model();
                 let cache: &CacheModel = ctx.model();
                 let metrics: &MetricsModel = ctx.model();
                 let session: &SessionModel = ctx.model();
-                
+
                 // Just black_box the extracted values to prevent optimization
                 black_box((user, config, cache, metrics, session));
                 Command::none()
             }
-            
-            let event = TestEvent::UpdateUser { id: 1, name: "test".to_string() };
+
+            let event = TestEvent::UpdateUser {
+                id: 1,
+                name: "test".to_string(),
+            };
             let result = update_wrapper(event, &mut EventContext::new(&mut storage));
             black_box(result)
         });
@@ -390,19 +409,19 @@ fn bench_extraction_overhead_only(c: &mut Criterion) {
         b.iter(|| {
             let mut storage = create_test_storage();
             let ctx = EventContext::<TestEvent, TestEffect, _>::new(&mut storage);
-            
+
             // Manual extraction of the same 5 parameters
             let user: &mut UserModel = ctx.model_mut();
             let config: &ConfigModel = ctx.model();
             let cache: &CacheModel = ctx.model();
             let metrics: &MetricsModel = ctx.model();
             let session: &SessionModel = ctx.model();
-            
+
             // Same minimal work
             black_box((user, config, cache, metrics, session));
         });
     });
-    
+
     group.finish();
 }
 

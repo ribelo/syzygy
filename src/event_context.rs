@@ -45,7 +45,6 @@ impl<'a, Event, Effect, Storage> EventContext<'a, Event, Effect, Storage> {
         }
     }
 
-
     /// Get immutable reference to a specific model by type
     ///
     /// This is a convenience method that delegates to the storage's get() method.
@@ -78,7 +77,8 @@ impl<'a, Event, Effect, Storage> EventContext<'a, Event, Effect, Storage> {
     /// let counter = ctx.model_mut::<CounterModel>();
     /// counter.count += 1;
     /// ```
-    #[must_use] pub fn model_mut<T, Index>(&self) -> &mut T
+    #[must_use]
+    pub fn model_mut<T, Index>(&self) -> &mut T
     where
         Storage: Selector<T, Index>,
     {
@@ -134,7 +134,9 @@ mod tests {
     fn test_event_context_multiple_models() {
         let mut storage = EmptyStorage
             .with_model(CounterModel { count: 10 })
-            .with_model(UserModel { name: "Alice".to_string() });
+            .with_model(UserModel {
+                name: "Alice".to_string(),
+            });
 
         let ctx = EventContext::<TestEvent, TestEffect, _>::new(&mut storage);
 
@@ -161,5 +163,4 @@ mod tests {
         let user: &UserModel = ctx.model();
         assert_eq!(user.name, "Bob");
     }
-
 }

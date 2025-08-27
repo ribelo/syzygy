@@ -9,8 +9,8 @@
 //! - Resources are accessed via EffectContext
 //! - Zero-cost abstractions with compile-time verification
 
-use std::future::Future;
 use crate::async_context::EffectContext;
+use std::future::Future;
 
 /// AFIT-based trait for handling effects with zero-cost abstractions
 ///
@@ -132,10 +132,13 @@ mod tests {
         multiplier: i32,
     }
 
-    // Test effect handler as function pointer  
+    // Test effect handler as function pointer
     async fn test_effect_handler(
         effect: TestEffect,
-        ctx: EffectContext<TestEvent, crate::storage::Storage<TestResources, crate::storage::EmptyStorage>>,
+        ctx: EffectContext<
+            TestEvent,
+            crate::storage::Storage<TestResources, crate::storage::EmptyStorage>,
+        >,
     ) {
         match effect {
             TestEffect::Process { value } => {
@@ -150,33 +153,34 @@ mod tests {
     async fn test_function_pointer_implements_effect_handler() {
         use crate::storage::{EmptyStorage, Storage};
         let storage = EmptyStorage.with_model(TestResources { multiplier: 2 });
-        let ctx: EffectContext<TestEvent, Storage<TestResources, EmptyStorage>> = EffectContext::new(None, storage);
+        let ctx: EffectContext<TestEvent, Storage<TestResources, EmptyStorage>> =
+            EffectContext::new(None, storage);
 
         // Verify function pointer implements the trait
-        let handler: fn(TestEffect, EffectContext<TestEvent, Storage<TestResources, EmptyStorage>>) -> _ = test_effect_handler;
+        let handler: fn(
+            TestEffect,
+            EffectContext<TestEvent, Storage<TestResources, EmptyStorage>>,
+        ) -> _ = test_effect_handler;
 
         // This should compile and work
-        handler.handle(
-            TestEffect::Process { value: 5 },
-            ctx,
-        ).await;
+        handler.handle(TestEffect::Process { value: 5 }, ctx).await;
     }
 
     #[tokio::test]
     async fn test_effect_handler_execution() {
-        use crossbeam_channel::unbounded;
         use crate::storage::{EmptyStorage, Storage};
+        use crossbeam_channel::unbounded;
 
         let (tx, rx) = unbounded();
         let storage = EmptyStorage.with_model(TestResources { multiplier: 3 });
         let ctx = EffectContext::new(Some(tx), storage);
 
         // Execute through trait
-        let handler: fn(TestEffect, EffectContext<TestEvent, Storage<TestResources, EmptyStorage>>) -> _ = test_effect_handler;
-        handler.handle(
-            TestEffect::Process { value: 7 },
-            ctx,
-        ).await;
+        let handler: fn(
+            TestEffect,
+            EffectContext<TestEvent, Storage<TestResources, EmptyStorage>>,
+        ) -> _ = test_effect_handler;
+        handler.handle(TestEffect::Process { value: 7 }, ctx).await;
 
         // Verify event was sent
         let event = rx.try_recv().unwrap();
@@ -189,7 +193,10 @@ mod tests {
     fn test_function_pointer_compiles() {
         use crate::storage::{EmptyStorage, Storage};
         // This test verifies that function pointers can be used as effect handlers
-        let _handler: fn(TestEffect, EffectContext<TestEvent, Storage<TestResources, EmptyStorage>>) -> _ = test_effect_handler;
+        let _handler: fn(
+            TestEffect,
+            EffectContext<TestEvent, Storage<TestResources, EmptyStorage>>,
+        ) -> _ = test_effect_handler;
 
         // Verify the function pointer can be called directly
         // (We don't actually call it in the test to avoid async complexity)

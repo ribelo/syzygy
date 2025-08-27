@@ -1,5 +1,5 @@
 //! Performance Benchmark for Syzygy Optimizations
-//! 
+//!
 //! This benchmark measures the impact of the implemented performance optimizations:
 //! 1. Pre-allocated command buffer (eliminates Vec reallocations)
 //! 2. Smart event loop optimization (conditional polling)
@@ -8,9 +8,7 @@
 //!
 //! All optimizations use safe Rust and follow zero-copy patterns where possible.
 
-use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
-use std::collections::HashMap;
-use syzygy::prelude::*;
+use criterion::{Criterion, criterion_group, criterion_main};
 
 // ============================================================================
 // Performance Test Application

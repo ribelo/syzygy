@@ -4,9 +4,9 @@
 //! to enable Axum-style magic parameter injection in handler functions.
 
 use crate::async_context::EffectContext;
-use crate::event_context::EventContext;
-use crate::storage::{storage::Here, Selector};
 use crate::error::ShellError;
+use crate::event_context::EventContext;
+use crate::storage::{Selector, storage::Here};
 use crossbeam_channel::Sender;
 
 /// Extract a value from an EventContext
@@ -38,7 +38,9 @@ pub struct EventSender<Event>(pub Sender<Event>);
 impl<Event> EventSender<Event> {
     /// Send an event back to the Core
     pub fn send(&self, event: Event) -> Result<(), ShellError> {
-        self.0.send(event).map_err(|_| ShellError::EventChannelClosed)
+        self.0
+            .send(event)
+            .map_err(|_| ShellError::EventChannelClosed)
     }
 }
 
@@ -47,7 +49,8 @@ impl<Event> EventSender<Event> {
 // ============================================================================
 
 // Extract EffectContext directly
-impl<'ctx, Event, Resources> FromEffectContext<'ctx, Event, Resources> for EffectContext<Event, Resources>
+impl<'ctx, Event, Resources> FromEffectContext<'ctx, Event, Resources>
+    for EffectContext<Event, Resources>
 where
     Event: Send + 'static,
     Resources: Clone + Send + Sync + 'static,
@@ -64,12 +67,16 @@ where
     Resources: Clone + Send + Sync + 'static,
 {
     fn from_context(ctx: &'ctx EffectContext<Event, Resources>) -> Self {
-        EventSender(ctx.event_sender().expect("EffectContext must have an event sender for EventSender extraction"))
+        EventSender(
+            ctx.event_sender()
+                .expect("EffectContext must have an event sender for EventSender extraction"),
+        )
     }
 }
 
 // Extract model references from EventContext
-impl<'ctx, Event, Effect, Storage, T, I> FromEventContext<'ctx, Event, Effect, Storage, I> for &'ctx T
+impl<'ctx, Event, Effect, Storage, T, I> FromEventContext<'ctx, Event, Effect, Storage, I>
+    for &'ctx T
 where
     Storage: Selector<T, I>,
 {
@@ -78,13 +85,30 @@ where
     }
 }
 
-// Extract mutable model references from EventContext  
-impl<'ctx, Event, Effect, Storage, T, I> FromEventContext<'ctx, Event, Effect, Storage, I> for &'ctx mut T
+// Extract mutable model references from EventContext
+impl<'ctx, Event, Effect, Storage, T, I> FromEventContext<'ctx, Event, Effect, Storage, I>
+    for &'ctx mut T
 where
     Storage: Selector<T, I>,
 {
     fn from_context(ctx: &'ctx EventContext<Event, Effect, Storage>) -> Self {
         ctx.model_mut::<T, I>()
+    }
+}
+
+// ============================================================================
+// Resource Extraction from EffectContext
+// ============================================================================
+
+// Extract resource references from EffectContext (zero-cost)
+impl<'ctx, Event, Resources, T, I> FromEffectContext<'ctx, Event, Resources, I> for &'ctx T
+where
+    Resources: Selector<T, I>,
+    Event: Send + 'static,
+    Resources: Clone + Send + Sync + 'static,
+{
+    fn from_context(ctx: &'ctx EffectContext<Event, Resources>) -> Self {
+        ctx.resource::<T, I>()
     }
 }
 
@@ -231,7 +255,10 @@ mod tests {
         }
 
         let mut storage = EmptyStorage
-            .with_model(TestModel { counter: 99, name: "test".to_string() })
+            .with_model(TestModel {
+                counter: 99,
+                name: "test".to_string(),
+            })
             .with_model(SecondModel { value: 42 });
 
         let ctx = EventContext::<TestEvent, TestEffect, _>::new(&mut storage);
@@ -261,7 +288,7 @@ mod tests {
     #[test]
     fn test_event_sender_extraction() {
         use crossbeam_channel::unbounded;
-        
+
         let (tx, rx) = unbounded();
         let resources = EmptyStorage;
         let ctx = EffectContext::<TestEvent, _>::new(Some(tx), resources);
@@ -271,28 +298,12 @@ mod tests {
         assert!(rx.try_recv().is_ok());
     }
 
-    #[test] 
+    #[test]
     #[should_panic(expected = "EffectContext must have an event sender")]
     fn test_event_sender_extraction_panics_without_sender() {
         let resources = EmptyStorage;
         let ctx = EffectContext::<TestEvent, _>::new(None, resources);
 
         let _sender: EventSender<TestEvent> = FromEffectContext::from_context(&ctx);
-    }
-}
-
-// ============================================================================
-// Resource Extraction from EffectContext
-// ============================================================================
-
-// Extract resource references from EffectContext (zero-cost)
-impl<'ctx, Event, Resources, T, I> FromEffectContext<'ctx, Event, Resources, I> for &'ctx T
-where
-    Resources: Selector<T, I>,
-    Event: Send + 'static,
-    Resources: Clone + Send + Sync + 'static,
-{
-    fn from_context(ctx: &'ctx EffectContext<Event, Resources>) -> Self {
-        ctx.resource::<T, I>()
     }
 }

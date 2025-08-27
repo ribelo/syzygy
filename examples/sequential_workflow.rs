@@ -1,6 +1,6 @@
 //! # Sequential Workflow Example
 //!
-//! This example demonstrates the sequential workflow pattern that solves the 
+//! This example demonstrates the sequential workflow pattern that solves the
 //! "200+ lines of event spaghetti" problem. Instead of complex event chains,
 //! effects can be composed sequentially with automatic error handling.
 //!
@@ -21,8 +21,8 @@
 //! ```
 //! Clean, readable, automatic error handling, zero boilerplate.
 
-use syzygy::prelude::*;
 use std::time::Duration;
+use syzygy::prelude::*;
 use tokio::time::sleep;
 
 #[derive(Debug, Clone)]
@@ -34,20 +34,10 @@ enum WorkflowEvent {
 
 #[derive(Debug, Clone)]
 enum WorkflowEffect {
-    LoginUser { 
-        username: String, 
-        password: String,
-    },
-    FetchUserData { 
-        user_id: u32,
-    },
-    FetchAddressData { 
-        user_id: u32,
-    },
-    MakeASandwichForUser { 
-        user_id: u32, 
-        preferences: String,
-    },
+    LoginUser { username: String, password: String },
+    FetchUserData { user_id: u32 },
+    FetchAddressData { user_id: u32 },
+    MakeASandwichForUser { user_id: u32, preferences: String },
     // Parallel effects for comparison
     FetchUserProfile { user_id: u32 },
     FetchUserNotifications { user_id: u32 },
@@ -61,49 +51,47 @@ struct WorkflowModel {
     errors: Vec<String>,
 }
 
-use syzygy::storage::{Storage, EmptyStorage};
+use syzygy::storage::{EmptyStorage, Storage};
 
 fn workflow_update(
-    event: WorkflowEvent, 
-    ctx: &mut EventContext<WorkflowEvent, WorkflowEffect, Storage<WorkflowModel, EmptyStorage>>
+    event: WorkflowEvent,
+    ctx: &mut EventContext<WorkflowEvent, WorkflowEffect, Storage<WorkflowModel, EmptyStorage>>,
 ) -> Command<WorkflowEvent, WorkflowEffect> {
     let model: &mut WorkflowModel = ctx.model_mut();
-    
+
     match event {
         WorkflowEvent::StartUserOnboarding { username, password } => {
-            println!("🚀 Starting user onboarding for: {}", username);
-            
+            println!("🚀 Starting user onboarding for: {username}");
+
             // This is the key innovation: sequential effects with fail-fast error handling
             // If any step fails, the entire pipeline stops automatically
             Command::sequence([
-                Command::effect(WorkflowEffect::LoginUser { 
-                    username: username.clone(), 
+                Command::effect(WorkflowEffect::LoginUser {
+                    username: username.clone(),
                     password,
                 }),
-                Command::effect(WorkflowEffect::FetchUserData { 
+                Command::effect(WorkflowEffect::FetchUserData {
                     user_id: 42, // In real app, this would come from login result
                 }),
-                Command::effect(WorkflowEffect::FetchAddressData { 
+                Command::effect(WorkflowEffect::FetchAddressData { user_id: 42 }),
+                Command::effect(WorkflowEffect::MakeASandwichForUser {
                     user_id: 42,
-                }),
-                Command::effect(WorkflowEffect::MakeASandwichForUser { 
-                    user_id: 42, 
                     preferences: "Turkey and swiss".to_string(),
                 }),
             ])
         }
-        
+
         WorkflowEvent::ErrorOccurred { message } => {
-            println!("❌ Error: {}", message);
+            println!("❌ Error: {message}");
             model.errors.push(message);
             Command::none()
         }
-        
+
         WorkflowEvent::OnboardingComplete { user_id } => {
-            println!("✅ Onboarding complete for user {}", user_id);
+            println!("✅ Onboarding complete for user {user_id}");
             model.user_id = Some(user_id);
-            
-            // After successful onboarding, fetch additional data 
+
+            // After successful onboarding, fetch additional data
             // Since we removed parallel coordination, we'll use individual effects
             // (In a real app, you might batch these or use a different pattern)
             println!("📊 Fetching additional user data...");
@@ -121,47 +109,53 @@ async fn create_effect_handler(
     effect: WorkflowEffect,
     ctx: EffectContext<WorkflowEvent, EmptyStorage>,
 ) {
-            match effect {
-                WorkflowEffect::LoginUser { username, password: _ } => {
-                    println!("🔐 Logging in user: {}", username);
-                    sleep(Duration::from_millis(100)).await;
-                    
-                    // Simulate successful login
-                    let _ = ctx.send_event(WorkflowEvent::OnboardingComplete { user_id: 42 });
-                }
-                
-                WorkflowEffect::FetchUserData { user_id } => {
-                    println!("👤 Fetching user data for user {}", user_id);
-                    sleep(Duration::from_millis(150)).await;
-                    // In a real app, this might fail and send ErrorOccurred event
-                }
-                
-                WorkflowEffect::FetchAddressData { user_id } => {
-                    println!("🏠 Fetching address data for user {}", user_id);
-                    sleep(Duration::from_millis(120)).await;
-                }
-                
-                WorkflowEffect::MakeASandwichForUser { user_id, preferences } => {
-                    println!("🥪 Making sandwich for user {}: {}", user_id, preferences);
-                    sleep(Duration::from_millis(200)).await;
-                }
-                
-                // Parallel effects
-                WorkflowEffect::FetchUserProfile { user_id } => {
-                    println!("📋 Fetching profile for user {}", user_id);
-                    sleep(Duration::from_millis(80)).await;
-                }
-                
-                WorkflowEffect::FetchUserNotifications { user_id } => {
-                    println!("🔔 Fetching notifications for user {}", user_id);
-                    sleep(Duration::from_millis(60)).await;
-                }
-                
-                WorkflowEffect::FetchUserPreferences { user_id } => {
-                    println!("⚙️ Fetching preferences for user {}", user_id);
-                    sleep(Duration::from_millis(90)).await;
-                }
-            }
+    match effect {
+        WorkflowEffect::LoginUser {
+            username,
+            password: _,
+        } => {
+            println!("🔐 Logging in user: {username}");
+            sleep(Duration::from_millis(100)).await;
+
+            // Simulate successful login
+            let _ = ctx.send_event(WorkflowEvent::OnboardingComplete { user_id: 42 });
+        }
+
+        WorkflowEffect::FetchUserData { user_id } => {
+            println!("👤 Fetching user data for user {user_id}");
+            sleep(Duration::from_millis(150)).await;
+            // In a real app, this might fail and send ErrorOccurred event
+        }
+
+        WorkflowEffect::FetchAddressData { user_id } => {
+            println!("🏠 Fetching address data for user {user_id}");
+            sleep(Duration::from_millis(120)).await;
+        }
+
+        WorkflowEffect::MakeASandwichForUser {
+            user_id,
+            preferences,
+        } => {
+            println!("🥪 Making sandwich for user {user_id}: {preferences}");
+            sleep(Duration::from_millis(200)).await;
+        }
+
+        // Parallel effects
+        WorkflowEffect::FetchUserProfile { user_id } => {
+            println!("📋 Fetching profile for user {user_id}");
+            sleep(Duration::from_millis(80)).await;
+        }
+
+        WorkflowEffect::FetchUserNotifications { user_id } => {
+            println!("🔔 Fetching notifications for user {user_id}");
+            sleep(Duration::from_millis(60)).await;
+        }
+
+        WorkflowEffect::FetchUserPreferences { user_id } => {
+            println!("⚙️ Fetching preferences for user {user_id}");
+            sleep(Duration::from_millis(90)).await;
+        }
+    }
 }
 
 #[tokio::main]
@@ -172,7 +166,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("This example demonstrates how Syzygy's sequential effects");
     println!("solve the '200+ lines of event spaghetti' problem.");
     println!();
-    
+
     // Build the application
     let (core, shell) = Syzygy::builder::<WorkflowEvent, WorkflowEffect>()
         .model(WorkflowModel::default())
@@ -183,15 +177,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut runner = Runner::new(core, shell);
 
     // Start the workflow
-    runner.core().send_event(WorkflowEvent::StartUserOnboarding {
-        username: "alice".to_string(),
-        password: "secure123".to_string(),
-    })?;
+    runner
+        .core()
+        .send_event(WorkflowEvent::StartUserOnboarding {
+            username: "alice".to_string(),
+            password: "secure123".to_string(),
+        })?;
 
     // Run the application for a few seconds
     let start = std::time::Instant::now();
     while start.elapsed() < Duration::from_secs(3) {
-    runner.tick(syzygy::spawn::spawner()).await?;
+        runner.tick(syzygy::spawn::spawner()).await?;
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
 
@@ -199,7 +195,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("🎉 Workflow demonstration complete!");
     println!();
     println!("Key benefits demonstrated:");
-    println!("• Sequential execution: LoginUser → FetchUserData → FetchAddressData → MakeASandwichForUser");
+    println!(
+        "• Sequential execution: LoginUser → FetchUserData → FetchAddressData → MakeASandwichForUser"
+    );
     println!("• Automatic error handling: Any step failure stops the pipeline");
     println!("• Zero boilerplate: No manual state tracking or event orchestration");
     println!("• Simplified approach: Focus on sequential patterns that solve the core problem");
