@@ -85,34 +85,6 @@ impl<Head: 'static, Tail: RuntimeContains> RuntimeContains for Storage<Head, Tai
 }
 
 // ============================================================================
-// Error Types
-// ============================================================================
-
-/// Error returned when trying to add a duplicate type to a chain
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DuplicateTypeError {
-    /// Name of the type that was duplicated
-    pub type_name: &'static str,
-}
-
-impl DuplicateTypeError {
-    /// Create a new error for type T
-    #[must_use] pub fn new<T: 'static>() -> Self {
-        Self {
-            type_name: std::any::type_name::<T>(),
-        }
-    }
-}
-
-impl std::fmt::Display for DuplicateTypeError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Duplicate type in chain: {}", self.type_name)
-    }
-}
-
-impl std::error::Error for DuplicateTypeError {}
-
-// ============================================================================
 // Selector Trait for UnsafeCell Chain
 // ============================================================================
 
@@ -152,8 +124,7 @@ impl<T, Tail> Selector<T, Here> for Storage<T, Tail> {
 }
 
 // Implementation when T is in the tail (There index)
-impl<Head, Tail, FromTail, TailIndex> Selector<FromTail, There<TailIndex>>
-    for Storage<Head, Tail>
+impl<Head, Tail, FromTail, TailIndex> Selector<FromTail, There<TailIndex>> for Storage<Head, Tail>
 where
     Tail: Selector<FromTail, TailIndex>,
 {
@@ -174,7 +145,7 @@ where
 pub trait StorageBuilder<T> {
     /// The type after adding a model
     type Output;
-    
+
     /// Add a model with runtime duplicate checking
     fn with_model(self, model: T) -> Self::Output;
 }
@@ -186,7 +157,7 @@ pub trait StorageBuilder<T> {
 // Implement StorageBuilder for EmptyStorage
 impl<T> StorageBuilder<T> for EmptyStorage {
     type Output = Storage<T, EmptyStorage>;
-    
+
     fn with_model(self, model: T) -> Self::Output {
         Storage {
             head: UnsafeCell::new(model),
@@ -196,14 +167,18 @@ impl<T> StorageBuilder<T> for EmptyStorage {
 }
 
 // Implement StorageBuilder for Storage
-impl<T: 'static, Head, Tail> StorageBuilder<T> for Storage<Head, Tail> 
+impl<T: 'static, Head, Tail> StorageBuilder<T> for Storage<Head, Tail>
 where
     Self: RuntimeContains,
 {
     type Output = Storage<T, Self>;
-    
+
     fn with_model(self, model: T) -> Self::Output {
-        assert!(!self.contains::<T>(), "{}", DuplicateTypeError::new::<T>());
+        assert!(
+            !self.contains::<T>(),
+            "Duplicate type in chain: {}",
+            std::any::type_name::<T>()
+        );
         Storage {
             head: UnsafeCell::new(model),
             tail: self,
@@ -217,25 +192,6 @@ impl EmptyStorage {
     /// Since EmptyStorage is empty, this never has duplicates so no runtime check needed.
     pub fn with_model<T>(self, head: T) -> Storage<T, EmptyStorage> {
         StorageBuilder::with_model(self, head)
-    }
-
-    /// Start a new chain with a single value (alias for with_model)
-    pub fn push_model<T>(self, head: T) -> Storage<T, EmptyStorage> {
-        self.with_model(head)
-    }
-
-    /// Start a new chain with a single value (unchecked version)
-    ///
-    /// Same as with_model since EmptyStorage is empty and cannot have duplicates.
-    pub fn with_model_unchecked<T>(self, head: T) -> Storage<T, EmptyStorage> {
-        self.with_model(head)
-    }
-
-    /// Try to start a new chain with a single value
-    ///
-    /// Always succeeds since EmptyStorage is empty and cannot have duplicates.
-    pub fn try_with_model<T: 'static>(self, head: T) -> Result<Storage<T, EmptyStorage>, DuplicateTypeError> {
-        Ok(self.with_model(head))
     }
 }
 
@@ -284,8 +240,8 @@ impl<Head, Tail> Storage<Head, Tail> {
     /// Add a value to the front of the chain with runtime duplicate checking
     ///
     /// This method checks at runtime if the type already exists in the chain
-    /// and panics if it does. For recoverable error handling, use `try_with_model`.
-    /// For maximum performance without checks, use `with_model_unchecked`.
+    /// and panics if it does. This is the only supported method for adding
+    /// models to storage chains.
     ///
     /// # Panics
     /// Panics if the type `V` already exists in the chain.
@@ -304,87 +260,6 @@ impl<Head, Tail> Storage<Head, Tail> {
         Self: RuntimeContains,
     {
         StorageBuilder::with_model(self, value)
-    }
-
-    /// Try to add a value to the front of the chain with runtime duplicate checking
-    ///
-    /// Returns `Err(DuplicateTypeError)` if the type already exists in the chain.
-    /// This is the safe version for recoverable error handling.
-    ///
-    /// # Examples
-    /// ```rust,ignore
-    /// let chain = EmptyStorage::default()
-    ///     .with_model(Model1 { value: 1 });
-    ///
-    /// match chain.try_with_model(Model1 { value: 2 }) {
-    ///     Ok(new_chain) => {
-    ///         // This won't happen - duplicate type
-    ///     }
-    ///     Err(err) => {
-    ///         println!("Cannot add duplicate: {}", err);
-    ///     }
-    /// }
-    /// ```
-    pub fn try_with_model<V: 'static>(self, value: V) -> Result<Storage<V, Self>, DuplicateTypeError>
-    where
-        Self: RuntimeContains,
-    {
-        if self.contains::<V>() {
-            return Err(DuplicateTypeError::new::<V>());
-        }
-        Ok(self.with_model_unchecked(value))
-    }
-
-    /// Add a value to the front of the chain without any duplicate checking
-    ///
-    /// This method performs no runtime checks and allows duplicate types.
-    /// Use this for maximum performance when you're certain no duplicates exist,
-    /// or when you intentionally want to allow duplicates.
-    ///
-    /// # Safety
-    /// This method is safe to call but may create chains with duplicate types.
-    /// Accessing duplicated types will result in compiler ambiguity errors.
-    ///
-    /// # Examples
-    /// ```rust,ignore
-    /// // Fast path - no checks
-    /// let chain = EmptyStorage::default()
-    ///     .with_model_unchecked(Model1 { value: 1 })
-    ///     .with_model_unchecked(Model2 { value: 2 });
-    ///
-    /// // This compiles but creates unusable chain:
-    /// let bad_chain = chain.with_model_unchecked(Model1 { value: 999 });
-    /// // let model: &Model1 = bad_chain.get(); // Compile error: ambiguous!
-    /// ```
-    pub fn with_model_unchecked<V>(self, value: V) -> Storage<V, Self> {
-        Storage {
-            head: UnsafeCell::new(value),
-            tail: self,
-        }
-    }
-
-    /// Alias for `with_model` - adds a value with runtime duplicate checking
-    ///
-    /// # Panics
-    /// Panics if the type `V` already exists in the chain.
-    pub fn push_model<V: 'static>(self, value: V) -> Storage<V, Self>
-    where
-        Self: RuntimeContains,
-    {
-        self.with_model(value)
-    }
-
-    /// Alias for `try_with_model` - tries to add a value with runtime checking
-    pub fn try_push_model<V: 'static>(self, value: V) -> Result<Storage<V, Self>, DuplicateTypeError>
-    where
-        Self: RuntimeContains,
-    {
-        self.try_with_model(value)
-    }
-
-    /// Alias for `with_model_unchecked` - adds a value without checking
-    pub fn push_model_unchecked<V>(self, value: V) -> Storage<V, Self> {
-        self.with_model_unchecked(value)
     }
 
     /// Get an immutable reference to the head value
@@ -432,3 +307,148 @@ unsafe impl<Head: Send, Tail: Send> Send for Storage<Head, Tail> {}
 // This is safe because we only allow access to different types simultaneously,
 // preventing aliasing of the same type across threads.
 unsafe impl<Head: Sync, Tail: Sync> Sync for Storage<Head, Tail> {}
+
+// ============================================================================
+// Bulk Extraction Trait for Type-Inferred Multi-Model Access
+// ============================================================================
+
+/// Trait for extracting multiple models in a single operation with type inference
+pub trait BulkExtract<'a, T, I> {
+    /// Extract multiple models at once, with tuple size inferred from return type
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// let storage = EmptyStorage
+    ///     .with_model(Model1 { value: 1 })
+    ///     .with_model(Model2 { value: 2 });
+    ///
+    /// // Type inference determines tuple size
+    /// let (m1, m2): (&Model1, &Model2) = storage.extract_bulk();
+    /// ```
+    fn extract_bulk(&'a self) -> T;
+}
+
+/// Trait for extracting multiple models mutably with type inference
+pub trait BulkExtractMut<'a, T, I> {
+    /// Extract multiple models mutably at once, with tuple size inferred from return type
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// let mut storage = EmptyStorage
+    ///     .with_model(Model1 { value: 1 })
+    ///     .with_model(Model2 { value: 2 });
+    ///
+    /// let (m1, m2): (&mut Model1, &mut Model2) = storage.extract_bulk_mut();
+    /// m1.value = 10;
+    /// ```
+    fn extract_bulk_mut(&'a self) -> T;
+}
+
+macro_rules! impl_bulk_extract {
+    ($($T:ident, $I:ident),*) => {
+        impl<'a, Head, Tail, $($T, $I),*>
+            BulkExtract<'a, ($(&'a $T,)*), ($($I,)*)> for Storage<Head, Tail>
+        where
+            Self: $(Selector<$T, $I> +)* Send + Sync + 'a,
+        {
+            fn extract_bulk(&'a self) -> ($(&'a $T,)*) {
+                ($(self.get::<$T, $I>(),)*)
+            }
+        }
+
+        impl<'a, Head, Tail, $($T, $I),*>
+            BulkExtractMut<'a, ($(&'a mut $T,)*), ($($I,)*)> for Storage<Head, Tail>
+        where
+            Self: $(Selector<$T, $I> +)* Send + Sync + 'a,
+        {
+            fn extract_bulk_mut(&'a self) -> ($(&'a mut $T,)*) {
+                ($(self.get_mut::<$T, $I>(),)*)
+            }
+        }
+    };
+}
+
+// Generate implementations for tuples 1-16 using a cleaner approach
+impl_bulk_extract!(T1, I1);
+impl_bulk_extract!(T1, I1, T2, I2);
+impl_bulk_extract!(T1, I1, T2, I2, T3, I3);
+impl_bulk_extract!(T1, I1, T2, I2, T3, I3, T4, I4);
+impl_bulk_extract!(T1, I1, T2, I2, T3, I3, T4, I4, T5, I5);
+impl_bulk_extract!(T1, I1, T2, I2, T3, I3, T4, I4, T5, I5, T6, I6);
+impl_bulk_extract!(T1, I1, T2, I2, T3, I3, T4, I4, T5, I5, T6, I6, T7, I7);
+impl_bulk_extract!(T1, I1, T2, I2, T3, I3, T4, I4, T5, I5, T6, I6, T7, I7, T8, I8);
+impl_bulk_extract!(T1, I1, T2, I2, T3, I3, T4, I4, T5, I5, T6, I6, T7, I7, T8, I8, T9, I9);
+impl_bulk_extract!(T1, I1, T2, I2, T3, I3, T4, I4, T5, I5, T6, I6, T7, I7, T8, I8, T9, I9, T10, I10);
+impl_bulk_extract!(T1, I1, T2, I2, T3, I3, T4, I4, T5, I5, T6, I6, T7, I7, T8, I8, T9, I9, T10, I10, T11, I11);
+impl_bulk_extract!(T1, I1, T2, I2, T3, I3, T4, I4, T5, I5, T6, I6, T7, I7, T8, I8, T9, I9, T10, I10, T11, I11, T12, I12);
+impl_bulk_extract!(T1, I1, T2, I2, T3, I3, T4, I4, T5, I5, T6, I6, T7, I7, T8, I8, T9, I9, T10, I10, T11, I11, T12, I12, T13, I13);
+impl_bulk_extract!(T1, I1, T2, I2, T3, I3, T4, I4, T5, I5, T6, I6, T7, I7, T8, I8, T9, I9, T10, I10, T11, I11, T12, I12, T13, I13, T14, I14);
+impl_bulk_extract!(T1, I1, T2, I2, T3, I3, T4, I4, T5, I5, T6, I6, T7, I7, T8, I8, T9, I9, T10, I10, T11, I11, T12, I12, T13, I13, T14, I14, T15, I15);
+impl_bulk_extract!(T1, I1, T2, I2, T3, I3, T4, I4, T5, I5, T6, I6, T7, I7, T8, I8, T9, I9, T10, I10, T11, I11, T12, I12, T13, I13, T14, I14, T15, I15, T16, I16);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[derive(Debug, Clone, PartialEq)]
+    struct Model1 {
+        value: i32,
+    }
+
+    #[derive(Debug, Clone, PartialEq)]
+    struct Model2 {
+        value: String,
+    }
+
+    #[derive(Debug, Clone, PartialEq)]
+    struct Model3 {
+        value: f64,
+    }
+
+    #[test]
+    fn test_bulk_extract_single() {
+        let storage = EmptyStorage::default().with_model(Model1 { value: 42 });
+
+        let (m1,): (&Model1,) = storage.extract_bulk();
+        assert_eq!(m1.value, 42);
+    }
+
+    #[test]
+    fn test_bulk_extract_two() {
+        let storage = EmptyStorage::default()
+            .with_model(Model1 { value: 42 })
+            .with_model(Model2 {
+                value: "hello".to_string(),
+            });
+
+        let (m1, m2): (&Model1, &Model2) = storage.extract_bulk();
+        assert_eq!(m1.value, 42);
+        assert_eq!(m2.value, "hello");
+
+        // Test with different order
+        let (m2, m1): (&Model2, &Model1) = storage.extract_bulk();
+        assert_eq!(m1.value, 42);
+        assert_eq!(m2.value, "hello");
+    }
+
+    #[test]
+    fn test_bulk_extract_mut_two() {
+        let storage = EmptyStorage::default()
+            .with_model(Model1 { value: 42 })
+            .with_model(Model2 {
+                value: "hello".to_string(),
+            });
+
+        let (m1, m2): (&mut Model1, &mut Model2) = storage.extract_bulk_mut();
+        m1.value = 100;
+        m2.value = "world".to_string();
+
+        assert_eq!(m1.value, 100);
+        assert_eq!(m2.value, "world");
+
+        // Verify that the original storage was modified
+        let (m1_immut, m2_immut): (&Model1, &Model2) = storage.extract_bulk();
+        assert_eq!(m1_immut.value, 100);
+        assert_eq!(m2_immut.value, "world");
+    }
+}

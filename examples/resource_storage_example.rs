@@ -28,12 +28,12 @@ struct AppModel {
 }
 
 // Resource types
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct HttpClient {
     base_url: String,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct FileSystem {
     base_path: String,
 }

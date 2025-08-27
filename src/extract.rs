@@ -296,4 +296,3 @@ where
         ctx.resource::<T, I>()
     }
 }
-

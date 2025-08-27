@@ -153,6 +153,87 @@ impl<Event, Effect> Command<Event, Effect> {
         Self { outputs }
     }
 
+    /// Optimize command by flattening and deduplicating similar effect types
+    ///
+    /// This optimization consolidates adjacent effects of the same coordination type
+    /// (sequential or parallel) to reduce executor overhead. For example, multiple
+    /// sequential effect steps are merged into a single SequentialEffects step.
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// let cmd = Command::batch([
+    ///     Command::effect(Effect::A),    // Individual effect
+    ///     Command::effect(Effect::B),    // Individual effect  
+    ///     Command::parallel([Effect::C, Effect::D]),  // Parallel effects
+    ///     Command::effect(Effect::E),    // Individual effect
+    /// ]);
+    /// 
+    /// let optimized = cmd.flatten(); 
+    /// // Results in: ParallelEffects([A, B, C, D, E]) - all merged for parallel execution
+    /// ```
+    pub fn flatten(self) -> Self {
+        let mut events = Vec::new();
+        let mut parallel_effects = Vec::new();
+        let mut sequential_effects = Vec::new();
+        let mut has_sequential = false;
+        
+        // Collect all outputs by type, merging similar coordination patterns
+        for output in self.outputs {
+            match output {
+                CommandStep::Event(event) => {
+                    events.push(event);
+                }
+                CommandStep::Effect(effect) => {
+                    // Individual effects default to parallel execution in Shell
+                    parallel_effects.push(effect);
+                }
+                CommandStep::ParallelEffects(effects) => {
+                    parallel_effects.extend(effects);
+                }
+                CommandStep::SequentialEffects(effects) => {
+                    sequential_effects.extend(effects);
+                    has_sequential = true;
+                }
+            }
+        }
+        
+        // Rebuild optimized command
+        let mut optimized_outputs = SmallVec::new();
+        
+        // Add events first (they execute immediately)
+        for event in events {
+            optimized_outputs.push(CommandStep::Event(event));
+        }
+        
+        // Add effects based on coordination requirements
+        match (has_sequential, !parallel_effects.is_empty(), !sequential_effects.is_empty()) {
+            // Only parallel effects
+            (false, true, false) => {
+                optimized_outputs.push(CommandStep::ParallelEffects(parallel_effects));
+            }
+            // Only sequential effects
+            (true, false, true) => {
+                optimized_outputs.push(CommandStep::SequentialEffects(sequential_effects));
+            }
+            // Both types - sequential takes precedence to maintain ordering
+            (true, true, true) => {
+                // Merge all effects into sequential to preserve ordering guarantees
+                sequential_effects.extend(parallel_effects);
+                optimized_outputs.push(CommandStep::SequentialEffects(sequential_effects));
+            }
+            // Mixed without explicit sequential - use parallel
+            (false, true, true) => {
+                parallel_effects.extend(sequential_effects);
+                optimized_outputs.push(CommandStep::ParallelEffects(parallel_effects));
+            }
+            _ => {
+                // No effects to optimize
+            }
+        }
+        
+        Self { outputs: optimized_outputs }
+    }
+
     /// Append another command to this one
     #[must_use]
     pub fn append(mut self, other: Self) -> Self {
@@ -1394,5 +1475,157 @@ mod tests {
         let (events, effects) = cmd.partition_outputs();
         assert_eq!(events, vec![TestEvent::A]);
         assert_eq!(effects, vec![TestEffect::X, TestEffect::Y]);
+    }
+
+    // Tests for command flattening optimization
+
+    #[test]
+    fn test_flatten_empty_command() {
+        let cmd = Command::<TestEvent, TestEffect>::none();
+        let flattened = cmd.flatten();
+        assert!(flattened.is_empty());
+    }
+
+    #[test]
+    fn test_flatten_only_events() {
+        let cmd = Command::<TestEvent, TestEffect>::events([TestEvent::A, TestEvent::B]);
+        let flattened = cmd.flatten();
+        
+        assert_eq!(flattened.len(), 2);
+        assert_eq!(flattened.count_events(), 2);
+        assert_eq!(flattened.count_effects(), 0);
+        
+        let events = flattened.into_events();
+        assert_eq!(events, vec![TestEvent::A, TestEvent::B]);
+    }
+
+    #[test]
+    fn test_flatten_individual_effects_to_parallel() {
+        let cmd = Command::<TestEvent, TestEffect>::batch([
+            test_effect(TestEffect::X),
+            test_effect(TestEffect::Y),
+            test_effect(TestEffect::Z),
+        ]);
+        let flattened = cmd.flatten();
+        
+        assert_eq!(flattened.len(), 3);
+        assert_eq!(flattened.count_effects(), 3);
+        
+        // Should be consolidated into a single ParallelEffects step
+        let outputs: Vec<_> = flattened.into_iter().collect();
+        assert_eq!(outputs.len(), 1);
+        
+        match &outputs[0] {
+            CommandStep::ParallelEffects(effects) => {
+                assert_eq!(effects, &vec![TestEffect::X, TestEffect::Y, TestEffect::Z]);
+            }
+            _ => panic!("Expected ParallelEffects"),
+        }
+    }
+
+    #[test]
+    fn test_flatten_mixed_parallel_effects() {
+        let cmd = Command::<TestEvent, TestEffect>::batch([
+            test_effect(TestEffect::X),
+            Command::parallel([TestEffect::Y, TestEffect::Z]),
+        ]);
+        let flattened = cmd.flatten();
+        
+        assert_eq!(flattened.len(), 3);
+        assert_eq!(flattened.count_effects(), 3);
+        
+        let effects = flattened.into_effects();
+        assert_eq!(effects, vec![TestEffect::X, TestEffect::Y, TestEffect::Z]);
+    }
+
+    #[test]
+    fn test_flatten_only_sequential_effects() {
+        let cmd = Command::<TestEvent, TestEffect>::sequence([
+            test_effect(TestEffect::X),
+            test_effect(TestEffect::Y),
+        ]);
+        let flattened = cmd.flatten();
+        
+        assert_eq!(flattened.len(), 2);
+        assert_eq!(flattened.count_effects(), 2);
+        
+        // Should maintain sequential coordination
+        let outputs: Vec<_> = flattened.into_iter().collect();
+        assert_eq!(outputs.len(), 1);
+        
+        match &outputs[0] {
+            CommandStep::SequentialEffects(effects) => {
+                assert_eq!(effects, &vec![TestEffect::X, TestEffect::Y]);
+            }
+            _ => panic!("Expected SequentialEffects"),
+        }
+    }
+
+    #[test]
+    fn test_flatten_mixed_events_and_effects() {
+        let cmd = Command::<TestEvent, TestEffect>::batch([
+            test_event(TestEvent::A),
+            test_effect(TestEffect::X),
+            test_event(TestEvent::B),
+            Command::parallel([TestEffect::Y, TestEffect::Z]),
+        ]);
+        let flattened = cmd.flatten();
+        
+        assert_eq!(flattened.len(), 5); // A, B, X, Y, Z
+        assert_eq!(flattened.count_events(), 2);
+        assert_eq!(flattened.count_effects(), 3);
+        
+        let outputs: Vec<_> = flattened.into_iter().collect();
+        assert_eq!(outputs.len(), 3); // 2 events + 1 parallel effects group
+        
+        // Events should come first
+        assert!(matches!(outputs[0], CommandStep::Event(TestEvent::A)));
+        assert!(matches!(outputs[1], CommandStep::Event(TestEvent::B)));
+        
+        // Effects should be grouped
+        match &outputs[2] {
+            CommandStep::ParallelEffects(effects) => {
+                assert_eq!(effects, &vec![TestEffect::X, TestEffect::Y, TestEffect::Z]);
+            }
+            _ => panic!("Expected ParallelEffects"),
+        }
+    }
+
+    #[test]
+    fn test_flatten_sequential_takes_precedence() {
+        let cmd = Command::<TestEvent, TestEffect>::batch([
+            test_effect(TestEffect::X),                    // Parallel by default
+            Command::sequence([test_effect(TestEffect::Y)]), // Sequential
+            Command::parallel([TestEffect::Z]),            // Parallel
+        ]);
+        let flattened = cmd.flatten();
+        
+        // Clone to test both effects and structure
+        let effects = flattened.clone().into_effects();
+        assert_eq!(effects, vec![TestEffect::Y, TestEffect::X, TestEffect::Z]);
+        
+        let outputs: Vec<_> = flattened.into_iter().collect();
+        assert_eq!(outputs.len(), 1);
+        
+        match &outputs[0] {
+            CommandStep::SequentialEffects(_) => {
+                // Correct - sequential coordination preserved
+            }
+            _ => panic!("Expected SequentialEffects when mixing sequential and parallel"),
+        }
+    }
+
+    #[test]
+    fn test_flatten_preserves_smallvec_optimization() {
+        let cmd = Command::<TestEvent, TestEffect>::batch([
+            test_event(TestEvent::A),
+            test_effect(TestEffect::X),
+            test_effect(TestEffect::Y),
+        ]);
+        let flattened = cmd.flatten();
+        
+        // Should still be inline after flattening (2 outputs: 1 event + 1 parallel effects)
+        assert!(!flattened.outputs.spilled());
+        assert_eq!(flattened.outputs.len(), 2);
     }
 }

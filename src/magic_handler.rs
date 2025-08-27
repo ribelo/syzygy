@@ -13,7 +13,7 @@ use std::future::Future;
 /// Marker type for unit variant handlers
 pub struct UnitHandler;
 
-/// Magic handler trait for update functions with automatic parameter extraction
+/// Handler trait for update functions with automatic parameter extraction
 pub trait EventMagicHandler<'a, Variant, Event, Effect, Storage, Args> {
     /// Call the handler with automatic parameter extraction from EventContext
     fn call(
@@ -23,7 +23,7 @@ pub trait EventMagicHandler<'a, Variant, Event, Effect, Storage, Args> {
     ) -> Command<Event, Effect>;
 }
 
-/// Magic handler trait for effect handlers with automatic parameter extraction
+/// Handler trait for effect handlers with automatic parameter extraction  
 pub trait EffectMagicHandler<Variant, Effect, Event, Resources, Args> {
     /// Call the handler with automatic parameter extraction from EffectContext
     fn call(

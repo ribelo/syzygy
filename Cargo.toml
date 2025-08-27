@@ -136,4 +136,12 @@ harness = false
 name = "real_magic_dispatch_benchmark"
 harness = false
 
+[[bench]]
+name = "storage_benchmark"
+harness = false
+
+[[bench]]
+name = "realistic_app_benchmark"
+harness = false
+
 
