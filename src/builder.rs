@@ -143,7 +143,7 @@ impl Syzygy {
 mod tests {
     use super::*;
     use crate::command::Command;
-    use crate::storage::EmptyStorage;
+    use crate::storage::{EmptyStorage, Storage};
 
     #[derive(Debug, Clone)]
     enum TestEvent {

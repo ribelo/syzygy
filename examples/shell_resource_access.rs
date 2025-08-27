@@ -30,14 +30,14 @@ struct AppModel {
 }
 
 // Read-only resource - no synchronization overhead
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct HttpClient {
     base_url: String,
     timeout_seconds: u32,
 }
 
 // Resource with interior mutability
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct Cache {
     data: Arc<Mutex<HashMap<String, String>>>,
 }
