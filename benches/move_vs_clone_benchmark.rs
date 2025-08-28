@@ -46,6 +46,7 @@ fn _use_effects(effect: &TestEffect) {
         }
         TestEffect::ProcessRecords { records } => {
             for record in records {
+                #[allow(clippy::cast_possible_truncation)] // Benchmark code - u64 to usize is intentional
                 let _total = record.id as usize + record.name.len() + record.data.len();
             }
         }
@@ -116,8 +117,8 @@ fn create_large_event() -> TestEvent {
     TestEvent::DataImport {
         records: (0..1000).map(|i| UserRecord {
             id: i,
-            name: format!("User {}", i),
-            data: format!("Large data string for user {} with more content to make cloning expensive", i),
+            name: format!("User {i}"),
+            data: format!("Large data string for user {i} with more content to make cloning expensive"),
         }).collect(),
     }
 }

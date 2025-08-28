@@ -15,6 +15,7 @@ use criterion::{Criterion, criterion_group, criterion_main};
 // ============================================================================
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)] // Benchmark code - used for performance testing
 enum PerfEvent {
     ProcessBatch { count: u32 },
     BatchProcessed { processed: u32 },
@@ -25,12 +26,14 @@ enum PerfEvent {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)] // Benchmark code - used for performance testing
 enum PerfEffect {
     ExecuteTask { id: u32 },
     LogMetrics { active_count: u32 },
 }
 
 #[derive(Debug, Default)]
+#[allow(dead_code)] // Benchmark code - used for performance testing
 struct PerfModel {
     processed_events: u32,
     batch_count: u32,

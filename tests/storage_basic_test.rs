@@ -13,12 +13,14 @@ mod tests {
     }
 
     #[derive(Debug, Clone)]
+    #[allow(dead_code)] // Test model - fields used for storage verification
     struct Model2 {
         pub value: u64,
         pub name: String,
     }
 
     #[derive(Debug, Clone)]
+    #[allow(dead_code)] // Test model - fields used for storage verification
     struct Model3 {
         pub value: u64,
         pub count: i32,

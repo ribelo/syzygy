@@ -193,6 +193,7 @@ mod tests {
     fn test_function_pointer_compiles() {
         use crate::storage::{EmptyStorage, Storage};
         // This test verifies that function pointers can be used as effect handlers
+        #[allow(clippy::no_effect_underscore_binding)] // Test variable - assignment validates compilation
         let _handler: fn(
             TestEffect,
             EffectContext<TestEvent, Storage<TestResources, EmptyStorage>>,

@@ -143,7 +143,7 @@ fn handle_config_update(
 // ============================================================================
 
 /// Effect handler with EventSender extraction
-async fn handle_with_event_sender(
+fn handle_with_event_sender(
     effect: AppEffect,
     sender: EventSender<AppEvent>,
 ) {
@@ -176,7 +176,7 @@ async fn handle_with_database(
 }
 
 /// Effect handler with full context access
-async fn handle_with_full_context(
+fn handle_with_full_context(
     effect: AppEffect,
     ctx: EffectContext<AppEvent, Storage<DatabaseConfig, EmptyStorage>>,
 ) {

@@ -785,7 +785,7 @@ async fn handle_background_operation(
     }
 }
 
-async fn handle_logging_effect(effect: AppEffect) {
+fn handle_logging_effect(effect: AppEffect) {
     match effect {
         AppEffect::LogEvent { level, message, context } => {
             let timestamp = std::time::SystemTime::now()

@@ -11,6 +11,7 @@ enum DemoEvent {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)] // Example code - fields used for demonstration
 enum DemoEffect {
     LoadUser { id: u32 },
     LoadUserPosts { id: u32 },
@@ -19,6 +20,7 @@ enum DemoEffect {
 }
 
 #[derive(Debug, Default)]
+#[allow(dead_code)] // Example code - fields used for demonstration
 struct DemoModel {
     user_authenticated: bool,
     user_id: Option<u32>,

@@ -452,9 +452,9 @@ fn bench_resource_lookup_overhead(c: &mut Criterion) {
 
                     // Create trait objects (magic system overhead)
                     let http_handler = HttpMagicHandler { http: Arc::clone(http) };
-                    let db_handler = DatabaseMagicHandler { db: Arc::clone(&db) };
+                    let db_handler = DatabaseMagicHandler { db: Arc::clone(db) };
                     let log_handler = LoggingMagicHandler {
-                        logger: Arc::clone(&logger),
+                        logger: Arc::clone(logger),
                     };
 
                     black_box((http_handler, db_handler, log_handler));

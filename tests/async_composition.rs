@@ -9,6 +9,7 @@ use syzygy::prelude::*;
 use tokio::time::sleep;
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)] // Test code - variants used in async workflow testing
 enum CompositionEvent {
     StartWorkflow,
     StepCompleted(String),
@@ -16,6 +17,8 @@ enum CompositionEvent {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)] // Test code - variants used for logging effect testing
+#[allow(clippy::enum_variant_names)] // Test code - "Log" suffix is intentional for testing
 enum CompositionEffect {
     DelayedLog { message: String, delay_ms: u64 },
     FastLog { message: String },
@@ -125,10 +128,10 @@ async fn test_sequential_effects_execution_order() {
         }
 
         assert!(
-            !(start_time.elapsed() > timeout),
+            start_time.elapsed() <= timeout,
             "Test timeout - only {} steps completed",
             runner.core().model().completed_steps.len()
-        )
+        );
     }
 
     let total_time = start_time.elapsed();
@@ -199,10 +202,10 @@ async fn test_mixed_coordination_patterns() {
         }
 
         assert!(
-            !(start_time.elapsed() > timeout),
+            start_time.elapsed() <= timeout,
             "Test timeout - only {} steps completed",
             runner.core().model().completed_steps.len()
-        )
+        );
     }
 
     // Verify all effects executed using model data (no state capture!)

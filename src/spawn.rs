@@ -380,7 +380,7 @@ mod tests {
 
         // This test actually spawns an async block and verifies it executes
         let executed = Arc::new(Mutex::new(false));
-        let executed_clone = executed.clone();
+        let executed_clone = Arc::clone(&executed);
 
         // Zero-cost async block spawning
         auto_spawn(async move {
@@ -408,6 +408,7 @@ mod tests {
 
         // Test async function call
         #[allow(clippy::unused_async)]
+        #[allow(clippy::items_after_statements)] // Test function - local scope is fine
         async fn test_async_fn() {
             println!("Test async function");
         }
@@ -424,6 +425,7 @@ mod tests {
         });
 
         #[allow(clippy::unused_async)]
+        #[allow(clippy::items_after_statements)] // Test function - local scope is fine
         async fn test_fn() {}
         spawn_tokio(test_fn());
     }
@@ -449,7 +451,7 @@ mod tests {
         use std::sync::{Arc, Mutex};
 
         let executed = Arc::new(Mutex::new(false));
-        let executed_clone = executed.clone();
+        let executed_clone = Arc::clone(&executed);
 
         // Test TokioSpawn
         let tokio_spawner = TokioSpawn;
@@ -487,7 +489,7 @@ mod tests {
 
         // Test direct spawn_tokio with async block
         let executed = Arc::new(Mutex::new(false));
-        let executed_clone = executed.clone();
+        let executed_clone = Arc::clone(&executed);
 
         spawn_tokio(async move {
             *executed_clone.lock().unwrap() = true;
@@ -544,7 +546,7 @@ mod tests {
         use std::sync::{Arc, Mutex};
 
         let executed = Arc::new(Mutex::new(false));
-        let executed_clone = executed.clone();
+        let executed_clone = Arc::clone(&executed);
 
         // Test legacy boxed API
         let spawn_fn = auto_spawn_fn();

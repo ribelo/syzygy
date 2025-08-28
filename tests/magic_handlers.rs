@@ -150,7 +150,7 @@ fn test_event_handler_with_multiple_model_extraction() {
     ) -> Command<AppEvent, AppEffect> {
         match event {
             AppEvent::UserCreated { name } => {
-                let message = format!(
+                let _message = format!(
                     "Processing user creation: {} (current: {} count: {}, theme: {})",
                     name, user.name, user.count, config.theme
                 );

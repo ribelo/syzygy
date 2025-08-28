@@ -293,7 +293,7 @@ async fn handle_database_query(
     }
 }
 
-async fn handle_cache_operation(
+fn handle_cache_operation(
     effect: AppEffect,
     cache: &CacheManager,
     sender: EventSender<AppEvent>,
@@ -319,7 +319,7 @@ async fn handle_cache_operation(
     }
 }
 
-async fn handle_parallel_tasks(
+fn handle_parallel_tasks(
     effect: AppEffect,
     ctx: EffectContext<AppEvent, ResourceStorage>,
 ) {
