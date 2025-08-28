@@ -1,3 +1,5 @@
+#![allow(clippy::uninlined_format_args)] // Educational examples use explicit format for clarity
+
 //! Example 04: Async Effects and Resources
 //!
 //! This example demonstrates advanced async effect handling with resources.
@@ -31,14 +33,12 @@ struct AppModel {
 #[derive(Debug, Clone)]
 struct HttpClient {
     base_url: String,
-    timeout_ms: u64,
 }
 
 impl HttpClient {
     fn new(base_url: String) -> Self {
         Self {
             base_url,
-            timeout_ms: 5000,
         }
     }
     
@@ -122,7 +122,6 @@ enum AppEvent {
     StartTask { task_id: String },
     TaskCompleted { task_id: String, result: String },
     TaskFailed { task_id: String, error: String },
-    FetchData { url_path: String },
     SaveData { key: String, value: String },
     LoadCachedData { key: String },
     BatchProcess { items: Vec<String> },
@@ -210,15 +209,6 @@ fn update_app(
             Command::none()
         }
         
-        AppEvent::FetchData { url_path } => {
-            let task_id = format!("http_fetch_{}", model.completed_tasks);
-            model.active_tasks += 1;
-            
-            Command::effect(AppEffect::HttpRequest {
-                task_id,
-                path: url_path,
-            })
-        }
         
         AppEvent::SaveData { key, value } => {
             Command::batch([
@@ -245,7 +235,7 @@ fn update_app(
                 .map(|(i, item)| format!("batch_{}_{}", i, item))
                 .collect();
             
-            model.active_tasks += task_ids.len() as u32;
+            model.active_tasks += u32::try_from(task_ids.len()).unwrap_or(0);
             
             Command::effect(AppEffect::ParallelTasks { task_ids })
         }
@@ -380,10 +370,10 @@ async fn handle_effects(effect: AppEffect, ctx: EffectContext<AppEvent, Resource
         }
         AppEffect::CacheOperation { .. } => {
             let cache: &CacheManager = ctx.resource();
-            handle_cache_operation(effect, cache, sender).await;
+            handle_cache_operation(effect, cache, sender);
         }
         AppEffect::ParallelTasks { .. } => {
-            handle_parallel_tasks(effect, ctx).await;
+            handle_parallel_tasks(effect, ctx);
         }
         AppEffect::DelayedTask { .. } => {
             handle_delayed_task(effect, sender).await;

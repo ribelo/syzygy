@@ -104,9 +104,15 @@ fn handle_with_multiple_models(
             );
             
             Command::batch([
-                Command::effect(AppEffect::SaveUser { email }),
+                Command::effect(AppEffect::SaveUser { email: email.clone() }),
                 Command::effect(AppEffect::LogActivity {
                     message: format!("Login successful for {}", user.name),
+                }),
+                Command::effect(AppEffect::SendNotification {
+                    message: format!("Welcome back, {}!", user.name),
+                }),
+                Command::effect(AppEffect::DatabaseQuery {
+                    query: format!("UPDATE users SET last_login = NOW() WHERE email = '{}'", email),
                 }),
             ])
         }
@@ -243,7 +249,7 @@ async fn handle_effects(
         }
         AppEffect::SendNotification { .. } => {
             let sender = EventSender(ctx.event_sender().unwrap());
-            handle_with_event_sender(effect, sender).await;
+            handle_with_event_sender(effect, sender);
         }
         AppEffect::DatabaseQuery { .. } => {
             let db_config: &DatabaseConfig = ctx.resource();
@@ -251,7 +257,7 @@ async fn handle_effects(
             handle_with_database(effect, db_config, sender).await;
         }
         AppEffect::SaveUser { .. } => {
-            handle_with_full_context(effect, ctx).await;
+            handle_with_full_context(effect, ctx);
         }
     }
 }
@@ -314,6 +320,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     runner.core().send_event(AppEvent::UserLogin {
         email: "bob@example.com".to_string(),
     })?;
+    runner.tick(syzygy::spawn::spawner()).await?;
+    println!();
+    
+    // Test 5: Logout demonstration
+    println!("5. Testing logout handler");
+    runner.core().send_event(AppEvent::UserLogout)?;
     runner.tick(syzygy::spawn::spawner()).await?;
     println!();
     

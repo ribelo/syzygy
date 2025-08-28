@@ -1,3 +1,4 @@
+#![allow(clippy::clone_on_ref_ptr, unused_variables, unused_imports, clippy::let_and_return, clippy::format_in_format_args)]
 //! Comprehensive tests for the magic handler system
 //!
 //! This test file verifies that the magic handler system works correctly
@@ -19,12 +20,14 @@ struct UserModel {
 }
 
 #[derive(Debug, Clone, Default)]
+#[allow(dead_code)]
 struct ConfigModel {
     theme: String,
     enabled: bool,
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 enum AppEvent {
     UserCreated { name: String },
     ConfigUpdated { theme: String },
@@ -32,6 +35,7 @@ enum AppEvent {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 enum AppEffect {
     SaveUser { name: String },
     LogMessage { message: String },

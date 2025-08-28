@@ -125,10 +125,15 @@ fn todo_update(
             ])
         }
 
-        TodoEvent::TodoAdded { id, text } => Command::effect(TodoEffect::Log {
-            level: LogLevel::Info,
-            message: format!("Todo added: {id} - {text}"),
-        }),
+        TodoEvent::TodoAdded { id, text } => Command::batch([
+            Command::effect(TodoEffect::Log {
+                level: LogLevel::Info,
+                message: format!("Todo added: {id} - {text}"),
+            }),
+            Command::effect(TodoEffect::Timer {
+                duration: Duration::from_millis(500),
+            }),
+        ]),
 
         TodoEvent::LoadTodos => {
             model.is_loading = true;

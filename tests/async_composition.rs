@@ -1,3 +1,4 @@
+#![allow(dead_code, clippy::clone_on_ref_ptr, unused_variables, unused_imports, clippy::let_and_return, clippy::format_in_format_args)]
 //! Comprehensive tests for async composition patterns
 //!
 //! This test suite verifies that the sequential, parallel, and race patterns

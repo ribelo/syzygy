@@ -11,7 +11,6 @@ use syzygy::prelude::*;
 #[derive(Debug, Clone, PartialEq)]
 enum UserEvent {
     Login { username: String },
-    Logout,
     ViewProfile { user_id: u32 },
     UpdateProfile { user_id: u32, data: String },
     Error { message: String },
@@ -28,7 +27,6 @@ enum UserEffect {
 
 #[derive(Debug, Default)]
 struct UserModel {
-    current_user: Option<u32>,
     authenticated: bool,
 }
 
@@ -73,13 +71,6 @@ fn user_update(
         UserEvent::Error { message } => Command::effect(UserEffect::LogActivity {
             activity: format!("Error: {message}"),
         }),
-        UserEvent::Logout => {
-            model.authenticated = false;
-            model.current_user = None;
-            Command::effect(UserEffect::LogActivity {
-                activity: "User logged out".to_string(),
-            })
-        }
     }
 }
 
@@ -89,7 +80,6 @@ fn main() {
 
     let mut storage = syzygy::storage::EmptyStorage.with_model(UserModel {
         authenticated: true,
-        current_user: Some(123),
     });
 
     // Create a complex command

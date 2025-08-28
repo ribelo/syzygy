@@ -90,7 +90,7 @@ fn update_counter(
 async fn handle_effects(effect: CounterEffect, _ctx: EffectContext<CounterEvent, EmptyStorage>) {
     match effect {
         CounterEffect::LogMessage(message) => {
-            println!("LOG: {}", message);
+            println!("LOG: {message}");
         }
         CounterEffect::PlaySound => {
             println!("BEEP! (sound effect)");
@@ -121,7 +121,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     
     // Increment a few times
     for i in 1..=3 {
-        println!("Step {}: Incrementing counter", i);
+        println!("Step {i}: Incrementing counter");
         runner.core().send_event(CounterEvent::Increment)?;
         runner.tick(syzygy::spawn::spawner()).await?;
         println!("State: {:?}\n", runner.core().model());

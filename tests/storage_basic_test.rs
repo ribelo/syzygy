@@ -1,3 +1,4 @@
+#![allow(dead_code, clippy::clone_on_ref_ptr, unused_variables, unused_imports, clippy::let_and_return, clippy::format_in_format_args)]
 //! Basic tests for simplified Storage functionality
 
 use syzygy::storage::*;

@@ -24,7 +24,6 @@ struct UserModel {
 struct AppConfigModel {
     theme: String,
     language: String,
-    debug_mode: bool,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -205,7 +204,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .model(AppConfigModel {
             theme: "light".to_string(),
             language: "en".to_string(),
-            debug_mode: false,
         })
         .model(SessionModel::default())
         .update(update_app)
@@ -254,8 +252,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let session: &SessionModel = runner.core().model();
     println!("  Updated Session: {:?}\n", session);
     
+    // Test 4: Language update
+    println!("4. Testing language update...");
+    runner.core().send_event(AppEvent::UpdateLanguage {
+        language: "fr".to_string(),
+    })?;
+    runner.tick(syzygy::spawn::spawner()).await?;
+    
     // Test session expiry (triggers logout)
-    println!("4. Session expiry (chains to logout)");
+    println!("5. Session expiry (chains to logout)");
     runner.core().send_event(AppEvent::SessionExpired)?;
     runner.tick(syzygy::spawn::spawner()).await?;
     

@@ -7,6 +7,12 @@
 //! - State management across multiple domains
 //! - Production-ready effect handling
 //! - Testing and debugging strategies
+//!
+//! Note: This is an architectural demonstration. Many types and fields are included
+//! to show complete application structure but not all are used in the demo.
+
+// Suppress warnings for architectural demo elements that aren't fully implemented
+#![allow(dead_code)]
 
 use std::collections::HashMap;
 use syzygy::prelude::*;
@@ -831,7 +837,7 @@ async fn handle_effects(effect: AppEffect, ctx: EffectContext<AppEvent, Resource
         
         AppEffect::LogEvent { .. }
         | AppEffect::RecordMetric { .. } => {
-            handle_logging_effect(effect).await;
+            handle_logging_effect(effect);
         }
     }
 }

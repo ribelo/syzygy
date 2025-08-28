@@ -1,3 +1,4 @@
+#![allow(dead_code, clippy::clone_on_ref_ptr, unused_variables, unused_imports, clippy::let_and_return, clippy::format_in_format_args, clippy::unnecessary_wraps, clippy::unused_self, clippy::derivable_impls, clippy::match_same_arms, clippy::cast_possible_truncation, clippy::items_after_statements, clippy::type_complexity, clippy::duplicated_attributes)]
 //! Arc vs Function Pointer Benchmark for Effect Handler Performance
 //!
 //! This benchmark measures the specific performance impact of using Arc<dyn Fn>
@@ -15,6 +16,7 @@ struct BenchEffect {
 }
 
 #[derive(Clone)]
+#[allow(dead_code)]
 struct BenchEvent {
     result: String,
 }
@@ -24,7 +26,7 @@ struct BenchEvent {
 struct MockAsyncContext;
 
 impl MockAsyncContext {
-    fn send_event(&self, _event: BenchEvent) -> Result<(), ()> {
+    fn send_event(self, _event: BenchEvent) -> Result<(), ()> {
         Ok(())
     }
 }

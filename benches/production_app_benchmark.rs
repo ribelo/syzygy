@@ -35,18 +35,13 @@ enum SyncStatus {
     Error,
 }
 
-#[derive(Debug, Clone, PartialEq)]
-#[allow(dead_code)]
+#[derive(Debug, Clone, PartialEq, Default)]
+#[allow(dead_code)] // Benchmark may test different priorities in future
 enum Priority {
     Low,
+    #[default]
     Medium,
     High,
-}
-
-impl Default for Priority {
-    fn default() -> Self {
-        Priority::Medium
-    }
 }
 
 // --- Model Definitions ---
@@ -77,26 +72,14 @@ struct AppStateModel {
     sync_status: SyncStatus,
 }
 
-#[derive(Debug, Clone)]
-#[allow(dead_code)]
+#[derive(Debug, Clone, Default)]
+#[allow(dead_code)] // Benchmark struct - fields used for realistic data simulation
 struct Task {
     id: u32,
     title: String,
     completed: bool,
     created_at: u64,
     priority: Priority,
-}
-
-impl Default for Task {
-    fn default() -> Self {
-        Self {
-            id: 0,
-            title: String::new(),
-            completed: false,
-            created_at: 0,
-            priority: Priority::default(),
-        }
-    }
 }
 
 

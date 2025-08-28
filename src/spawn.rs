@@ -466,7 +466,7 @@ mod tests {
 
         // Test auto_spawner
         let executed2 = Arc::new(Mutex::new(false));
-        let executed2_clone = executed2.clone();
+        let executed2_clone = Arc::clone(&executed2);
 
         let spawnr = spawner();
         spawnr.spawn(async move {
@@ -487,6 +487,11 @@ mod tests {
     async fn test_zero_cost_async_spawn() {
         use std::sync::{Arc, Mutex};
 
+        #[allow(clippy::unused_async, dead_code)]
+        async fn test_async_function(flag: Arc<Mutex<bool>>) {
+            *flag.lock().unwrap() = true;
+        }
+
         // Test direct spawn_tokio with async block
         let executed = Arc::new(Mutex::new(false));
         let executed_clone = Arc::clone(&executed);
@@ -505,7 +510,7 @@ mod tests {
 
         // Test auto_spawn with async block
         let executed2 = Arc::new(Mutex::new(false));
-        let executed2_clone = executed2.clone();
+        let executed2_clone = Arc::clone(&executed2);
 
         auto_spawn(async move {
             *executed2_clone.lock().unwrap() = true;
@@ -521,12 +526,7 @@ mod tests {
 
         // Test with async function call
         let executed3 = Arc::new(Mutex::new(false));
-        let executed3_clone = executed3.clone();
-
-        #[allow(clippy::unused_async)]
-        async fn test_async_function(flag: Arc<Mutex<bool>>) {
-            *flag.lock().unwrap() = true;
-        }
+        let executed3_clone = Arc::clone(&executed3);
 
         spawn_tokio(test_async_function(executed3_clone));
 

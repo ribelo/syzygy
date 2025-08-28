@@ -11,19 +11,16 @@ enum DemoEvent {
 }
 
 #[derive(Debug, Clone)]
-#[allow(dead_code)] // Example code - fields used for demonstration
 enum DemoEffect {
-    LoadUser { id: u32 },
-    LoadUserPosts { id: u32 },
-    ShowMessage { text: String },
-    ProcessData { data: String },
+    LoadUser,
+    LoadUserPosts,
+    ShowMessage,
+    ProcessData,
 }
 
 #[derive(Debug, Default)]
-#[allow(dead_code)] // Example code - fields used for demonstration
 struct DemoModel {
     user_authenticated: bool,
-    user_id: Option<u32>,
     data: Option<String>,
 }
 
@@ -37,20 +34,18 @@ fn demo_update(
     match event {
         DemoEvent::UserClicked => {
             // Demonstrate monadic composition with conditional logic
-            Command::effect(DemoEffect::LoadUser { id: 123 })
+            Command::effect(DemoEffect::LoadUser)
                 .and_then(|outputs| {
                     // If load user command was issued, also load posts
                     if outputs.is_empty() {
                         Command::event(DemoEvent::UserNotFound)
                     } else {
-                        Command::effect(DemoEffect::LoadUserPosts { id: 123 })
+                        Command::effect(DemoEffect::LoadUserPosts)
                     }
                 })
                 .when(model.user_authenticated) // Only if authenticated
                 .or_else(Command::event(DemoEvent::AuthRequired)) // Fallback
-                .then(Command::effect(DemoEffect::ShowMessage {
-                    text: "Loading user data...".to_string(),
-                }))
+                .then(Command::effect(DemoEffect::ShowMessage))
         }
 
         DemoEvent::DataLoaded { data } => {
@@ -58,10 +53,8 @@ fn demo_update(
 
             // Chain processing with filtering
             Command::batch([
-                Command::effect(DemoEffect::ProcessData { data: data.clone() }),
-                Command::effect(DemoEffect::ShowMessage {
-                    text: "Processing...".to_string(),
-                }),
+                Command::effect(DemoEffect::ProcessData),
+                Command::effect(DemoEffect::ShowMessage),
                 Command::event(DemoEvent::UserNotFound), // This will be filtered out
             ])
             .filter(|output| {
@@ -73,18 +66,12 @@ fn demo_update(
 
         DemoEvent::AuthRequired => {
             model.user_authenticated = false;
-            Command::effect(DemoEffect::ShowMessage {
-                text: "Authentication required".to_string(),
-            })
+            Command::effect(DemoEffect::ShowMessage)
         }
 
-        DemoEvent::UserNotFound => Command::effect(DemoEffect::ShowMessage {
-            text: "User not found".to_string(),
-        }),
+        DemoEvent::UserNotFound => Command::effect(DemoEffect::ShowMessage),
 
-        DemoEvent::ProcessComplete => Command::effect(DemoEffect::ShowMessage {
-            text: "Processing complete!".to_string(),
-        }),
+        DemoEvent::ProcessComplete => Command::effect(DemoEffect::ShowMessage),
     }
 }
 

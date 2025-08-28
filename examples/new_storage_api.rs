@@ -199,7 +199,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .core_mut()
         .send_event(AppEvent::ToggleNotifications)?;
 
-    for i in 1..=3 {
+    for _i in 1..=3 {
         runner.core_mut().send_event(AppEvent::IncrementCounter)?;
     }
 

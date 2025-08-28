@@ -333,13 +333,13 @@ mod tests {
 
     #[test]
     fn test_event_only_handler() {
-        let mut storage = EmptyStorage.with_model(TestModel::default());
-        let ctx = EventContext::<TestEvent, TestEffect, _>::new(&mut storage);
-
         fn simple_handler(event: Increment) -> Command<TestEvent, TestEffect> {
             println!("Incrementing by {}", event.by);
             Command::none()
         }
+
+        let mut storage = EmptyStorage.with_model(TestModel::default());
+        let ctx = EventContext::<TestEvent, TestEffect, _>::new(&mut storage);
 
         let event = Increment { by: 5 };
         let _result = event_trigger(event, &ctx, simple_handler);
@@ -348,12 +348,6 @@ mod tests {
 
     #[test]
     fn test_event_with_extraction() {
-        let mut storage = EmptyStorage.with_model(TestModel {
-            counter: 42,
-            name: "test".to_string(),
-        });
-        let ctx = EventContext::<TestEvent, TestEffect, _>::new(&mut storage);
-
         fn handler_with_extraction(
             event: Increment,
             current: &TestModel,
@@ -361,6 +355,12 @@ mod tests {
             println!("Current: {}, incrementing by {}", current.counter, event.by);
             Command::none()
         }
+
+        let mut storage = EmptyStorage.with_model(TestModel {
+            counter: 42,
+            name: "test".to_string(),
+        });
+        let ctx = EventContext::<TestEvent, TestEffect, _>::new(&mut storage);
         let event = Increment { by: 3 };
         let _result = event_trigger(event, &ctx, handler_with_extraction);
         // Test passes if it compiles and runs
@@ -372,14 +372,6 @@ mod tests {
         struct SecondModel {
             value: i32,
         }
-
-        let mut storage = EmptyStorage
-            .with_model(TestModel {
-                counter: 99,
-                name: "multi".to_string(),
-            })
-            .with_model(SecondModel { value: 42 });
-        let ctx = EventContext::<TestEvent, TestEffect, _>::new(&mut storage);
 
         fn handler_multi_extraction(
             event: Increment,
@@ -394,6 +386,14 @@ mod tests {
             );
             Command::none()
         }
+
+        let mut storage = EmptyStorage
+            .with_model(TestModel {
+                counter: 99,
+                name: "multi".to_string(),
+            })
+            .with_model(SecondModel { value: 42 });
+        let ctx = EventContext::<TestEvent, TestEffect, _>::new(&mut storage);
 
         let event = Increment { by: 1 };
         let _result = event_trigger(event, &ctx, handler_multi_extraction);

@@ -91,14 +91,15 @@ fn app_update(
         AppEvent::UserDataFetched { user_id, name } => {
             model.user_name = name.clone();
 
-            // Cache the result and log
+            // Cache the result and send cache event
             Command::batch(vec![
                 Command::effect(AppEffect::CacheWrite {
                     key: format!("user_{user_id}"),
-                    value: name,
+                    value: name.clone(),
                 }),
-                Command::effect(AppEffect::LogMessage {
-                    message: format!("User {user_id} data fetched"),
+                Command::event(AppEvent::CacheResult {
+                    key: format!("user_{user_id}"),
+                    value: name,
                 }),
             ])
         }
@@ -117,11 +118,11 @@ async fn handle_effects(
         AppEffect::HttpGet { url } => {
             // Access read-only HTTP client - no mutex overhead!
             let client: &HttpClient = ctx.resource();
-            let full_url = client.get_user_url(1); // Simulate fetching user 1
+            let _full_url = client.get_user_url(1); // Simulate fetching user 1
 
             println!(
                 "Making HTTP request to: {} (timeout: {}s)",
-                full_url, client.timeout_seconds
+                url, client.timeout_seconds
             );
 
             // Simulate API response

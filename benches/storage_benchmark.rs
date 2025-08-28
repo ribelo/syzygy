@@ -1,3 +1,4 @@
+#![allow(dead_code, clippy::clone_on_ref_ptr, unused_variables, unused_imports, clippy::let_and_return, clippy::format_in_format_args, clippy::type_complexity, clippy::duplicated_attributes, clippy::unnecessary_wraps, clippy::unused_self, clippy::derivable_impls, clippy::match_same_arms, clippy::cast_possible_truncation, clippy::items_after_statements)]
 //! Storage Performance Benchmarks
 //!
 //! Measures critical storage performance paths:
@@ -9,13 +10,14 @@
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
 use std::any::{Any, TypeId};
 use std::collections::HashMap;
-use syzygy::storage::{BulkExtract, EmptyStorage, Selector, Storage, StorageBuilder};
+use syzygy::storage::{BulkExtract, EmptyStorage, Storage};
 
 // ============================================================================
 // Test Models for Benchmarking
 // ============================================================================
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 struct Model1 {
     value: u64,
     data: [u8; 64],

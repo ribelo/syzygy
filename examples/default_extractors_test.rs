@@ -34,7 +34,9 @@ enum AppEvent {
 
 #[derive(Debug, Clone)]
 enum AppEffect {
+    #[allow(dead_code)] // Fields used in command creation but not execution (unit test)
     SaveToDb { name: String },
+    #[allow(dead_code)] // Fields used in command creation but not execution (unit test)
     LogMessage { msg: String },
 }
 
@@ -127,6 +129,7 @@ fn handle_with_multiple_models(
 // ============================================================================
 // Test Runner
 // ============================================================================
+
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {

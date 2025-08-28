@@ -10,6 +10,8 @@ use syzygy::prelude::*;
 /// Events - including database results
 #[derive(Debug, Clone)]
 enum AppEvent {
+    ConnectDatabase { connection_string: String },
+    DatabaseConnected,
     LoadUser { user_id: u32 },
     UserLoaded { user_id: u32, user: User },
     UserNotFound { user_id: u32 },
@@ -47,16 +49,12 @@ struct User {
 #[derive(Debug, Clone)]
 struct AppResources {
     pub database_url: String,
-    pub max_connections: u32,
-    pub timeout_ms: u64,
 }
 
 impl AppResources {
     pub fn new() -> Self {
         Self {
             database_url: "sqlite://database.db".to_string(),
-            max_connections: 10,
-            timeout_ms: 5000,
         }
     }
 }
@@ -77,6 +75,18 @@ fn database_update(
 ) -> Command<AppEvent, AppEffect> {
     let model: &mut AppModel = ctx.model_mut();
     match event {
+        AppEvent::ConnectDatabase { connection_string } => {
+            // Set connecting state and trigger connection effect
+            model.is_connected = false; // Will be set to true when connection succeeds
+            Command::effect(AppEffect::ConnectDatabase { connection_string })
+        }
+        
+        AppEvent::DatabaseConnected => {
+            model.is_connected = true;
+            model.last_error = None;
+            Command::none()
+        }
+        
         AppEvent::LoadUser { user_id } => {
             // Check if we already have the user in local state
             if let Some(user) = model.users.get(&user_id) {
@@ -133,20 +143,6 @@ fn database_update(
     }
 }
 
-/// Effect handler - receives all data through parameters
-/// NO STATE CAPTURE - this is the key lesson from Crux!
-// Example magic effect handler demonstrating pure resource extraction
-fn handle_log_with_config(
-    log_effect: AppEffect,   // In practice, you'd extract the variant struct
-    resources: AppResources, // Pure T extraction - no wrapper needed!
-) {
-    if let AppEffect::Log { message } = log_effect {
-        println!(
-            "[{}] {} (timeout: {}ms)",
-            resources.database_url, message, resources.timeout_ms
-        );
-    }
-}
 
 async fn handle_effects(
     effect: AppEffect,
@@ -154,7 +150,8 @@ async fn handle_effects(
 ) {
     match effect {
         AppEffect::GetUser { user_id, table } => {
-            println!("🔍 Getting user {user_id} from table {table}");
+            let resources: &AppResources = ctx.resource();
+            println!("🔍 Getting user {user_id} from table {table} (db: {})", resources.database_url);
 
             // Simulate database query
             #[cfg(feature = "tokio")]
@@ -219,6 +216,7 @@ async fn handle_effects(
 
             // In real app, you'd establish connection here
             println!("✅ Database connected");
+            let _ = ctx.send_event(AppEvent::DatabaseConnected);
         }
 
         AppEffect::Log { message } => {
@@ -301,6 +299,14 @@ async fn run_demo() -> Result<(), Box<dyn std::error::Error>> {
     let mut runner = Runner::new(core, shell);
 
     // Connect to database first
+    println!("🚀 Step 1: Connecting to database...");
+    runner.core().send_event(AppEvent::ConnectDatabase { 
+        connection_string: "postgresql://localhost/demo".to_string() 
+    })?;
+    runner.tick(syzygy::spawn::spawner()).await?;
+    
+    // Load a user
+    println!("🚀 Step 2: Loading user data...");
     runner
         .core()
         .send_event(AppEvent::LoadUser { user_id: 1 })?; // Will find Alice
