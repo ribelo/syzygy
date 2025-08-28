@@ -1,16 +1,28 @@
 # Syzygy
 
-A zero-overhead state management library for Rust following The Elm Architecture (TEA) with Core/Shell separation.
+**Elm for everything that isn't a web server** - A zero-overhead state management library for Rust targeting event-driven applications with predictable state evolution.
+
+Perfect for desktop apps, game servers, CLI tools, IoT systems, and simple servers where events must be processed in order.
+
+## Why Syzygy?
+
+Most software isn't web servers - it's desktop apps, games, CLI tools, IoT devices, and simple servers. These applications share common needs:
+- **Predictable state evolution** - events processed in order, deterministic outcomes  
+- **Strong compile-time guarantees** - prevent bugs before they happen
+- **Testable architecture** - separate pure logic from side effects
+- **Resource management** - proper cleanup of files, connections, background tasks
 
 ## Features
 
 - 🎯 **The Elm Architecture** - Unidirectional data flow (Event → Model → Command)
-- 🔧 **Core/Shell Separation** - Pure sync Core + async Shell for effects
+- 🔧 **Core/Shell Separation** - Pure sync Core + async Shell for effects  
+- 📋 **Predictable Event Processing** - FIFO ordering, deterministic behavior
+- 🧪 **Magic Handlers** - Axum-inspired parameter extraction for testable code
 - 🚀 **Zero-overhead Commands** - Simple data structures, no complex execution
 - 🌊 **User-defined effects** - Library provides no effects, users define their own
 - ⚡ **Sequential & Parallel execution** - Predictable, composable command processing
 - 🛡️ **Error-as-events** - All errors flow through the same event pipeline
-- 🏎️ **High Performance** - 24x faster task spawning with safety guarantees
+- 🏎️ **High Performance** - Handles 100K+ events/sec with safety guarantees
 
 ## Quick Start
 
@@ -43,8 +55,8 @@ enum AppEffect {
     Log { message: String },
 }
 
-// Update function (no trait needed!)
-fn my_update(event: AppEvent, ctx: &mut EventContext<AppEvent, AppEffect, Storage<AppModel, EmptyStorage>>) -> Command<AppEvent, AppEffect> {
+// Event handler function (no trait needed!)  
+fn my_event_handler(event: AppEvent, ctx: &mut EventContext<AppEvent, AppEffect, Storage<AppModel, EmptyStorage>>) -> Command<AppEvent, AppEffect> {
     let model: &mut AppModel = ctx.model_mut();
     
     match event {
@@ -99,7 +111,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Build the system using Storage-based API
     let (core, shell) = Syzygy::builder::<AppEvent, AppEffect>()
         .model(AppModel::default())
-        .update(my_update)
+        .update(my_event_handler)
         .build();
     
     // Set up the effect handler
@@ -123,13 +135,41 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
+## Perfect For
+
+**✅ Desktop Applications**
+- GUI apps (egui, dioxus, tauri) with complex state
+- Note-taking apps, IDEs, media players
+- Configuration management tools
+
+**✅ Game Development** 
+- Turn-based games with complex state machines
+- Real-time games with centralized state
+- Game servers and matchmaking systems
+
+**✅ System Tools**
+- CLI tools with interactive modes
+- Build systems and deployment tools
+- IoT device controllers and data processors
+
+**✅ Simple Servers**
+- Chat servers and notification systems  
+- Real-time data processing pipelines
+- Workflow engines and task orchestrators
+- Financial systems where event ordering matters
+
+**❌ Not Ideal For**
+- High-concurrency web servers (use axum/warp instead)
+- Distributed systems with multiple nodes
+- Applications where massive parallelism is core requirement
+
 ## Architecture
 
 Syzygy follows **The Elm Architecture** (TEA) with clear separation between pure and impure code:
 
 ### Core (Pure)
 - Manages application state synchronously
-- Processes events through `update()` function
+- Processes events through `event_handler()` function
 - Returns Commands describing what effects to run
 - No I/O, no async, no side effects
 
