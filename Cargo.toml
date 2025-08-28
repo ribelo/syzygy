@@ -111,6 +111,10 @@ struct_excessive_bools = "allow"
 too_many_lines = "allow"
 doc_markdown = "allow"
 
+# Domain-specific: Events are consumed by exactly one handler and often need their data moved
+# to Commands, making pass-by-value more efficient than borrow+clone patterns.
+needless_pass_by_value = "allow"
+
 # nursery
 # `const` functions do not make sense for our project because this is not a `const` library.
 # This rule also confuses new comers and forces them to add `const` blindlessly without any reason.

@@ -31,7 +31,7 @@ struct SequentialResources {
 use syzygy::storage::{EmptyStorage, Storage};
 
 fn sequential_update(
-    event: &SequentialEvent,
+    event: SequentialEvent,
     _ctx: &mut EventContext<
         SequentialEvent,
         SequentialEffect,

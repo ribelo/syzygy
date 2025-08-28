@@ -55,7 +55,7 @@ impl FileSystem {
 
 // Update function using the model storage
 fn app_update(
-    event: &AppEvent,
+    event: AppEvent,
     ctx: &mut EventContext<AppEvent, AppEffect, Storage<AppModel, EmptyStorage>>,
 ) -> Command<AppEvent, AppEffect> {
     let model: &mut AppModel = ctx.model_mut();
@@ -72,7 +72,7 @@ fn app_update(
             })
         }
         AppEvent::DataFetched { data } => {
-            model.data = data;
+            model.data = data.to_string();
             Command::none()
         }
         AppEvent::ConfigSaved => {

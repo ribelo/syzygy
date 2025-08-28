@@ -17,7 +17,7 @@
 //! # #[derive(Debug, Clone)] enum TestEvent { Ping }
 //! # #[derive(Debug, Clone)] enum TestEffect { DoPing }
 //! # #[derive(Debug, Default)] struct Model;
-//! # fn update(event: &TestEvent, ctx: &mut EventContext<TestEvent, TestEffect, Storage<Model, EmptyStorage>>) -> Command<TestEvent, TestEffect> {
+//! # fn update(event: TestEvent, ctx: &mut EventContext<TestEvent, TestEffect, Storage<Model, EmptyStorage>>) -> Command<TestEvent, TestEffect> {
 //! #     Command::effect(TestEffect::DoPing)
 //! # }
 //! # async fn handle_effects(effect: TestEffect, ctx: EffectContext<TestEvent, EmptyStorage>) {
@@ -582,7 +582,7 @@ mod tests {
             .model(()) // Need at least one model for Core
             .resource(HttpClient::new())
             .update(
-                |_event: &TestEvent,
+                |_event: TestEvent,
                  _ctx: &mut crate::event_context::EventContext<
                     TestEvent,
                     (),
@@ -634,7 +634,7 @@ mod tests {
                 root_path: "/var/data".to_string(),
             })
             .update(
-                |_event: &TestEvent,
+                |_event: TestEvent,
                  _ctx: &mut crate::event_context::EventContext<
                     TestEvent,
                     (),
@@ -688,7 +688,7 @@ mod tests {
             .model(()) // Need at least one model for Core
             .resource(Cache::new())
             .update(
-                |_event: &TestEvent,
+                |_event: TestEvent,
                  _ctx: &mut crate::event_context::EventContext<
                     TestEvent,
                     (),

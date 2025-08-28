@@ -16,7 +16,7 @@
 //! # #[derive(Debug, Clone)] enum TestEvent { Ping }
 //! # #[derive(Debug, Clone)] enum TestEffect { DoPing }
 //! # #[derive(Debug, Default)] struct Model;
-//! # fn update(event: &TestEvent, ctx: &mut EventContext<TestEvent, TestEffect, Storage<Model, EmptyStorage>>) -> Command<TestEvent, TestEffect> { Command::none() }
+//! # fn update(event: TestEvent, ctx: &mut EventContext<TestEvent, TestEffect, Storage<Model, EmptyStorage>>) -> Command<TestEvent, TestEffect> { Command::none() }
 //! # async fn handle_effects(effect: TestEffect, ctx: EffectContext<TestEvent, EmptyStorage>) {}
 //! # #[tokio::main]
 //! # async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -322,7 +322,7 @@ mod tests {
     }
 
     fn test_update(
-        event: &TestEvent,
+        event: TestEvent,
         ctx: &mut crate::event_context::EventContext<
             TestEvent,
             TestEffect,

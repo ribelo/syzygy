@@ -160,7 +160,7 @@ enum AppEffect {
 
 type AppStorage = Storage<AppStateModel, Storage<TaskModel, Storage<UserModel, EmptyStorage>>>;
 
-fn update(event: &AppEvent, ctx: &mut EventContext<AppEvent, AppEffect, AppStorage>) -> Command<AppEvent, AppEffect> {
+fn update(event: AppEvent, ctx: &mut EventContext<AppEvent, AppEffect, AppStorage>) -> Command<AppEvent, AppEffect> {
     let user_model: &mut UserModel = ctx.model_mut();
     let task_model: &mut TaskModel = ctx.model_mut();
     let app_state: &mut AppStateModel = ctx.model_mut();
@@ -169,19 +169,19 @@ fn update(event: &AppEvent, ctx: &mut EventContext<AppEvent, AppEffect, AppStora
         AppEvent::Login { username, password } => {
             app_state.is_loading = true;
             Command::effect(AppEffect::Authenticate { 
-                username: username.clone(), 
-                password: password.clone() 
+                username, 
+                password 
             })
         }
         AppEvent::LoginSuccess { user } => {
-            *user_model = user.clone();
+            *user_model = user;
             app_state.is_loading = false;
             app_state.error_message = None;
             Command::event(AppEvent::LoadTasks)
         }
         AppEvent::LoginFailure { error } => {
             app_state.is_loading = false;
-            app_state.error_message = Some(error.clone());
+            app_state.error_message = Some(error);
             Command::none()
         }
         AppEvent::LoadTasks => {
@@ -189,7 +189,7 @@ fn update(event: &AppEvent, ctx: &mut EventContext<AppEvent, AppEffect, AppStora
             Command::effect(AppEffect::FetchTasks)
         }
         AppEvent::TasksLoaded { tasks } => {
-            task_model.tasks = tasks.clone();
+            task_model.tasks = tasks;
             app_state.is_loading = false;
             Command::event(AppEvent::Sync)
         }
@@ -203,8 +203,9 @@ fn update(event: &AppEvent, ctx: &mut EventContext<AppEvent, AppEffect, AppStora
         }
         AppEvent::SyncFailure { error } => {
             app_state.sync_status = SyncStatus::Error;
-            app_state.error_message = Some(error.clone());
-            if *error == "Conflict" {
+            let is_conflict = error == "Conflict";
+            app_state.error_message = Some(error);
+            if is_conflict {
                 Command::effect(AppEffect::ResolveConflict)
             } else {
                 Command::none()
@@ -221,7 +222,7 @@ fn update(event: &AppEvent, ctx: &mut EventContext<AppEvent, AppEffect, AppStora
         AppEvent::AddTask(title) => {
             let new_task = Task {
                 id: task_model.tasks.len() as u32 + 1,
-                title: title.clone(),
+                title,
                 completed: false,
                 created_at: 0, // Not used in this benchmark
                 priority: Priority::Medium,
@@ -230,7 +231,7 @@ fn update(event: &AppEvent, ctx: &mut EventContext<AppEvent, AppEffect, AppStora
             Command::effect(AppEffect::SaveTask(new_task))
         }
         AppEvent::CompleteTask(id) => {
-            if let Some(task) = task_model.tasks.iter_mut().find(|t| t.id == *id) {
+            if let Some(task) = task_model.tasks.iter_mut().find(|t| t.id == id) {
                 task.completed = true;
                 Command::effect(AppEffect::SaveTask(task.clone()))
             } else {
@@ -238,20 +239,21 @@ fn update(event: &AppEvent, ctx: &mut EventContext<AppEvent, AppEffect, AppStora
             }
         }
         AppEvent::DeleteTask(id) => {
-            task_model.tasks.retain(|t| t.id != *id);
-            Command::effect(AppEffect::DeleteTask(*id))
+            task_model.tasks.retain(|t| t.id != id);
+            Command::effect(AppEffect::DeleteTask(id))
         }
         AppEvent::ImportTasks(tasks) => {
-            task_model.tasks = tasks.clone();
-            Command::effect(AppEffect::BulkSaveTasks(tasks.clone()))
+            let tasks_clone = tasks.clone();
+            task_model.tasks = tasks;
+            Command::effect(AppEffect::BulkSaveTasks(tasks_clone))
         }
         AppEvent::MarkTasksComplete(ids) => {
-            for id in ids {
+            for id in &ids {
                 if let Some(task) = task_model.tasks.iter_mut().find(|t| t.id == *id) {
                     task.completed = true;
                 }
             }
-            Command::effect(AppEffect::BulkUpdateTasks(ids.clone()))
+            Command::effect(AppEffect::BulkUpdateTasks(ids))
         }
     }
 }

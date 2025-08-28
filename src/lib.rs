@@ -363,7 +363,7 @@
 //! # #[derive(Debug, Default, PartialEq)] struct CounterModel { count: i32 }
 //! # #[derive(Debug, Clone)] enum CounterEvent { Increment }
 //! # #[derive(Debug, Clone)] enum CounterEffect { Log }
-//! # fn update(event: &CounterEvent, ctx: &mut EventContext<CounterEvent, CounterEffect, Storage<CounterModel, EmptyStorage>>) -> Command<CounterEvent, CounterEffect> {
+//! # fn update(event: CounterEvent, ctx: &mut EventContext<CounterEvent, CounterEffect, Storage<CounterModel, EmptyStorage>>) -> Command<CounterEvent, CounterEffect> {
 //! #     let model: &mut CounterModel = ctx.model_mut();
 //! #     match event {
 //! #         CounterEvent::Increment => { model.count += 1; Command::effect(CounterEffect::Log) }
