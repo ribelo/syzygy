@@ -8,35 +8,67 @@
 - 30-41% performance improvements achieved
 - Code formatting and major cleanups done
 
+## 📊 **Jules' Recent Work Status** (As of Aug 28, 2025)
+✅ **COMPLETED by Jules**:
+- **Task 4**: API Examples - Added comprehensive examples to key methods ✅
+- **Task 5**: Production Benchmark - Created production_app_benchmark.rs ✅  
+- **Task 2**: Module Documentation - Added module docs to core.rs, shell.rs ✅
+- Additional improvements to multiple files across the codebase
+
+🔄 **PARTIALLY COMPLETED**:
+- **Task 2**: Module docs still needed for runner.rs, async_context.rs, event_context.rs
+- **Task 3**: Test cleanup partially done but more work needed
+
+❌ **REMAINING WORK**:
+- **Task 1**: Clippy warnings - MANY still failing (18+ errors)
+- Clean up dead code in examples 
+- Fix unused async functions
+- Fix format string inlining issues
+
 ## 🚨 **Phase 2: Mechanical Cleanup Tasks**
 *These are well-defined tasks that don't require API design decisions*
 
 ---
 
 ### **Task 1: Fix Clippy Warnings** ⚡
-**Priority**: HIGH (blocks CI)
+**Priority**: CRITICAL (blocks CI - 18+ errors currently)
 **Skills**: Mechanical fixes
 
-**What to do**:
+**Current Issues Found** (Aug 28, 2025):
 ```bash
 # See current issues:
 cargo clippy --all-targets -- -D warnings
-
-# Fix these specific issues:
 ```
 
-1. **Missing semicolons** (5 locations in `src/command.rs`):
-   - Lines 268, 271, 552, 626, 629
-   - Just add `;` at the end of each line
+**URGENT FIXES NEEDED**:
 
-2. **Dead code in tests** (safe to fix):
-   - Add `#[allow(dead_code)]` to test-only structs
-   - Remove unused fields in test structs
-   - Add `#[cfg(test)]` to test-only code
+1. **Dead Code in Examples** (6 locations):
+   - `examples/monadic_composition.rs`: Add `#[allow(dead_code)]` to DemoEffect fields
+   - Multiple example files have unused struct fields
+   - **Fix**: Add `#[allow(dead_code)]` to example-only code
 
-3. **Unused async functions** (3 locations in `src/spawn.rs`):
-   - Remove `async` from functions that don't use `await`
-   - Lines 410, 425, 522
+2. **Unused Async Functions** (6 locations):
+   - `examples/05_real_world_app.rs`: Lines 771, 788
+   - `examples/03_magic_handlers.rs`: Lines 146, 179  
+   - `examples/04_async_effects.rs`: Lines 296, 322
+   - **Fix**: Remove `async` keyword from functions without `.await`
+
+3. **Format String Issues** (2 locations):
+   - `benches/move_vs_clone_benchmark.rs`: Lines 119, 120
+   - **Fix**: Change `format!("User {}", i)` to `format!("User {i}")`
+
+4. **Arc Clone Issues** (2 locations):
+   - `src/spawn.rs`: Line 383
+   - `benches/fair_magic_benchmark.rs`: Lines 455, 457
+   - **Fix**: Use explicit `Arc::clone(&var)` syntax
+
+5. **Casting Issues** (1 location):
+   - `benches/move_vs_clone_benchmark.rs`: Line 49
+   - **Fix**: Add `#[allow(clippy::cast_possible_truncation)]` to benchmark
+
+6. **Effect Handler Issue** (1 location):
+   - `src/effect_handler.rs`: Line 196
+   - **Fix**: Add `#[allow(clippy::no_effect_underscore_binding)]` to test code
 
 **Acceptance Criteria**:
 - `cargo clippy --all-targets -- -D warnings` passes
@@ -342,6 +374,33 @@ Before marking any task complete:
 - [ ] `cargo clippy --all-targets -- -D warnings` passes
 - [ ] `cargo fmt` has been run
 - [ ] Changes follow the provided templates/patterns
+
+---
+
+## 🚨 **IMMEDIATE NEXT PRIORITIES FOR JULES**
+
+### **Priority 1: CRITICAL - Fix Clippy Warnings** 
+- **Status**: 18+ errors blocking CI  
+- **Effort**: 2-3 hours of mechanical fixes
+- **Impact**: Unblocks development pipeline
+- **Next Step**: Start with examples dead code fixes (easiest)
+
+### **Priority 2: MEDIUM - Complete Module Documentation**
+- **Status**: 3 of 5 modules still need docs (runner.rs, async_context.rs, event_context.rs)
+- **Effort**: 1-2 hours following existing templates  
+- **Impact**: Better user onboarding
+- **Next Step**: Copy template from core.rs/shell.rs pattern
+
+### **Priority 3: LOW - Test File Cleanup**
+- **Status**: Partially done, needs completion
+- **Effort**: 1 hour of organization
+- **Impact**: Better maintainability
+- **Next Step**: Focus on `tests/magic_handlers.rs` duplicates
+
+**RECOMMENDED ORDER:**
+1. Fix clippy warnings (blocks everything else)
+2. Complete module documentation  
+3. Test cleanup when time allows
 
 ---
 
