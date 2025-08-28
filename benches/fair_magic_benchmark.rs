@@ -42,6 +42,7 @@ impl HttpService {
 }
 
 #[derive(Debug)]
+#[allow(dead_code)]
 struct DatabaseService {
     connection_string: String,
     query_count: std::sync::atomic::AtomicU64,
@@ -92,6 +93,7 @@ impl LoggingService {
 // ============================================================================
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 enum TestEffect {
     FetchUser { id: u64 },
     SaveData { table: String, data: String },
@@ -100,6 +102,7 @@ enum TestEffect {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 enum TestEvent {
     UserFetched { id: u64, name: String },
     DataSaved { success: bool },
@@ -204,14 +207,11 @@ struct HttpMagicHandler {
 
 impl MagicEffectHandler<TestEffect> for HttpMagicHandler {
     async fn handle(&self, effect: TestEffect) {
-        match effect {
-            TestEffect::FetchUser { id } => {
-                // Simulated automatic resource extraction (what magic system does)
-                let service = self.http.lock().await;
-                let result = service.get(&format!("users/{id}")).await;
-                black_box(result);
-            }
-            _ => {} // Only handle relevant effects
+        if let TestEffect::FetchUser { id } = effect {
+            // Simulated automatic resource extraction (what magic system does)
+            let service = self.http.lock().await;
+            let result = service.get(&format!("users/{id}")).await;
+            black_box(result);
         }
     }
 }
@@ -290,15 +290,15 @@ async fn simulated_magic_handler(effect: TestEffect, ctx: EffectContext<TestEven
     let logger: &Arc<Mutex<LoggingService>> = ctx.resource();
 
     // Create magic handlers (simulating what the magic system generates)
-    let http_handler = HttpMagicHandler { http: http.clone() };
-    let db_handler = DatabaseMagicHandler { db: db.clone() };
+    let http_handler = HttpMagicHandler { http: Arc::clone(&http) };
+    let db_handler = DatabaseMagicHandler { db: Arc::clone(&db) };
     let log_handler = LoggingMagicHandler {
-        logger: logger.clone(),
+        logger: Arc::clone(&logger),
     };
     let complex_handler = ComplexMagicHandler {
-        http: http.clone(),
-        db: db.clone(),
-        logger: logger.clone(),
+        http: Arc::clone(&http),
+        db: Arc::clone(&db),
+        logger: Arc::clone(&logger),
     };
 
     // Simulated dispatch (like what effect_magic_handler! macro does)
@@ -451,7 +451,7 @@ fn bench_resource_lookup_overhead(c: &mut Criterion) {
                     let logger: &Arc<Mutex<LoggingService>> = ctx.resource();
 
                     // Create trait objects (magic system overhead)
-                    let http_handler = HttpMagicHandler { http: http.clone() };
+                    let http_handler = HttpMagicHandler { http: Arc::clone(&http) };
                     let db_handler = DatabaseMagicHandler { db: db.clone() };
                     let log_handler = LoggingMagicHandler {
                         logger: logger.clone(),

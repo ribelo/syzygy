@@ -407,6 +407,7 @@ mod tests {
         });
 
         // Test async function call
+        #[allow(clippy::unused_async)]
         async fn test_async_fn() {
             println!("Test async function");
         }
@@ -422,6 +423,7 @@ mod tests {
             // Async block test
         });
 
+        #[allow(clippy::unused_async)]
         async fn test_fn() {}
         spawn_tokio(test_fn());
     }
@@ -519,6 +521,7 @@ mod tests {
         let executed3 = Arc::new(Mutex::new(false));
         let executed3_clone = executed3.clone();
 
+        #[allow(clippy::unused_async)]
         async fn test_async_function(flag: Arc<Mutex<bool>>) {
             *flag.lock().unwrap() = true;
         }

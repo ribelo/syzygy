@@ -49,6 +49,7 @@ struct CacheModel {
 // ============================================================================
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 enum AppEvent {
     UserLogin { username: String, password: String },
     UserLogout,
@@ -63,6 +64,7 @@ enum AppEvent {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 enum AppEffect {
     AuthenticateUser { username: String, password: String },
     SaveProfile { user_id: u32 },

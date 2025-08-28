@@ -328,17 +328,19 @@ async fn handle_parallel_tasks(
         
         for task_id in task_ids {
             let task_id_clone = task_id.clone();
-            ctx.spawn(async move {
+            let ctx_clone = ctx.clone();
+            let task = async move {
                 // Simulate parallel work
                 #[cfg(feature = "tokio")]
                 tokio::time::sleep(std::time::Duration::from_millis(150)).await;
-                
+
                 let result = format!("Parallel result for {}", task_id_clone);
-                let _ = ctx.send_event(AppEvent::TaskCompleted {
+                let _ = ctx_clone.send_event(AppEvent::TaskCompleted {
                     task_id: task_id_clone,
                     result,
                 });
-            }).unwrap();
+            };
+            ctx.spawn(task).unwrap();
         }
     }
 }

@@ -1,3 +1,40 @@
+//! # Shell - Asynchronous Effect Management
+//!
+//! This module provides the `Shell` component, which is responsible for managing
+//! asynchronous side effects. It works in tandem with the `Core` to separate
+//! synchronous state updates from asynchronous operations.
+//!
+//! ## Key Components
+//! - `Shell` - The main struct that orchestrates effect execution.
+//! - `EffectHandler` - A trait for implementing effect handling logic.
+//! - `EffectContext` - Provides services to effect handlers, like sending events.
+//!
+//! ## Example
+//! ```rust
+//! # use syzygy::prelude::*;
+//! # use syzygy::event_context::EventContext;
+//! # use syzygy::storage::{EmptyStorage, Storage};
+//! # #[derive(Debug, Clone)] enum TestEvent { Ping }
+//! # #[derive(Debug, Clone)] enum TestEffect { DoPing }
+//! # #[derive(Debug, Default)] struct Model;
+//! # fn update(event: TestEvent, ctx: &mut EventContext<TestEvent, TestEffect, Storage<Model, EmptyStorage>>) -> Command<TestEvent, TestEffect> {
+//! #     Command::effect(TestEffect::DoPing)
+//! # }
+//! # async fn handle_effects(effect: TestEffect, ctx: EffectContext<TestEvent, EmptyStorage>) {
+//! #     if let TestEffect::DoPing = effect {
+//! #         println!("Pong!");
+//! #     }
+//! # }
+//! // In a real application, you would build the shell like this:
+//! let (core, shell) = Syzygy::builder()
+//!     .model(Model::default())
+//!     .update(update)
+//!     .build();
+//!
+//! let shell = shell.with_effect_handler(handle_effects);
+//!
+//! // The shell would then be used by a Runner to execute effects.
+//! ```
 use crossbeam_channel::{Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;

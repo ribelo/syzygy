@@ -88,10 +88,8 @@ fn bench_command_iteration(c: &mut Criterion) {
             let mut count = 0;
             for output in black_box(small_cmd.clone()) {
                 count += match output {
-                    CommandStep::Event(_) => 1,
-                    CommandStep::Effect(_) => 1,
-                    CommandStep::SequentialEffects(effects) => effects.len(),
-                    CommandStep::ParallelEffects(effects) => effects.len(),
+                    CommandStep::Event(_) | CommandStep::Effect(_) => 1,
+                    CommandStep::SequentialEffects(e) | CommandStep::ParallelEffects(e) => e.len(),
                 };
             }
             black_box(count)
@@ -103,10 +101,8 @@ fn bench_command_iteration(c: &mut Criterion) {
             let mut count = 0;
             for output in black_box(large_cmd.clone()) {
                 count += match output {
-                    CommandStep::Event(_) => 1,
-                    CommandStep::Effect(_) => 1,
-                    CommandStep::SequentialEffects(effects) => effects.len(),
-                    CommandStep::ParallelEffects(effects) => effects.len(),
+                    CommandStep::Event(_) | CommandStep::Effect(_) => 1,
+                    CommandStep::SequentialEffects(e) | CommandStep::ParallelEffects(e) => e.len(),
                 };
             }
             black_box(count)

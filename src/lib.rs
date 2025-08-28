@@ -302,11 +302,12 @@
 //! ### Resource Management
 //! ```rust
 //! # use syzygy::prelude::*;
+//! # #[derive(Debug, Default)] struct MyModel;
 //! # #[derive(Clone)] struct Database { url: String }
 //! # #[derive(Clone)] struct HttpClient { base_url: String }
 //! # #[derive(Debug, Clone)] enum Event { Test }
 //! # #[derive(Debug, Clone)] enum Effect { Test }
-//! # fn update(e: Event, ctx: &mut EventContext<Event, Effect, EmptyStorage>) -> Command<Event, Effect> { Command::none() }
+//! # fn update(e: Event, ctx: &mut EventContext<Event, Effect, Storage<MyModel, EmptyStorage>>) -> Command<Event, Effect> { Command::none() }
 //! let (core, shell) = Syzygy::builder()
 //!     .model(MyModel::default())
 //!     .resource(Database { url: "postgres://...".to_string() })
@@ -319,22 +320,29 @@
 //! ```rust
 //! # use syzygy::prelude::*;
 //! # #[derive(Debug, Clone)] enum Event { TaskComplete }
+//! # #[derive(Debug, Clone)] enum MyEffect { DoWork }
 //! async fn handle_effect(
 //!     effect: MyEffect,
 //!     ctx: EffectContext<Event, EmptyStorage>,
 //! ) {
-//!     // All spawned tasks automatically cancelled when context drops
-//!     ctx.spawn(async {
-//!         // Long running background work
-//!         tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
-//!         let _ = ctx.send_event(Event::TaskComplete);
-//!     }).unwrap();
-//!     
-//!     // Spawn multiple tasks safely
-//!     for i in 0..10 {
-//!         ctx.spawn(async move {
-//!             println!("Background task {}", i);
-//!         }).unwrap();
+//!     match effect {
+//!         MyEffect::DoWork => {
+//!             // All spawned tasks automatically cancelled when context drops
+//!             let ctx_clone = ctx.clone();
+//!             ctx.spawn(async move {
+//!                 // Long running background work
+//!                 tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+//!                 let _ = ctx_clone.send_event(Event::TaskComplete);
+//!             }).unwrap();
+//!
+//!             // Spawn multiple tasks safely
+//!             for i in 0..10 {
+//!                 let ctx_clone = ctx.clone();
+//!                 ctx.spawn(async move {
+//!                     println!("Background task {}", i);
+//!                 }).unwrap();
+//!             }
+//!         }
 //!     }
 //! }
 //! ```

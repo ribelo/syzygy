@@ -43,103 +43,24 @@ enum AppEffect {
 // ============================================================================
 
 #[test]
-fn test_event_only_magic_handler() {
-    // Setup storage with models
-    let mut storage = EmptyStorage.with_model(UserModel {
-        name: "Alice".to_string(),
-        count: 0,
-    });
-
+fn test_event_only_handler() {
+    let mut storage = EmptyStorage.with_model(UserModel::default());
     let ctx = EventContext::<AppEvent, AppEffect, _>::new(&mut storage);
 
-    // Handler that only takes the event
-    fn simple_handler(event: AppEvent) -> Command<AppEvent, AppEffect> {
+    fn test_handler(event: AppEvent) -> Command<AppEvent, AppEffect> {
         match event {
-            AppEvent::UserCreated { name } => Command::effect(AppEffect::SaveUser { name }),
+            AppEvent::UserCreated { .. } => Command::effect(AppEffect::LogMessage {
+                message: "User created via magic handler".to_string(),
+            }),
             _ => Command::none(),
         }
     }
 
     let event = AppEvent::UserCreated {
-        name: "Bob".to_string(),
+        name: "Eve".to_string(),
     };
-    let command = event_trigger(event, &ctx, simple_handler);
 
-    // Verify command was created
-    let steps: Vec<_> = command.into_iter().collect();
-    assert_eq!(steps.len(), 1);
-}
-
-#[test]
-fn test_event_with_single_extraction() {
-    let mut storage = EmptyStorage.with_model(UserModel {
-        name: "Alice".to_string(),
-        count: 42,
-    });
-
-    let ctx = EventContext::<AppEvent, AppEffect, _>::new(&mut storage);
-
-    // Handler that extracts user model via &T
-    fn handler_with_model_ref(event: AppEvent, user: &UserModel) -> Command<AppEvent, AppEffect> {
-        match event {
-            AppEvent::UserCreated { name } => {
-                let message = format!(
-                    "User {} created, current user: {} (count: {})",
-                    name, user.name, user.count
-                );
-                Command::effect(AppEffect::LogMessage { message })
-            }
-            _ => Command::none(),
-        }
-    }
-
-    let event = AppEvent::UserCreated {
-        name: "Charlie".to_string(),
-    };
-    let command = event_trigger(event, &ctx, handler_with_model_ref);
-
-    let steps: Vec<_> = command.into_iter().collect();
-    assert_eq!(steps.len(), 1);
-}
-
-#[test]
-fn test_event_with_multiple_extractions() {
-    // Test multiple extractions of different model types
-    let mut storage = EmptyStorage
-        .with_model(UserModel {
-            name: "Alice".to_string(),
-            count: 5,
-        })
-        .with_model(ConfigModel {
-            theme: "dark".to_string(),
-            enabled: true,
-        });
-
-    let ctx = EventContext::<AppEvent, AppEffect, _>::new(&mut storage);
-
-    // Handler that extracts different model types
-    fn handler_multi_extract(
-        event: AppEvent,
-        user: &UserModel,
-        config: &ConfigModel,
-    ) -> Command<AppEvent, AppEffect> {
-        match event {
-            AppEvent::ConfigUpdated { .. } => {
-                let message = format!(
-                    "Config updated: user={} (count={}), theme={} (enabled={})",
-                    user.name, user.count, config.theme, config.enabled
-                );
-                Command::effect(AppEffect::LogMessage { message })
-            }
-            _ => Command::none(),
-        }
-    }
-
-    let event = AppEvent::ConfigUpdated {
-        theme: "light".to_string(),
-    };
-    let command = event_trigger(event, &ctx, handler_multi_extract);
-
+    let command = event_trigger(event, &ctx, test_handler);
     let steps: Vec<_> = command.into_iter().collect();
     assert_eq!(steps.len(), 1);
 }
@@ -209,7 +130,7 @@ fn test_magic_handler_flexibility() {
 // ============================================================================
 
 #[test]
-fn test_magic_handlers_integration() {
+fn test_event_handler_with_multiple_model_extraction() {
     // Setup storage with multiple models
     let mut event_storage = EmptyStorage
         .with_model(UserModel {

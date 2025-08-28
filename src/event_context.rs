@@ -1,4 +1,29 @@
-//! EventContext - Synchronous context for update functions
+//! # EventContext - Synchronous context for update functions
+//!
+//! This module provides the `EventContext`, a component that gives update functions
+//! safe and controlled access to the application's models. It is designed to be
+//! lightweight and synchronous.
+//!
+//! ## Key Components
+//! - `EventContext` - The main struct that provides access to models.
+//!
+//! ## Example
+//! ```rust
+//! # use syzygy::prelude::*;
+//! # use syzygy::event_context::EventContext;
+//! # use syzygy::storage::{EmptyStorage, Storage};
+//! # #[derive(Debug, Clone)] enum TestEvent { Increment }
+//! # #[derive(Debug, Clone)] enum TestEffect { Log }
+//! # #[derive(Debug, Default)] struct CounterModel { count: i32 }
+//! fn my_update(
+//!     event: TestEvent,
+//!     ctx: &mut EventContext<TestEvent, TestEffect, Storage<CounterModel, EmptyStorage>>
+//! ) -> Command<TestEvent, TestEffect> {
+//!     let model: &mut CounterModel = ctx.model_mut();
+//!     model.count += 1;
+//!     Command::none()
+//! }
+//! ```
 //!
 //! This provides controlled access to models within update functions, mirroring
 //! the EffectContext pattern for consistency. EventContext is designed to be:
@@ -51,10 +76,14 @@ impl<'a, Event, Effect, Storage> EventContext<'a, Event, Effect, Storage> {
     /// The type must exist in the storage chain for this to compile.
     ///
     /// # Example
-    /// ```rust,ignore
-    /// let counter: &CounterModel = ctx.model();
-    /// // Or with explicit type:
-    /// let counter = ctx.model::<CounterModel>();
+    /// ```rust
+    /// # use syzygy::prelude::*;
+    /// # use syzygy::event_context::EventContext;
+    /// # #[derive(Debug, Default)] struct Model { count: i32 }
+    /// # let mut storage = EmptyStorage.with_model(Model::default());
+    /// let ctx = EventContext::<(), (), _>::new(&mut storage);
+    /// let model: &Model = ctx.model();
+    /// assert_eq!(model.count, 0);
     /// ```
     #[must_use]
     pub fn model<T, Index>(&self) -> &T
@@ -70,12 +99,15 @@ impl<'a, Event, Effect, Storage> EventContext<'a, Event, Effect, Storage> {
     /// The type must exist in the storage chain for this to compile.
     ///
     /// # Example
-    /// ```rust,ignore
-    /// let counter: &mut CounterModel = ctx.model_mut();
-    /// counter.count += 1;
-    /// // Or with explicit type:
-    /// let counter = ctx.model_mut::<CounterModel>();
-    /// counter.count += 1;
+    /// ```rust
+    /// # use syzygy::prelude::*;
+    /// # use syzygy::event_context::EventContext;
+    /// # #[derive(Debug, Default)] struct Model { count: i32 }
+    /// # let mut storage = EmptyStorage.with_model(Model::default());
+    /// let ctx = EventContext::<(), (), _>::new(&mut storage);
+    /// let model: &mut Model = ctx.model_mut();
+    /// model.count += 1;
+    /// assert_eq!(model.count, 1);
     /// ```
     #[must_use]
     pub fn model_mut<T, Index>(&self) -> &mut T
@@ -92,11 +124,13 @@ mod tests {
     use crate::storage::EmptyStorage;
 
     #[derive(Debug, Clone)]
+    #[allow(dead_code)]
     enum TestEvent {
         Increment,
     }
 
     #[derive(Debug, Clone)]
+    #[allow(dead_code)]
     enum TestEffect {
         Log,
     }

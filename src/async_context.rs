@@ -1,4 +1,28 @@
-//! EffectContext - Safe and fast task spawning for effect handlers
+//! # EffectContext - Safe and fast task spawning for effect handlers
+//!
+//! This module provides the `EffectContext`, a component that gives effect handlers
+//! safe access to resources and the ability to spawn tasks. It ensures that any
+//! tasks spawned within an effect handler are properly managed and cleaned up.
+//!
+//! ## Key Components
+//! - `EffectContext` - The main struct that provides services to effect handlers.
+//!
+//! ## Example
+//! ```rust
+//! # use syzygy::prelude::*;
+//! # use std::time::Duration;
+//! # #[derive(Debug, Clone)] enum TestEvent { Done }
+//! # #[derive(Debug, Clone)] enum TestEffect { PerformAsyncWork }
+//! async fn handle_effects(effect: TestEffect, ctx: EffectContext<TestEvent, ()>) {
+//!     if let TestEffect::PerformAsyncWork = effect {
+//!         // Spawn a task that will be cancelled if the context is dropped.
+//!         ctx.clone().spawn(async move {
+//!             tokio::time::sleep(Duration::from_millis(100)).await;
+//!             let _ = ctx.send_event(TestEvent::Done);
+//!         }).unwrap();
+//!     }
+//! }
+//! ```
 //!
 //! This provides controlled task spawning within effect handlers with safety guarantees:
 //! - All spawned tasks are cancelled when context is dropped

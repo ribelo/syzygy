@@ -424,6 +424,7 @@ mod tests {
     }
 
     #[derive(Debug, Clone, PartialEq)]
+    #[allow(dead_code)]
     struct Model3 {
         value: f64,
     }

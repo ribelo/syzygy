@@ -65,7 +65,7 @@ fn app_update(
             url: "/data".to_string(),
         }),
         AppEvent::SaveConfig { theme } => {
-            model.theme = theme.clone();
+            model.theme.clone_from(&theme);
             Command::effect(AppEffect::WriteFile {
                 path: "config.json".to_string(),
                 content: format!(r#"{{"theme": "{theme}"}}"#),

@@ -131,7 +131,7 @@ fn handle_config_update(
             );
             
             Command::effect(AppEffect::LogActivity {
-                message: format!("Debug mode changed to {}", debug_mode),
+                message: format!("Debug mode changed to {debug_mode}"),
             })
         }
         _ => Command::none(),
@@ -147,13 +147,10 @@ async fn handle_with_event_sender(
     effect: AppEffect,
     sender: EventSender<AppEvent>,
 ) {
-    match effect {
-        AppEffect::SendNotification { message } => {
-            println!("Sending notification: {}", message);
-            // Send follow-up event
-            let _ = sender.send(AppEvent::SystemReady);
-        }
-        _ => {}
+    if let AppEffect::SendNotification { message } = effect {
+        println!("Sending notification: {message}");
+        // Send follow-up event
+        let _ = sender.send(AppEvent::SystemReady);
     }
 }
 
@@ -163,21 +160,18 @@ async fn handle_with_database(
     db_config: &DatabaseConfig,
     sender: EventSender<AppEvent>,
 ) {
-    match effect {
-        AppEffect::DatabaseQuery { query } => {
-            println!(
-                "Executing query '{}' on {} (pool: {})",
-                query, db_config.url, db_config.pool_size
-            );
-            
-            // Simulate database operation
-            #[cfg(feature = "tokio")]
-            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-            
-            // Send completion event
-            let _ = sender.send(AppEvent::SystemReady);
-        }
-        _ => {}
+    if let AppEffect::DatabaseQuery { query } = effect {
+        println!(
+            "Executing query '{}' on {} (pool: {})",
+            query, db_config.url, db_config.pool_size
+        );
+
+        // Simulate database operation
+        #[cfg(feature = "tokio")]
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        // Send completion event
+        let _ = sender.send(AppEvent::SystemReady);
     }
 }
 
@@ -186,24 +180,21 @@ async fn handle_with_full_context(
     effect: AppEffect,
     ctx: EffectContext<AppEvent, Storage<DatabaseConfig, EmptyStorage>>,
 ) {
-    match effect {
-        AppEffect::SaveUser { email } => {
-            let db_config: &DatabaseConfig = ctx.resource();
-            
-            println!(
-                "Saving user {} to database {} with pool size {}",
-                email, db_config.url, db_config.pool_size
-            );
-            
-            // Spawn background task
-            ctx.spawn(async move {
-                println!("Background: Processing user save for {}", email);
-                #[cfg(feature = "tokio")]
-                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-                println!("Background: User {} saved successfully", email);
-            }).unwrap();
-        }
-        _ => {}
+    if let AppEffect::SaveUser { email } = effect {
+        let db_config: &DatabaseConfig = ctx.resource();
+
+        println!(
+            "Saving user {} to database {} with pool size {}",
+            email, db_config.url, db_config.pool_size
+        );
+
+        // Spawn background task
+        ctx.spawn(async move {
+            println!("Background: Processing user save for {email}");
+            #[cfg(feature = "tokio")]
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            println!("Background: User {email} saved successfully");
+        }).unwrap();
     }
 }
 
@@ -248,7 +239,7 @@ async fn handle_effects(
 ) {
     match &effect {
         AppEffect::LogActivity { message } => {
-            println!("LOG: {}", message);
+            println!("LOG: {message}");
         }
         AppEffect::SendNotification { .. } => {
             let sender = EventSender(ctx.event_sender().unwrap());
@@ -308,7 +299,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     runner.tick(syzygy::spawn::spawner()).await?;
     
     let user: &UserModel = runner.core().model();
-    println!("   User state: {:?}\n", user);
+    println!("   User state: {user:?}\n");
     
     // Test 3: Config update handler
     println!("3. Testing config update handler");
@@ -316,7 +307,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     runner.tick(syzygy::spawn::spawner()).await?;
     
     let config: &ConfigModel = runner.core().model();
-    println!("   Config state: {:?}\n", config);
+    println!("   Config state: {config:?}\n");
     
     // Test 4: Effect handlers with resource extraction
     println!("4. Testing effect handlers with resources");

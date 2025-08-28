@@ -114,6 +114,13 @@ impl<Event, Effect> Command<Event, Effect> {
     }
 
     /// Create a command that requests a single effect
+    ///
+    /// # Example
+    /// ```rust
+    /// # use syzygy::prelude::*;
+    /// # #[derive(Debug, Clone)] enum Effect { Log(String) }
+    /// let command = Command::<(), Effect>::effect(Effect::Log("Hello".to_string()));
+    /// ```
     pub fn effect(effect: impl Into<Effect>) -> Self {
         let mut outputs = SmallVec::new();
         outputs.push(CommandStep::Effect(effect.into()));
@@ -144,6 +151,19 @@ impl<Event, Effect> Command<Event, Effect> {
     /// All outputs from the provided commands will be executed.
     /// Effects will run in parallel (default Shell behavior).
     /// Events will be processed sequentially in the order received.
+    ///
+    /// # Example
+    /// ```rust
+    /// # use syzygy::prelude::*;
+    /// # #[derive(Debug, Clone)] enum Event { A, B }
+    /// # #[derive(Debug, Clone)] enum Effect { X, Y }
+    /// let command = Command::batch([
+    ///     Command::<Event, Effect>::event(Event::A),
+    ///     Command::<Event, Effect>::effect(Effect::X),
+    ///     Command::<Event, Effect>::event(Event::B),
+    ///     Command::<Event, Effect>::effect(Effect::Y),
+    /// ]);
+    /// ```
     pub fn batch(commands: impl IntoIterator<Item = Self>) -> Self {
         let mut outputs = SmallVec::new();
         for command in commands {
@@ -265,10 +285,10 @@ impl<Event, Effect> Command<Event, Effect> {
                 CommandStep::Event(event) => outputs.push(CommandStep::Event(f(event))),
                 CommandStep::Effect(effect) => outputs.push(CommandStep::Effect(effect)),
                 CommandStep::SequentialEffects(effects) => {
-                    outputs.push(CommandStep::SequentialEffects(effects))
+                    outputs.push(CommandStep::SequentialEffects(effects));
                 }
                 CommandStep::ParallelEffects(effects) => {
-                    outputs.push(CommandStep::ParallelEffects(effects))
+                    outputs.push(CommandStep::ParallelEffects(effects));
                 }
             }
         }
@@ -549,7 +569,7 @@ impl<Event, Effect> Command<Event, Effect> {
             match output {
                 CommandStep::Effect(_) => count += 1,
                 CommandStep::SequentialEffects(effects) | CommandStep::ParallelEffects(effects) => {
-                    count += effects.len()
+                    count += effects.len();
                 }
                 CommandStep::Event(_) => {}
             }
@@ -623,10 +643,10 @@ impl<Event, Effect> Command<Event, Effect> {
                 CommandStep::Event(event) => outputs.push(CommandStep::Event(f(event)?)),
                 CommandStep::Effect(effect) => outputs.push(CommandStep::Effect(effect)),
                 CommandStep::SequentialEffects(effects) => {
-                    outputs.push(CommandStep::SequentialEffects(effects))
+                    outputs.push(CommandStep::SequentialEffects(effects));
                 }
                 CommandStep::ParallelEffects(effects) => {
-                    outputs.push(CommandStep::ParallelEffects(effects))
+                    outputs.push(CommandStep::ParallelEffects(effects));
                 }
             }
         }

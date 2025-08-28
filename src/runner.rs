@@ -1,3 +1,39 @@
+//! # Runner - Core/Shell Orchestration
+//!
+//! This module provides the `Runner`, a component that automates the interaction
+//! between the `Core` and the `Shell`. It simplifies the process of building and
+//! running a Syzygy application by managing the event loop.
+//!
+//! ## Key Components
+//! - `Runner` - The main struct that drives the application by orchestrating `Core` and `Shell`.
+//! - `RunnerConfig` - Configuration for the runner's behavior.
+//!
+//! ## Example
+//! ```rust,no_run
+//! # use syzygy::prelude::*;
+//! # use syzygy::event_context::EventContext;
+//! # use syzygy::storage::{EmptyStorage, Storage};
+//! # #[derive(Debug, Clone)] enum TestEvent { Ping }
+//! # #[derive(Debug, Clone)] enum TestEffect { DoPing }
+//! # #[derive(Debug, Default)] struct Model;
+//! # fn update(event: TestEvent, ctx: &mut EventContext<TestEvent, TestEffect, Storage<Model, EmptyStorage>>) -> Command<TestEvent, TestEffect> { Command::none() }
+//! # async fn handle_effects(effect: TestEffect, ctx: EffectContext<TestEvent, EmptyStorage>) {}
+//! # #[tokio::main]
+//! # async fn main() -> Result<(), Box<dyn std::error::Error>> {
+//! // In a real application, you would build and run the system like this:
+//! let (core, shell) = Syzygy::builder()
+//!     .model(Model::default())
+//!     .update(update)
+//!     .build();
+//!
+//! let shell = shell.with_effect_handler(handle_effects);
+//! let mut runner = Runner::new(core, shell);
+//!
+//! // Run the application indefinitely
+//! runner.run(syzygy::spawn::spawner()).await?;
+//! # Ok(())
+//! # }
+//! ```
 use std::time::Duration;
 
 use crate::core::Core;
@@ -54,6 +90,20 @@ where
     Resources: Clone + Send + Sync + 'static,
 {
     /// Create a new Runner with Core and Shell
+    ///
+    /// # Example
+    /// ```rust
+    /// # use syzygy::prelude::*;
+    /// # #[derive(Debug, Default)] struct Model;
+    /// # #[derive(Debug, Clone)] enum Event { Test }
+    /// # #[derive(Debug, Clone)] enum Effect { Test }
+    /// let (core, shell) = Syzygy::builder::<Event, Effect>()
+    ///     .model(Model::default())
+    ///     .update(|_event: Event, _ctx| Command::none())
+    ///     .build();
+    ///
+    /// let runner = Runner::new(core, shell);
+    /// ```
     pub fn new(
         core: Core<Event, Effect, Storage>,
         shell: Shell<Event, Effect, Resources, H>,
@@ -142,6 +192,29 @@ where
     /// Execute a single tick of the event loop
     ///
     /// Returns true if work was done, false if idle.
+    ///
+    /// # Example
+    /// ```rust
+    /// # use syzygy::prelude::*;
+    /// # #[derive(Debug, Default)] struct Model;
+    /// # #[derive(Debug, Clone)] enum Event { Test }
+    /// # #[derive(Debug, Clone)] enum Effect { Test }
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// let (core, shell) = Syzygy::builder::<Event, Effect>()
+    ///     .model(Model::default())
+    ///     .update(|_event: Event, _ctx| Command::none())
+    ///     .build();
+    ///
+    /// let mut runner = Runner::new(core, shell);
+    /// runner.core().send_event(Event::Test)?;
+    ///
+    /// // Process the event
+    /// let did_work = runner.tick(syzygy::spawn::spawner()).await?;
+    /// assert!(did_work);
+    /// # Ok(())
+    /// # }
+    /// ```
     #[allow(clippy::unused_async)]
     pub async fn tick<S>(&mut self, spawner: S) -> Result<bool, RunnerError>
     where

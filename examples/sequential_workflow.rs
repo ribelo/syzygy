@@ -26,6 +26,7 @@ use syzygy::prelude::*;
 use tokio::time::sleep;
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 enum WorkflowEvent {
     StartUserOnboarding { username: String, password: String },
     ErrorOccurred { message: String },
@@ -33,6 +34,7 @@ enum WorkflowEvent {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 enum WorkflowEffect {
     LoginUser { username: String, password: String },
     FetchUserData { user_id: u32 },
@@ -45,6 +47,7 @@ enum WorkflowEffect {
 }
 
 #[derive(Default)]
+#[allow(dead_code)]
 struct WorkflowModel {
     user_id: Option<u32>,
     completed_steps: Vec<String>,

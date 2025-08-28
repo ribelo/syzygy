@@ -301,6 +301,7 @@ mod tests {
     use syzygy_macros::MagicVariants;
 
     #[derive(Debug, Clone, Default)]
+    #[allow(dead_code)]
     struct TestModel {
         counter: i32,
         name: String,
@@ -312,17 +313,20 @@ mod tests {
     }
 
     #[derive(Debug, Clone)]
+    #[allow(dead_code)]
     struct SetName {
         name: String,
     }
 
     #[derive(Debug, Clone, MagicVariants)]
+    #[allow(dead_code)]
     enum TestEvent {
         Increment(Increment),
         SetName(SetName),
     }
 
     #[derive(Debug, Clone)]
+    #[allow(dead_code)]
     enum TestEffect {
         Log { message: String },
     }

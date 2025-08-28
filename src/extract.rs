@@ -134,6 +134,7 @@ mod tests {
     }
 
     #[derive(Debug, Clone)]
+    #[allow(dead_code)]
     enum TestEffect {
         Log(String),
     }

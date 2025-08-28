@@ -38,6 +38,18 @@ where
     ResourceStorage: Clone + Send + Sync + 'static,
 {
     /// Add a model to the storage chain
+    ///
+    /// # Example
+    /// ```rust
+    /// # use syzygy::prelude::*;
+    /// # #[derive(Debug, Default)] struct CounterModel { count: i32 }
+    /// # #[derive(Debug, Default)] struct UserModel { name: String }
+    /// # #[derive(Debug, Clone)] enum Event { Test }
+    /// # #[derive(Debug, Clone)] enum Effect { Test }
+    /// let builder = Syzygy::builder::<Event, Effect>()
+    ///     .model(CounterModel::default())
+    ///     .model(UserModel::default());
+    /// ```
     #[must_use]
     pub fn model<M: 'static>(
         self,
@@ -54,6 +66,18 @@ where
     }
 
     /// Add a resource to the resource storage chain
+    ///
+    /// # Example
+    /// ```rust
+    /// # use syzygy::prelude::*;
+    /// # #[derive(Clone)] struct Database;
+    /// # #[derive(Clone)] struct ApiClient;
+    /// # #[derive(Debug, Clone)] enum Event { Test }
+    /// # #[derive(Debug, Clone)] enum Effect { Test }
+    /// let builder = Syzygy::builder::<Event, Effect>()
+    ///     .resource(Database)
+    ///     .resource(ApiClient);
+    /// ```
     #[must_use]
     pub fn resource<R: Send + Sync + 'static>(
         self,
@@ -70,6 +94,21 @@ where
     }
 
     /// Set the update function that processes events
+    ///
+    /// # Example
+    /// ```rust
+    /// # use syzygy::prelude::*;
+    /// # #[derive(Debug, Default)] struct Model;
+    /// # #[derive(Debug, Clone)] enum Event { Test }
+    /// # #[derive(Debug, Clone)] enum Effect { Test }
+    /// fn my_update(event: Event, ctx: &mut EventContext<Event, Effect, Storage<Model, EmptyStorage>>) -> Command<Event, Effect> {
+    ///     Command::none()
+    /// }
+    ///
+    /// let builder = Syzygy::builder()
+    ///     .model(Model::default())
+    ///     .update(my_update);
+    /// ```
     #[must_use]
     pub fn update(mut self, update_fn: UpdateFn<Event, Effect, ModelStorage>) -> Self {
         self.update_fn = Some(update_fn);
@@ -77,6 +116,18 @@ where
     }
 
     /// Build the system with auto-wired Shell connected to Core's event channel
+    ///
+    /// # Example
+    /// ```rust
+    /// # use syzygy::prelude::*;
+    /// # #[derive(Debug, Default)] struct Model;
+    /// # #[derive(Debug, Clone)] enum Event { Test }
+    /// # #[derive(Debug, Clone)] enum Effect { Test }
+    /// let (core, shell) = Syzygy::builder::<Event, Effect>()
+    ///     .model(Model::default())
+    ///     .update(|_event: Event, _ctx| Command::none())
+    ///     .build();
+    /// ```
     pub fn build(
         self,
     ) -> (
@@ -150,6 +201,18 @@ pub struct Syzygy;
 
 impl Syzygy {
     /// Create a new builder for the given Event and Effect types
+    ///
+    /// # Example
+    /// ```rust
+    /// # use syzygy::prelude::*;
+    /// # #[derive(Debug, Default)] struct Model;
+    /// # #[derive(Debug, Clone)] enum Event { Test }
+    /// # #[derive(Debug, Clone)] enum Effect { Test }
+    /// let (core, shell) = Syzygy::builder::<Event, Effect>()
+    ///     .model(Model::default())
+    ///     .update(|_event: Event, _ctx| Command::none())
+    ///     .build();
+    /// ```
     #[must_use]
     pub fn builder<Event, Effect>() -> SyzygyBuilder<Event, Effect>
     where

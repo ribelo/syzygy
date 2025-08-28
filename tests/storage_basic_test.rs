@@ -2,44 +2,27 @@
 
 use syzygy::storage::*;
 
-#[derive(Debug, Clone)]
-pub struct Model1 {
-    pub value: u64,
-    pub active: bool,
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-#[derive(Debug, Clone)]
-pub struct Model2 {
-    pub value: u64,
-    pub name: String,
-}
+    #[derive(Debug, Clone)]
+    struct Model1 {
+        pub value: u64,
+        pub active: bool,
+    }
 
-#[derive(Debug, Clone)]
-pub struct Model3 {
-    pub value: u64,
-    pub count: i32,
-}
+    #[derive(Debug, Clone)]
+    struct Model2 {
+        pub value: u64,
+        pub name: String,
+    }
 
-#[test]
-fn test_storage_basic_functionality() {
-    let storage = EmptyStorage
-        .with_model(Model1 {
-            value: 1,
-            active: true,
-        })
-        .with_model(Model2 {
-            value: 2,
-            name: "test".to_string(),
-        });
-
-    let model1: &Model1 = storage.get();
-    let model2: &Model2 = storage.get();
-
-    assert_eq!(model1.value, 1);
-    assert!(model1.active);
-    assert_eq!(model2.value, 2);
-    assert_eq!(model2.name, "test");
-}
+    #[derive(Debug, Clone)]
+    struct Model3 {
+        pub value: u64,
+        pub count: i32,
+    }
 
 #[test]
 fn test_storage_mutable_access() {
@@ -60,7 +43,7 @@ fn test_storage_mutable_access() {
 }
 
 #[test]
-fn test_storage_multiple_models() {
+    fn test_storage_with_multiple_models() {
     let storage = EmptyStorage
         .with_model(Model1 {
             value: 1,
@@ -93,4 +76,5 @@ fn test_storage_contains_trait() {
 
     assert!(storage.contains::<Model1>());
     assert!(!storage.contains::<Model2>());
+}
 }

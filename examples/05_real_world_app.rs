@@ -761,6 +761,7 @@ async fn handle_background_operation(
     if let AppEffect::StartBackgroundOperation { operation_id, task_type } = effect {
         let operation_id_clone = operation_id.clone();
         
+        let ctx_clone = ctx.clone();
         ctx.spawn(async move {
             println!("Background operation {} started ({})", operation_id_clone, task_type);
             
@@ -770,14 +771,14 @@ async fn handle_background_operation(
                 tokio::time::sleep(std::time::Duration::from_millis(100)).await;
                 
                 let progress = (i as f32) / 5.0;
-                let _ = ctx.send_event(AppEvent::OperationProgress {
+                let _ = ctx_clone.send_event(AppEvent::OperationProgress {
                     operation_id: operation_id_clone.clone(),
                     progress,
                 });
             }
             
             // Complete the operation
-            let _ = ctx.send_event(AppEvent::OperationCompleted {
+            let _ = ctx_clone.send_event(AppEvent::OperationCompleted {
                 operation_id: operation_id_clone,
             });
         }).unwrap();

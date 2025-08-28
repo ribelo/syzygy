@@ -1,3 +1,40 @@
+//! # Core - Synchronous State Management
+//!
+//! This module provides the `Core` component, which is the heart of Syzygy's
+//! synchronous state management. It is responsible for processing events,
+//! updating the application's models, and generating commands for side effects.
+//!
+//! ## Key Components
+//! - `Core` - The main struct that owns the application state (models) and processes events.
+//! - `UpdateFn` - A type alias for the function that contains the application's update logic.
+//!
+//! ## Example
+//! ```rust
+//! # use syzygy::prelude::*;
+//! # use syzygy::event_context::EventContext;
+//! # use syzygy::storage::{EmptyStorage, Storage};
+//! # #[derive(Debug, Clone)] enum TestEvent { Increment }
+//! # #[derive(Debug, Clone)] enum TestEffect { Log }
+//! # #[derive(Debug, Default)] struct CounterModel { count: i32 }
+//! # fn counter_update(event: TestEvent, ctx: &mut EventContext<TestEvent, TestEffect, Storage<CounterModel, EmptyStorage>>) -> Command<TestEvent, TestEffect> {
+//! #     let model: &mut CounterModel = ctx.model_mut();
+//! #     model.count += 1;
+//! #     Command::none()
+//! # }
+//! // In a real application, you would build the core like this:
+//! let storage = EmptyStorage.with_model(CounterModel::default());
+//! let (mut core, sender) = Core::new(counter_update, storage);
+//!
+//! // Send an event to the core
+//! sender.send(TestEvent::Increment).unwrap();
+//!
+//! // Process the event queue
+//! core.process_events();
+//!
+//! // The model is now updated
+//! let model: &CounterModel = core.model();
+//! assert_eq!(model.count, 1);
+//! ```
 use crate::{command::Command, event_context::EventContext, storage::Selector};
 use crossbeam_channel::{Receiver, Sender, unbounded};
 use std::collections::VecDeque;
