@@ -21,9 +21,9 @@ enum TestEvent {
 
 #[derive(Debug, Clone)]
 struct UserRecord {
-    id: u64,
-    name: String,
-    data: String,
+    pub id: u64,
+    pub name: String,
+    pub data: String,
 }
 
 #[derive(Debug, Clone)]
@@ -36,6 +36,20 @@ enum TestEffect {
     ProcessRecords {
         records: Vec<UserRecord>,
     },
+}
+
+// Use the effects to prevent dead code warnings
+fn _use_effects(effect: &TestEffect) {
+    match effect {
+        TestEffect::Authenticate { username, password, session_data } => {
+            let _len = username.len() + password.len() + session_data.len();
+        }
+        TestEffect::ProcessRecords { records } => {
+            for record in records {
+                let _total = record.id as usize + record.name.len() + record.data.len();
+            }
+        }
+    }
 }
 
 #[derive(Debug, Default)]
@@ -126,7 +140,11 @@ fn bench_move_approach(c: &mut Criterion) {
             let mut storage = EmptyStorage.with_model(TestModel::default());
             let mut ctx = EventContext::new(&mut storage);
             let event = create_login_event();
-            let _command = move_update(event, &mut ctx);
+            let command = move_update(event, &mut ctx);
+            let effects = command.into_effects();
+            if let Some(effect) = effects.first() {
+                _use_effects(effect);
+            }
         })
     });
     
@@ -135,7 +153,11 @@ fn bench_move_approach(c: &mut Criterion) {
             let mut storage = EmptyStorage.with_model(TestModel::default());
             let mut ctx = EventContext::new(&mut storage);
             let event = create_large_event();
-            let _command = move_update(event, &mut ctx);
+            let command = move_update(event, &mut ctx);
+            let effects = command.into_effects();
+            if let Some(effect) = effects.first() {
+                _use_effects(effect);
+            }
         })
     });
 }
@@ -146,7 +168,11 @@ fn bench_reference_approach(c: &mut Criterion) {
             let mut storage = EmptyStorage.with_model(TestModel::default());
             let mut ctx = EventContext::new(&mut storage);
             let event = create_login_event();
-            let _command = reference_update(&event, &mut ctx);
+            let command = reference_update(&event, &mut ctx);
+            let effects = command.into_effects();
+            if let Some(effect) = effects.first() {
+                _use_effects(effect);
+            }
         })
     });
     
@@ -155,7 +181,11 @@ fn bench_reference_approach(c: &mut Criterion) {
             let mut storage = EmptyStorage.with_model(TestModel::default());
             let mut ctx = EventContext::new(&mut storage);
             let event = create_large_event();
-            let _command = reference_update(&event, &mut ctx);
+            let command = reference_update(&event, &mut ctx);
+            let effects = command.into_effects();
+            if let Some(effect) = effects.first() {
+                _use_effects(effect);
+            }
         })
     });
 }

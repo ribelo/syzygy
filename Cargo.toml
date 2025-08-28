@@ -133,6 +133,10 @@ name = "command_performance"
 harness = false
 
 [[bench]]
+name = "move_vs_clone_benchmark"
+harness = false
+
+[[bench]]
 name = "magic_handler_benchmark"
 harness = false
 
