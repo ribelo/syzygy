@@ -239,7 +239,7 @@ fn realistic_update(
 
             // Simulate data refresh logic
             let refresh_needed = user.login_count > 10
-                || config.last_updated < 1000000
+                || config.last_updated < 1_000_000
                 || notifications.unread_count > 50
                 || cache.cache_misses > cache.cache_hits;
 

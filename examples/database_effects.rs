@@ -136,7 +136,7 @@ fn database_update(
 /// Effect handler - receives all data through parameters
 /// NO STATE CAPTURE - this is the key lesson from Crux!
 // Example magic effect handler demonstrating pure resource extraction
-async fn handle_log_with_config(
+fn handle_log_with_config(
     log_effect: AppEffect,   // In practice, you'd extract the variant struct
     resources: AppResources, // Pure T extraction - no wrapper needed!
 ) {
@@ -163,7 +163,7 @@ async fn handle_effects(
             async_std::task::sleep(Duration::from_millis(100)).await;
 
             // Simulate database lookup
-            match simulate_database_get(&table, user_id).await {
+            match simulate_database_get(&table, user_id) {
                 Ok(Some(user)) => {
                     // Success - send user loaded event
                     let _ = ctx.send_event(AppEvent::UserLoaded { user_id, user });
@@ -194,7 +194,7 @@ async fn handle_effects(
             async_std::task::sleep(Duration::from_millis(150)).await;
 
             // Simulate database save
-            match simulate_database_save(&table, &user).await {
+            match simulate_database_save(&table, &user) {
                 Ok(()) => {
                     let _ = ctx.send_event(AppEvent::UserSaved { user_id: user.id });
                     println!("✅ User {} saved", user.id);
@@ -228,7 +228,7 @@ async fn handle_effects(
 }
 
 /// Simulated database operations - in real app these would be SQLx, Diesel, etc.
-async fn simulate_database_get(_table: &str, user_id: u32) -> Result<Option<User>, String> {
+fn simulate_database_get(_table: &str, user_id: u32) -> Result<Option<User>, String> {
     // Simulate some users existing
     match user_id {
         1 => Ok(Some(User {
@@ -246,7 +246,7 @@ async fn simulate_database_get(_table: &str, user_id: u32) -> Result<Option<User
     }
 }
 
-async fn simulate_database_save(_table: &str, user: &User) -> Result<(), String> {
+fn simulate_database_save(_table: &str, user: &User) -> Result<(), String> {
     // Simulate validation
     if user.name.is_empty() {
         return Err("Name cannot be empty".to_string());

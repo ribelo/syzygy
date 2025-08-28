@@ -16,7 +16,7 @@
 //! # #[derive(Debug, Clone)] enum TestEvent { Increment }
 //! # #[derive(Debug, Clone)] enum TestEffect { Log }
 //! # #[derive(Debug, Default)] struct CounterModel { count: i32 }
-//! # fn counter_update(event: TestEvent, ctx: &mut EventContext<TestEvent, TestEffect, Storage<CounterModel, EmptyStorage>>) -> Command<TestEvent, TestEffect> {
+//! # fn counter_update(event: &TestEvent, ctx: &mut EventContext<TestEvent, TestEffect, Storage<CounterModel, EmptyStorage>>) -> Command<TestEvent, TestEffect> {
 //! #     let model: &mut CounterModel = ctx.model_mut();
 //! #     model.count += 1;
 //! #     Command::none()
@@ -44,7 +44,7 @@ use tracing::{Level, debug, span};
 
 /// Update function type that takes an event and a mutable EventContext
 pub type UpdateFn<Event, Effect, Storage> =
-    fn(event: Event, ctx: &mut EventContext<Event, Effect, Storage>) -> Command<Event, Effect>;
+    fn(event: &Event, ctx: &mut EventContext<Event, Effect, Storage>) -> Command<Event, Effect>;
 
 /// Core handles synchronous event processing and owns the model storage.
 ///
@@ -103,7 +103,7 @@ where
     ///
     /// This is the main entry point for event processing. It updates the storage
     /// and returns a Command describing any effects to execute.
-    pub fn handle_event(&mut self, event: Event) -> Command<Event, Effect> {
+    pub fn handle_event(&mut self, event: &Event) -> Command<Event, Effect> {
         #[cfg(feature = "tracing")]
         let _span = span!(Level::DEBUG, "handle_event").entered();
 
@@ -139,7 +139,7 @@ where
         while let Some(event) = self.event_queue.pop_front() {
             processed_any = true;
 
-            let command = self.handle_event(event);
+            let command = self.handle_event(&event);
             self.command_buffer.push(command);
         }
 
@@ -252,7 +252,7 @@ mod tests {
     }
 
     fn counter_update(
-        event: TestEvent,
+        event: &TestEvent,
         ctx: &mut EventContext<TestEvent, TestEffect, Storage<CounterModel, EmptyStorage>>,
     ) -> Command<TestEvent, TestEffect> {
         let model: &mut CounterModel = ctx.model_mut();
@@ -276,7 +276,7 @@ mod tests {
         let (mut core, _) = Core::new(counter_update, storage);
 
         // Test event handling
-        let _command = core.handle_event(TestEvent::Increment);
+        let _command = core.handle_event(&TestEvent::Increment);
 
         // Verify model was updated (using new model() API)
         let model: &CounterModel = core.model();
@@ -368,14 +368,12 @@ mod tests {
             debug: bool,
         }
 
+        type TestStorage = Storage<ConfigModel, Storage<UserModel, Storage<CounterModel, EmptyStorage>>>;
+
         // Update function for the multi-model storage
         fn multi_model_update(
-            event: TestEvent,
-            ctx: &mut EventContext<
-                TestEvent,
-                TestEffect,
-                Storage<ConfigModel, Storage<UserModel, Storage<CounterModel, EmptyStorage>>>,
-            >,
+            event: &TestEvent,
+            ctx: &mut EventContext<TestEvent, TestEffect, TestStorage>,
         ) -> Command<TestEvent, TestEffect> {
             // Just update the counter for simplicity
             let counter: &mut CounterModel = ctx.model_mut();

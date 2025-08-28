@@ -741,7 +741,7 @@ async fn handle_persistence_effect(
 
 async fn handle_notification_effect(
     effect: AppEffect,
-    notification_service: &NotificationService,
+    _notification_service: &NotificationService,
     _sender: EventSender<AppEvent>,
 ) {
     if let AppEffect::SendNotification { notification, .. } = effect {

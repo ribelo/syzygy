@@ -101,7 +101,7 @@ where
     /// # #[derive(Debug, Default)] struct Model;
     /// # #[derive(Debug, Clone)] enum Event { Test }
     /// # #[derive(Debug, Clone)] enum Effect { Test }
-    /// fn my_update(event: Event, ctx: &mut EventContext<Event, Effect, Storage<Model, EmptyStorage>>) -> Command<Event, Effect> {
+    /// fn my_update(event: &Event, ctx: &mut EventContext<Event, Effect, Storage<Model, EmptyStorage>>) -> Command<Event, Effect> {
     ///     Command::none()
     /// }
     ///
@@ -245,7 +245,7 @@ mod tests {
     }
 
     fn test_update(
-        event: TestEvent,
+        event: &TestEvent,
         ctx: &mut crate::event_context::EventContext<
             TestEvent,
             TestEffect,
@@ -268,7 +268,7 @@ mod tests {
             .update(test_update)
             .build();
 
-        let _command = core.handle_event(TestEvent::Increment);
+        let _command = core.handle_event(&TestEvent::Increment);
         let model: &TestModel = core.storage().get();
         assert_eq!(model.count, 1);
     }
@@ -286,7 +286,7 @@ mod tests {
         }
 
         fn multi_update(
-            event: TestEvent,
+            event: &TestEvent,
             ctx: &mut crate::event_context::EventContext<
                 TestEvent,
                 TestEffect,
@@ -319,7 +319,7 @@ mod tests {
             .update(multi_update)
             .build();
 
-        core.handle_event(TestEvent::Increment);
+        core.handle_event(&TestEvent::Increment);
 
         let user: &UserModel = core.storage().get();
         let config: &ConfigModel = core.storage().get();

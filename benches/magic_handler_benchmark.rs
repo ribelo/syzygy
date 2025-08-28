@@ -66,7 +66,7 @@ fn create_test_storage() -> TestStorage {
     EmptyStorage
         .with_model(SessionModel {
             token: "abc123".to_string(),
-            expires_at: 1234567890,
+            expires_at: 1_234_567_890,
         })
         .with_model(MetricsModel {
             request_count: 1000,

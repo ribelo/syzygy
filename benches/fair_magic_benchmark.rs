@@ -290,15 +290,15 @@ async fn simulated_magic_handler(effect: TestEffect, ctx: EffectContext<TestEven
     let logger: &Arc<Mutex<LoggingService>> = ctx.resource();
 
     // Create magic handlers (simulating what the magic system generates)
-    let http_handler = HttpMagicHandler { http: Arc::clone(&http) };
-    let db_handler = DatabaseMagicHandler { db: Arc::clone(&db) };
+    let http_handler = HttpMagicHandler { http: Arc::clone(http) };
+    let db_handler = DatabaseMagicHandler { db: Arc::clone(db) };
     let log_handler = LoggingMagicHandler {
-        logger: Arc::clone(&logger),
+        logger: Arc::clone(logger),
     };
     let complex_handler = ComplexMagicHandler {
-        http: Arc::clone(&http),
-        db: Arc::clone(&db),
-        logger: Arc::clone(&logger),
+        http: Arc::clone(http),
+        db: Arc::clone(db),
+        logger: Arc::clone(logger),
     };
 
     // Simulated dispatch (like what effect_magic_handler! macro does)
@@ -451,10 +451,10 @@ fn bench_resource_lookup_overhead(c: &mut Criterion) {
                     let logger: &Arc<Mutex<LoggingService>> = ctx.resource();
 
                     // Create trait objects (magic system overhead)
-                    let http_handler = HttpMagicHandler { http: Arc::clone(&http) };
-                    let db_handler = DatabaseMagicHandler { db: db.clone() };
+                    let http_handler = HttpMagicHandler { http: Arc::clone(http) };
+                    let db_handler = DatabaseMagicHandler { db: Arc::clone(&db) };
                     let log_handler = LoggingMagicHandler {
-                        logger: logger.clone(),
+                        logger: Arc::clone(&logger),
                     };
 
                     black_box((http_handler, db_handler, log_handler));
