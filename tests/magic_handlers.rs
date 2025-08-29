@@ -7,7 +7,7 @@
 use syzygy::command::Command;
 use syzygy::event_context::EventContext;
 use syzygy::magic_handler::event_trigger;
-use syzygy::storage::EmptyStorage;
+use syzygy::storage::{EmptyStorage, StorageBuilder};
 
 // ============================================================================
 // Test Types
@@ -48,7 +48,7 @@ enum AppEffect {
 
 #[test]
 fn test_event_only_handler() {
-    let mut storage = EmptyStorage.with_model(UserModel::default());
+    let mut storage = EmptyStorage::new().with_model(UserModel::default());
     let ctx = EventContext::<AppEvent, AppEffect, _>::new(&mut storage);
 
     fn test_handler(event: AppEvent) -> Command<AppEvent, AppEffect> {
@@ -71,7 +71,7 @@ fn test_event_only_handler() {
 
 #[test]
 fn test_event_with_model_mut_extraction() {
-    let mut storage = EmptyStorage.with_model(UserModel {
+    let mut storage = EmptyStorage::new().with_model(UserModel {
         name: "Dave".to_string(),
         count: 99,
     });
@@ -106,7 +106,7 @@ fn test_event_with_model_mut_extraction() {
 
 #[test]
 fn test_magic_handler_flexibility() {
-    let mut storage = EmptyStorage.with_model(UserModel::default());
+    let mut storage = EmptyStorage::new().with_model(UserModel::default());
     let ctx = EventContext::<AppEvent, AppEffect, _>::new(&mut storage);
 
     fn test_handler(event: AppEvent) -> Command<AppEvent, AppEffect> {
@@ -136,7 +136,7 @@ fn test_magic_handler_flexibility() {
 #[test]
 fn test_event_handler_with_multiple_model_extraction() {
     // Setup storage with multiple models
-    let mut event_storage = EmptyStorage
+    let mut event_storage = EmptyStorage::new()
         .with_model(UserModel {
             name: "initial".to_string(),
             count: 0,

@@ -16,6 +16,7 @@
 
 use std::collections::HashMap;
 use syzygy::prelude::*;
+use syzygy::executor::{TokioExecutor, ExecutorStorage, EmptyExecutorStorage};
 
 // ============================================================================
 // Domain Models - Separate concerns
@@ -762,13 +763,13 @@ async fn handle_notification_effect(
 
 async fn handle_background_operation(
     effect: AppEffect,
-    ctx: EffectContext<AppEvent, ResourceStorage>,
+    ctx: EffectContext<AppEvent, ResourceStorage, ExecutorStorage<TokioExecutor<AppEvent>, EmptyExecutorStorage>>,
 ) {
     if let AppEffect::StartBackgroundOperation { operation_id, task_type } = effect {
         let operation_id_clone = operation_id.clone();
         
         let ctx_clone = ctx.clone();
-        ctx.spawn(async move {
+        ctx.executor::<TokioExecutor<AppEvent>, _>().spawn(async move {
             println!("Background operation {} started ({})", operation_id_clone, task_type);
             
             // Simulate work with progress updates
@@ -809,7 +810,10 @@ fn handle_logging_effect(effect: AppEffect) {
 }
 
 // Main effect dispatcher
-async fn handle_effects(effect: AppEffect, ctx: EffectContext<AppEvent, ResourceStorage>) {
+async fn handle_effects(
+    effect: AppEffect, 
+    ctx: EffectContext<AppEvent, ResourceStorage, ExecutorStorage<TokioExecutor<AppEvent>, EmptyExecutorStorage>>
+) {
     let sender = EventSender(ctx.event_sender().unwrap());
     
     match &effect {
@@ -872,10 +876,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             default_ttl: 3600, // 1 hour
             max_size: 1000,
         })
-        .update(update_app)
+        .executor(TokioExecutor::new())
+        .event_handler(update_app)
+        .effect_handler(handle_effects)
         .build();
-    
-    let shell = shell.with_effect_handler(handle_effects);
     let mut runner = Runner::new(core, shell);
     
     println!("Starting application workflow:\n");

@@ -180,10 +180,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Build the application
     let (core, shell) = Syzygy::builder::<WorkflowEvent, WorkflowEffect>()
         .model(WorkflowModel::default())
-        .update(workflow_update)
+        .event_handler(workflow_update)
+        .effect_handler(create_effect_handler)
         .build();
-
-    let shell = shell.with_effect_handler(create_effect_handler);
     let mut runner = Runner::new(core, shell);
 
     // Start the workflow

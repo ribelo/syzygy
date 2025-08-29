@@ -6,7 +6,7 @@
 //!
 //! ## Key Components
 //! - `Core` - The main struct that owns the application state (models) and processes events.
-//! - `UpdateFn` - A type alias for the function that contains the application's update logic.
+//! - `EventHandler` - A type alias for the function that contains the application's update logic.
 //!
 //! ## Example
 //! ```rust
@@ -22,7 +22,7 @@
 //! #     Command::none()
 //! # }
 //! // In a real application, you would build the core like this:
-//! let storage = EmptyStorage.with_model(CounterModel::default());
+//! let storage = EmptyStorage::new().with_model(CounterModel::default());
 //! let (mut core, sender) = Core::new(counter_update, storage);
 //!
 //! // Send an event to the core
@@ -43,7 +43,7 @@ use std::collections::VecDeque;
 use tracing::{Level, debug, span};
 
 /// Update function type that takes an event and a mutable EventContext
-pub type UpdateFn<Event, Effect, Storage> =
+pub type EventHandler<Event, Effect, Storage> =
     fn(event: Event, ctx: &mut EventContext<Event, Effect, Storage>) -> Command<Event, Effect>;
 
 /// Core handles synchronous event processing and owns the model storage.
@@ -57,7 +57,7 @@ where
     Effect: Clone + Send + 'static,
 {
     /// The update function that processes events
-    update_fn: UpdateFn<Event, Effect, Storage>,
+    update_fn: EventHandler<Event, Effect, Storage>,
 
     /// The storage containing all models - owned and mutable
     models: Storage,
@@ -82,7 +82,7 @@ where
 {
     /// Create a new Core with update function and storage
     pub fn new(
-        update_fn: UpdateFn<Event, Effect, Storage>,
+        update_fn: EventHandler<Event, Effect, Storage>,
         models: Storage,
     ) -> (Self, Sender<Event>) {
         let (event_tx, event_rx) = unbounded();
@@ -233,7 +233,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::storage::{EmptyStorage, Storage};
+    use crate::storage::{EmptyStorage, Storage, StorageBuilder};
 
     #[derive(Debug, Clone)]
     enum TestEvent {
@@ -271,7 +271,7 @@ mod tests {
 
     #[test]
     fn test_core_basic_functionality() {
-        let storage = EmptyStorage.with_model(CounterModel { count: 0 });
+        let storage = EmptyStorage::new().with_model(CounterModel { count: 0 });
 
         let (mut core, _) = Core::new(counter_update, storage);
 
@@ -292,7 +292,7 @@ mod tests {
 
     #[test]
     fn test_core_event_processing() {
-        let storage = EmptyStorage.with_model(CounterModel { count: 0 });
+        let storage = EmptyStorage::new().with_model(CounterModel { count: 0 });
 
         let (mut core, sender) = Core::new(counter_update, storage);
 
@@ -314,7 +314,7 @@ mod tests {
 
     #[test]
     fn test_core_pending_events() {
-        let storage = EmptyStorage.with_model(CounterModel { count: 0 });
+        let storage = EmptyStorage::new().with_model(CounterModel { count: 0 });
 
         let (mut core, sender) = Core::new(counter_update, storage);
 
@@ -332,7 +332,7 @@ mod tests {
 
     #[test]
     fn test_core_model_access() {
-        let storage = EmptyStorage.with_model(CounterModel { count: 42 });
+        let storage = EmptyStorage::new().with_model(CounterModel { count: 42 });
         let (mut core, _) = Core::new(counter_update, storage);
 
         // Test immutable model access
@@ -390,7 +390,7 @@ mod tests {
         }
 
         // Create storage with multiple models
-        let storage = EmptyStorage
+        let storage = EmptyStorage::new()
             .with_model(CounterModel { count: 10 })
             .with_model(UserModel {
                 name: "Alice".to_string(),
@@ -444,7 +444,7 @@ mod tests {
 
     #[test]
     fn test_core_model_vs_storage_api() {
-        let storage = EmptyStorage.with_model(CounterModel { count: 0 });
+        let storage = EmptyStorage::new().with_model(CounterModel { count: 0 });
         let (mut core, _) = Core::new(counter_update, storage);
 
         // Test both APIs work equivalently

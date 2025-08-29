@@ -295,12 +295,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Build the system (auto-wired by default)
     let (core, shell) = Syzygy::builder::<TodoEvent, TodoEffect>()
         .model(TodoModel::default())
-        .update(todo_update)
+        .event_handler(todo_update)
+        .effect_handler(handle_effect)
         .build();
 
     // Set up the effect handler
     let event_sender = core.event_sender();
-    let shell = shell.with_effect_handler(handle_effect);
 
     // Use Runner for automatic orchestration
     let mut runner = Runner::new(core, shell);
@@ -340,12 +340,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // Build the system (auto-wired by default)
         let (core, shell) = Syzygy::builder::<TodoEvent, TodoEffect>()
             .model(TodoModel::default())
-            .update(todo_update)
+            .event_handler(todo_update)
+            .effect_handler(handle_effect)
             .build();
 
         // Set up the effect handler
         let event_sender = core.event_sender();
-        let shell = shell.with_effect_handler(handle_effect);
 
         // Use Runner for automatic orchestration
         let mut runner = Runner::new(core, shell);
@@ -383,12 +383,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // Build the system (auto-wired by default)
         let (core, shell) = Syzygy::builder::<TodoEvent, TodoEffect>()
             .model(TodoModel::default())
-            .update(todo_update)
+            .event_handler(todo_update)
+            .effect_handler(handle_effect)
             .build();
 
         // Set up the effect handler
         let event_sender = core.event_sender();
-        let shell = shell.with_effect_handler(handle_effect);
 
         // Use Runner for automatic orchestration
         let mut runner = Runner::new(core, shell);

@@ -93,7 +93,9 @@ async fn handle_effects(
     match effect {
         AppEffect::HttpRequest { url } => {
             println!("🌐 Fetching: {}", url);
-            // Simulate HTTP request
+            
+            // For now, just do the async work directly without spawning
+            // TODO: This example will be updated when executor integration is complete
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
             
             let _ = ctx.send_event(AppEvent::DataLoaded { 
@@ -167,6 +169,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 Syzygy follows **The Elm Architecture** (TEA) with clear separation between pure and impure code:
 
+```
+┌─────────────┐    Effects     ┌──────────────┐    Spawning    ┌───────────────┐
+│    Shell    ├───────────────►│    Handler   ├───────────────►│   Executor    │
+│ (Distributes│                │  (Processes  │                │  (Spawns &    │
+│  Effects)   │                │   Effects)   │                │   Runtime)    │
+└─────────────┘                └──────────────┘                └───────────────┘
+```
+
 ### Core (Pure)
 - Manages application state synchronously
 - Processes events through `event_handler()` function
@@ -174,10 +184,16 @@ Syzygy follows **The Elm Architecture** (TEA) with clear separation between pure
 - No I/O, no async, no side effects
 
 ### Shell (Impure)  
-- Executes async effects (HTTP, database, timers, etc.)
-- Converts effect results back to events
+- Catches effects from Core commands
+- Distributes effects to appropriate handlers
 - Routes events back to Core for processing
-- Handles all side effects and I/O
+- Orchestrates the async execution flow
+
+### Executors (Runtime Services)
+- Provide safe task spawning with cleanup guarantees
+- Handle runtime services (timeouts, scheduling)
+- Manage resources and execution contexts  
+- Focus purely on spawning - no effect queue management
 
 ### Commands
 - Simple data structures describing effects to run  
@@ -311,34 +327,35 @@ Syzygy achieves high performance through:
 - **Memory safety guarantees** - All spawned tasks cancelled on context drop
 - **Efficient composition** - Commands can be combined with minimal overhead
 
-### EffectContext Performance
+### Executor Performance
 
-The EffectContext provides safe, high-performance task spawning:
+Executors provide safe, high-performance task spawning with cleanup guarantees:
 
 ```rust
 use syzygy::prelude::*;
 
-// Effect handler with high-performance task spawning
-fn handle_effect(effect: MyEffect, ctx: EffectContext<MyEvent>) -> BoxFuture<'static, ()> {
-    Box::pin(async move {
-        match effect {
-            MyEffect::ProcessBatch { items } => {
-                // Spawn multiple tasks safely - all will be cancelled on context drop
-                for item in items {
-                    ctx.spawn(async move {
-                        process_item(item).await;
-                    }).unwrap();
-                }
+// Effect handler with high-performance task spawning via executor
+async fn handle_effect(effect: MyEffect, ctx: EffectContext<MyEvent, MyResources, MyExecutors>) {
+    match effect {
+        MyEffect::ProcessBatch { items } => {
+            // Get the executor from context
+            let executor: &TokioExecutor<MyEvent> = ctx.executor();
+            
+            // Spawn multiple tasks safely - all will be cancelled on executor drop
+            for item in items {
+                executor.spawn(async move {
+                    process_item(item).await;
+                }).unwrap();
             }
         }
-    })
+    }
 }
 ```
 
 Key performance characteristics:
 - **Task spawning**: ~4ns per task (24x faster than previous implementation)
-- **Memory safety**: Zero orphaned tasks through automatic cancellation
-- **Runtime support**: Optimized for tokio, compatible with all async runtimes
+- **Memory safety**: Zero orphaned tasks through automatic cancellation on executor drop
+- **Clean architecture**: Shell distributes effects, executors handle spawning
 
 ## Runtime Support
 

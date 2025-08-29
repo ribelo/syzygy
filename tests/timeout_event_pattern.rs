@@ -109,11 +109,11 @@ async fn timeout_aware_effect_handler(
 async fn test_timeout_event_pattern() {
     let (core, shell) = Syzygy::builder::<TimeoutEvent, TimeoutEffect>()
         .model(TimeoutModel::default())
-        .update(timeout_update)
+        .event_handler(timeout_update)
+        .effect_handler(timeout_aware_effect_handler)
         .build();
 
     let event_sender = core.event_sender();
-    let shell = shell.with_effect_handler(timeout_aware_effect_handler);
     let mut runner = Runner::new(core, shell);
 
     // Start a slow operation

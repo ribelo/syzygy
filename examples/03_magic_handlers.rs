@@ -8,6 +8,7 @@
 //! - Clean handler composition
 
 use syzygy::prelude::*;
+use syzygy::executor::{TokioExecutor, ExecutorStorage, EmptyExecutorStorage};
 
 // ============================================================================
 // Models and Resources
@@ -184,7 +185,7 @@ async fn handle_with_database(
 /// Effect handler with full context access
 fn handle_with_full_context(
     effect: AppEffect,
-    ctx: EffectContext<AppEvent, Storage<DatabaseConfig, EmptyStorage>>,
+    ctx: EffectContext<AppEvent, Storage<DatabaseConfig, EmptyStorage>, ExecutorStorage<TokioExecutor<AppEvent>, EmptyExecutorStorage>>,
 ) {
     if let AppEffect::SaveUser { email } = effect {
         let db_config: &DatabaseConfig = ctx.resource();
@@ -195,7 +196,7 @@ fn handle_with_full_context(
         );
 
         // Spawn background task
-        ctx.spawn(async move {
+        ctx.executor::<TokioExecutor<AppEvent>, _>().spawn(async move {
             println!("Background: Processing user save for {email}");
             #[cfg(feature = "tokio")]
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
@@ -241,7 +242,7 @@ fn update_app(
 
 async fn handle_effects(
     effect: AppEffect,
-    ctx: EffectContext<AppEvent, Storage<DatabaseConfig, EmptyStorage>>,
+    ctx: EffectContext<AppEvent, Storage<DatabaseConfig, EmptyStorage>, ExecutorStorage<TokioExecutor<AppEvent>, EmptyExecutorStorage>>,
 ) {
     match &effect {
         AppEffect::LogActivity { message } => {
@@ -283,10 +284,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             url: "postgresql://localhost/demo".to_string(),
             pool_size: 5,
         })
-        .update(update_app)
+        .executor(TokioExecutor::new())
+        .event_handler(update_app)
+        .effect_handler(handle_effects)
         .build();
-    
-    let shell = shell.with_effect_handler(handle_effects);
     let mut runner = Runner::new(core, shell);
     
     println!("Testing different magic handler patterns:\n");

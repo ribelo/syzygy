@@ -63,7 +63,7 @@ async fn test_effect_handler(effect: TestEffect, ctx: EffectContext<TestEvent, E
             #[cfg(all(feature = "async-std", not(feature = "tokio"), not(feature = "smol")))]
             async_std::task::sleep(duration).await;
 
-            // Send event back using AsyncContext
+            // Send event back using EffectContext
             let _ = ctx.send_event(TestEvent::Work);
         }
     }
@@ -74,10 +74,9 @@ async fn test_effect_handler(effect: TestEffect, ctx: EffectContext<TestEvent, E
 async fn test_tokio_runtime() {
     let (core, shell) = Syzygy::builder::<TestEvent, TestEffect>()
         .model(TestModel::default())
-        .update(test_update)
+        .event_handler(test_update)
+        .effect_handler(test_effect_handler)
         .build();
-
-    let shell = shell.with_effect_handler(test_effect_handler);
 
     let mut runner = Runner::new(core, shell);
     let event_sender = runner.core().event_sender();
@@ -105,10 +104,9 @@ fn test_smol_runtime() {
     smol::block_on(async {
         let (core, shell) = Syzygy::builder::<TestEvent, TestEffect>()
             .model(TestModel::default())
-            .update(test_update)
+            .event_handler(test_update)
+            .effect_handler(test_effect_handler)
             .build();
-
-        let shell = shell.with_effect_handler(test_effect_handler);
 
         let mut runner = Runner::new(core, shell);
         let event_sender = runner.core().event_sender();
@@ -137,10 +135,9 @@ fn test_async_std_runtime() {
     async_std::task::block_on(async {
         let (core, shell) = Syzygy::builder::<TestEvent, TestEffect>()
             .model(TestModel::default())
-            .update(test_update)
+            .event_handler(test_update)
+            .effect_handler(test_effect_handler)
             .build();
-
-        let shell = shell.with_effect_handler(test_effect_handler);
 
         let mut runner = Runner::new(core, shell);
         let event_sender = runner.core().event_sender();
@@ -169,10 +166,9 @@ fn test_async_std_runtime() {
 async fn test_auto_spawn_adapter() {
     let (core, shell) = Syzygy::builder::<TestEvent, TestEffect>()
         .model(TestModel::default())
-        .update(test_update)
+        .event_handler(test_update)
+        .effect_handler(test_effect_handler)
         .build();
-
-    let shell = shell.with_effect_handler(test_effect_handler);
 
     let mut runner = Runner::new(core, shell);
     let event_sender = runner.core().event_sender();
@@ -202,10 +198,9 @@ fn test_auto_spawn_with_smol() {
     smol::block_on(async {
         let (core, shell) = Syzygy::builder::<TestEvent, TestEffect>()
             .model(TestModel::default())
-            .update(test_update)
+            .event_handler(test_update)
+            .effect_handler(test_effect_handler)
             .build();
-
-        let shell = shell.with_effect_handler(test_effect_handler);
 
         let mut runner = Runner::new(core, shell);
         let event_sender = runner.core().event_sender();

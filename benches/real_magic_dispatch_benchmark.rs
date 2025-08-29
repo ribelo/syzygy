@@ -199,7 +199,7 @@ fn bench_dispatch_overhead(c: &mut Criterion) {
         b.iter(|| {
             rt.block_on(async {
                 let resources = create_test_resources();
-                let ctx = EffectContext::<(), TestResources>::new(None, resources);
+                let ctx = EffectContext::<(), TestResources>::new(None, resources, syzygy::executor::EmptyExecutorStorage);
 
                 for effect in &effects {
                     magic_dispatch(effect.clone(), ctx.clone()).await;
@@ -214,7 +214,7 @@ fn bench_dispatch_overhead(c: &mut Criterion) {
         b.iter(|| {
             rt.block_on(async {
                 let resources = create_test_resources();
-                let ctx = EffectContext::<(), TestResources>::new(None, resources);
+                let ctx = EffectContext::<(), TestResources>::new(None, resources, syzygy::executor::EmptyExecutorStorage);
 
                 for effect in &effects {
                     manual_dispatch(effect.clone(), &ctx).await;
@@ -235,7 +235,7 @@ fn bench_single_effect_dispatch(c: &mut Criterion) {
         b.iter(|| {
             rt.block_on(async {
                 let resources = create_test_resources();
-                let ctx = EffectContext::<(), TestResources>::new(None, resources);
+                let ctx = EffectContext::<(), TestResources>::new(None, resources, syzygy::executor::EmptyExecutorStorage);
                 let effect = TestEffect::FetchUserData { user_id: 1 };
 
                 magic_dispatch(effect, ctx).await;
@@ -248,7 +248,7 @@ fn bench_single_effect_dispatch(c: &mut Criterion) {
         b.iter(|| {
             rt.block_on(async {
                 let resources = create_test_resources();
-                let ctx = EffectContext::<(), TestResources>::new(None, resources);
+                let ctx = EffectContext::<(), TestResources>::new(None, resources, syzygy::executor::EmptyExecutorStorage);
                 let effect = TestEffect::FetchUserData { user_id: 1 };
 
                 manual_dispatch(effect, &ctx).await;
@@ -262,7 +262,7 @@ fn bench_single_effect_dispatch(c: &mut Criterion) {
         b.iter(|| {
             rt.block_on(async {
                 let resources = create_test_resources();
-                let ctx = EffectContext::<(), TestResources>::new(None, resources);
+                let ctx = EffectContext::<(), TestResources>::new(None, resources, syzygy::executor::EmptyExecutorStorage);
                 let effect = TestEffect::ComplexOperation {
                     id: 1,
                     data: "test".to_string(),
@@ -278,7 +278,7 @@ fn bench_single_effect_dispatch(c: &mut Criterion) {
         b.iter(|| {
             rt.block_on(async {
                 let resources = create_test_resources();
-                let ctx = EffectContext::<(), TestResources>::new(None, resources);
+                let ctx = EffectContext::<(), TestResources>::new(None, resources, syzygy::executor::EmptyExecutorStorage);
                 let effect = TestEffect::ComplexOperation {
                     id: 1,
                     data: "test".to_string(),
@@ -301,7 +301,7 @@ fn bench_resource_extraction_patterns(c: &mut Criterion) {
         b.iter(|| {
             rt.block_on(async {
                 let resources = create_test_resources();
-                let ctx = EffectContext::<(), TestResources>::new(None, resources);
+                let ctx = EffectContext::<(), TestResources>::new(None, resources, syzygy::executor::EmptyExecutorStorage);
                 let effect = TestEffect::FetchUserData { user_id: 1 };
 
                 // Simulate magic extraction (clone cost)
@@ -316,7 +316,7 @@ fn bench_resource_extraction_patterns(c: &mut Criterion) {
         b.iter(|| {
             rt.block_on(async {
                 let resources = create_test_resources();
-                let ctx = EffectContext::<(), TestResources>::new(None, resources);
+                let ctx = EffectContext::<(), TestResources>::new(None, resources, syzygy::executor::EmptyExecutorStorage);
                 let effect = TestEffect::FetchUserData { user_id: 1 };
 
                 // Manual extraction (reference cost)

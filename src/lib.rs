@@ -32,7 +32,7 @@
 //!     ctx: &mut EventContext<CounterEvent, CounterEffect, Storage<CounterModel, EmptyStorage>>,
 //! ) -> Command<CounterEvent, CounterEffect> {
 //!     let model: &mut CounterModel = ctx.model_mut();
-//!     
+//!
 //!     match event {
 //!         CounterEvent::Increment => {
 //!             model.count += 1;
@@ -51,7 +51,7 @@
 //!
 //! // 4. Handle side effects
 //! async fn handle_effects(
-//!     effect: CounterEffect, 
+//!     effect: CounterEffect,
 //!     _ctx: EffectContext<CounterEvent, EmptyStorage>
 //! ) {
 //!     match effect {
@@ -66,10 +66,9 @@
 //! # async fn main() -> Result<(), Box<dyn std::error::Error>> {
 //! let (core, shell) = Syzygy::builder()
 //!     .model(CounterModel::default())
-//!     .update(update_counter)
+//!     .event_handler(update_counter)
+//!     .effect_handler(handle_effects)
 //!     .build();
-//!
-//! let shell = shell.with_effect_handler(handle_effects);
 //! let mut runner = Runner::new(core, shell);
 //!
 //! // Send events and run
@@ -97,7 +96,7 @@
 //! let (core, shell) = Syzygy::builder()
 //!     .model(UserModel::default())     // Add multiple models
 //!     .model(ConfigModel::default())   // Type-safe composition
-//!     .update(update)
+//!     .event_handler(update)
 //!     .build();
 //! ```
 //!
@@ -295,7 +294,7 @@
 //! # type MyStorage = Storage<SessionModel, Storage<ConfigModel, Storage<UserModel, EmptyStorage>>>;
 //! # let storage: MyStorage = EmptyStorage.with_model(UserModel::default()).with_model(ConfigModel::default()).with_model(SessionModel::default());
 //! // Extract multiple models efficiently (30-41% faster than individual calls)
-//! let (user, config, session): (&UserModel, &ConfigModel, &SessionModel) = 
+//! let (user, config, session): (&UserModel, &ConfigModel, &SessionModel) =
 //!     storage.extract_bulk();
 //! ```
 //!
@@ -312,7 +311,7 @@
 //!     .model(MyModel::default())
 //!     .resource(Database { url: "postgres://...".to_string() })
 //!     .resource(HttpClient { base_url: "https://api.example.com".to_string() })
-//!     .update(update)
+//!     .event_handler(update)
 //!     .build();
 //! ```
 //!
@@ -377,12 +376,12 @@
 //!     fn test_counter_increment() {
 //!         let mut storage = EmptyStorage.with_model(CounterModel::default());
 //!         let mut ctx = EventContext::new(&mut storage);
-//!         
+//!
 //!         let command = update(CounterEvent::Increment, &mut ctx);
-//!         
+//!
 //!         let model: &CounterModel = storage.get();
 //!         assert_eq!(model.count, 1);
-//!         
+//!
 //!         // Verify command contains expected effect
 //!         let effects: Vec<_> = command.into_iter()
 //!             .filter_map(|step| match step {
@@ -425,6 +424,9 @@ pub mod spawn;
 // Storage system with UnsafeCell-based chains
 pub mod storage;
 
+// Executor system for specialized effect handling
+pub mod executor;
+
 // Magic handler system for automatic parameter extraction
 pub mod extract;
 pub mod magic_handler;
@@ -438,7 +440,7 @@ pub mod prelude {
     pub use crate::command::{Command, CommandStep};
 
     // Core/Shell architecture
-    pub use crate::core::{Core, UpdateFn};
+    pub use crate::core::{Core, EventHandler};
     pub use crate::runner::{Runner, RunnerConfig, RunnerError};
     pub use crate::shell::{Shell, ShellConfig};
 
@@ -456,6 +458,9 @@ pub mod prelude {
 
     // Storage system
     pub use crate::storage::{Contains, EmptyStorage, Storage};
+
+    // Executor system
+    pub use crate::executor::{SpawnExecutor, ExecutorStorage, EmptyExecutorStorage, TokioExecutor};
 
     // Magic handler system
     pub use crate::extract::{EventSender, FromEffectContext, FromEventContext};

@@ -553,7 +553,7 @@ Syzygy achieves high performance through:
 - **Events are simple enums** - Minimal memory footprint
 - **Pure functions** - Compiler can optimize aggressively
 
-### High-Performance AsyncContext
+### High-Performance EffectContext
 - **24x faster task spawning** - Direct spawning without boxing overhead
 - **Memory safety** - Automatic task cancellation prevents leaks
 - **Batch operations** - Efficient handling of multiple tasks

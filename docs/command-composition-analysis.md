@@ -81,7 +81,7 @@ fn update(&self, event: Event, model: &mut Model) -> Command<Event, Effect> {
 ```rust
 // OLD: Command::race([cmd1, cmd2])
 // NEW: Use futures::select! in effect handlers
-async fn handle_effect(effect: Effect, ctx: AsyncContext<Event>) {
+async fn handle_effect(effect: Effect, ctx: EffectContext<Event>) {
     match effect {
         Effect::LoadWithTimeout { url, timeout_ms } => {
             use futures::future::{select, Either};
@@ -105,7 +105,7 @@ async fn handle_effect(effect: Effect, ctx: AsyncContext<Event>) {
 ## Why This Approach is Better
 
 ### Performance Benefits
-- **24x faster task spawning** in AsyncContext (4ns vs 97ns)
+- **24x faster task spawning** in EffectContext (4ns vs 97ns)
 - **Zero allocation** for typical commands (≤4 outputs)
 - **No async overhead** in command creation/composition
 - **Cache-friendly** SmallVec layout

@@ -29,7 +29,7 @@ mod tests {
 
 #[test]
 fn test_storage_mutable_access() {
-    let storage = EmptyStorage.with_model(Model1 {
+    let storage = EmptyStorage::new().with_model(Model1 {
         value: 10,
         active: false,
     });
@@ -47,7 +47,7 @@ fn test_storage_mutable_access() {
 
 #[test]
     fn test_storage_with_multiple_models() {
-    let storage = EmptyStorage
+    let storage = EmptyStorage::new()
         .with_model(Model1 {
             value: 1,
             active: true,
@@ -72,7 +72,7 @@ fn test_storage_mutable_access() {
 
 #[test]
 fn test_storage_contains_trait() {
-    let storage = EmptyStorage.with_model(Model1 {
+    let storage = EmptyStorage::new().with_model(Model1 {
         value: 1,
         active: true,
     });

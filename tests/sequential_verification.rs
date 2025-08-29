@@ -94,10 +94,10 @@ async fn test_sequential_effects_are_actually_sequential() {
     let (core, shell) = Syzygy::builder::<SequentialEvent, SequentialEffect>()
         .model(SequentialModel)
         .resource(resources)
-        .update(sequential_update)
+        .event_handler(sequential_update)
+        .effect_handler(sequential_effect_handler)
         .build();
 
-    let shell = shell.with_effect_handler(sequential_effect_handler);
     let mut runner = Runner::new(core, shell);
 
     // Record overall start time
@@ -183,10 +183,10 @@ async fn test_parallel_baseline_for_comparison() {
     let (core, shell) = Syzygy::builder::<SequentialEvent, SequentialEffect>()
         .model(SequentialModel)
         .resource(resources)
-        .update(sequential_update)
+        .event_handler(sequential_update)
+        .effect_handler(sequential_effect_handler)
         .build();
 
-    let shell = shell.with_effect_handler(sequential_effect_handler);
     let mut runner = Runner::new(core, shell);
 
     let overall_start = Instant::now();

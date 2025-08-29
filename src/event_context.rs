@@ -80,7 +80,7 @@ impl<'a, Event, Effect, Storage> EventContext<'a, Event, Effect, Storage> {
     /// # use syzygy::prelude::*;
     /// # use syzygy::event_context::EventContext;
     /// # #[derive(Debug, Default)] struct Model { count: i32 }
-    /// # let mut storage = EmptyStorage.with_model(Model::default());
+    /// # let mut storage = EmptyStorage::new().with_model(Model::default());
     /// let ctx = EventContext::<(), (), _>::new(&mut storage);
     /// let model: &Model = ctx.model();
     /// assert_eq!(model.count, 0);
@@ -103,7 +103,7 @@ impl<'a, Event, Effect, Storage> EventContext<'a, Event, Effect, Storage> {
     /// # use syzygy::prelude::*;
     /// # use syzygy::event_context::EventContext;
     /// # #[derive(Debug, Default)] struct Model { count: i32 }
-    /// # let mut storage = EmptyStorage.with_model(Model::default());
+    /// # let mut storage = EmptyStorage::new().with_model(Model::default());
     /// let ctx = EventContext::<(), (), _>::new(&mut storage);
     /// let model: &mut Model = ctx.model_mut();
     /// model.count += 1;
@@ -121,7 +121,7 @@ impl<'a, Event, Effect, Storage> EventContext<'a, Event, Effect, Storage> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::storage::EmptyStorage;
+    use crate::storage::{EmptyStorage, StorageBuilder};
 
     #[derive(Debug, Clone)]
     #[allow(dead_code)]
@@ -147,7 +147,7 @@ mod tests {
 
     #[test]
     fn test_event_context_single_model() {
-        let mut storage = EmptyStorage.with_model(CounterModel { count: 5 });
+        let mut storage = EmptyStorage::new().with_model(CounterModel { count: 5 });
         let ctx = EventContext::<TestEvent, TestEffect, _>::new(&mut storage);
 
         // Test immutable access
@@ -166,7 +166,7 @@ mod tests {
 
     #[test]
     fn test_event_context_multiple_models() {
-        let mut storage = EmptyStorage
+        let mut storage = EmptyStorage::new()
             .with_model(CounterModel { count: 10 })
             .with_model(UserModel {
                 name: "Alice".to_string(),

@@ -1,5 +1,6 @@
 use syzygy::command::CommandStep;
 use syzygy::prelude::*;
+use syzygy::storage::StorageBuilder;
 
 #[derive(Debug, Clone)]
 enum DemoEvent {
@@ -79,7 +80,7 @@ fn main() {
     println!("Monadic Command Composition Demo");
     println!("=================================");
 
-    let mut storage = syzygy::storage::EmptyStorage.with_model(DemoModel {
+    let mut storage = syzygy::storage::EmptyStorage::new().with_model(DemoModel {
         user_authenticated: true,
         ..Default::default()
     });
@@ -113,7 +114,7 @@ fn main() {
     }
 
     // Demonstrate data processing with filtering
-    let mut storage2 = syzygy::storage::EmptyStorage.with_model(DemoModel::default());
+    let mut storage2 = syzygy::storage::EmptyStorage::new().with_model(DemoModel::default());
     let mut ctx2 = EventContext::new(&mut storage2);
     let command2 = demo_update(
         DemoEvent::DataLoaded {

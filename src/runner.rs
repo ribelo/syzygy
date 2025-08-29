@@ -23,10 +23,9 @@
 //! // In a real application, you would build and run the system like this:
 //! let (core, shell) = Syzygy::builder()
 //!     .model(Model::default())
-//!     .update(update)
+//!     .event_handler(update)
+//!     .effect_handler(handle_effects)
 //!     .build();
-//!
-//! let shell = shell.with_effect_handler(handle_effects);
 //! let mut runner = Runner::new(core, shell);
 //!
 //! // Run the application indefinitely
@@ -37,7 +36,6 @@
 use std::time::Duration;
 
 use crate::core::Core;
-use crate::effect_handler::EffectHandler;
 use crate::error::{CoreError, ShellError};
 use crate::shell::Shell;
 use crate::spawn::Spawn;
@@ -72,22 +70,26 @@ impl Default for RunnerConfig {
 /// This solves Grug's complaint about manual event loop orchestration.
 /// Instead of users manually calling poll_events → process → execute → tick,
 /// Runner handles the proper sequencing automatically.
-pub struct Runner<Event, Effect, Storage, Resources = (), H = ()>
+pub struct Runner<Event, Effect, Storage, Resources = (), Executors = (), H = ()>
 where
     Event: Clone + Send + 'static,
     Effect: Clone + Send + 'static,
     Resources: Clone + Send + Sync + 'static,
+    H: crate::effect_handler::EffectHandler<Event, Effect, Resources, Executors> + Clone + 'static,
 {
     core: Core<Event, Effect, Storage>,
-    shell: Shell<Event, Effect, Resources, H>,
+    shell: Shell<Event, Effect, Resources, Executors, H>,
     config: RunnerConfig,
 }
 
-impl<Event, Effect, Storage, Resources, H> Runner<Event, Effect, Storage, Resources, H>
+impl<Event, Effect, Storage, Resources, Executors, H>
+    Runner<Event, Effect, Storage, Resources, Executors, H>
 where
     Event: Clone + Send + 'static,
     Effect: Clone + Send + 'static,
     Resources: Clone + Send + Sync + 'static,
+    Executors: Clone + Send + Sync + 'static,
+    H: crate::effect_handler::EffectHandler<Event, Effect, Resources, Executors> + Clone + 'static,
 {
     /// Create a new Runner with Core and Shell
     ///
@@ -99,14 +101,14 @@ where
     /// # #[derive(Debug, Clone)] enum Effect { Test }
     /// let (core, shell) = Syzygy::builder::<Event, Effect>()
     ///     .model(Model::default())
-    ///     .update(|_event: Event, _ctx| Command::none())
+    ///     .event_handler(|_event: Event, _ctx| Command::none())
     ///     .build();
     ///
     /// let runner = Runner::new(core, shell);
     /// ```
     pub fn new(
         core: Core<Event, Effect, Storage>,
-        shell: Shell<Event, Effect, Resources, H>,
+        shell: Shell<Event, Effect, Resources, Executors, H>,
     ) -> Self {
         Self {
             core,
@@ -118,7 +120,7 @@ where
     /// Create a new Runner with custom configuration
     pub fn with_config(
         core: Core<Event, Effect, Storage>,
-        shell: Shell<Event, Effect, Resources, H>,
+        shell: Shell<Event, Effect, Resources, Executors, H>,
         config: RunnerConfig,
     ) -> Self {
         Self {
@@ -133,7 +135,6 @@ where
     /// This will run until the shell is shut down or an error occurs.
     pub async fn run<S>(&mut self, spawner: S) -> Result<(), RunnerError>
     where
-        H: EffectHandler<Event, Effect, Resources> + Clone + Send + Sync + 'static,
         S: Spawn,
     {
         loop {
@@ -157,8 +158,7 @@ where
     /// Useful for testing or conditional execution.
     pub async fn run_until<F, S>(&mut self, mut condition: F, spawner: S) -> Result<(), RunnerError>
     where
-        F: FnMut(&Core<Event, Effect, Storage>, &Shell<Event, Effect, Resources, H>) -> bool,
-        H: EffectHandler<Event, Effect, Resources> + Clone + Send + Sync + 'static,
+        F: FnMut(&Core<Event, Effect, Storage>, &Shell<Event, Effect, Resources, Executors, H>) -> bool,
         S: Spawn,
     {
         let start_time = std::time::Instant::now();
@@ -203,7 +203,7 @@ where
     /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
     /// let (core, shell) = Syzygy::builder::<Event, Effect>()
     ///     .model(Model::default())
-    ///     .update(|_event: Event, _ctx| Command::none())
+    ///     .event_handler(|_event: Event, _ctx| Command::none())
     ///     .build();
     ///
     /// let mut runner = Runner::new(core, shell);
@@ -218,7 +218,6 @@ where
     #[allow(clippy::unused_async)]
     pub async fn tick<S>(&mut self, spawner: S) -> Result<bool, RunnerError>
     where
-        H: EffectHandler<Event, Effect, Resources> + Clone + Send + Sync + 'static,
         S: Spawn,
     {
         let mut did_work = false;
@@ -261,12 +260,12 @@ where
     }
 
     /// Get a reference to the Shell
-    pub fn shell(&self) -> &Shell<Event, Effect, Resources, H> {
+    pub fn shell(&self) -> &Shell<Event, Effect, Resources, Executors, H> {
         &self.shell
     }
 
     /// Get a mutable reference to the Shell
-    pub fn shell_mut(&mut self) -> &mut Shell<Event, Effect, Resources, H> {
+    pub fn shell_mut(&mut self) -> &mut Shell<Event, Effect, Resources, Executors, H> {
         &mut self.shell
     }
 
@@ -348,7 +347,8 @@ mod tests {
     async fn test_runner_basic() {
         let (core, shell) = Syzygy::builder::<TestEvent, TestEffect>()
             .model(TestModel { count: 0 })
-            .update(test_update)
+            .event_handler(test_update)
+            .effect_handler(|_e: TestEffect, _ctx| async {})
             .build();
 
         let event_sender = core.event_sender();
@@ -371,7 +371,8 @@ mod tests {
     async fn test_runner_until_condition() {
         let (core, shell) = Syzygy::builder::<TestEvent, TestEffect>()
             .model(TestModel { count: 0 })
-            .update(test_update)
+            .event_handler(test_update)
+            .effect_handler(|_e: TestEffect, _ctx| async {})
             .build();
 
         let event_sender = core.event_sender();

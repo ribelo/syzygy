@@ -123,11 +123,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .model(AppModel::default())
         .resource(HttpClient::new()) // Add HttpClient resource
         .resource(FileSystem::new()) // Add FileSystem resource
-        .update(app_update)
+        .event_handler(app_update)
+        .effect_handler(handle_effects)
         .build();
 
-    // Configure shell with effect handler
-    let shell = shell.with_effect_handler(handle_effects);
+    // Effect handler provided via builder
 
     // Create runner
     let mut runner = Runner::new(core, shell);

@@ -206,10 +206,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             language: "en".to_string(),
         })
         .model(SessionModel::default())
-        .update(update_app)
+        .event_handler(update_app)
+        .effect_handler(handle_effects)
         .build();
-    
-    let shell = shell.with_effect_handler(handle_effects);
     let mut runner = Runner::new(core, shell);
     
     // Print initial state

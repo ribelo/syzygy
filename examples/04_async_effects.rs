@@ -13,6 +13,7 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 use syzygy::prelude::*;
+use syzygy::executor::{TokioExecutor, ExecutorStorage, EmptyExecutorStorage};
 
 // ============================================================================
 // Application State
@@ -311,7 +312,7 @@ fn handle_cache_operation(
 
 fn handle_parallel_tasks(
     effect: AppEffect,
-    ctx: EffectContext<AppEvent, ResourceStorage>,
+    ctx: EffectContext<AppEvent, ResourceStorage, ExecutorStorage<TokioExecutor<AppEvent>, EmptyExecutorStorage>>,
 ) {
     if let AppEffect::ParallelTasks { task_ids } = effect {
         println!("Starting {} parallel tasks", task_ids.len());
@@ -330,7 +331,7 @@ fn handle_parallel_tasks(
                     result,
                 });
             };
-            ctx.spawn(task).unwrap();
+            ctx.executor::<TokioExecutor<AppEvent>, _>().spawn(task).unwrap();
         }
     }
 }
@@ -356,7 +357,10 @@ async fn handle_delayed_task(
 // Main Effect Dispatcher
 // ============================================================================
 
-async fn handle_effects(effect: AppEffect, ctx: EffectContext<AppEvent, ResourceStorage>) {
+async fn handle_effects(
+    effect: AppEffect, 
+    ctx: EffectContext<AppEvent, Storage<CacheManager, Storage<DatabasePool, Storage<HttpClient, EmptyStorage>>>, ExecutorStorage<TokioExecutor<AppEvent>, EmptyExecutorStorage>>
+) {
     let sender = EventSender(ctx.event_sender().unwrap());
     
     match &effect {
@@ -396,10 +400,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .resource(HttpClient::new("https://api.example.com".to_string()))
         .resource(DatabasePool::new(3))
         .resource(CacheManager::new())
-        .update(update_app)
+        .executor(TokioExecutor::new())
+        .event_handler(update_app)
+        .effect_handler(handle_effects)
         .build();
-    
-    let shell = shell.with_effect_handler(handle_effects);
     let mut runner = Runner::new(core, shell);
     
     println!("Starting various async tasks:\n");

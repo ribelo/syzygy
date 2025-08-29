@@ -1,238 +1,75 @@
-//! # EffectContext - Safe and fast task spawning for effect handlers
+//! # EffectContext - Container for executors and resources
 //!
-//! This module provides the `EffectContext`, a component that gives effect handlers
-//! safe access to resources and the ability to spawn tasks. It ensures that any
-//! tasks spawned within an effect handler are properly managed and cleaned up.
+//! This module provides the `EffectContext`, a container that gives effect handlers
+//! access to executors and resources. Executors handle task spawning and runtime
+//! operations, while the context provides type-safe access to them.
 //!
 //! ## Key Components
-//! - `EffectContext` - The main struct that provides services to effect handlers.
+//! - `EffectContext` - Container for executors and resources with event sending capability.
 //!
 //! ## Example
 //! ```rust
 //! # use syzygy::prelude::*;
-//! # use std::time::Duration;
 //! # #[derive(Debug, Clone)] enum TestEvent { Done }
 //! # #[derive(Debug, Clone)] enum TestEffect { PerformAsyncWork }
-//! async fn handle_effects(effect: TestEffect, ctx: EffectContext<TestEvent, ()>) {
+//! async fn handle_effects(effect: TestEffect, ctx: EffectContext<TestEvent, (), ()>) {
 //!     if let TestEffect::PerformAsyncWork = effect {
-//!         // Spawn a task that will be cancelled if the context is dropped.
-//!         ctx.clone().spawn(async move {
-//!             tokio::time::sleep(Duration::from_millis(100)).await;
+//!         // Get executor and use it to spawn tasks
+//!         let executor = ctx.executor::<MyExecutor>();
+//!         executor.spawn(async move {
+//!             // Work happens here
 //!             let _ = ctx.send_event(TestEvent::Done);
-//!         }).unwrap();
+//!         }).await;
 //!     }
 //! }
 //! ```
 //!
-//! This provides controlled task spawning within effect handlers with safety guarantees:
-//! - All spawned tasks are cancelled when context is dropped
-//! - 24x faster than the previous implementation (4ns vs 97ns per spawn)
-//! - Hard task cancellation with tokio, cooperative cancellation with other runtimes
-//! - Zero mutex locks in the spawn hot path for maximum performance
+//! This provides clean separation of concerns:
+//! - EffectContext holds executors and resources
+//! - Executors handle spawning and provide runtime services
+//! - Resources provide shared data access
+//! - Event sending bridges back to the Core
 
-use crate::error::ShellError;
-use crate::task::TaskId;
-use crate::timer::{Time, time};
+use crate::{error::ShellError, executor::EmptyExecutorStorage, storage::EmptyStorage};
 use crossbeam_channel::Sender;
-use smallvec::SmallVec;
-use std::future::Future;
-use std::sync::Arc;
-use std::time::Duration;
 
-/// EffectContext provides controlled task spawning and resource access within effect handlers
+/// EffectContext provides access to executors and resources within effect handlers
 ///
-/// This context ensures all spawned tasks are tracked and properly cleaned up
-/// when the effect handler completes. Key features:
-/// - Tasks are cancelled on context drop (prevents orphaned tasks)
-/// - Uses tokio::AbortHandle for hard task cancellation with tokio runtime
-/// - Cooperative cancellation for other runtimes (best effort)
-/// - High performance: 24x faster spawning than previous implementation
+/// This context is a simple container that holds executors and resources,
+/// allowing effect handlers to access them in a type-safe manner. Key features:
 /// - Type-safe resource access via `resource()` method
+/// - Type-safe executor access via `executor()` method
+/// - Event sending capability to communicate back to Core
+/// - Pure container - no spawning or runtime functionality
 ///
-/// SAFETY GUARANTEE: All tasks spawned through this context will be
-/// cancelled when the context is dropped, preventing memory safety issues.
-pub struct EffectContext<Event, Resources = crate::storage::EmptyStorage> {
+/// Executors handle all spawning and runtime operations.
+pub struct EffectContext<Event, Resources = EmptyStorage, Executors = EmptyExecutorStorage> {
     /// Channel to send events back to Core
     event_tx: Option<Sender<Event>>,
-    /// Runtime implementation for time operations  
-    runtime: Time,
-    /// Task group for safe cancellation on drop
-    task_group: Arc<TaskGroup>,
     /// Resources available to effect handlers (stored directly, user controls Arc/Mutex)
     resources: Resources,
+    /// Executors available to effect handlers
+    executors: Executors,
 }
 
-/// Task group that tracks spawned tasks for safe cleanup
-struct TaskGroup {
-    #[cfg(feature = "tokio")]
-    abort_handles: std::sync::Mutex<Vec<tokio::task::AbortHandle>>,
-
-    #[cfg(not(feature = "tokio"))]
-    shutdown_signal: Arc<std::sync::atomic::AtomicBool>,
-}
-
-impl TaskGroup {
-    fn new() -> Self {
-        Self {
-            #[cfg(feature = "tokio")]
-            abort_handles: std::sync::Mutex::new(Vec::new()),
-
-            #[cfg(not(feature = "tokio"))]
-            shutdown_signal: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-        }
-    }
-
-    #[cfg(feature = "tokio")]
-    fn add_abort_handle(&self, handle: tokio::task::AbortHandle) {
-        if let Ok(mut handles) = self.abort_handles.lock() {
-            handles.push(handle);
-        }
-    }
-
-    #[cfg(not(feature = "tokio"))]
-    fn is_shutting_down(&self) -> bool {
-        self.shutdown_signal
-            .load(std::sync::atomic::Ordering::Relaxed)
-    }
-
-    #[cfg(not(feature = "tokio"))]
-    fn shutdown_signal(&self) -> Arc<std::sync::atomic::AtomicBool> {
-        self.shutdown_signal.clone()
-    }
-}
-
-impl Drop for TaskGroup {
-    fn drop(&mut self) {
-        #[cfg(feature = "tokio")]
-        {
-            if let Ok(handles) = self.abort_handles.lock() {
-                for handle in handles.iter() {
-                    handle.abort(); // Hard cancel all spawned tasks
-                }
-            }
-        }
-
-        #[cfg(not(feature = "tokio"))]
-        {
-            self.shutdown_signal
-                .store(true, std::sync::atomic::Ordering::Relaxed);
-            // Tasks should check this signal and exit gracefully
-        }
-    }
-}
-
-impl<Event, Resources> EffectContext<Event, Resources>
+impl<Event, Resources, Executors> EffectContext<Event, Resources, Executors>
 where
     Event: Send + 'static,
     Resources: Clone + Send + Sync + 'static,
+    Executors: Clone + Send + Sync + 'static,
 {
-    /// Create a new EffectContext with runtime detection
+    /// Create a new EffectContext
     #[must_use]
-    pub fn new(event_tx: Option<Sender<Event>>, resources: Resources) -> Self {
-        Self {
-            event_tx,
-            runtime: time(),
-            task_group: Arc::new(TaskGroup::new()),
-            resources,
-        }
-    }
-
-    /// Create a new EffectContext with explicit runtime
-    #[must_use]
-    pub fn with_runtime(
+    pub fn new(
         event_tx: Option<Sender<Event>>,
-        runtime: Time,
         resources: Resources,
+        executors: Executors,
     ) -> Self {
         Self {
             event_tx,
-            runtime,
-            task_group: Arc::new(TaskGroup::new()),
             resources,
+            executors,
         }
-    }
-
-    /// Spawn a tracked task that will be cleaned up on shutdown
-    ///
-    /// SAFETY GUARANTEE: All tasks spawned through this method will be cancelled
-    /// when the EffectContext is dropped, preventing orphaned tasks and memory safety issues.
-    ///
-    /// Performance: ~4ns per spawn (24x faster than previous implementation)
-    ///
-    /// Runtime-specific behavior:
-    /// - Tokio: Uses AbortHandle for hard task cancellation
-    /// - Others: Uses graceful shutdown signal (best effort)
-    pub fn spawn<F>(&self, future: F) -> Result<TaskId, ShellError>
-    where
-        F: Future<Output = ()> + Send + 'static,
-    {
-        let task_id = TaskId::new();
-
-        #[cfg(feature = "tokio")]
-        {
-            // Safe tokio implementation with hard cancellation
-            let handle = tokio::spawn(future);
-            self.task_group.add_abort_handle(handle.abort_handle());
-        }
-
-        #[cfg(not(feature = "tokio"))]
-        {
-            // Best-effort graceful shutdown for other runtimes
-            if self.task_group.is_shutting_down() {
-                return Err(ShellError::TaskTrackerClosed);
-            }
-
-            let shutdown = self.task_group.shutdown_signal();
-            let safe_future = async move {
-                // Cooperative cancellation check
-                if shutdown.load(std::sync::atomic::Ordering::Relaxed) {
-                    return;
-                }
-                future.await;
-            };
-
-            let spawner = crate::spawn::spawner();
-            spawner.spawn(safe_future);
-        }
-
-        Ok(task_id)
-    }
-
-    /// Batch spawn for high-volume scenarios (>50 spawns)
-    ///
-    /// SAFETY GUARANTEE: All tasks in the batch will be cancelled when context drops.
-    /// Uses stack allocation with SmallVec for efficiency.
-    pub fn spawn_batch<I>(&self, futures: I) -> Result<Vec<TaskId>, ShellError>
-    where
-        I: IntoIterator,
-        I::Item: Future<Output = ()> + Send + 'static,
-    {
-        // Stack allocate for <=64 tasks to avoid heap allocation
-        let mut task_ids = SmallVec::<[TaskId; 64]>::new();
-
-        for future in futures {
-            // Use the safe spawn method for each task
-            let task_id = self.spawn(future)?;
-            task_ids.push(task_id);
-        }
-
-        Ok(task_ids.into_vec())
-    }
-
-    /// Spawn a task with timeout
-    pub fn spawn_with_timeout<F>(&self, duration: Duration, future: F) -> Result<TaskId, ShellError>
-    where
-        F: Future<Output = ()> + Send + 'static,
-    {
-        let runtime = self.runtime;
-        let timeout_future = async move {
-            let timeout_result = runtime.timeout(duration, Box::pin(future)).await;
-            if timeout_result.is_err() {
-                // Task timed out - could send timeout event here
-            }
-        };
-
-        self.spawn(timeout_future)
     }
 
     /// Send an event back to the Core
@@ -243,12 +80,6 @@ where
         } else {
             Err(ShellError::EventChannelClosed)
         }
-    }
-
-    /// Get the current runtime implementation
-    #[must_use]
-    pub fn runtime(&self) -> Time {
-        self.runtime
     }
 
     /// Get immutable reference to a specific resource by type
@@ -270,6 +101,25 @@ where
         self.resources.get()
     }
 
+    /// Get immutable reference to a specific executor by type
+    ///
+    /// This is a convenience method that delegates to the executors' get() method.
+    /// The type must exist in the executors chain for this to compile.
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// let executor: &TokioExecutor<Event, Effect> = ctx.executor();
+    /// // Or with explicit type:
+    /// let executor = ctx.executor::<TokioExecutor<Event, Effect>>();
+    /// ```
+    #[must_use]
+    pub fn executor<T, Index>(&self) -> &T
+    where
+        Executors: crate::storage::Selector<T, Index>,
+    {
+        self.executors.get()
+    }
+
     /// Get a clone of the event sender if available
     ///
     /// This is useful for magic handlers that need to send events
@@ -287,16 +137,16 @@ where
     }
 }
 
-impl<Event, Resources> Clone for EffectContext<Event, Resources>
+impl<Event, Resources, Executors> Clone for EffectContext<Event, Resources, Executors>
 where
     Resources: Clone,
+    Executors: Clone,
 {
     fn clone(&self) -> Self {
         Self {
             event_tx: self.event_tx.clone(),
-            runtime: self.runtime,
-            task_group: Arc::clone(&self.task_group), // Share the same task group for cleanup
-            resources: self.resources.clone(),        // User-controlled clone semantics
+            resources: self.resources.clone(), // User-controlled clone semantics
+            executors: self.executors.clone(), // User-controlled clone semantics
         }
     }
 }
@@ -305,44 +155,45 @@ where
 mod tests {
     use super::*;
 
-    #[cfg(feature = "tokio")]
-    #[tokio::test]
-    async fn test_async_context_zero_cost() {
+    #[test]
+    fn test_context_creation() {
+        use crate::executor::EmptyExecutorStorage;
         use crate::storage::EmptyStorage;
-        let resources = EmptyStorage;
-        let ctx: EffectContext<()> = EffectContext::new(None, resources);
 
-        // Test zero-cost spawn (returns immediately)
-        let _id1 = ctx.spawn(async {}).unwrap();
-        let _id2 = ctx.spawn(async {}).unwrap();
-
-        // Spawns happen immediately with zero-cost approach
-        // No pending tasks to track
-    }
-
-    #[cfg(feature = "tokio")]
-    #[tokio::test]
-    async fn test_batch_spawn() {
-        use crate::storage::EmptyStorage;
-        let resources = EmptyStorage;
-        let ctx: EffectContext<()> = EffectContext::new(None, resources);
-
-        // Test batch spawning
-        let futures = (0..5).map(|_| async {});
-        let task_ids = ctx.spawn_batch(futures).unwrap();
-
-        assert_eq!(task_ids.len(), 5);
-        // All spawned immediately with zero-cost approach
+        // Test that context creation is fast and simple
+        let resources = EmptyStorage::new();
+        let executors = EmptyExecutorStorage::default();
+        let _ctx: EffectContext<()> = EffectContext::new(None, resources, executors);
     }
 
     #[test]
-    fn test_context_creation_performance() {
+    fn test_context_clone() {
+        use crate::executor::EmptyExecutorStorage;
         use crate::storage::EmptyStorage;
-        // Test that context creation is fast (no heavy initialization)
-        for _ in 0..1000 {
-            let resources = EmptyStorage;
-            let _ctx: EffectContext<()> = EffectContext::new(None, resources);
-        }
-        // This test doesn't spawn anything, so no runtime required
+
+        let resources = EmptyStorage::new();
+        let executors = EmptyExecutorStorage::default();
+        let ctx: EffectContext<()> = EffectContext::new(None, resources, executors);
+
+        let _cloned = ctx.clone();
+    }
+
+    #[test]
+    fn test_event_sending() {
+        use crate::executor::EmptyExecutorStorage;
+        use crate::storage::EmptyStorage;
+        use crossbeam_channel;
+
+        let (tx, rx) = crossbeam_channel::unbounded();
+        let resources = EmptyStorage::new();
+        let executors = EmptyExecutorStorage::default();
+        let ctx = EffectContext::new(Some(tx), resources, executors);
+
+        // Send an event
+        ctx.send_event(42).unwrap();
+
+        // Verify it was received
+        let received = rx.recv().unwrap();
+        assert_eq!(received, 42);
     }
 }

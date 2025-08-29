@@ -68,6 +68,9 @@ impl Time {
     }
 
     /// Create a timeout future for the specified duration and future
+    ///
+    /// Legacy boxed API kept for compatibility. Prefer the free `timeout` function
+    /// for zero-cost generic futures.
     #[must_use]
     pub fn timeout(
         self,
@@ -148,6 +151,48 @@ pub fn time() -> Time {
     #[cfg(not(any(feature = "tokio", feature = "smol", feature = "async-std")))]
     compile_error!(
         "syzygy requires at least one async runtime feature: enable 'tokio', 'smol', or 'async-std'"
+    );
+}
+
+/// Zero-cost timeout for generic futures (no boxing)
+///
+/// Uses compile-time runtime selection (tokio > smol > async-std).
+/// Prefer this over `Time::timeout` when possible.
+pub async fn timeout<F>(duration: Duration, future: F) -> TimeoutResult<()>
+where
+    F: Future<Output = ()> + Send + 'static,
+{
+    #[cfg(feature = "tokio")]
+    {
+        match tokio::time::timeout(duration, future).await {
+            Ok(()) => Ok(()),
+            Err(_) => Err(TimeoutError::new(duration)),
+        }
+    }
+
+    #[cfg(all(feature = "smol", not(feature = "tokio")))]
+    {
+        use futures::future::{Either, select};
+        futures::pin_mut!(future);
+        let timer = smol::Timer::after(duration);
+        futures::pin_mut!(timer);
+        match select(timer, future).await {
+            Either::Left(_) => Err(TimeoutError::new(duration)),
+            Either::Right(((), _)) => Ok(()),
+        }
+    }
+
+    #[cfg(all(feature = "async-std", not(feature = "tokio"), not(feature = "smol")))]
+    {
+        match async_std::future::timeout(duration, future).await {
+            Ok(()) => Ok(()),
+            Err(_) => Err(TimeoutError::new(duration)),
+        }
+    }
+
+    #[cfg(not(any(feature = "tokio", feature = "smol", feature = "async-std")))]
+    compile_error!(
+        "syzygy requires at least one async runtime feature: enable 'tokio', 'smol', or 'async-std'",
     );
 }
 

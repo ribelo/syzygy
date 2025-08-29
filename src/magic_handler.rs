@@ -297,7 +297,7 @@ macro_rules! effect_magic_handler {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::storage::EmptyStorage;
+    use crate::storage::{EmptyStorage, StorageBuilder};
     use syzygy_macros::MagicVariants;
 
     #[derive(Debug, Clone, Default)]
@@ -338,7 +338,7 @@ mod tests {
             Command::none()
         }
 
-        let mut storage = EmptyStorage.with_model(TestModel::default());
+        let mut storage = EmptyStorage::new().with_model(TestModel::default());
         let ctx = EventContext::<TestEvent, TestEffect, _>::new(&mut storage);
 
         let event = Increment { by: 5 };
@@ -356,7 +356,7 @@ mod tests {
             Command::none()
         }
 
-        let mut storage = EmptyStorage.with_model(TestModel {
+        let mut storage = EmptyStorage::new().with_model(TestModel {
             counter: 42,
             name: "test".to_string(),
         });
@@ -387,7 +387,7 @@ mod tests {
             Command::none()
         }
 
-        let mut storage = EmptyStorage
+        let mut storage = EmptyStorage::new()
             .with_model(TestModel {
                 counter: 99,
                 name: "multi".to_string(),

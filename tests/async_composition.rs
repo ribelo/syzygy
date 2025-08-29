@@ -101,10 +101,10 @@ async fn test_sequential_effects_execution_order() {
     // Build the system - no state capture needed!
     let (core, shell) = Syzygy::builder::<CompositionEvent, CompositionEffect>()
         .model(CompositionModel::default())
-        .update(composition_update)
+        .event_handler(composition_update)
+        .effect_handler(create_effect_handler)
         .build();
 
-    let shell = shell.with_effect_handler(create_effect_handler);
     let mut runner = Runner::new(core, shell);
 
     // Start the workflow
@@ -155,10 +155,10 @@ async fn test_sequential_effects_execution_order() {
 async fn test_mixed_coordination_patterns() {
     let (core, shell) = Syzygy::builder::<CompositionEvent, CompositionEffect>()
         .model(CompositionModel::default())
-        .update(composition_update)
+        .event_handler(composition_update)
+        .effect_handler(create_effect_handler)
         .build();
 
-    let shell = shell.with_effect_handler(create_effect_handler);
     let mut runner = Runner::new(core, shell);
 
     // Test a combination of patterns through direct shell execution

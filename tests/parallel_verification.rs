@@ -90,10 +90,10 @@ async fn test_parallel_effects_are_actually_parallel() {
     let (core, shell) = Syzygy::builder::<ParallelEvent, ParallelEffect>()
         .model(ParallelModel)
         .resource(resources)
-        .update(parallel_update)
+        .event_handler(parallel_update)
+        .effect_handler(parallel_effect_handler)
         .build();
 
-    let shell = shell.with_effect_handler(parallel_effect_handler);
     let mut runner = Runner::new(core, shell);
 
     // Record overall start time
@@ -189,10 +189,10 @@ async fn test_mixed_sequential_and_parallel() {
     let (core, shell) = Syzygy::builder::<ParallelEvent, ParallelEffect>()
         .model(ParallelModel)
         .resource(resources)
-        .update(parallel_update)
+        .event_handler(parallel_update)
+        .effect_handler(parallel_effect_handler)
         .build();
 
-    let shell = shell.with_effect_handler(parallel_effect_handler);
     let mut runner = Runner::new(core, shell);
 
     // Mix sequential and parallel patterns

@@ -159,11 +159,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             version: "1.0.0".to_string(),
         })
         .model(CounterModel { value: 0 })
-        .update(update)
+        .event_handler(update)
+        .effect_handler(handle_effects)
         .build();
 
-    // Set up effect handler
-    let shell = shell.with_effect_handler(handle_effects);
+    // Effect handler provided via builder
 
     // Create runner for orchestration
     let mut runner = Runner::new(core, shell);

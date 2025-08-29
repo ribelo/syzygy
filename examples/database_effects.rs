@@ -292,10 +292,9 @@ async fn run_demo() -> Result<(), Box<dyn std::error::Error>> {
     let (core, shell) = Syzygy::builder::<AppEvent, AppEffect>()
         .model(AppModel::default())
         .resource(resources)
-        .update(database_update)
+        .event_handler(database_update)
+        .effect_handler(handle_effects)
         .build();
-
-    let shell = shell.with_effect_handler(handle_effects);
     let mut runner = Runner::new(core, shell);
 
     // Connect to database first

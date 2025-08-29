@@ -110,10 +110,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Build the system
     let (core, shell) = Syzygy::builder()
         .model(CounterModel::default())
-        .update(update_counter)
+        .event_handler(update_counter)
+        .effect_handler(handle_effects)
         .build();
-    
-    let shell = shell.with_effect_handler(handle_effects);
     let mut runner = Runner::new(core, shell);
     
     // Test the counter

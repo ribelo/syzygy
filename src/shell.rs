@@ -28,10 +28,9 @@
 //! // In a real application, you would build the shell like this:
 //! let (core, shell) = Syzygy::builder()
 //!     .model(Model::default())
-//!     .update(update)
+//!     .event_handler(update)
+//!     .effect_handler(handle_effects)
 //!     .build();
-//!
-//! let shell = shell.with_effect_handler(handle_effects);
 //!
 //! // The shell would then be used by a Runner to execute effects.
 //! ```
@@ -45,6 +44,7 @@ use crate::command::{Command, CommandStep};
 use crate::error::ShellError;
 use crate::task::{TaskStats, TaskTracker};
 use crate::timer::{Time, time};
+use crate::executor::EmptyExecutorStorage;
 
 use crate::effect_handler::EffectHandler;
 
@@ -112,15 +112,18 @@ impl Default for ShellConfig {
 /// - Bridging sync Core with async world
 /// - Routing events back to Core from command execution
 /// - Providing Resources to effect handlers via Storage
+/// - Managing specialized executors for different effect types
 ///
 /// The Shell works alongside Core rather than owning it, giving users
 /// maximum flexibility in how they structure their applications.
 /// Resources are stored using the same Storage pattern as Core's models.
-pub struct Shell<Event, Effect, Resources = crate::storage::EmptyStorage, H = ()>
+/// Executors are also stored using the same Storage pattern for type-safe access.
+pub struct Shell<Event, Effect, Resources = crate::storage::EmptyStorage, Executors = EmptyExecutorStorage, H = ()>
 where
     Event: Clone + Send + 'static,
     Effect: Clone + Send + 'static,
     Resources: Clone + Send + Sync + 'static,
+    H: EffectHandler<Event, Effect, Resources, Executors> + 'static,
 {
     /// Task tracker for managing async effects (wrapped for sharing with EffectContext)
     pub(crate) task_tracker: Arc<Mutex<TaskTracker>>,
@@ -135,6 +138,9 @@ where
     /// Resources shared with effect handlers (user controls Arc wrapping)
     pub(crate) resources: Resources,
 
+    /// Specialized executors for different effect handling strategies
+    pub(crate) executors: Executors,
+
     /// User-provided effect handler (AFIT, zero-alloc). Default is `()` which is a noop handler.
     pub(crate) effect_handler: H,
 
@@ -142,7 +148,7 @@ where
     pub(crate) config: ShellConfig,
 }
 
-impl<Event, Effect> Default for Shell<Event, Effect, crate::storage::EmptyStorage, ()>
+impl<Event, Effect> Default for Shell<Event, Effect, crate::storage::EmptyStorage, EmptyExecutorStorage, ()>
 where
     Event: Clone + Send + 'static,
     Effect: Clone + Send + 'static,
@@ -152,7 +158,7 @@ where
     }
 }
 
-impl<Event, Effect> Shell<Event, Effect, crate::storage::EmptyStorage, ()>
+impl<Event, Effect> Shell<Event, Effect, crate::storage::EmptyStorage, EmptyExecutorStorage, ()>
 where
     Event: Clone + Send + 'static,
     Effect: Clone + Send + 'static,
@@ -177,24 +183,29 @@ where
             effect_rx,
             effect_tx,
             event_tx: None,
-            resources: crate::storage::EmptyStorage,
+            resources: crate::storage::EmptyStorage::new(),
+            executors: EmptyExecutorStorage::default(),
             effect_handler: (),
             config,
         }
     }
 }
 
-impl<Event, Effect, Resources, H> Shell<Event, Effect, Resources, H>
+impl<Event, Effect, Resources, Executors, H> Shell<Event, Effect, Resources, Executors, H>
 where
     Event: Clone + Send + 'static,
     Effect: Clone + Send + 'static,
     Resources: Clone + Send + Sync + 'static,
+    Executors: Clone + Send + Sync + 'static,
+    H: EffectHandler<Event, Effect, Resources, Executors> + 'static + Clone,
 {
     /// Create a new Shell with custom configuration and explicit handler
     #[must_use]
-    pub fn with_config_and_handler(config: ShellConfig, handler: H) -> Self
+    pub fn with_config_and_handler<H2>(config: ShellConfig, handler: H2) -> Shell<Event, Effect, Resources, Executors, H2>
     where
         Resources: Default,
+        Executors: Default,
+        H2: EffectHandler<Event, Effect, Resources, Executors> + 'static,
     {
         // Create channel based on configuration
         let (effect_tx, effect_rx) = match config.effect_channel_capacity {
@@ -202,30 +213,37 @@ where
             None => crossbeam_channel::unbounded(),
         };
 
-        Self {
+        Shell {
             task_tracker: Arc::new(Mutex::new(TaskTracker::new())),
             effect_rx,
             effect_tx,
             event_tx: None,
             resources: Resources::default(),
+            executors: Executors::default(),
             effect_handler: handler,
             config,
         }
     }
 
-    /// Replace the effect handler with a new AFIT handler (type-changing method)
+    /// Replace the effect handler with a new AFIT handler
     #[must_use]
-    pub fn with_effect_handler<H2>(self, handler: H2) -> Shell<Event, Effect, Resources, H2> {
+    pub fn with_effect_handler<H2>(self, handler: H2) -> Shell<Event, Effect, Resources, Executors, H2>
+    where
+        H2: EffectHandler<Event, Effect, Resources, Executors> + 'static,
+    {
         Shell {
+            effect_handler: handler,
             task_tracker: self.task_tracker,
             effect_rx: self.effect_rx,
             effect_tx: self.effect_tx,
             event_tx: self.event_tx,
             resources: self.resources,
-            effect_handler: handler,
+            executors: self.executors,
             config: self.config,
         }
     }
+
+    
 
     /// Set the resources storage for effect handlers
     ///
@@ -263,6 +281,29 @@ where
     {
         // Resources are Arc-wrapped, so we deref to get to the Storage
         self.resources.get()
+    }
+
+    /// Get an immutable reference to a specific executor by type
+    ///
+    /// This provides direct access to executors stored in the Shell.
+    /// Executors can be accessed by their NewType wrapper to distinguish
+    /// multiple executors of the same base type.
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// // Using NewType pattern for multiple executors
+    /// struct DatabaseExecutor(TokioExecutor);
+    /// struct NetworkExecutor(TokioExecutor);
+    ///
+    /// let db_executor: &DatabaseExecutor = shell.executor();
+    /// let net_executor: &NetworkExecutor = shell.executor();
+    /// ```
+    #[must_use]
+    pub fn executor<T, Index>(&self) -> &T
+    where
+        Executors: crate::storage::Selector<T, Index>,
+    {
+        self.executors.get()
     }
 
     /// Set the event sender for routing events back to Core
@@ -317,7 +358,6 @@ where
     pub fn tick<S>(&mut self, spawner: S) -> Result<bool, ShellError>
     where
         S: crate::spawn::Spawn,
-        H: EffectHandler<Event, Effect, Resources> + Clone + Send + Sync + 'static,
     {
         #[cfg(feature = "tracing")]
         let _span = span!(Level::DEBUG, "shell_tick").entered();
@@ -350,6 +390,9 @@ where
             }
         }
 
+        // Also tick any registered executors (for executor-based effect handling)
+        // Note: This is currently a placeholder - full executor integration TBD
+        
         // Cleanup finished tasks
         let (_cleaned_count, _active_count) = self.cleanup_finished_tasks();
 
@@ -370,25 +413,22 @@ where
     fn spawn_single_effect<S>(&self, effect: Effect, spawner: &S)
     where
         S: crate::spawn::Spawn,
-        H: EffectHandler<Event, Effect, Resources> + Clone + Send + Sync + 'static,
     {
         #[cfg(feature = "tracing")]
         debug!("Processing effect");
 
-        let ctx = EffectContext::with_runtime(
+        let ctx = EffectContext::new(
             self.event_tx.clone(),
-            self.config.runtime,
             self.resources.clone(),
+            self.executors.clone(),
         );
         let handler = self.effect_handler.clone();
-        let runtime = self.config.runtime;
         let timeout = self.config.effect_timeout;
 
         match timeout {
             Some(dur) => {
                 spawner.spawn(async move {
-                    let fut = handler.handle(effect, ctx);
-                    let _ = runtime.timeout(dur, Box::pin(fut)).await;
+                    let _ = crate::timer::timeout(dur, handler.handle(effect, ctx)).await;
                 });
             }
             None => {
@@ -403,22 +443,19 @@ where
     fn spawn_sequential_effects<S>(&self, effects: Vec<Effect>, spawner: &S)
     where
         S: crate::spawn::Spawn,
-        H: EffectHandler<Event, Effect, Resources> + Clone + Send + Sync + 'static,
     {
         let resources = self.resources.clone();
         let event_tx = self.event_tx.clone();
-        let runtime = self.config.runtime;
         let timeout = self.config.effect_timeout;
         let handler = self.effect_handler.clone();
+        let executors = self.executors.clone();
 
         let seq_future = async move {
-            let ctx = EffectContext::with_runtime(event_tx, runtime, resources);
+            let ctx = EffectContext::new(event_tx, resources, executors);
             for effect in effects {
                 match timeout {
                     Some(dur) => {
-                        let _ = runtime
-                            .timeout(dur, Box::pin(handler.handle(effect, ctx.clone())))
-                            .await;
+                        let _ = crate::timer::timeout(dur, handler.handle(effect, ctx.clone())).await;
                     }
                     None => {
                         handler.handle(effect, ctx.clone()).await;
@@ -433,20 +470,18 @@ where
     fn spawn_parallel_effects<S>(&self, effects: Vec<Effect>, spawner: &S)
     where
         S: crate::spawn::Spawn,
-        H: EffectHandler<Event, Effect, Resources> + Clone + Send + Sync + 'static,
     {
         let resources = self.resources.clone();
         let event_tx = self.event_tx.clone();
-        let runtime = self.config.runtime;
         let timeout = self.config.effect_timeout;
         let handler = self.effect_handler.clone();
 
         for effect in effects {
-            let ctx = EffectContext::with_runtime(event_tx.clone(), runtime, resources.clone());
+            let ctx = EffectContext::new(event_tx.clone(), resources.clone(), self.executors.clone());
             if let Some(dur) = timeout {
                 let h = handler.clone();
                 spawner.spawn(async move {
-                    let _ = runtime.timeout(dur, Box::pin(h.handle(effect, ctx))).await;
+                    let _ = crate::timer::timeout(dur, h.handle(effect, ctx)).await;
                 });
             } else {
                 let h = handler.clone();
@@ -581,7 +616,7 @@ mod tests {
         let (_core, shell) = Syzygy::builder::<TestEvent, ()>()
             .model(()) // Need at least one model for Core
             .resource(HttpClient::new())
-            .update(
+            .event_handler(
                 |_event: TestEvent,
                  _ctx: &mut crate::event_context::EventContext<
                     TestEvent,
@@ -589,6 +624,7 @@ mod tests {
                     Storage<(), EmptyStorage>,
                 >| crate::command::Command::none(),
             )
+            .effect_handler(())
             .build();
 
         // Test resource access
@@ -633,7 +669,7 @@ mod tests {
             .resource(FileSystem {
                 root_path: "/var/data".to_string(),
             })
-            .update(
+            .event_handler(
                 |_event: TestEvent,
                  _ctx: &mut crate::event_context::EventContext<
                     TestEvent,
@@ -641,6 +677,7 @@ mod tests {
                     Storage<(), EmptyStorage>,
                 >| crate::command::Command::none(),
             )
+            .effect_handler(())
             .build();
 
         // Test accessing different resource types
@@ -687,7 +724,7 @@ mod tests {
         let (_core, shell) = Syzygy::builder::<TestEvent, ()>()
             .model(()) // Need at least one model for Core
             .resource(Cache::new())
-            .update(
+            .event_handler(
                 |_event: TestEvent,
                  _ctx: &mut crate::event_context::EventContext<
                     TestEvent,
@@ -695,6 +732,7 @@ mod tests {
                     Storage<(), EmptyStorage>,
                 >| crate::command::Command::none(),
             )
+            .effect_handler(())
             .build();
 
         // Access cache resource (immutable reference)

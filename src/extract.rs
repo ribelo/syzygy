@@ -115,7 +115,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::storage::EmptyStorage;
+    use crate::storage::{EmptyStorage, StorageBuilder};
 
     #[derive(Debug, Clone, Default)]
     struct TestModel {
@@ -146,7 +146,7 @@ mod tests {
 
     #[test]
     fn test_model_ref_extraction() {
-        let mut storage = EmptyStorage.with_model(TestModel {
+        let mut storage = EmptyStorage::new().with_model(TestModel {
             counter: 42,
             name: "test".to_string(),
         });
@@ -158,7 +158,7 @@ mod tests {
 
     #[test]
     fn test_model_mut_extraction() {
-        let mut storage = EmptyStorage.with_model(TestModel {
+        let mut storage = EmptyStorage::new().with_model(TestModel {
             counter: 123,
             name: "test".to_string(),
         });
@@ -172,7 +172,7 @@ mod tests {
 
     #[test]
     fn test_event_two_model_ref_extraction() {
-        let mut storage = EmptyStorage
+        let mut storage = EmptyStorage::new()
             .with_model(TestModel {
                 counter: 99,
                 name: "tuple".to_string(),
@@ -191,7 +191,7 @@ mod tests {
 
     #[test]
     fn test_event_two_model_mut_extraction() {
-        let mut storage = EmptyStorage
+        let mut storage = EmptyStorage::new()
             .with_model(TestModel {
                 counter: 99,
                 name: "tuple".to_string(),
@@ -221,7 +221,7 @@ mod tests {
 
     #[test]
     fn test_event_model_ref_and_model_mut_extraction() {
-        let mut storage = EmptyStorage
+        let mut storage = EmptyStorage::new()
             .with_model(TestModel {
                 counter: 100,
                 name: "original".to_string(),
@@ -255,7 +255,7 @@ mod tests {
             value: i32,
         }
 
-        let mut storage = EmptyStorage
+        let mut storage = EmptyStorage::new()
             .with_model(TestModel {
                 counter: 99,
                 name: "test".to_string(),
@@ -276,10 +276,10 @@ mod tests {
 
     #[test]
     fn test_effect_context_extraction() {
-        let resources = EmptyStorage.with_model(TestResource {
+        let resources = EmptyStorage::new().with_model(TestResource {
             url: "test_url".to_string(),
         });
-        let ctx = EffectContext::<TestEvent, _>::new(None, resources);
+        let ctx = EffectContext::<TestEvent, _>::new(None, resources, crate::executor::EmptyExecutorStorage::new());
 
         let extracted_ctx: EffectContext<TestEvent, _> = FromEffectContext::from_context(&ctx);
         let resource: &TestResource = extracted_ctx.resource();
@@ -291,8 +291,8 @@ mod tests {
         use crossbeam_channel::unbounded;
 
         let (tx, rx) = unbounded();
-        let resources = EmptyStorage;
-        let ctx = EffectContext::<TestEvent, _>::new(Some(tx), resources);
+        let resources = EmptyStorage::new();
+        let ctx = EffectContext::<TestEvent, _>::new(Some(tx), resources, crate::executor::EmptyExecutorStorage::new());
 
         let sender: EventSender<TestEvent> = FromEffectContext::from_context(&ctx);
         sender.send(TestEvent::Increment).unwrap();
@@ -302,8 +302,8 @@ mod tests {
     #[test]
     #[should_panic(expected = "EffectContext must have an event sender")]
     fn test_event_sender_extraction_panics_without_sender() {
-        let resources = EmptyStorage;
-        let ctx = EffectContext::<TestEvent, _>::new(None, resources);
+        let resources = EmptyStorage::new();
+        let ctx = EffectContext::<TestEvent, _>::new(None, resources, crate::executor::EmptyExecutorStorage::new());
 
         let _sender: EventSender<TestEvent> = FromEffectContext::from_context(&ctx);
     }
