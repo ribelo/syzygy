@@ -10,10 +10,12 @@
 
 pub mod storage;
 pub mod tokio_executor;
+pub mod single_thread_executor;
+pub mod thread_per_core_tokio;
+#[cfg(feature = "rayon")]
+pub mod rayon_executor;
 
-use crate::async_context::EffectContext;
 use crate::error::ShellError;
-use crate::spawn::Spawn;
 use crate::task::{TaskId, TaskStats};
 use crate::timer::Time;
 use std::future::Future;
@@ -22,6 +24,25 @@ use std::time::Duration;
 // Re-export commonly used types
 pub use storage::{ExecutorStorage, EmptyExecutorStorage};
 pub use tokio_executor::TokioExecutor;
+pub use single_thread_executor::SingleThreadExecutor;
+pub use thread_per_core_tokio::ThreadPerCoreTokioExecutor;
+#[cfg(feature = "rayon")]
+pub use rayon_executor::RayonExecutor;
+
+/// Accessor for an executor's resource storage
+///
+/// This trait enables higher-level helpers (like EffectContext::run_on_magic)
+/// to construct an EffectContext backed by the executor's own resources.
+pub trait HasExecutorResources<Event>: Send + Sync + 'static
+where
+    Event: Clone + Send + 'static,
+{
+    /// Resource storage type carried by this executor
+    type Resources: Clone + Send + Sync + 'static;
+
+    /// Clone the executor's resources for use in a new EffectContext
+    fn clone_resources(&self) -> Self::Resources;
+}
 
 /// Legacy trait for effect executors (DEPRECATED)
 ///
@@ -32,31 +53,7 @@ pub use tokio_executor::TokioExecutor;
 /// - `Event`: Event type that can be sent back to Core
 /// - `Effect`: Effect type this executor can handle
 /// - `Resources`: Resources available to this executor
-#[deprecated = "Use simplified executor pattern - Shell handles effects, executors provide spawning"]
-pub trait Executor<Event, Effect, Resources>: Send + Sync + 'static
-where
-    Event: Clone + Send + 'static,
-    Effect: Clone + Send + 'static,
-    Resources: Clone + Send + Sync + 'static,
-{
-    /// Process queued effects for this executor
-    fn tick<S>(&mut self, spawner: &S) -> Result<bool, ShellError>
-    where
-        S: Spawn;
-
-    /// Handle a specific effect using the provided handler function
-    fn handle<H>(&self, effect: Effect, handler: H)
-    where
-        H: FnOnce(Effect, EffectContext<Event, Resources>) + Send + 'static;
-
-    /// Get immutable reference to a resource by type
-    fn resource<T, Index>(&self) -> &T
-    where
-        Resources: crate::storage::Selector<T, Index>;
-
-    /// Check if executor has work queued
-    fn has_work(&self) -> bool;
-}
+// Deprecated Executor trait removed - use SpawnExecutor and HasExecutorResources instead
 
 /// Simplified executor trait focused on spawning and runtime services
 /// 

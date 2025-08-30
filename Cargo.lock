@@ -2029,6 +2029,7 @@ dependencies = [
  "micromap",
  "proptest",
  "rand 0.8.5",
+ "rayon",
  "smallvec",
  "smol",
  "syzygy_macros",

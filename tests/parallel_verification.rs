@@ -1,13 +1,14 @@
 #![allow(dead_code, clippy::clone_on_ref_ptr, unused_variables, unused_imports, clippy::let_and_return, clippy::format_in_format_args)]
 //! Test to verify that parallel effects truly execute in parallel
 //!
-//! This test verifies that the new ParallelEffects coordination pattern
+//! This test verifies that the Group coordination pattern
 //! correctly runs effects concurrently, not sequentially.
 
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use syzygy::event_context::EventContext;
 use syzygy::prelude::*;
+use syzygy::command::Effects;
 use tokio::time::sleep;
 
 #[derive(Debug, Clone)]
@@ -39,7 +40,7 @@ fn parallel_update(
         ParallelEvent::StartParallel => {
             // These should execute in parallel: all starting at the same time
             // Each step takes 100ms, so total should be ~100ms for parallel execution
-            Command::parallel([
+            Effects::new([
                 ParallelEffect::Step {
                     id: 1,
                     duration_ms: 100,
@@ -52,7 +53,7 @@ fn parallel_update(
                     id: 3,
                     duration_ms: 100,
                 },
-            ])
+            ]).parallel().spawn()
         }
     }
 }
@@ -198,7 +199,7 @@ async fn test_mixed_sequential_and_parallel() {
     // Mix sequential and parallel patterns
     let mixed_command = Command::batch([
         // First: parallel execution (should complete in ~100ms)
-        Command::parallel([
+        Effects::new([
             ParallelEffect::Step {
                 id: 10,
                 duration_ms: 80,
@@ -207,7 +208,7 @@ async fn test_mixed_sequential_and_parallel() {
                 id: 11,
                 duration_ms: 80,
             },
-        ]),
+        ]).parallel().spawn(),
         // Then: sequential execution (should complete in ~160ms total)
         Command::sequence([
             Command::effect(ParallelEffect::Step {

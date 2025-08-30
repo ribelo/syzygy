@@ -30,7 +30,13 @@
 //! - Resources provide shared data access
 //! - Event sending bridges back to the Core
 
-use crate::{error::ShellError, executor::EmptyExecutorStorage, storage::EmptyStorage};
+use crate::{
+    error::ShellError,
+    executor::{EmptyExecutorStorage, HasExecutorResources, SpawnExecutor},
+    magic_handler::effect_trigger_direct,
+    storage::EmptyStorage,
+};
+use futures::channel::oneshot;
 use crossbeam_channel::Sender;
 
 /// EffectContext provides access to executors and resources within effect handlers
@@ -134,6 +140,44 @@ where
     #[must_use]
     pub fn event_sender(&self) -> Option<Sender<Event>> {
         self.event_tx.clone()
+    }
+
+    /// Run a magic effect handler on a specific executor using that executor's
+    /// resource storage, and await completion.
+    ///
+    /// This integrates with the magic handler system without requiring a split
+    /// effect enum. You pass the concrete variant payload and a magic handler
+    /// closure that declares its required resources and EventSender.
+    pub async fn run_on<E, Index, Variant, ExecRes, Args, H>(
+        &self,
+        payload: Variant,
+        handler: H,
+    ) -> Result<(), ShellError>
+    where
+        Executors: crate::storage::Selector<E, Index>,
+        E: SpawnExecutor<Event, ExecRes> + HasExecutorResources<Event, Resources = ExecRes>,
+        ExecRes: Clone + Send + Sync + 'static,
+        H: crate::magic_handler::EffectMagicHandlerDirect<Variant, Event, ExecRes, Args> + Send + 'static,
+        Variant: Send + 'static,
+        Event: Clone,
+    {
+        let exec: &E = self.executor::<E, Index>();
+        let resources = exec.clone_resources();
+        let event_tx = self.event_sender();
+
+        // Build a context tailored to the executor's resources
+        let exec_ctx = EffectContext::<Event, ExecRes>::new(event_tx, resources, EmptyExecutorStorage::new());
+
+        let (tx, rx) = oneshot::channel::<()>();
+        // Spawn the magic handler on the chosen executor
+        exec.spawn(async move {
+            effect_trigger_direct::<_, Event, ExecRes, _, _>(payload, exec_ctx, handler).await;
+            let _ = tx.send(());
+        })?;
+
+        // Await completion to preserve sequential semantics when desired
+        let _ = rx.await;
+        Ok(())
     }
 }
 

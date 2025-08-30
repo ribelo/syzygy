@@ -8,6 +8,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use syzygy::event_context::EventContext;
 use syzygy::prelude::*;
+use syzygy::command::Effects;
 use tokio::time::sleep;
 
 #[derive(Debug, Clone)]
@@ -192,7 +193,7 @@ async fn test_parallel_baseline_for_comparison() {
     let overall_start = Instant::now();
 
     // Use individual effects (which spawn separate tasks = parallel execution)
-    let parallel_command = Command::parallel([
+    let parallel_command = Effects::new([
         SequentialEffect::Step {
             id: 1,
             duration_ms: 100,
@@ -205,7 +206,7 @@ async fn test_parallel_baseline_for_comparison() {
             id: 3,
             duration_ms: 100,
         },
-    ]);
+    ]).parallel().spawn();
 
     runner.shell_mut().dispatch(parallel_command).unwrap();
 

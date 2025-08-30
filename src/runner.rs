@@ -215,7 +215,6 @@ where
     /// # Ok(())
     /// # }
     /// ```
-    #[allow(clippy::unused_async)]
     pub async fn tick<S>(&mut self, spawner: S) -> Result<bool, RunnerError>
     where
         S: Spawn,
@@ -237,8 +236,8 @@ where
             }
         }
 
-        // 4. Process effects in Shell
-        let shell_work = self.shell.tick(spawner).map_err(RunnerError::Shell)?;
+        // 4. Process effects in Shell (now async for sequential effect processing)
+        let shell_work = self.shell.tick(spawner).await.map_err(RunnerError::Shell)?;
         if shell_work {
             did_work = true;
             if self.config.debug_logging {

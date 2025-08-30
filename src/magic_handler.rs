@@ -259,6 +259,120 @@ where
 }
 
 // ============================================================================
+// Direct Variant Magic Effect Handler (no TryFrom bound)
+// ============================================================================
+
+/// Magic handler trait for direct effect variant payloads
+///
+/// This mirrors EffectMagicHandler but drops the `Variant: TryFrom<Effect>`
+/// bound so it can be used when you already have the concrete variant payload
+/// (e.g., when routing to a specific executor).
+pub trait EffectMagicHandlerDirect<Variant, Event, Resources, Args> {
+    fn call(
+        self,
+        effect_variant: Variant,
+        ctx: EffectContext<Event, Resources>,
+    ) -> impl Future<Output = ()> + Send;
+}
+
+/// Generates EffectMagicHandlerDirect implementations for 0..=16 parameters
+macro_rules! impl_effect_magic_handler_direct {
+    () => {
+        impl<Variant, Event, Resources, F, Fut> EffectMagicHandlerDirect<Variant, Event, Resources, ()>
+            for F
+        where
+            F: Fn(Variant) -> Fut,
+            Fut: Future<Output = ()> + Send + 'static,
+        {
+            fn call(
+                self,
+                effect_variant: Variant,
+                _ctx: EffectContext<Event, Resources>,
+            ) -> impl Future<Output = ()> + Send {
+                self(effect_variant)
+            }
+        }
+    };
+
+    ($($T:ident, $I:ident),+) => {
+        impl<Variant, Event, Resources, F, $($T, $I),+, Fut>
+            EffectMagicHandlerDirect<Variant, Event, Resources, ($($T, $I),+)> for F
+        where
+            F: Fn(Variant, $($T),+) -> Fut,
+            $($T: for<'a> FromEffectContext<'a, Event, Resources, $I>),+,
+            Fut: Future<Output = ()> + Send + 'static,
+        {
+            fn call(
+                self,
+                effect_variant: Variant,
+                ctx: EffectContext<Event, Resources>,
+            ) -> impl Future<Output = ()> + Send {
+                $(let $T = $T::from_context(&ctx);)+
+                self(effect_variant, $($T),+)
+            }
+        }
+    };
+}
+
+#[allow(non_snake_case)]
+mod effect_magic_handler_direct_impls {
+    use super::{EffectContext, EffectMagicHandlerDirect, FromEffectContext, Future};
+
+    impl_effect_magic_handler_direct!();
+    impl_effect_magic_handler_direct!(T1, I1);
+    impl_effect_magic_handler_direct!(T1, I1, T2, I2);
+    impl_effect_magic_handler_direct!(T1, I1, T2, I2, T3, I3);
+    impl_effect_magic_handler_direct!(T1, I1, T2, I2, T3, I3, T4, I4);
+    impl_effect_magic_handler_direct!(T1, I1, T2, I2, T3, I3, T4, I4, T5, I5);
+    impl_effect_magic_handler_direct!(T1, I1, T2, I2, T3, I3, T4, I4, T5, I5, T6, I6);
+    impl_effect_magic_handler_direct!(T1, I1, T2, I2, T3, I3, T4, I4, T5, I5, T6, I6, T7, I7);
+    impl_effect_magic_handler_direct!(
+        T1, I1, T2, I2, T3, I3, T4, I4, T5, I5, T6, I6, T7, I7, T8, I8
+    );
+    impl_effect_magic_handler_direct!(
+        T1, I1, T2, I2, T3, I3, T4, I4, T5, I5, T6, I6, T7, I7, T8, I8, T9, I9
+    );
+    impl_effect_magic_handler_direct!(
+        T1, I1, T2, I2, T3, I3, T4, I4, T5, I5, T6, I6, T7, I7, T8, I8, T9, I9, T10, I10
+    );
+    impl_effect_magic_handler_direct!(
+        T1, I1, T2, I2, T3, I3, T4, I4, T5, I5, T6, I6, T7, I7, T8, I8, T9, I9, T10, I10, T11, I11
+    );
+    impl_effect_magic_handler_direct!(
+        T1, I1, T2, I2, T3, I3, T4, I4, T5, I5, T6, I6, T7, I7, T8, I8, T9, I9, T10, I10, T11, I11,
+        T12, I12
+    );
+    impl_effect_magic_handler_direct!(
+        T1, I1, T2, I2, T3, I3, T4, I4, T5, I5, T6, I6, T7, I7, T8, I8, T9, I9, T10, I10, T11, I11,
+        T12, I12, T13, I13
+    );
+    impl_effect_magic_handler_direct!(
+        T1, I1, T2, I2, T3, I3, T4, I4, T5, I5, T6, I6, T7, I7, T8, I8, T9, I9, T10, I10, T11, I11,
+        T12, I12, T13, I13, T14, I14
+    );
+    impl_effect_magic_handler_direct!(
+        T1, I1, T2, I2, T3, I3, T4, I4, T5, I5, T6, I6, T7, I7, T8, I8, T9, I9, T10, I10, T11, I11,
+        T12, I12, T13, I13, T14, I14, T15, I15
+    );
+    impl_effect_magic_handler_direct!(
+        T1, I1, T2, I2, T3, I3, T4, I4, T5, I5, T6, I6, T7, I7, T8, I8, T9, I9, T10, I10, T11, I11,
+        T12, I12, T13, I13, T14, I14, T15, I15, T16, I16
+    );
+}
+
+/// Trigger a direct-variant magic effect handler
+pub fn effect_trigger_direct<Variant, Event, Resources, Args, H>(
+    effect_variant: Variant,
+    context: EffectContext<Event, Resources>,
+    handler: H,
+) -> impl Future<Output = ()> + Send
+where
+    H: EffectMagicHandlerDirect<Variant, Event, Resources, Args>,
+{
+    handler.call(effect_variant, context)
+}
+
+// ============================================================================
 // Dispatch Macros - Keep existing API
 // ============================================================================
 

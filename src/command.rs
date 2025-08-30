@@ -1,7 +1,12 @@
 // trimmed public testing helpers; no external Sender used here anymore
 use smallvec::SmallVec;
+use std::time::Duration;
 
 pub mod executor;
+pub mod effects_builder;
+
+// Re-export for convenience - this is the main API users should use
+pub use effects_builder::Effects;
 
 /// A step in a Command - events, effects, or coordination patterns
 pub enum CommandStep<Event, Effect> {
@@ -9,10 +14,22 @@ pub enum CommandStep<Event, Effect> {
     Event(Event),
     /// Single effect to be executed by Shell
     Effect(Effect),
-    /// Sequential execution - effects run one after another, fail-fast on first error
-    SequentialEffects(Vec<Effect>),
-    /// Parallel execution - effects run concurrently, all complete or fail together
-    ParallelEffects(Vec<Effect>),
+    /// Batch execution - effects run sequentially (same as single effects, but batched for efficiency)
+    Batch(Vec<Effect>),
+    /// Unified group execution with policy and optional barrier
+    Group {
+        effects: Vec<Effect>,
+        mode: GroupMode,
+        barrier: Option<Event>,
+        timeout_per: Option<Duration>,
+    },
+}
+
+/// Group execution policy
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GroupMode {
+    Parallel,
+    Race,
 }
 
 impl<Event, Effect> PartialEq for CommandStep<Event, Effect>
@@ -24,8 +41,11 @@ where
         match (self, other) {
             (Self::Event(a), Self::Event(b)) => a == b,
             (Self::Effect(a), Self::Effect(b)) => a == b,
-            (Self::SequentialEffects(a), Self::SequentialEffects(b))
-            | (Self::ParallelEffects(a), Self::ParallelEffects(b)) => a == b,
+            (Self::Batch(a), Self::Batch(b)) => a == b,
+            (
+                Self::Group { effects: ae, mode: am, barrier: ab, timeout_per: at },
+                Self::Group { effects: be, mode: bm, barrier: bb, timeout_per: bt },
+            ) => ae == be && am == bm && ab == bb && at == bt,
             _ => false,
         }
     }
@@ -40,8 +60,15 @@ where
         match self {
             Self::Event(e) => f.debug_tuple("Event").field(e).finish(),
             Self::Effect(x) => f.debug_tuple("Effect").field(x).finish(),
-            Self::SequentialEffects(v) => f.debug_tuple("SequentialEffects").field(v).finish(),
-            Self::ParallelEffects(v) => f.debug_tuple("ParallelEffects").field(v).finish(),
+            Self::Batch(v) => f.debug_tuple("Batch").field(v).finish(),
+            Self::Group { effects, mode, barrier, timeout_per } => {
+                f.debug_struct("Group")
+                    .field("effects", effects)
+                    .field("mode", mode)
+                    .field("barrier", barrier)
+                    .field("timeout_per", timeout_per)
+                    .finish()
+            }
         }
     }
 }
@@ -78,8 +105,15 @@ where
             let cloned = match o {
                 CommandStep::Event(e) => CommandStep::Event(e.clone()),
                 CommandStep::Effect(fx) => CommandStep::Effect(fx.clone()),
-                CommandStep::SequentialEffects(v) => CommandStep::SequentialEffects(v.clone()),
-                CommandStep::ParallelEffects(v) => CommandStep::ParallelEffects(v.clone()),
+                CommandStep::Batch(v) => CommandStep::Batch(v.clone()),
+                CommandStep::Group { effects, mode, barrier, timeout_per } => {
+                    CommandStep::Group {
+                        effects: effects.clone(),
+                        mode: *mode,
+                        barrier: barrier.clone(),
+                        timeout_per: *timeout_per,
+                    }
+                }
             };
             outputs.push(cloned);
         }
@@ -133,16 +167,6 @@ impl<Event, Effect> Command<Event, Effect> {
         Self { outputs }
     }
 
-    /// Create a command that requests multiple effects to run in parallel
-    pub fn parallel(effects: impl IntoIterator<Item = Effect>) -> Self {
-        let effects: Vec<Effect> = effects.into_iter().collect();
-        let mut outputs = SmallVec::new();
-        if !effects.is_empty() {
-            outputs.push(CommandStep::ParallelEffects(effects));
-        }
-        Self { outputs }
-    }
-
     // Sequential effects removed: use `sequence([Command::effect(...), ...])` for sequential effects
     // Parallel effects removed: use `effects([...])` for parallel effects
 
@@ -175,27 +199,28 @@ impl<Event, Effect> Command<Event, Effect> {
     /// Optimize command by flattening and deduplicating similar effect types
     ///
     /// This optimization consolidates adjacent effects of the same coordination type
-    /// (sequential or parallel) to reduce executor overhead. For example, multiple
-    /// sequential effect steps are merged into a single SequentialEffects step.
+    /// (batch or parallel) to reduce executor overhead. For example, multiple
+    /// single effect steps are merged into a single Batch step.
     ///
     /// # Example
     /// ```rust,ignore
     /// let cmd = Command::batch([
     ///     Command::effect(Effect::A),    // Individual effect
     ///     Command::effect(Effect::B),    // Individual effect  
-    ///     Command::parallel([Effect::C, Effect::D]),  // Parallel effects
+    ///     Effects::new([Effect::C, Effect::D]).parallel().spawn(),  // Parallel effects
     ///     Command::effect(Effect::E),    // Individual effect
     /// ]);
     ///
     /// let optimized = cmd.flatten();
-    /// // Results in: ParallelEffects([A, B, C, D, E]) - all merged for parallel execution
+    /// // Results in: Group { effects: [A, B, C, D, E], mode: Parallel, barrier: None } - all merged for parallel execution
     /// ```
     #[must_use]
     pub fn flatten(self) -> Self {
         let mut events = Vec::new();
         let mut parallel_effects = Vec::new();
-        let mut sequential_effects = Vec::new();
-        let mut has_sequential = false;
+        let mut batch_effects = Vec::new();
+        let mut has_batch = false;
+        let mut groups: Vec<CommandStep<Event, Effect>> = Vec::new();
 
         // Collect all outputs by type, merging similar coordination patterns
         for output in self.outputs {
@@ -207,12 +232,16 @@ impl<Event, Effect> Command<Event, Effect> {
                     // Individual effects default to parallel execution in Shell
                     parallel_effects.push(effect);
                 }
-                CommandStep::ParallelEffects(effects) => {
+                CommandStep::Group { effects, mode: GroupMode::Parallel, barrier: None, timeout_per: None } => {
                     parallel_effects.extend(effects);
                 }
-                CommandStep::SequentialEffects(effects) => {
-                    sequential_effects.extend(effects);
-                    has_sequential = true;
+                CommandStep::Batch(effects) => {
+                    batch_effects.extend(effects);
+                    has_batch = true;
+                }
+                CommandStep::Group { .. } => {
+                    // Preserve groups as they encode policy/barrier explicitly
+                    groups.push(output);
                 }
             }
         }
@@ -227,28 +256,38 @@ impl<Event, Effect> Command<Event, Effect> {
 
         // Add effects based on coordination requirements
         match (
-            has_sequential,
+            has_batch,
             !parallel_effects.is_empty(),
-            !sequential_effects.is_empty(),
+            !batch_effects.is_empty(),
         ) {
             // Only parallel effects
             (false, true, false) => {
-                optimized_outputs.push(CommandStep::ParallelEffects(parallel_effects));
+                optimized_outputs.push(CommandStep::Group {
+                    effects: parallel_effects,
+                    mode: GroupMode::Parallel,
+                    barrier: None,
+                    timeout_per: None,
+                });
             }
-            // Only sequential effects
+            // Only batch effects
             (true, false, true) => {
-                optimized_outputs.push(CommandStep::SequentialEffects(sequential_effects));
+                optimized_outputs.push(CommandStep::Batch(batch_effects));
             }
-            // Both types - sequential takes precedence to maintain ordering
+            // Both types - batch takes precedence to maintain ordering
             (true, true, true) => {
-                // Merge all effects into sequential to preserve ordering guarantees
-                sequential_effects.extend(parallel_effects);
-                optimized_outputs.push(CommandStep::SequentialEffects(sequential_effects));
+                // Merge all effects into batch to preserve ordering guarantees
+                batch_effects.extend(parallel_effects);
+                optimized_outputs.push(CommandStep::Batch(batch_effects));
             }
-            // Mixed without explicit sequential - use parallel
+            // Mixed without explicit batch - use parallel
             (false, true, true) => {
-                parallel_effects.extend(sequential_effects);
-                optimized_outputs.push(CommandStep::ParallelEffects(parallel_effects));
+                parallel_effects.extend(batch_effects);
+                optimized_outputs.push(CommandStep::Group {
+                    effects: parallel_effects,
+                    mode: GroupMode::Parallel,
+                    barrier: None,
+                    timeout_per: None,
+                });
             }
             _ => {
                 // No effects to optimize
@@ -256,7 +295,11 @@ impl<Event, Effect> Command<Event, Effect> {
         }
 
         Self {
-            outputs: optimized_outputs,
+            outputs: {
+                // Keep optimized outputs first (events/effects), then preserved groups
+                optimized_outputs.extend(groups);
+                optimized_outputs
+            },
         }
     }
 
@@ -284,11 +327,16 @@ impl<Event, Effect> Command<Event, Effect> {
             match output {
                 CommandStep::Event(event) => outputs.push(CommandStep::Event(f(event))),
                 CommandStep::Effect(effect) => outputs.push(CommandStep::Effect(effect)),
-                CommandStep::SequentialEffects(effects) => {
-                    outputs.push(CommandStep::SequentialEffects(effects));
+                CommandStep::Batch(effects) => {
+                    outputs.push(CommandStep::Batch(effects));
                 }
-                CommandStep::ParallelEffects(effects) => {
-                    outputs.push(CommandStep::ParallelEffects(effects));
+                CommandStep::Group { effects, mode, barrier, timeout_per } => {
+                    outputs.push(CommandStep::Group {
+                        effects,
+                        mode,
+                        barrier: barrier.map(&mut f),
+                        timeout_per,
+                    });
                 }
             }
         }
@@ -306,11 +354,16 @@ impl<Event, Effect> Command<Event, Effect> {
             let new_output = match output {
                 CommandStep::Event(event) => CommandStep::Event(event),
                 CommandStep::Effect(effect) => CommandStep::Effect(f(effect)),
-                CommandStep::SequentialEffects(effects) => {
-                    CommandStep::SequentialEffects(effects.into_iter().map(&mut f).collect())
+                CommandStep::Batch(effects) => {
+                    CommandStep::Batch(effects.into_iter().map(&mut f).collect())
                 }
-                CommandStep::ParallelEffects(effects) => {
-                    CommandStep::ParallelEffects(effects.into_iter().map(&mut f).collect())
+                CommandStep::Group { effects, mode, barrier, timeout_per } => {
+                    CommandStep::Group {
+                        effects: effects.into_iter().map(&mut f).collect(),
+                        mode,
+                        barrier,
+                        timeout_per,
+                    }
                 }
             };
             outputs.push(new_output);
@@ -331,7 +384,7 @@ impl<Event, Effect> Command<Event, Effect> {
         self.outputs
             .iter()
             .map(|o| match o {
-                CommandStep::SequentialEffects(effects) | CommandStep::ParallelEffects(effects) => {
+                CommandStep::Batch(effects) | CommandStep::Group { effects, .. } => {
                     effects.len()
                 }
                 CommandStep::Event(_) | CommandStep::Effect(_) => 1,
@@ -443,6 +496,7 @@ impl<Event, Effect> Command<Event, Effect> {
     pub fn then(self, next: Self) -> Self {
         Self::batch([self, next])
     }
+
 }
 
 // Sequential Effect Composition
@@ -489,11 +543,11 @@ impl<Event, Effect> Command<Event, Effect> {
                     CommandStep::Effect(effect) => {
                         all_effects.push(effect);
                     }
-                    CommandStep::SequentialEffects(effects) => {
+                    CommandStep::Batch(effects) => {
                         all_effects.extend(effects);
                     }
-                    CommandStep::ParallelEffects(effects) => {
-                        // When parallel effects are sequenced, they become sequential
+                    CommandStep::Group { effects, .. } => {
+                        // Grouped effects become sequential in a sequence pipeline  
                         all_effects.extend(effects);
                     }
                     CommandStep::Event(event) => {
@@ -510,9 +564,9 @@ impl<Event, Effect> Command<Event, Effect> {
             outputs.push(CommandStep::Event(event));
         }
 
-        // Then add effects as a sequential batch (enforces ordering via Shell)
+        // Then add effects as a batch (enforces ordering via Shell)
         if !all_effects.is_empty() {
-            outputs.push(CommandStep::SequentialEffects(all_effects));
+            outputs.push(CommandStep::Batch(all_effects));
         }
 
         Self { outputs }
@@ -540,8 +594,8 @@ impl<Event, Effect> Command<Event, Effect> {
             match output {
                 CommandStep::Event(event) => events.push(event),
                 CommandStep::Effect(effect) => effects.push(effect),
-                CommandStep::SequentialEffects(coordinated_effects)
-                | CommandStep::ParallelEffects(coordinated_effects) => {
+                CommandStep::Batch(coordinated_effects)
+                | CommandStep::Group { effects: coordinated_effects, .. } => {
                     effects.extend(coordinated_effects);
                 }
             }
@@ -568,7 +622,7 @@ impl<Event, Effect> Command<Event, Effect> {
         for output in &self.outputs {
             match output {
                 CommandStep::Effect(_) => count += 1,
-                CommandStep::SequentialEffects(effects) | CommandStep::ParallelEffects(effects) => {
+                CommandStep::Batch(effects) | CommandStep::Group { effects, .. } => {
                     count += effects.len();
                 }
                 CommandStep::Event(_) => {}
@@ -642,11 +696,18 @@ impl<Event, Effect> Command<Event, Effect> {
             match output {
                 CommandStep::Event(event) => outputs.push(CommandStep::Event(f(event)?)),
                 CommandStep::Effect(effect) => outputs.push(CommandStep::Effect(effect)),
-                CommandStep::SequentialEffects(effects) => {
-                    outputs.push(CommandStep::SequentialEffects(effects));
+                CommandStep::Batch(effects) => {
+                    outputs.push(CommandStep::Batch(effects));
                 }
-                CommandStep::ParallelEffects(effects) => {
-                    outputs.push(CommandStep::ParallelEffects(effects));
+                CommandStep::Group { effects, mode: GroupMode::Parallel, barrier: None, timeout_per: None } => {
+                    outputs.push(CommandStep::Group { effects, mode: GroupMode::Parallel, barrier: None, timeout_per: None });
+                }
+                CommandStep::Group { effects, mode, barrier, timeout_per } => {
+                    let mapped = match barrier {
+                        Some(ev) => Some(f(ev)?),
+                        None => None,
+                    };
+                    outputs.push(CommandStep::Group { effects, mode, barrier: mapped, timeout_per });
                 }
             }
         }
@@ -667,15 +728,14 @@ impl<Event, Effect> Command<Event, Effect> {
             let new_output = match output {
                 CommandStep::Event(event) => CommandStep::Event(event),
                 CommandStep::Effect(effect) => CommandStep::Effect(f(effect)?),
-                CommandStep::SequentialEffects(effects) => {
+                CommandStep::Batch(effects) => {
                     let mapped_effects: Result<Vec<_>, _> =
                         effects.into_iter().map(&mut f).collect();
-                    CommandStep::SequentialEffects(mapped_effects?)
+                    CommandStep::Batch(mapped_effects?)
                 }
-                CommandStep::ParallelEffects(effects) => {
-                    let mapped_effects: Result<Vec<_>, _> =
-                        effects.into_iter().map(&mut f).collect();
-                    CommandStep::ParallelEffects(mapped_effects?)
+                CommandStep::Group { effects, mode, barrier, timeout_per } => {
+                    let mapped_effects: Result<Vec<_>, _> = effects.into_iter().map(&mut f).collect();
+                    CommandStep::Group { effects: mapped_effects?, mode, barrier, timeout_per }
                 }
             };
             outputs.push(new_output);
@@ -705,7 +765,7 @@ impl<Event, Effect> Command<Event, Effect> {
         self.outputs.iter().any(|output| {
             matches!(
                 output,
-                CommandStep::Effect(_) | CommandStep::SequentialEffects(_)
+                CommandStep::Effect(_) | CommandStep::Batch(_)
             )
         })
     }
@@ -726,8 +786,8 @@ impl<Event, Effect> Command<Event, Effect> {
         self.outputs.retain(|output| match output {
             CommandStep::Event(event) => predicate(event),
             CommandStep::Effect(_)
-            | CommandStep::SequentialEffects(_)
-            | CommandStep::ParallelEffects(_) => true, // Always keep effects and coordination
+            | CommandStep::Batch(_)
+            | CommandStep::Group { .. } => true, // Always keep effects and coordination
         });
     }
 
@@ -747,8 +807,8 @@ impl<Event, Effect> Command<Event, Effect> {
         self.outputs.retain(|output| match output {
             CommandStep::Effect(effect) => predicate(effect),
             CommandStep::Event(_)
-            | CommandStep::SequentialEffects(_)
-            | CommandStep::ParallelEffects(_) => true, // Always keep events and coordinated effects
+            | CommandStep::Batch(_)
+            | CommandStep::Group { .. } => true, // Always keep events and coordinated effects
         });
     }
 
@@ -787,8 +847,8 @@ impl<Event, Effect> Command<Event, Effect> {
         for output in self.outputs {
             match output {
                 CommandStep::Effect(effect) => effects.push(effect),
-                CommandStep::SequentialEffects(coordinated_effects)
-                | CommandStep::ParallelEffects(coordinated_effects) => {
+                CommandStep::Batch(coordinated_effects)
+                | CommandStep::Group { effects: coordinated_effects, .. } => {
                     effects.extend(coordinated_effects);
                 }
                 CommandStep::Event(_) => {}
@@ -1377,8 +1437,9 @@ mod tests {
             match output {
                 CommandStep::Event(_) => count += 1,
                 CommandStep::Effect(_) => count += 10,
-                CommandStep::SequentialEffects(_) => count += 100,
-                CommandStep::ParallelEffects(_) => count += 200,
+                CommandStep::Batch(_) => count += 100,
+                CommandStep::Group { mode: GroupMode::Parallel, barrier: None, .. } => count += 200,
+                CommandStep::Group { .. } => count += 300,
             }
         }
         assert_eq!(count, 12); // 2 events + 1 effect = 1 + 10 + 1 = 12
@@ -1537,15 +1598,15 @@ mod tests {
         assert_eq!(flattened.len(), 3);
         assert_eq!(flattened.count_effects(), 3);
 
-        // Should be consolidated into a single ParallelEffects step
+        // Should be consolidated into a single Group step  
         let outputs: Vec<_> = flattened.into_iter().collect();
         assert_eq!(outputs.len(), 1);
 
         match &outputs[0] {
-            CommandStep::ParallelEffects(effects) => {
+            CommandStep::Group { effects, mode: GroupMode::Parallel, barrier: None, timeout_per: None } => {
                 assert_eq!(effects, &vec![TestEffect::X, TestEffect::Y, TestEffect::Z]);
             }
-            _ => panic!("Expected ParallelEffects"),
+            _ => panic!("Expected Group with Parallel mode"),
         }
     }
 
@@ -1553,7 +1614,7 @@ mod tests {
     fn test_flatten_mixed_parallel_effects() {
         let cmd = Command::<TestEvent, TestEffect>::batch([
             test_effect(TestEffect::X),
-            Command::parallel([TestEffect::Y, TestEffect::Z]),
+            Effects::new([TestEffect::Y, TestEffect::Z]).parallel().spawn(),
         ]);
         let flattened = cmd.flatten();
 
@@ -1565,7 +1626,7 @@ mod tests {
     }
 
     #[test]
-    fn test_flatten_only_sequential_effects() {
+    fn test_flatten_only_batch_effects() {
         let cmd = Command::<TestEvent, TestEffect>::sequence([
             test_effect(TestEffect::X),
             test_effect(TestEffect::Y),
@@ -1580,7 +1641,7 @@ mod tests {
         assert_eq!(outputs.len(), 1);
 
         match &outputs[0] {
-            CommandStep::SequentialEffects(effects) => {
+            CommandStep::Batch(effects) => {
                 assert_eq!(effects, &vec![TestEffect::X, TestEffect::Y]);
             }
             _ => panic!("Expected SequentialEffects"),
@@ -1593,7 +1654,7 @@ mod tests {
             test_event(TestEvent::A),
             test_effect(TestEffect::X),
             test_event(TestEvent::B),
-            Command::parallel([TestEffect::Y, TestEffect::Z]),
+            Effects::new([TestEffect::Y, TestEffect::Z]).parallel().spawn(),
         ]);
         let flattened = cmd.flatten();
 
@@ -1610,10 +1671,10 @@ mod tests {
 
         // Effects should be grouped
         match &outputs[2] {
-            CommandStep::ParallelEffects(effects) => {
+            CommandStep::Group { effects, mode: GroupMode::Parallel, barrier: None, timeout_per: None } => {
                 assert_eq!(effects, &vec![TestEffect::X, TestEffect::Y, TestEffect::Z]);
             }
-            _ => panic!("Expected ParallelEffects"),
+            _ => panic!("Expected Group with Parallel mode"),
         }
     }
 
@@ -1622,7 +1683,7 @@ mod tests {
         let cmd = Command::<TestEvent, TestEffect>::batch([
             test_effect(TestEffect::X),                      // Parallel by default
             Command::sequence([test_effect(TestEffect::Y)]), // Sequential
-            Command::parallel([TestEffect::Z]),              // Parallel
+            Effects::new([TestEffect::Z]).parallel().spawn(),              // Parallel
         ]);
         let flattened = cmd.flatten();
 
@@ -1634,7 +1695,7 @@ mod tests {
         assert_eq!(outputs.len(), 1);
 
         match &outputs[0] {
-            CommandStep::SequentialEffects(_) => {
+            CommandStep::Batch(_) => {
                 // Correct - sequential coordination preserved
             }
             _ => panic!("Expected SequentialEffects when mixing sequential and parallel"),

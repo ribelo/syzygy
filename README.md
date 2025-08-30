@@ -167,14 +167,33 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ## Architecture
 
-Syzygy follows **The Elm Architecture** (TEA) with clear separation between pure and impure code:
+Syzygy follows **The Elm Architecture** (TEA) with a strict, unidirectional flow and a clear split between pure state changes and impure effects.
 
 ```
-┌─────────────┐    Effects     ┌──────────────┐    Spawning    ┌───────────────┐
-│    Shell    ├───────────────►│    Handler   ├───────────────►│   Executor    │
-│ (Distributes│                │  (Processes  │                │  (Spawns &    │
-│  Effects)   │                │   Effects)   │                │   Runtime)    │
-└─────────────┘                └──────────────┘                └───────────────┘
+External World              Core (Pure)                    Shell (Impure)
+ ─────────────     ┌────────────────────────┐    ┌──────────────────────────┐
+  User, IO, etc ──►│   update(event,model)  │───►│ Execute Command outputs  │
+                   │   ┌──────────────────┐  │    │  - Route events to Core │
+                   │   │   Command<Event, │  │    │  - Route effects to     │
+                   │   │         Effect>  │  │    │    Effect Handler       │
+                   │   └──────────────────┘  │    └─────────────┬──────────┘
+                   └────────────────────────┘                  │ Effects
+                                                               ▼
+                                                        Effect Handler (async)
+                                                        ┌────────────────────┐
+                                                        │ ctx.run_on::<Exec> │
+                                                        │ per-effect routing │
+                                                        └──────────┬─────────┘
+                                                                   │ spawns
+                            Multiple Executors (Policy)            ▼
+     ┌────────────────────────────┬────────────────────────────┬───────────────┐
+     │ TokioExecutor              │ ThreadPerCoreTokioExecutor │ SingleThread │
+     │ (general async IO)         │ (actix-like per-core)      │ (single-writer)
+     ├────────────────────────────┼────────────────────────────┼───────────────┤
+     │ RayonExecutor (CPU heavy, pure compute)                  │ ... custom   │
+     └──────────────────────────────────────────────────────────┴──────────────┘
+
+Event → Core.update() → Command → Shell.execute() → Effect Handler → Executor → Event
 ```
 
 ### Core (Pure)
@@ -188,12 +207,34 @@ Syzygy follows **The Elm Architecture** (TEA) with clear separation between pure
 - Distributes effects to appropriate handlers
 - Routes events back to Core for processing
 - Orchestrates the async execution flow
+- **Sequential by default**: Effects run one after another for predictable behavior
+- **Parallel coordination**: Uses `futures_concurrency` for join/race patterns in effect handlers
 
 ### Executors (Runtime Services)
 - Provide safe task spawning with cleanup guarantees
 - Handle runtime services (timeouts, scheduling)
 - Manage resources and execution contexts  
-- Focus purely on spawning - no effect queue management
+- Each executor offers different execution guarantees
+
+#### Built-in Executors
+
+Syzygy provides multiple executor types for different use cases:
+
+- **`TokioExecutor`** — General-purpose async I/O executor using tokio runtime
+  - Best for: HTTP requests, file I/O, database queries
+  - Execution: Concurrent task spawning
+
+- **`SingleThreadExecutor`** — Strict FIFO sequential execution on dedicated OS thread
+  - Best for: Database writes, file operations requiring strict ordering
+  - Execution: Sequential FIFO guarantee, no race conditions
+
+- **`ThreadPerCoreTokioExecutor`** — Actix-like model with one tokio runtime per CPU core
+  - Best for: High-throughput applications, avoiding runtime contention
+  - Execution: Round-robin distribution across isolated per-core runtimes
+
+- **`RayonExecutor`** (feature `rayon`) — CPU-bound work-stealing compute pool
+  - Best for: Pure computation, image processing, mathematical operations  
+  - Execution: Work-stealing across CPU threads, no async I/O
 
 ### Commands
 - Simple data structures describing effects to run  
@@ -203,24 +244,90 @@ Syzygy follows **The Elm Architecture** (TEA) with clear separation between pure
 
 #### Command Composition Patterns
 
-**Parallel Effects** (Default):
+**Sequential Effects** (Default):
 ```rust
-// Effects run concurrently, events processed sequentially
+// Effects run sequentially, predictable execution order
 Command::batch([
     Command::effect(HttpRequest { url: "api1".into() }),
-    Command::effect(HttpRequest { url: "api2".into() }),
-    Command::event(RefreshUI),
+    Command::effect(HttpRequest { url: "api2".into() }),  // Waits for api1
+    Command::event(RefreshUI),  // Processed after both effects
 ])
 ```
 
-**Sequential Execution** (Event-Chaining):
+**Parallel Coordination with futures_concurrency**:
 ```rust
-// Use events to chain operations sequentially
-match event {
-    StartProcess => Command::effect(Step1),
-    Step1Complete => Command::effect(Step2), 
-    Step2Complete => Command::effect(Step3),
-    ProcessComplete => Command::none(),
+// Use Command::parallel for effects that should run concurrently
+Command::parallel([
+    HttpRequest { url: "api1".into() },
+    HttpRequest { url: "api2".into() },  // Runs concurrently with api1
+])
+
+// In effect handlers, use futures_concurrency for coordination
+use futures_concurrency::prelude::*;
+
+async fn handle_effects(effect: AppEffect, ctx: EffectContext<...>) {
+    match effect {
+        AppEffect::FetchMultipleApis { urls } => {
+            // Join: wait for all to complete
+            let futures = urls.into_iter().map(|url| async move {
+                reqwest::get(&url).await?.text().await
+            });
+            
+            match futures.collect::<Vec<_>>().join().await {
+                Ok(responses) => {
+                    let _ = ctx.send_event(AppEvent::AllApisCompleted { responses });
+                }
+                Err(error) => {
+                    let _ = ctx.send_event(AppEvent::ApiError { error: error.to_string() });
+                }
+            }
+        }
+        
+        AppEffect::RaceToFirstResponse { urls } => {
+            // Race: return first successful response
+            let futures = urls.into_iter().map(|url| async move {
+                reqwest::get(&url).await?.text().await
+            });
+            
+            match futures.collect::<Vec<_>>().race().await {
+                Ok(first_response) => {
+                    let _ = ctx.send_event(AppEvent::FirstApiResponded { response: first_response });
+                }
+                Err(error) => {
+                    let _ = ctx.send_event(AppEvent::AllApisFailed { error: error.to_string() });
+                }
+            }
+        }
+    }
+}
+```
+
+**Executor Routing Strategies**:
+```rust
+async fn handle_effects(effect: AppEffect, ctx: EffectContext<...>) {
+    match effect {
+        AppEffect::DatabaseWrite { data } => {
+            // Use sequential executor for consistent writes
+            ctx.executor::<SingleThreadExecutor<_>, _>()
+                .spawn(async move { write_to_db(data).await });
+        }
+        AppEffect::ImageProcess { image } => {
+            // Use compute executor for CPU-heavy work
+            ctx.executor::<RayonExecutor<_>, _>()
+                .spawn(async move { process_image(image).await });
+        }
+        AppEffect::ParallelRequests { urls } => {
+            // Use general executor with futures_concurrency
+            ctx.executor::<TokioExecutor<_>, _>().spawn(async move {
+                let responses = urls.into_iter()
+                    .map(|url| reqwest::get(&url))
+                    .collect::<Vec<_>>()
+                    .join()  // All requests in parallel
+                    .await;
+                // Process responses...
+            });
+        }
+    }
 }
 ```
 
@@ -334,19 +441,26 @@ Executors provide safe, high-performance task spawning with cleanup guarantees:
 ```rust
 use syzygy::prelude::*;
 
-// Effect handler with high-performance task spawning via executor
+// Effect handler with per-executor routing
 async fn handle_effect(effect: MyEffect, ctx: EffectContext<MyEvent, MyResources, MyExecutors>) {
     match effect {
         MyEffect::ProcessBatch { items } => {
-            // Get the executor from context
-            let executor: &TokioExecutor<MyEvent> = ctx.executor();
-            
-            // Spawn multiple tasks safely - all will be cancelled on executor drop
-            for item in items {
-                executor.spawn(async move {
-                    process_item(item).await;
-                }).unwrap();
-            }
+            // Route CPU-intensive work to dedicated executor
+            let executor: &ThreadPerCoreTokioExecutor<MyEvent> = ctx.executor();
+            executor.spawn(async move {
+                for item in items { 
+                    process_item(item).await; 
+                }
+                let _ = ctx.send_event(MyEvent::BatchComplete);
+            }).unwrap();
+        }
+        MyEffect::DatabaseWrite { data } => {
+            // Route sequential operations to single-thread executor
+            let executor: &SingleThreadExecutor<MyEvent> = ctx.executor();
+            executor.spawn(async move {
+                write_to_database(data).await;
+                let _ = ctx.send_event(MyEvent::DatabaseUpdated);
+            }).unwrap();
         }
     }
 }
@@ -355,7 +469,10 @@ async fn handle_effect(effect: MyEffect, ctx: EffectContext<MyEvent, MyResources
 Key performance characteristics:
 - **Task spawning**: ~4ns per task (24x faster than previous implementation)
 - **Memory safety**: Zero orphaned tasks through automatic cancellation on executor drop
-- **Clean architecture**: Shell distributes effects, executors handle spawning
+- **Sequential by default**: Effects execute predictably without race conditions
+- **Parallel coordination**: `futures_concurrency` provides efficient join/race patterns
+- **Executor specialization**: Choose the right executor for your workload's needs
+- **Zero-allocation futures**: Structured concurrency without unnecessary heap allocations
 
 ## Runtime Support
 
@@ -437,6 +554,35 @@ impl syzygy::spawn::Spawn for MySpawner {
 runner.run_until(condition, MySpawner).await?;
 ```
 
+## Multi-Executor Routing
+
+Route a single `Effect` enum to different executors using magic extraction. `EffectContext::run_on` builds a per-executor context with that executor’s resources and awaits completion (Batch stays strictly ordered; ParallelEffects fans out and each branch awaits on its chosen executor).
+
+```rust
+use syzygy::prelude::*;
+
+#[derive(Clone)] struct HttpClient;
+#[derive(Clone)] struct Database;
+
+struct NetExec(ThreadPerCoreTokioExecutor<AppEvent>);
+struct DbExec(SingleThreadExecutor<AppEvent>);
+
+async fn handle_effects(effect: AppEffect, ctx: EffectContext<AppEvent, AppResources, (DbExec, NetExec)>) {
+    match effect {
+        AppEffect::HttpRequest { url } => {
+            ctx.run_on::<NetExec, _>(url, |url: String, client: &HttpClient, tx: EventSender<AppEvent>| async move {
+                // ... do http, send event
+            }).await.unwrap();
+        }
+        AppEffect::DatabaseWrite { op } => {
+            ctx.run_on::<DbExec, _>(op, |op: WriteData, db: &Database, tx: EventSender<AppEvent>| async move {
+                // ... single-writer op, send event
+            }).await.unwrap();
+        }
+    }
+}
+```
+
 ## Installation
 
 ### Tokio (Recommended)
@@ -475,5 +621,34 @@ async-std = { version = "1.13", features = ["attributes"] }
 - [Examples](examples/) - Usage examples and demonstrations
 
 ## License
+
+## Rationale
+
+Why events?
+- Predictability: Unidirectional flow yields deterministic state evolution.
+- Testability: `update(event, model)` is pure; easy to unit test and reason about.
+- Composability: Everything (including errors) is just another event.
+- Decoupling: No ad-hoc request/response backchannels; all state changes cross the same gate.
+
+Why effects (as data)?
+- Separation of concerns: Core describes “what to do”; Shell/handlers decide “how to do it”.
+- Observability: Effects can be logged, inspected, and replayed without executing them.
+- Runtime neutrality: Handlers can target different executors without changing Core logic.
+- Safety: No hidden side effects inside update; easier to reason about failure and retries.
+
+Why multiple executors?
+- Correctness policy: Different work needs different execution guarantees.
+  - SingleThreadExecutor: Enforce single-writer semantics (e.g., DB writes) with strict FIFO.
+  - ThreadPerCoreTokioExecutor: High-throughput async IO with minimal cross-core contention.
+  - TokioExecutor: General async runtime integration; dedicate a runtime just for effects.
+  - RayonExecutor (feature): CPU-heavy compute on a work‑stealing pool, isolated from IO loops.
+- Isolation: Effects never contend with the event loop; executors own their runtimes/threads.
+- Performance: Pick the optimal engine per effect without splitting the effect type.
+
+How routing works (simple mental model)
+- Core emits `Command` with effects.
+- Shell enforces composition (Batch = sequential, ParallelEffects = concurrent).
+- Effect handler matches the effect and calls `ctx.run_on::<Executor>(payload, |..| async { .. })`.
+- The handler closure runs where it belongs (chosen executor), injects needed resources, and sends events back.
 
 This project is licensed under the MIT License.

@@ -40,13 +40,15 @@ use std::time::Duration;
 
 use crate::async_context::EffectContext;
 use crate::command::executor::route_command;
-use crate::command::{Command, CommandStep};
+use crate::command::{Command, CommandStep, GroupMode};
 use crate::error::ShellError;
 use crate::task::{TaskStats, TaskTracker};
 use crate::timer::{Time, time};
 use crate::executor::EmptyExecutorStorage;
 
 use crate::effect_handler::EffectHandler;
+use futures_concurrency::prelude::*;
+use futures::FutureExt;
 
 #[cfg(feature = "tracing")]
 use tracing::{Level, debug, span, warn};
@@ -243,7 +245,7 @@ where
         }
     }
 
-    
+
 
     /// Set the resources storage for effect handlers
     ///
@@ -354,8 +356,11 @@ where
     ///
     /// This processes any pending effects with timeout and panic handling.
     /// Returns true if there was work to do, false if idle.
+    ///
+    /// Single effects are processed sequentially for predictable behavior.
+    /// Use Group with Parallel mode explicitly when concurrent execution is needed.
     #[allow(clippy::needless_pass_by_value)]
-    pub fn tick<S>(&mut self, spawner: S) -> Result<bool, ShellError>
+    pub async fn tick<S>(&mut self, spawner: S) -> Result<bool, ShellError>
     where
         S: crate::spawn::Spawn,
     {
@@ -371,28 +376,34 @@ where
                 CommandStep::Effect(effect) => {
                     did_work = true;
                     _effect_count += 1;
-                    self.spawn_single_effect(effect, &spawner);
+                    self.execute_effect(effect).await;
                 }
-                CommandStep::SequentialEffects(effects) => {
+                CommandStep::Batch(effects) => {
                     did_work = true;
                     _effect_count += effects.len();
-                    self.spawn_sequential_effects(effects, &spawner);
+                    self.spawn_batch_effects(effects, &spawner);
                 }
-                CommandStep::ParallelEffects(effects) => {
+                CommandStep::Group { effects, mode: GroupMode::Parallel, barrier: None, timeout_per: None } => {
                     did_work = true;
                     _effect_count += effects.len();
                     self.spawn_parallel_effects(effects, &spawner);
                 }
+                CommandStep::Group { effects, mode, barrier, timeout_per } => {
+                    did_work = true;
+                    _effect_count += effects.len();
+                    self.spawn_group(effects, mode, barrier, timeout_per, &spawner);
+                }
                 CommandStep::Event(_) => {
                     // Other command outputs should be handled by Core
                     // This shouldn't happen in normal operation
+                    unreachable!()
                 }
             }
         }
 
         // Also tick any registered executors (for executor-based effect handling)
         // Note: This is currently a placeholder - full executor integration TBD
-        
+
         // Cleanup finished tasks
         let (_cleaned_count, _active_count) = self.cleanup_finished_tasks();
 
@@ -409,45 +420,41 @@ where
         Ok(did_work)
     }
 
-    /// Spawn a single effect with optional timeout
-    fn spawn_single_effect<S>(&self, effect: Effect, spawner: &S)
-    where
-        S: crate::spawn::Spawn,
-    {
+    /// Execute a single effect sequentially (no spawning)
+    ///
+    /// This processes effects one at a time for predictable ordering.
+    /// For parallel execution, use CommandStep::Group with Parallel mode.
+    async fn execute_effect(&self, effect: Effect) {
         #[cfg(feature = "tracing")]
-        debug!("Processing effect");
+        debug!("Processing effect sequentially");
 
         let ctx = EffectContext::new(
             self.event_tx.clone(),
             self.resources.clone(),
             self.executors.clone(),
         );
-        let handler = self.effect_handler.clone();
+        let handler = self.effect_handler;
         let timeout = self.config.effect_timeout;
 
         match timeout {
             Some(dur) => {
-                spawner.spawn(async move {
-                    let _ = crate::timer::timeout(dur, handler.handle(effect, ctx)).await;
-                });
+                let _ = crate::timer::timeout(dur, handler.handle(effect, ctx)).await;
             }
             None => {
-                spawner.spawn(async move {
-                    handler.handle(effect, ctx).await;
-                });
+                handler.handle(effect, ctx).await;
             }
         }
     }
 
-    /// Spawn effects in sequential order with optional timeout
-    fn spawn_sequential_effects<S>(&self, effects: Vec<Effect>, spawner: &S)
+    /// Spawn batch effects with optional timeout
+    fn spawn_batch_effects<S>(&self, effects: Vec<Effect>, spawner: &S)
     where
         S: crate::spawn::Spawn,
     {
         let resources = self.resources.clone();
         let event_tx = self.event_tx.clone();
         let timeout = self.config.effect_timeout;
-        let handler = self.effect_handler.clone();
+        let handler = self.effect_handler;
         let executors = self.executors.clone();
 
         let seq_future = async move {
@@ -487,6 +494,86 @@ where
                 let h = handler.clone();
                 spawner.spawn(async move {
                     h.handle(effect, ctx).await;
+                });
+            }
+        }
+    }
+
+    /// Spawn a unified group with policy and optional barrier using futures_concurrency
+    fn spawn_group<S>(
+        &self,
+        effects: Vec<Effect>,
+        mode: crate::command::GroupMode,
+        barrier: Option<Event>,
+        timeout_per: Option<std::time::Duration>,
+        spawner: &S,
+    ) where
+        S: crate::spawn::Spawn,
+        H: Clone,
+    {
+        if effects.is_empty() {
+            return;
+        }
+
+        let resources = self.resources.clone();
+        let event_tx = self.event_tx.clone();
+        let executors = self.executors.clone();
+        let handler = self.effect_handler.clone();
+
+        match mode {
+            crate::command::GroupMode::Parallel => {
+                // Barrier present => await all; None => fire-and-forget
+                if barrier.is_none() {
+                    // Equivalent to Group with Parallel mode
+                    self.spawn_parallel_effects(effects, spawner);
+                    return;
+                }
+
+                let barrier_event = barrier.unwrap();
+                spawner.spawn(async move {
+                    // Build child futures without pre-spawn; wrap with timeout if set
+                    let futures: Vec<futures_util::future::BoxFuture<'static, ()>> = effects
+                        .into_iter()
+                        .map(|effect| {
+                            let ctx = EffectContext::new(event_tx.clone(), resources.clone(), executors.clone());
+                            let h = handler.clone();
+                            async move {
+                                let fut = h.handle(effect, ctx);
+                                if let Some(d) = timeout_per {
+                                    let _ = crate::timer::timeout(d, fut).await;
+                                } else {
+                                    fut.await;
+                                }
+                            }
+                            .boxed()
+                        })
+                        .collect();
+                    // Await all via futures_concurrency join
+                    let _: Vec<_> = futures.join().await;
+                    if let Some(tx) = event_tx.as_ref() { let _ = tx.send(barrier_event); }
+                });
+            }
+            crate::command::GroupMode::Race => {
+                spawner.spawn(async move {
+                    let futures: Vec<futures_util::future::BoxFuture<'static, ()>> = effects
+                        .into_iter()
+                        .map(|effect| {
+                            let ctx = EffectContext::new(event_tx.clone(), resources.clone(), executors.clone());
+                            let h = handler.clone();
+                            async move {
+                                let fut = h.handle(effect, ctx);
+                                if let Some(d) = timeout_per {
+                                    let _ = crate::timer::timeout(d, fut).await;
+                                } else {
+                                    fut.await;
+                                }
+                            }
+                            .boxed()
+                        })
+                        .collect();
+                    // Await first; losers canceled by dropping
+                    let _ = futures.race().await;
+                    if let (Some(ev), Some(tx)) = (barrier, event_tx.as_ref()) { let _ = tx.send(ev); }
                 });
             }
         }

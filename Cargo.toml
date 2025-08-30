@@ -17,6 +17,7 @@ multi-model = []
 tracing = ["dep:tracing"]
 magic-compilation-test = []
 manual-compilation-test = []
+rayon = ["dep:rayon"]
 
 [dependencies]
 # Core dependencies
@@ -26,6 +27,7 @@ futures = "0.3"
 futures-util = "0.3"
 futures-concurrency = "7.6"
 smallvec = "1.13"
+rayon = { version = "1.9", optional = true }
 
 # Runtime dependencies
 tokio = { version = "1.40", features = ["rt", "rt-multi-thread", "sync", "time", "macros"], optional = true }
@@ -155,4 +157,3 @@ harness = false
 [[bench]]
 name = "production_app_benchmark"
 harness = false
-

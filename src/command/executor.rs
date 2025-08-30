@@ -48,24 +48,32 @@ where
                     .send(CommandStep::Effect(effect))
                     .map_err(|_| CommandError::CommandPanic("Effect channel closed".to_string()))?;
             }
-            CommandStep::SequentialEffects(effects) => {
+            CommandStep::Batch(effects) => {
                 _effect_count += effects.len();
                 #[cfg(feature = "tracing")]
-                debug!(count = effects.len(), "Routing sequential effects to Shell");
+                debug!(count = effects.len(), "Routing batch effects to Shell");
 
-                // Send the entire sequential pattern to Shell for proper coordination
+                // Send the entire batch pattern to Shell for proper coordination
                 effect_sender
-                    .send(CommandStep::SequentialEffects(effects))
+                    .send(CommandStep::Batch(effects))
                     .map_err(|_| CommandError::CommandPanic("Effect channel closed".to_string()))?;
             }
-            CommandStep::ParallelEffects(effects) => {
+            CommandStep::Group { effects, mode: crate::command::GroupMode::Parallel, barrier: None, timeout_per: None } => {
                 _effect_count += effects.len();
                 #[cfg(feature = "tracing")]
                 debug!(count = effects.len(), "Routing parallel effects to Shell");
 
                 // Send the entire parallel pattern to Shell for proper coordination
                 effect_sender
-                    .send(CommandStep::ParallelEffects(effects))
+                    .send(CommandStep::Group { effects, mode: crate::command::GroupMode::Parallel, barrier: None, timeout_per: None })
+                    .map_err(|_| CommandError::CommandPanic("Effect channel closed".to_string()))?;
+            }
+            CommandStep::Group { effects, mode, barrier, timeout_per } => {
+                _effect_count += effects.len();
+                #[cfg(feature = "tracing")]
+                debug!(count = effects.len(), "Routing group to Shell");
+                effect_sender
+                    .send(CommandStep::Group { effects, mode, barrier, timeout_per })
                     .map_err(|_| CommandError::CommandPanic("Effect channel closed".to_string()))?;
             }
         }
@@ -80,22 +88,7 @@ where
     Ok(())
 }
 
-/// Deprecated alias for route_command - use route_command instead
-#[deprecated(
-    since = "0.1.0",
-    note = "Use route_command instead for better semantic clarity"
-)]
-pub fn execute_command<Event, Effect>(
-    command: Command<Event, Effect>,
-    event_sender: Option<&Sender<Event>>,
-    effect_sender: &Sender<CommandStep<Event, Effect>>,
-) -> Result<(), CommandError>
-where
-    Event: Send + Clone + 'static,
-    Effect: Send + Clone + 'static,
-{
-    route_command(command, event_sender, effect_sender)
-}
+// Deprecated execute_command function removed in favor of route_command
 
 #[cfg(test)]
 mod tests {

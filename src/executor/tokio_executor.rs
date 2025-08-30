@@ -1,7 +1,9 @@
-//! TokioExecutor - Task spawning and runtime services for effect handlers
+//! TokioExecutor - Dedicated tokio runtime for effect handlers
 //!
-//! This executor provides safe task spawning with cleanup guarantees and runtime
-//! services. Shell handles effect distribution, executor handles execution.
+//! This executor owns (or attaches to) a tokio runtime that is separate from
+//! any application event loop, ensuring effects do not contend with UI/event
+//! processing. Shell distributes effects; the executor only spawns and manages
+//! runtime services for them.
 
 use crate::error::ShellError;
 use crate::storage::{EmptyStorage, StorageBuilder};
@@ -12,6 +14,8 @@ use std::future::Future;
 use crossbeam_channel::Sender;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+#[cfg(feature = "tokio")]
+use tokio::runtime;
 
 /// TokioExecutor provides spawning and runtime services
 ///
@@ -40,6 +44,17 @@ where
     
     /// Default timeout for tasks spawned by this executor
     default_timeout: Option<Duration>,
+
+    /// Tokio runtime backing this executor (owned or provided handle)
+    #[cfg(feature = "tokio")]
+    runtime_mode: TokioRuntimeMode,
+}
+
+#[cfg(feature = "tokio")]
+#[derive(Clone)]
+enum TokioRuntimeMode {
+    Owned(Arc<runtime::Runtime>),
+    Handle(runtime::Handle),
 }
 
 impl<Event> TokioExecutor<Event, EmptyStorage>
@@ -48,12 +63,33 @@ where
 {
     /// Create a new TokioExecutor with default configuration
     pub fn new() -> Self {
+        #[cfg(feature = "tokio")]
+        let rt = runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .expect("failed to build tokio runtime");
+
         Self {
             task_tracker: Arc::new(Mutex::new(TaskTracker::new())),
             event_tx: None,
             resources: EmptyStorage::new(),
             runtime: time(),
             default_timeout: Some(Duration::from_secs(30)),
+            #[cfg(feature = "tokio")]
+            runtime_mode: TokioRuntimeMode::Owned(Arc::new(rt)),
+        }
+    }
+
+    /// Attach this executor to an existing tokio runtime handle
+    #[cfg(feature = "tokio")]
+    pub fn with_handle(handle: runtime::Handle) -> Self {
+        Self {
+            task_tracker: Arc::new(Mutex::new(TaskTracker::new())),
+            event_tx: None,
+            resources: EmptyStorage::new(),
+            runtime: time(),
+            default_timeout: Some(Duration::from_secs(30)),
+            runtime_mode: TokioRuntimeMode::Handle(handle),
         }
     }
 }
@@ -72,6 +108,8 @@ where
     Event: Clone + Send + 'static,
     Resources: Clone + Send + Sync + 'static,
 {
+    // with_handle provided only for EmptyStorage version below
+
     /// Set the event sender for this executor
     pub fn with_event_sender(mut self, event_tx: Sender<Event>) -> Self {
         self.event_tx = Some(event_tx);
@@ -105,6 +143,8 @@ where
             resources: self.resources.clone().with_model(resource),
             runtime: self.runtime,
             default_timeout: self.default_timeout,
+            #[cfg(feature = "tokio")]
+            runtime_mode: self.runtime_mode.clone(),
         }
     }
     
@@ -154,7 +194,25 @@ where
         F: Future<Output = ()> + Send + 'static,
     {
         if let Ok(mut tracker) = self.task_tracker.lock() {
-            let handle = tracker.spawn_direct(future)?;
+            #[cfg(feature = "tokio")]
+            let handle: runtime::Handle = match &self.runtime_mode {
+                TokioRuntimeMode::Owned(rt) => rt.handle().clone(),
+                TokioRuntimeMode::Handle(h) => h.clone(),
+            };
+            #[cfg(feature = "tokio")]
+            let spawner = move |f| { handle.spawn(f); };
+
+            // Fallback when tokio feature is off (shouldn't be used)
+            #[cfg(not(feature = "tokio"))]
+            let spawner = |_f: F| {};
+
+            let handle = tracker.spawn(
+                spawner,
+                move |is_finished| async move {
+                    future.await;
+                    is_finished.store(true, std::sync::atomic::Ordering::Relaxed);
+                },
+            )?;
             Ok(handle.id())
         } else {
             Err(ShellError::TaskTrackerClosed)
@@ -177,15 +235,8 @@ where
         I: IntoIterator,
         I::Item: Future<Output = ()> + Send + 'static,
     {
-        // Stack allocate for <=64 tasks to avoid heap allocation
         let mut task_ids = SmallVec::<[TaskId; 64]>::new();
-
-        for future in futures {
-            // Use the safe spawn method for each task
-            let task_id = self.spawn(future)?;
-            task_ids.push(task_id);
-        }
-
+        for future in futures { task_ids.push(self.spawn(future)?); }
         Ok(task_ids.into_vec())
     }
 
@@ -237,6 +288,8 @@ where
             resources: self.resources.clone(),
             runtime: self.runtime,
             default_timeout: self.default_timeout,
+            #[cfg(feature = "tokio")]
+            runtime_mode: self.runtime_mode.clone(),
         }
     }
 }
@@ -319,3 +372,16 @@ where
     }
 }
 
+// Provide access to the executor's resource storage for magic handler helpers
+impl<Event, Resources> crate::executor::HasExecutorResources<Event>
+    for TokioExecutor<Event, Resources>
+where
+    Event: Clone + Send + 'static,
+    Resources: Clone + Send + Sync + 'static,
+{
+    type Resources = Resources;
+
+    fn clone_resources(&self) -> Self::Resources {
+        self.resources.clone()
+    }
+}

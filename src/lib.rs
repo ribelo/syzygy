@@ -437,7 +437,7 @@ pub mod prelude {
     pub use crate::event_context::EventContext;
 
     // Command system
-    pub use crate::command::{Command, CommandStep};
+    pub use crate::command::{Command, CommandStep, Effects};
 
     // Core/Shell architecture
     pub use crate::core::{Core, EventHandler};
@@ -460,12 +460,18 @@ pub mod prelude {
     pub use crate::storage::{Contains, EmptyStorage, Storage};
 
     // Executor system
-    pub use crate::executor::{SpawnExecutor, ExecutorStorage, EmptyExecutorStorage, TokioExecutor};
+    pub use crate::executor::{
+        SpawnExecutor, ExecutorStorage, EmptyExecutorStorage,
+        TokioExecutor, SingleThreadExecutor, ThreadPerCoreTokioExecutor,
+    };
+    #[cfg(feature = "rayon")]
+    pub use crate::executor::RayonExecutor;
 
     // Magic handler system
     pub use crate::extract::{EventSender, FromEffectContext, FromEventContext};
     pub use crate::magic_handler::{
         EffectMagicHandler, EventMagicHandler, UnitHandler, event_trigger,
+        EffectMagicHandlerDirect, effect_trigger_direct,
     };
 
     // Magic handler macros

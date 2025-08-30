@@ -10,7 +10,7 @@ pub trait EffectHandler<
     Effect,
     Resources,
     Executors = crate::executor::EmptyExecutorStorage,
->: Send + Sync + 'static
+>: Send + Sync + Clone + Copy + 'static
 {
     type Future: Future<Output = ()> + Send + 'static;
 
@@ -28,7 +28,7 @@ where
     Effect: Send + 'static,
     Resources: Send + Sync + 'static,
     Executors: Send + Sync + 'static,
-    F: Fn(Effect, EffectContext<Event, Resources, Executors>) -> Fut + Send + Sync + 'static,
+    F: Fn(Effect, EffectContext<Event, Resources, Executors>) -> Fut + Send + Sync + Clone + Copy + 'static,
     Fut: Future<Output = ()> + Send + 'static,
 {
     type Future = Fut;

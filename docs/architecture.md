@@ -9,39 +9,40 @@ Syzygy is The Elm Architecture (TEA) for Rust applications. It provides a clean,
 ### Fundamental Principles
 
 1. **Unidirectional Data Flow** - Events flow in one direction: Event → Model → Command → Effect → Event
-2. **Pure Functional Core** - Business logic is deterministic and side-effect free  
+2. **Pure Functional Core** - Business logic is deterministic and side-effect free
 3. **Error-as-Events** - All errors flow through the same event pipeline
 4. **Effect-as-Data** - Side effects are described as data, not executed directly
-5. **Safety First** - Memory safety and task cleanup are guaranteed by design
-6. **Zero-Overhead Abstractions** - High performance through compile-time optimizations
+5. **Parallel Coordination** - Uses `futures_concurrency` for structured join/race patterns
+6. **Safety First** - Memory safety and task cleanup are guaranteed by design
+7. **Zero-Overhead Abstractions** - High performance through compile-time optimizations
 
 ## Architecture Overview
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│                    External World                       │
-│           (User Input, Network, Files, etc.)           │
-└─────────────────┬───────────────────┬───────────────────┘
-                  │ Events            │ Effects
-                  ▼                   ▼
-┌─────────────────────────────────────────────────────────┐
-│               Core (Sync)     Shell (Async)            │
-│                                                         │
-│  ┌──────────────────────┐    ┌─────────────────────┐   │
-│  │   Core               │    │   Shell             │   │  
-│  │                      │    │                     │   │
-│  │  - Owns Model        │    │  - EffectContext    │   │
-│  │  - Processes Events  │───▶│  - Executes Effects │   │
-│  │  - Returns Commands  │    │  - Routes Events    │   │
-│  │  - Purely Sync      │    │  - Fully Async      │   │
-│  └──────────────────────┘    └─────────────────────┘   │
-│                                                         │
-│               Command<Event, Effect>                    │
-│          (Bridge between Core and Shell)               │
-└─────────────────────────────────────────────────────────┘
+External World              Core (Pure)                    Shell (Impure)
+ ─────────────     ┌────────────────────────┐    ┌──────────────────────────┐
+  User, IO, etc ──►│   update(event,model)  │───►│ Execute Command outputs  │
+                   │   ┌──────────────────┐ │    │  - Route events to Core │
+                   │   │   Command<Event, │ │    │  - Route effects to     │
+                   │   │         Effect>  │ │    │    Effect Handler       │
+                   │   └──────────────────┘ │    └─────────────┬──────────┘
+                   └────────────────────────┘                  │ Effects
+                                                               ▼
+                                                        Effect Handler (async)
+                                                        ┌────────────────────┐
+                                                        │ ctx.run_on::<Exec> │
+                                                        │ per-effect routing │
+                                                        └──────────┬─────────┘
+                                                                   │ spawns
+                            Multiple Executors (Policy)            ▼
+     ┌────────────────────────────┬────────────────────────────┬───────────────┐
+     │ TokioExecutor              │ ThreadPerCoreTokioExecutor │ SingleThread │
+     │ (general async IO)         │ (actix-like per-core)      │ (single-writer)
+     ├────────────────────────────┼────────────────────────────┼───────────────┤
+     │ RayonExecutor (CPU heavy, pure compute)                  │ ... custom   │
+     └──────────────────────────────────────────────────────────┴──────────────┘
 
-Unidirectional Flow:
-Event → Core.update() → Command → Shell.execute() → Effect → EffectContext → Event
+Event → Core.update() → Command → Shell.execute() → Effect Handler → Executor → Event
 ```
 
 ## Core Components
@@ -53,13 +54,13 @@ pub trait App: Send + 'static {
     type Event: Clone + Send + 'static;     // What can happen
     type Model: Send + 'static;             // Application state
     type Effect: Clone + Send + 'static;    // What you want to do
-    
+
     fn update(
-        &self, 
-        event: Self::Event, 
+        &self,
+        event: Self::Event,
         model: &mut Self::Model
     ) -> Command<Self::Event, Self::Effect>;
-    
+
     #[cfg(feature = "view-model")]
     fn view(&self, model: &Self::Model) -> Self::ViewModel;
 }
@@ -81,15 +82,15 @@ enum AppEvent {
     // User actions
     UserClicked { button: String },
     TextEntered { field: String, text: String },
-    
-    // External events  
+
+    // External events
     DataReceived { data: String },
     TimerExpired,
-    
+
     // Error events (not exceptions!)
     ValidationFailed { field: String, reason: String },
     NetworkError { message: String },
-    
+
     // Success events
     DataSaved { id: String },
     LoginSuccess { token: String },
@@ -111,11 +112,11 @@ struct AppModel {
     // Domain data
     users: Vec<User>,
     current_user: Option<User>,
-    
+
     // UI state
     loading: bool,
     error_message: Option<String>,
-    
+
     // Process state
     pending_operations: HashSet<String>,
 }
@@ -154,22 +155,22 @@ Commands are simple data structures that describe what should happen:
 impl<Event, Effect> Command<Event, Effect> {
     /// Create a no-op command
     pub fn none() -> Self
-    
-    /// Emit an event immediately  
+
+    /// Emit an event immediately
     pub fn event(event: Event) -> Self
-    
+
     /// Request an effect to be executed
     pub fn effect(effect: Effect) -> Self
-    
+
     /// Emit multiple events
     pub fn events(events: impl IntoIterator<Item = Event>) -> Self
-    
-    /// Request multiple effects  
+
+    /// Request multiple effects
     pub fn effects(effects: impl IntoIterator<Item = Effect>) -> Self
-    
+
     /// Combine multiple commands (effects run concurrently)
     pub fn batch(commands: impl IntoIterator<Item = Self>) -> Self
-    
+
     /// Transform events/effects in a command
     pub fn map_event<F>(self, f: F) -> Command<NewEvent, Effect>
     pub fn map_effect<F>(self, f: F) -> Command<Event, NewEffect>
@@ -178,7 +179,7 @@ impl<Event, Effect> Command<Event, Effect> {
 
 #### Execution Patterns
 
-**Parallel Effects (Default)**: 
+**Parallel Effects (Default)**:
 ```rust
 // Effects execute concurrently, events process sequentially
 Command::batch([
@@ -194,7 +195,7 @@ Command::batch([
 match event {
     StartWorkflow => Command::effect(Step1Effect),
     Step1Complete => Command::effect(Step2Effect),
-    Step2Complete => Command::effect(Step3Effect),  
+    Step2Complete => Command::effect(Step3Effect),
     WorkflowComplete => Command::none(),
 }
 ```
@@ -221,20 +222,20 @@ fn update(&self, event: AppEvent, model: &mut AppModel) -> Command<AppEvent, App
                     reason: "Username required".to_string(),
                 })
             } else {
-                // Request HTTP effect  
+                // Request HTTP effect
                 Command::effect(AppEffect::HttpPost {
                     url: "/api/login".to_string(),
                     body: serde_json::to_string(&model.credentials).unwrap(),
                 })
             }
         }
-        
+
         AppEvent::ValidationFailed { field, reason } => {
             // Handle errors like any other event
             model.error_message = Some(format!("{}: {}", field, reason));
             Command::none()
         }
-        
+
         AppEvent::DataReceived { data } => {
             // Parse and save
             if let Ok(user) = serde_json::from_str::<User>(&data) {
@@ -257,13 +258,13 @@ fn update(&self, event: AppEvent, model: &mut AppModel) -> Command<AppEvent, App
 impl<A: App> Core<A> {
     /// Process an event and return a command
     pub fn handle_event(&mut self, event: A::Event) -> Command<A::Event, A::Effect>
-    
+
     /// Get current model (read-only)
     pub fn model(&self) -> &A::Model
-    
-    /// Send an event for processing  
+
+    /// Send an event for processing
     pub fn send_event(&self, event: A::Event) -> Result<(), CoreError>\n    \n    /// Get a sender for external events\n    pub fn event_sender(&self) -> Sender<A::Event>
-    
+
     /// Process all pending events
     pub fn tick(&mut self) -> Vec<Command<A::Event, A::Effect>>
 }
@@ -271,7 +272,7 @@ impl<A: App> Core<A> {
 
 **Key characteristics**:
 - **Synchronous** - Can run on any thread, including UI threads
-- **No async/await** - Keeps business logic simple and testable  
+- **No async/await** - Keeps business logic simple and testable
 - **Event-driven** - Only updates state in response to events
 - **Command producer** - Returns descriptions of what to do, doesn't do it
 
@@ -282,11 +283,11 @@ impl<A: App> Shell<A> {
     /// Set the effect handler that converts effects to async operations
     pub fn with_effect_handler<F>(self, handler: F) -> Self
     where F: Fn(A::Effect, EffectContext<A::Event>) -> BoxFuture<'static, ()>
-    
+
     /// Execute a command synchronously, routing outputs to channels
     pub fn execute_command(&mut self, command: Command<A::Event, A::Effect>) -> Result<(), ShellError>
-    
-    /// Process effects and manage async tasks  
+
+    /// Process effects and manage async tasks
     pub fn tick(&mut self) -> Result<bool, ShellError>
 }
 ```
@@ -304,13 +305,13 @@ fn handle_effects(effect: MyEffect, ctx: EffectContext<MyEvent>) -> BoxFuture<'s
                         let _ = ctx.send_event(MyEvent::DataReceived { data });
                     }
                     Err(error) => {
-                        let _ = ctx.send_event(MyEvent::NetworkError { 
-                            message: error.to_string() 
+                        let _ = ctx.send_event(MyEvent::NetworkError {
+                            message: error.to_string()
                         });
                     }
                 }
             }
-            
+
             MyEffect::Sleep { duration } => {
                 tokio::time::sleep(duration).await;
                 let _ = ctx.send_event(MyEvent::TimerExpired);
@@ -322,25 +323,272 @@ fn handle_effects(effect: MyEffect, ctx: EffectContext<MyEvent>) -> BoxFuture<'s
 
 **EffectContext** provides safe task spawning:
 - **Memory safety** - All spawned tasks cancelled when context drops
-- **High performance** - 24x faster than previous implementations  
+- **High performance** - 24x faster than previous implementations
 - **Event routing** - Easy way to send events back to Core
 
-### 8. Builder Pattern - Simple System Construction
+### 8. Executors - Specialized Task Execution
+
+Syzygy provides multiple executor types, each optimized for different workload patterns:
+
+#### TokioExecutor - General-Purpose Async I/O
+```rust
+let (core, shell) = Syzygy::builder()
+    .model(MyModel::default())
+    .executor(TokioExecutor::new())  // Default async I/O executor
+    .event_handler(update)
+    .effect_handler(handle_effects)
+    .build();
+
+async fn handle_effects(effect: MyEffect, ctx: EffectContext<...>) {
+    match effect {
+        MyEffect::HttpRequest { url } => {
+            // Routes to tokio runtime for concurrent I/O
+            let executor: &TokioExecutor<_> = ctx.executor();
+            executor.spawn(async move {
+                let response = reqwest::get(&url).await.unwrap();
+                // Process response...
+            });
+        }
+    }
+}
+```
+
+**Best for**: HTTP requests, file I/O, database queries, general async operations
+
+#### SingleThreadExecutor - Sequential FIFO Execution
+```rust
+let (core, shell) = Syzygy::builder()
+    .model(MyModel::default())
+    .executor(SingleThreadExecutor::new())  // Sequential executor
+    .event_handler(update)
+    .effect_handler(handle_effects)
+    .build();
+
+async fn handle_effects(effect: MyEffect, ctx: EffectContext<...>) {
+    match effect {
+        MyEffect::DatabaseWrite { data } => {
+            // Guarantees FIFO execution on dedicated OS thread
+            let executor: &SingleThreadExecutor<_> = ctx.executor();
+            executor.spawn(async move {
+                write_to_database(data).await;  // No race conditions
+            });
+        }
+    }
+}
+```
+
+**Best for**: Database writes, file operations requiring strict ordering, single-writer patterns
+
+#### ThreadPerCoreTokioExecutor - Actix-Style Core Isolation
+```rust
+let (core, shell) = Syzygy::builder()
+    .model(MyModel::default())
+    .executor(ThreadPerCoreTokioExecutor::new())  // Per-core runtimes
+    .event_handler(update)
+    .effect_handler(handle_effects)
+    .build();
+
+async fn handle_effects(effect: MyEffect, ctx: EffectContext<...>) {
+    match effect {
+        MyEffect::ProcessBatch { items } => {
+            // Round-robin distribution across CPU cores
+            let executor: &ThreadPerCoreTokioExecutor<_> = ctx.executor();
+            executor.spawn(async move {
+                for item in items {
+                    process_item(item).await;  // Distributed across cores
+                }
+            });
+        }
+    }
+}
+```
+
+**Best for**: High-throughput applications, avoiding tokio runtime contention, core-isolated workloads
+
+#### RayonExecutor - CPU-Bound Computation
+```rust
+#[cfg(feature = "rayon")]
+let (core, shell) = Syzygy::builder()
+    .model(MyModel::default())
+    .executor(RayonExecutor::new())  // Work-stealing thread pool
+    .event_handler(update)
+    .effect_handler(handle_effects)
+    .build();
+
+async fn handle_effects(effect: MyEffect, ctx: EffectContext<...>) {
+    match effect {
+        MyEffect::ProcessImage { image_data } => {
+            // Work-stealing across CPU threads
+            let executor: &RayonExecutor<_> = ctx.executor();
+            executor.spawn(async move {
+                let processed = expensive_image_processing(image_data);
+                // Send result back via event
+            });
+        }
+    }
+}
+```
+
+**Best for**: Image processing, mathematical computation, pure CPU-bound tasks (no async I/O)
+
+#### Multi-Executor Architecture
+```rust
+let (core, shell) = Syzygy::builder()
+    .model(MyModel::default())
+    .executor(SingleThreadExecutor::new())      // For DB writes
+    .executor(ThreadPerCoreTokioExecutor::new()) // For I/O
+    .executor(RayonExecutor::new())             // For computation
+    .event_handler(update)
+    .effect_handler(handle_effects)
+    .build();
+
+async fn handle_effects(effect: MyEffect, ctx: EffectContext<...>) {
+    match effect {
+        MyEffect::DatabaseWrite { data } => {
+            // Route to sequential executor
+            ctx.executor::<SingleThreadExecutor<_>, _>()
+                .spawn(async move { write_to_db(data).await });
+        }
+        MyEffect::HttpRequest { url } => {
+            // Route to I/O executor
+            ctx.executor::<ThreadPerCoreTokioExecutor<_>, _>()
+                .spawn(async move { fetch_url(url).await });
+        }
+        MyEffect::ProcessImage { image } => {
+            // Route to compute executor
+            ctx.executor::<RayonExecutor<_>, _>()
+                .spawn(async move { process_image(image).await });
+        }
+    }
+}
+```
+
+**Parallel Coordination Patterns**:
+
+Syzygy uses `futures_concurrency` for sophisticated parallel coordination within effect handlers:
+
+```rust
+use futures_concurrency::prelude::*;
+
+async fn handle_effects(effect: MyEffect, ctx: EffectContext<...>) {
+    match effect {
+        MyEffect::JoinPattern { tasks } => {
+            // Join: All futures must complete successfully
+            let futures = tasks.into_iter().map(|task| async move {
+                process_task(task).await
+            });
+            
+            match futures.collect::<Vec<_>>().join().await {
+                Ok(results) => {
+                    // All tasks completed successfully
+                    let _ = ctx.send_event(MyEvent::AllTasksCompleted { results });
+                }
+                Err(error) => {
+                    // One or more tasks failed
+                    let _ = ctx.send_event(MyEvent::TasksFailed { error });
+                }
+            }
+        }
+        
+        MyEffect::RacePattern { urls } => {
+            // Race: Return first successful result
+            let futures = urls.into_iter().map(|url| async move {
+                reqwest::get(&url).await?.json::<ApiResponse>().await
+            });
+            
+            match futures.collect::<Vec<_>>().race().await {
+                Ok(first_success) => {
+                    // First successful response wins
+                    let _ = ctx.send_event(MyEvent::FirstApiSuccess { data: first_success });
+                }
+                Err(last_error) => {
+                    // All requests failed
+                    let _ = ctx.send_event(MyEvent::AllApisFailed { error: last_error });
+                }
+            }
+        }
+        
+        MyEffect::TryJoinPattern { critical_tasks } => {
+            // TryJoin: All must succeed or fail fast
+            let futures = critical_tasks.into_iter().map(|task| async move {
+                validate_critical_task(task).await
+            });
+            
+            // Fails fast on first error
+            match futures.collect::<Vec<_>>().try_join().await {
+                Ok(all_results) => {
+                    let _ = ctx.send_event(MyEvent::CriticalValidationPassed { all_results });
+                }
+                Err(first_error) => {
+                    // Stop on first failure
+                    let _ = ctx.send_event(MyEvent::CriticalValidationFailed { first_error });
+                }
+            }
+        }
+    }
+}
+```
+
+**When to Use Each Pattern**:
+- **`join()`**: Wait for all futures to complete, collect all results or errors
+- **`race()`**: Return the first successful result, ignore others
+- **`try_join()`**: Fail fast on first error, don't wait for remaining futures
+
+**Executor Selection Guidelines**:
+- **Default**: Start with `TokioExecutor` for general async I/O
+- **Consistency needed**: Use `SingleThreadExecutor` for operations requiring strict ordering
+- **High throughput**: Use `ThreadPerCoreTokioExecutor` to avoid runtime contention
+- **CPU-heavy work**: Use `RayonExecutor` for pure computation without async I/O
+
+#### Shell vs Executor Responsibilities
+
+**Shell (Coordinator)**:
+- Receives Commands from Core
+- Interprets execution hints (single/batch/parallel)  
+- Routes effects to effect handlers
+- **Sequential by default**: Single effects and batches execute in order
+- Does NOT make complex execution decisions
+
+**Effect Handlers (User Logic)**:
+- Receive individual effects from Shell
+- Decide which executor to use for each effect
+- Implement sophisticated execution patterns
+- Route effects based on workload characteristics
+
+**Executors (Task Runners)**:
+- Provide specialized execution environments
+- Handle task spawning and lifecycle
+- Manage runtime resources (threads, runtimes)
+- Focus on **how** tasks execute, not **what** tasks to execute
+
+```rust
+Core → Command → Shell → Effect Handler → Executor
+                   ↑           ↑              ↑
+               (interprets)  (decides)    (executes)
+```
+
+This separation allows:
+- **Simple Shell**: Just routes effects, no complex logic
+- **Flexible handlers**: Users control execution strategy
+- **Specialized executors**: Optimized for different workload patterns
+- **Clean boundaries**: Each component has a single responsibility
+
+### 9. Builder Pattern - Simple System Construction
 
 ```rust
 let (core, shell) = Syzygy::builder()
-    .app(MyApp::default())
-    .model(MyModel::default()) 
+    .model(MyModel::default())
+    .executor(TokioExecutor::new())
+    .event_handler(update)
+    .effect_handler(handle_effects)
     .build();
-
-let shell = shell.with_effect_handler(handle_effects);
 ```
 
-**Two build modes**:
-- **`build()`** - Auto-wired Shell connected to Core (recommended)
-- **`build_manual()`** - Independent Core and Shell for advanced use cases
+**Two-phase builder pattern**:
+- **Phase 1**: Configure models, resources, executors
+- **Phase 2**: Set event and effect handlers, then build
 
-### 9. Runner - Application Orchestration
+### 10. Runner - Application Orchestration
 
 ```rust
 let mut runner = Runner::new(core, shell);
@@ -370,10 +618,10 @@ runner.run_until(
 let response = http_client.get("/api/data").await?;
 process_response(response); // Where does this state go?
 
-// WRONG: Hidden state mutations  
+// WRONG: Hidden state mutations
 async fn complex_workflow() {
     let data = fetch_data().await?;
-    let processed = process_data(data).await?; 
+    let processed = process_data(data).await?;
     save_result(processed).await?; // State scattered everywhere
 }
 ```
@@ -397,7 +645,7 @@ AppEvent::DataProcessed { result } => {
     Command::effect(AppEffect::SaveData { data: model.processed_data.clone() })
 }
 
-// Save result comes back as event  
+// Save result comes back as event
 AppEvent::DataSaved => {
     model.status = "Complete".to_string();
     Command::none()
@@ -428,7 +676,7 @@ fn update(event: Event, model: &mut Model) -> Result<Command, Error> {
 ```
 
 **Syzygy's error-as-events solution**:
-```rust  
+```rust
 // RIGHT: Errors are events
 fn update(&self, event: Event, model: &mut Model) -> Command<Event, Effect> {
     match event {
@@ -442,12 +690,12 @@ fn update(&self, event: Event, model: &mut Model) -> Command<Event, Effect> {
                 Command::effect(Effect::ProcessInput { data: model.input.clone() })
             }
         }
-        
+
         Event::ValidationFailed { field, reason } => {
             model.error_message = Some(format!("{}: {}", field, reason));
             Command::none()
         }
-        
+
         Event::NetworkError { message } => {
             model.network_status = NetworkStatus::Error(message);
             Command::effect(Effect::RetryAfter { seconds: 5 })
@@ -475,15 +723,15 @@ use syzygy::prelude::*;
 fn test_user_login_validation() {
     let app = MyApp::default();
     let mut model = MyModel::default();
-    
+
     // Test empty username
     let command = app.update(AppEvent::LoginClicked, &mut model);
-    
+
     // Commands are simple data - inspect directly
     assert_eq!(command.len(), 1);
     let outputs: Vec<_> = command.into_iter().collect();
     assert!(matches!(
-        outputs[0], 
+        outputs[0],
         CommandOutput::Event(AppEvent::ValidationFailed { field, .. }) if field == "username"
     ));
 }
@@ -492,16 +740,16 @@ fn test_user_login_validation() {
 fn test_successful_data_processing() {
     let app = MyApp::default();
     let mut model = MyModel::default();
-    
+
     // Simulate data received event
     let command = app.update(
         AppEvent::DataReceived { data: "valid data".to_string() },
         &mut model
     );
-    
+
     // Check model was updated
     assert!(!model.data.is_empty());
-    
+
     // Check next effect was requested
     let outputs: Vec<_> = command.into_iter().collect();
     assert_eq!(outputs.len(), 1);
@@ -520,23 +768,23 @@ async fn test_complete_login_flow() {
         .app(MyApp::default())
         .model(MyModel::default())
         .build();
-        
+
     let shell = shell.with_effect_handler(mock_effect_handler);
     let mut runner = Runner::new(core, shell);
-    
+
     // Start login flow
     runner.core().send_event(AppEvent::LoginClicked)?;
-    
+
     // Process one tick
     runner.tick(syzygy::spawn::spawner()).await?;
-    
+
     // Simulate successful response
     runner.core().send_event(AppEvent::DataReceived {
         data: r#"{"token": "abc123", "user": {"name": "Alice"}}"#.to_string()
     })?;
-    
+
     runner.tick(syzygy::spawn::spawner()).await?;
-    
+
     // Check final state
     let model = runner.core().model();
     assert!(model.current_user.is_some());
@@ -565,7 +813,7 @@ Syzygy achieves high performance through:
 
 **Benchmark targets**:
 - Event processing: < 100ns
-- Command creation: < 50ns  
+- Command creation: < 50ns
 - Task spawning: ~4ns
 - Model access: ~7ns
 
@@ -579,15 +827,15 @@ async fn main() {
         .app(WebApp::default())
         .model(WebModel::default())
         .build();
-    
+
     let shell = shell.with_effect_handler(web_effects);
     let mut runner = Runner::new(core, shell);
-    
+
     // Handle HTTP requests
     let app = Router::new()
         .route("/api/:action", post(handle_request))
         .with_state(Arc::new(Mutex::new(runner)));
-        
+
     serve(app).await
 }
 ```
@@ -606,7 +854,7 @@ std::thread::spawn(move || {
 });
 ```
 
-### CLI Applications  
+### CLI Applications
 ```rust
 #[tokio::main]
 async fn main() {
@@ -614,14 +862,14 @@ async fn main() {
         .app(CliApp::default())
         .model(parse_args())
         .build();
-        
+
     let mut runner = Runner::new(core, shell.with_effect_handler(cli_effects));
-    
+
     runner.run_until(
         |core, _| core.model().finished,
         syzygy::spawn::auto_spawn
     ).await.unwrap();
-    
+
     println!("Result: {:?}", runner.core().model().result);
 }
 ```
@@ -653,11 +901,11 @@ We considered automatic model extraction but kept it optional:
 
 ## Summary
 
-Syzygy proves that The Elm Architecture principles, combined with Rust's ownership model, create an ideal foundation for maintainable, high-performance applications. 
+Syzygy proves that The Elm Architecture principles, combined with Rust's ownership model, create an ideal foundation for maintainable, high-performance applications.
 
 **Key architectural decisions**:
 1. **Unidirectional flow** - Events flow in one direction only
-2. **Pure functional Core** - Business logic remains simple and testable  
+2. **Pure functional Core** - Business logic remains simple and testable
 3. **Error-as-events** - All outcomes flow through the same pipeline
 4. **Effect-as-data** - Side effects described as data, not executed directly
 5. **Core/Shell separation** - Clear boundary between pure and impure code
@@ -671,3 +919,16 @@ Syzygy proves that The Elm Architecture principles, combined with Rust's ownersh
 - **Easy to test** - Pure functions and event simulation
 
 The result is an architecture that scales from simple CLI tools to complex web applications while maintaining the same clear, predictable patterns throughout.
+## Rationale
+
+Why events?
+- Determinism and testability through a single gate for all changes.
+- Errors become events; no hidden control flow.
+
+Why effects-as-data?
+- Pure update logic; side effects described, not run.
+- Runtime-neutral effect execution and easy inspection.
+
+Why multiple executors?
+- Execution policy per effect: serialize DB writes, pin IO to per-core runtimes, isolate CPU compute.
+- Keep effect execution off the app’s event loop for responsiveness.

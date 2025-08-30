@@ -4,7 +4,7 @@
 //! without implementing the Iterator trait, maintaining type safety
 //! and semantic clarity.
 
-use syzygy::command::CommandStep;
+use syzygy::command::{CommandStep, GroupMode};
 use syzygy::event_context::EventContext;
 use syzygy::prelude::*;
 use syzygy::storage::StorageBuilder;
@@ -106,7 +106,7 @@ fn main() {
         match output {
             CommandStep::Event(event) => println!("   {}: Event - {:?}", i + 1, event),
             CommandStep::Effect(effect) => println!("   {}: Effect - {:?}", i + 1, effect),
-            CommandStep::SequentialEffects(effects) => {
+            CommandStep::Batch(effects) => {
                 println!(
                     "   {}: Sequential Effects - {} effects",
                     i + 1,
@@ -116,8 +116,20 @@ fn main() {
                     println!("     {}.{}: {:?}", i + 1, j + 1, effect);
                 }
             }
-            CommandStep::ParallelEffects(effects) => {
+            CommandStep::Group { effects, mode: GroupMode::Parallel, barrier: None, timeout_per: None } => {
                 println!("   {}: Parallel Effects - {} effects", i + 1, effects.len());
+                for (j, effect) in effects.iter().enumerate() {
+                    println!("     {}.{}: {:?}", i + 1, j + 1, effect);
+                }
+            }
+            CommandStep::Group { effects, mode: GroupMode::Race, .. } => {
+                println!("   {}: Race Effects - {} effects", i + 1, effects.len());
+                for (j, effect) in effects.iter().enumerate() {
+                    println!("     {}.{}: {:?}", i + 1, j + 1, effect);
+                }
+            }
+            CommandStep::Group { effects, .. } => {
+                println!("   {}: Group Effects - {} effects", i + 1, effects.len());
                 for (j, effect) in effects.iter().enumerate() {
                     println!("     {}.{}: {:?}", i + 1, j + 1, effect);
                 }

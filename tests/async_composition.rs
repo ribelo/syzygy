@@ -7,6 +7,7 @@
 use std::time::{Duration, Instant};
 use syzygy::event_context::EventContext;
 use syzygy::prelude::*;
+use syzygy::command::Effects;
 use tokio::time::sleep;
 
 #[derive(Debug, Clone)]
@@ -173,7 +174,7 @@ async fn test_mixed_coordination_patterns() {
             }),
         ]),
         // Then some individual effects (default parallel execution by Shell)
-        Command::parallel([
+        Effects::new([
             CompositionEffect::DelayedLog {
                 message: "Par1".to_string(),
                 delay_ms: 10,
@@ -182,7 +183,7 @@ async fn test_mixed_coordination_patterns() {
                 message: "Par2".to_string(),
                 delay_ms: 10,
             },
-        ]),
+        ]).parallel().spawn(),
     ]);
 
     runner.shell_mut().dispatch(mixed_command).unwrap();
