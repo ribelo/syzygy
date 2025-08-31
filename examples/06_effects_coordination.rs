@@ -12,6 +12,7 @@
 
 use std::time::Duration;
 use syzygy::prelude::*;
+use syzygy::streaming::EffectOutput;
 
 // ============================================================================
 // Application State & Events
@@ -173,7 +174,7 @@ fn handle_event(event: AppEvent, ctx: &mut EventContext<AppEvent, AppEffect, Sto
 // Effect Handlers
 // ============================================================================
 
-async fn handle_effects(effect: AppEffect, ctx: EffectContext<AppEvent, EmptyStorage>) {
+async fn handle_effects(effect: AppEffect, ctx: EffectContext<AppEvent, EmptyStorage>) -> EffectOutput<AppEvent> {
     match effect {
         AppEffect::LoadConfig => {
             println!("Loading application config...");
@@ -184,6 +185,7 @@ async fn handle_effects(effect: AppEffect, ctx: EffectContext<AppEvent, EmptySto
             
             let config = "app_config_v1.2.3".to_string();
             let _ = ctx.send_event(AppEvent::ConfigLoaded(config));
+            EffectOutput::None
         }
         
         AppEffect::LoadUserData => {
@@ -195,6 +197,7 @@ async fn handle_effects(effect: AppEffect, ctx: EffectContext<AppEvent, EmptySto
             
             let user_data = "user_12345_profile".to_string();
             let _ = ctx.send_event(AppEvent::UserDataLoaded(user_data));
+            EffectOutput::None
         }
         
         AppEffect::TryMirror { url } => {
@@ -214,6 +217,7 @@ async fn handle_effects(effect: AppEffect, ctx: EffectContext<AppEvent, EmptySto
             
             // Winner takes all - only the first to complete will send this event
             let _ = ctx.send_event(AppEvent::MirrorSelected(url));
+            EffectOutput::None
         }
         
         AppEffect::ProcessWorkflowStep { step, item } => {
@@ -224,6 +228,7 @@ async fn handle_effects(effect: AppEffect, ctx: EffectContext<AppEvent, EmptySto
             tokio::time::sleep(Duration::from_millis(400)).await;
             
             let _ = ctx.send_event(AppEvent::WorkflowStepComplete(step));
+            EffectOutput::None
         }
         
         AppEffect::Cleanup => {
@@ -233,10 +238,12 @@ async fn handle_effects(effect: AppEffect, ctx: EffectContext<AppEvent, EmptySto
             tokio::time::sleep(Duration::from_millis(200)).await;
             
             let _ = ctx.send_event(AppEvent::LogMessage("Cleanup completed".to_string()));
+            EffectOutput::None
         }
         
         AppEffect::Log(message) => {
             println!("LOG: {}", message);
+            EffectOutput::None
         }
     }
 }

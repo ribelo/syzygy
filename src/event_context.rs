@@ -44,10 +44,14 @@ use crate::storage::Selector;
 ///
 /// # Example Usage
 ///
-/// ```rust,ignore
+/// ```rust
+/// # use syzygy::prelude::*;
+/// # #[derive(Debug, Default)] struct MyModel { counter: i32 }
+/// # #[derive(Debug, Clone)] enum MyEvent { Increment }  
+/// # #[derive(Debug, Clone)] enum MyEffect { Log { message: String } }
 /// fn my_update(
 ///     event: MyEvent,
-///     ctx: EventContext<MyEvent, MyEffect, Storage<MyModel, EmptyStorage>>
+///     ctx: &mut EventContext<MyEvent, MyEffect, Storage<MyModel, EmptyStorage>>
 /// ) -> Command<MyEvent, MyEffect> {
 ///     let model: &mut MyModel = ctx.model_mut();
 ///     model.counter += 1;
@@ -79,6 +83,7 @@ impl<'a, Event, Effect, Storage> EventContext<'a, Event, Effect, Storage> {
     /// ```rust
     /// # use syzygy::prelude::*;
     /// # use syzygy::event_context::EventContext;
+    /// # use syzygy::storage::StorageBuilder;
     /// # #[derive(Debug, Default)] struct Model { count: i32 }
     /// # let mut storage = EmptyStorage::new().with_model(Model::default());
     /// let ctx = EventContext::<(), (), _>::new(&mut storage);
@@ -102,6 +107,7 @@ impl<'a, Event, Effect, Storage> EventContext<'a, Event, Effect, Storage> {
     /// ```rust
     /// # use syzygy::prelude::*;
     /// # use syzygy::event_context::EventContext;
+    /// # use syzygy::storage::StorageBuilder;
     /// # #[derive(Debug, Default)] struct Model { count: i32 }
     /// # let mut storage = EmptyStorage::new().with_model(Model::default());
     /// let ctx = EventContext::<(), (), _>::new(&mut storage);

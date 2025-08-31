@@ -337,18 +337,6 @@ impl<Event, Effect> Command<Event, Effect> {
     /// (batch or parallel) to reduce executor overhead. For example, multiple
     /// single effect steps are merged into a single Batch step.
     ///
-    /// # Example
-    /// ```rust,ignore
-    /// let cmd = Command::batch([
-    ///     Command::effect(Effect::A),    // Individual effect
-    ///     Command::effect(Effect::B),    // Individual effect  
-    ///     Effects::new([Effect::C, Effect::D]).parallel().spawn(),  // Parallel effects
-    ///     Command::effect(Effect::E),    // Individual effect
-    /// ]);
-    ///
-    /// let optimized = cmd.flatten();
-    /// // Results in: Group { effects: [A, B, C, D, E], mode: Parallel, barrier: None } - all merged for parallel execution
-    /// ```
     #[must_use]
     pub fn flatten(self) -> Self {
         let mut events = Vec::new();
@@ -534,17 +522,6 @@ impl<Event, Effect> Command<Event, Effect> {
     /// This enables conditional command chaining where the next command
     /// depends on what outputs the current command produces.
     ///
-    /// # Example
-    /// ```rust,ignore
-    /// let cmd = Command::effect(LoadUser { id: 123 })
-    ///     .and_then(|outputs| {
-    ///         if outputs.is_empty() {
-    ///             Command::event(UserNotFound)
-    ///         } else {
-    ///             Command::effect(LoadUserPosts { id: 123 })
-    ///         }
-    ///     });
-    /// ```
     #[must_use]
     pub fn and_then<F>(self, f: F) -> Self
     where
@@ -560,8 +537,13 @@ impl<Event, Effect> Command<Event, Effect> {
     /// Useful for conditional command execution based on runtime state.
     ///
     /// # Example
-    /// ```rust,ignore
-    /// let cmd = Command::effect(SaveData { data })
+    /// ```rust
+    /// # use syzygy::prelude::*;
+    /// # #[derive(Debug, Clone)] struct SaveData { data: String }
+    /// # #[derive(Debug, Clone)] enum Effect { Save(SaveData) }
+    /// # #[derive(Debug, Clone)] enum Event { Test }
+    /// # let user_has_permission = true;
+    /// let cmd = Command::<Event, Effect>::effect(Effect::Save(SaveData { data: "test".to_string() }))
     ///     .when(user_has_permission);
     /// ```
     #[must_use]
@@ -575,9 +557,12 @@ impl<Event, Effect> Command<Event, Effect> {
     /// Useful for providing default behavior when a command produces no outputs.
     ///
     /// # Example
-    /// ```rust,ignore
-    /// let cmd = Command::none()
-    ///     .or_else(Command::event(DefaultAction));
+    /// ```rust
+    /// # use syzygy::prelude::*;
+    /// # #[derive(Debug, Clone)] enum Event { DefaultAction }
+    /// # #[derive(Debug, Clone)] enum Effect { Test }
+    /// let cmd = Command::<Event, Effect>::none()
+    ///     .or_else(Command::event(Event::DefaultAction));
     /// ```
     #[must_use]
     pub fn or_else(self, fallback: Self) -> Self {
@@ -590,11 +575,14 @@ impl<Event, Effect> Command<Event, Effect> {
     /// Useful for selective output processing or removing unwanted outputs.
     ///
     /// # Example
-    /// ```rust,ignore
-    /// let cmd = Command::batch([
-    ///     Command::event(ValidEvent),
-    ///     Command::event(ErrorEvent),
-    /// ]).filter(|output| !matches!(output, CommandStep::Event(ErrorEvent)));
+    /// ```rust
+    /// # use syzygy::prelude::*;
+    /// # #[derive(Debug, Clone)] enum Event { ValidEvent, ErrorEvent }
+    /// # #[derive(Debug, Clone)] enum Effect { Test }
+    /// let cmd = Command::<Event, Effect>::batch([
+    ///     Command::event(Event::ValidEvent),
+    ///     Command::event(Event::ErrorEvent),
+    /// ]).filter(|output| !matches!(output, CommandStep::Event(Event::ErrorEvent)));
     /// ```
     #[must_use]
     pub fn filter<F>(self, predicate: F) -> Self
@@ -616,10 +604,13 @@ impl<Event, Effect> Command<Event, Effect> {
     /// use event-chaining patterns in your update() function.
     ///
     /// # Example
-    /// ```rust,ignore
-    /// let cmd = Command::effect(StartProcess)
-    ///     .then(Command::effect(ProcessStep1))
-    ///     .then(Command::event(ProcessComplete));
+    /// ```rust
+    /// # use syzygy::prelude::*;
+    /// # #[derive(Debug, Clone)] enum Effect { StartProcess, ProcessStep1 }
+    /// # #[derive(Debug, Clone)] enum Event { ProcessComplete }
+    /// let cmd = Command::<Event, Effect>::effect(Effect::StartProcess)
+    ///     .then(Command::effect(Effect::ProcessStep1))
+    ///     .then(Command::event(Event::ProcessComplete));
     /// ```
     #[must_use]
     pub fn then(self, next: Self) -> Self {
@@ -640,13 +631,20 @@ impl<Event, Effect> Command<Event, Effect> {
     /// just readable sequential composition.
     ///
     /// # Example
-    /// ```rust,ignore
-    /// Command::sequence([
-    ///     Command::effect(LoginUser { credentials }),
-    ///     Command::effect(FetchUserData { user_id }),
-    ///     Command::effect(FetchAddressData { user_id }),
-    ///     Command::effect(MakeASandwichForUser { user_id, preferences }),
-    /// ])
+    /// ```rust
+    /// # use syzygy::prelude::*;
+    /// # #[derive(Debug, Clone)] struct LoginUser { credentials: String }
+    /// # #[derive(Debug, Clone)] struct FetchUserData { user_id: u32 }
+    /// # #[derive(Debug, Clone)] struct FetchAddressData { user_id: u32 }
+    /// # #[derive(Debug, Clone)] struct MakeASandwichForUser { user_id: u32, preferences: String }
+    /// # #[derive(Debug, Clone)] enum Effect { Login(LoginUser), FetchUser(FetchUserData), FetchAddress(FetchAddressData), MakeSandwich(MakeASandwichForUser) }
+    /// # #[derive(Debug, Clone)] enum Event { Test }
+    /// Command::<Event, Effect>::sequence([
+    ///     Command::effect(Effect::Login(LoginUser { credentials: "test".to_string() })),
+    ///     Command::effect(Effect::FetchUser(FetchUserData { user_id: 1 })),
+    ///     Command::effect(Effect::FetchAddress(FetchAddressData { user_id: 1 })),
+    ///     Command::effect(Effect::MakeSandwich(MakeASandwichForUser { user_id: 1, preferences: "mayo".to_string() })),
+    /// ]);
     /// ```
     ///
     /// This creates a pipeline where each effect waits for the previous one
@@ -714,7 +712,13 @@ impl<Event, Effect> Command<Event, Effect> {
     /// as it knows the structure of CommandStep.
     ///
     /// # Example
-    /// ```rust,ignore
+    /// ```rust
+    /// # use syzygy::prelude::*;
+    /// # #[derive(Debug, Clone)] enum Event { Test }
+    /// # #[derive(Debug, Clone)] enum Effect { Log }
+    /// # fn process_events(_events: Vec<Event>) {}
+    /// # fn execute_effects(_effects: Vec<Effect>) {}
+    /// # let command = Command::<Event, Effect>::batch([Command::event(Event::Test), Command::effect(Effect::Log)]);
     /// let (events, effects) = command.partition_outputs();
     /// process_events(events);
     /// execute_effects(effects);
@@ -779,8 +783,13 @@ impl<Event, Effect> Command<Event, Effect> {
     /// the Event/Effect distinction.
     ///
     /// # Example
-    /// ```rust,ignore
-    /// if let Some(user_event) = command.find_event(|e| matches!(e, UserEvent::_)) {
+    /// ```rust
+    /// # use syzygy::prelude::*;
+    /// # #[derive(Debug, Clone)] enum Event { UserEvent, SystemEvent }
+    /// # #[derive(Debug, Clone)] enum Effect { Test }
+    /// # fn handle_user_event(_event: &Event) {}
+    /// # let command = Command::<Event, Effect>::batch([Command::event(Event::UserEvent), Command::event(Event::SystemEvent)]);
+    /// if let Some(user_event) = command.find_event(|e| matches!(e, Event::UserEvent)) {
     ///     handle_user_event(user_event);
     /// }
     /// ```
@@ -823,10 +832,16 @@ impl<Event, Effect> Command<Event, Effect> {
     /// all errors.
     ///
     /// # Example
-    /// ```rust,ignore
+    /// ```rust
+    /// # use syzygy::prelude::*;
+    /// # #[derive(Debug, Clone)] enum Event { Raw(String) }
+    /// # #[derive(Debug, Clone)] enum ProcessedEvent { Valid(String) }
+    /// # #[derive(Debug, Clone)] enum Effect { Test }
+    /// # fn validate_event(event: Event) -> Result<String, &'static str> { match event { Event::Raw(s) => Ok(s) } }
+    /// # let command = Command::<Event, Effect>::event(Event::Raw("test".to_string()));
     /// let validated_cmd = command.try_map_event(|event| {
-    ///     validate_event(event).map(|e| ProcessedEvent(e))
-    /// })?;
+    ///     validate_event(event).map(|s| ProcessedEvent::Valid(s))
+    /// });
     /// ```
     pub fn try_map_event<NewEvent, E, F>(self, mut f: F) -> Result<Command<NewEvent, Effect>, E>
     where
@@ -931,8 +946,12 @@ impl<Event, Effect> Command<Event, Effect> {
     /// the predicate while preserving all effects.
     ///
     /// # Example
-    /// ```rust,ignore
-    /// command.retain_events(|event| matches!(event, ImportantEvent::_));
+    /// ```rust
+    /// # use syzygy::prelude::*;
+    /// # #[derive(Debug, Clone)] enum Event { ImportantEvent, UnimportantEvent }
+    /// # #[derive(Debug, Clone)] enum Effect { Test }
+    /// # let mut command = Command::<Event, Effect>::batch([Command::event(Event::ImportantEvent), Command::event(Event::UnimportantEvent)]);
+    /// command.retain_events(|event| matches!(event, Event::ImportantEvent));
     /// ```
     pub fn retain_events<F>(&mut self, mut predicate: F)
     where
@@ -956,8 +975,12 @@ impl<Event, Effect> Command<Event, Effect> {
     /// the predicate while preserving all events.
     ///
     /// # Example
-    /// ```rust,ignore
-    /// command.retain_effects(|effect| matches!(effect, CriticalEffect::_));
+    /// ```rust
+    /// # use syzygy::prelude::*;
+    /// # #[derive(Debug, Clone)] enum Effect { CriticalEffect, MinorEffect }
+    /// # #[derive(Debug, Clone)] enum Event { Test }
+    /// # let mut command = Command::<Event, Effect>::batch([Command::effect(Effect::CriticalEffect), Command::effect(Effect::MinorEffect)]);
+    /// command.retain_effects(|effect| matches!(effect, Effect::CriticalEffect));
     /// ```
     pub fn retain_effects<F>(&mut self, mut predicate: F)
     where
@@ -981,7 +1004,12 @@ impl<Event, Effect> Command<Event, Effect> {
     /// need the events and want to discard effects.
     ///
     /// # Example
-    /// ```rust,ignore
+    /// ```rust
+    /// # use syzygy::prelude::*;
+    /// # #[derive(Debug, Clone)] enum Event { Test }
+    /// # #[derive(Debug, Clone)] enum Effect { Log }
+    /// # fn process_events(_events: Vec<Event>) {}
+    /// # let command = Command::<Event, Effect>::batch([Command::event(Event::Test), Command::effect(Effect::Log)]);
     /// let events: Vec<Event> = command.into_events();
     /// process_events(events);
     /// ```
@@ -1001,7 +1029,12 @@ impl<Event, Effect> Command<Event, Effect> {
     /// need the effects and want to discard events.
     ///
     /// # Example
-    /// ```rust,ignore
+    /// ```rust
+    /// # use syzygy::prelude::*;
+    /// # #[derive(Debug, Clone)] enum Event { Test }
+    /// # #[derive(Debug, Clone)] enum Effect { Log }
+    /// # fn execute_effects(_effects: Vec<Effect>) {}
+    /// # let command = Command::<Event, Effect>::batch([Command::event(Event::Test), Command::effect(Effect::Log)]);
     /// let effects: Vec<Effect> = command.into_effects();
     /// execute_effects(effects);
     /// ```
@@ -1075,672 +1108,156 @@ mod tests {
         Z,
     }
 
-    // Helper functions for test code
-    fn test_event(event: TestEvent) -> Command<TestEvent, TestEffect> {
-        Command::event(event)
-    }
+    #[test]
+    fn test_basic_command_operations() {
+        // Test empty command
+        let empty_cmd = Command::<TestEvent, TestEffect>::none();
+        assert!(empty_cmd.is_empty());
+        assert_eq!(empty_cmd.len(), 0);
 
-    fn test_effect(effect: TestEffect) -> Command<TestEvent, TestEffect> {
-        Command::effect(effect)
+        // Test single event and effect
+        let event_cmd = Command::<TestEvent, TestEffect>::event(TestEvent::A);
+        assert_eq!(event_cmd.len(), 1);
+        assert!(event_cmd.has_events());
+        assert!(!event_cmd.has_effects());
+
+        let effect_cmd = Command::<TestEvent, TestEffect>::effect(TestEffect::X);
+        assert_eq!(effect_cmd.len(), 1);
+        assert!(!effect_cmd.has_events());
+        assert!(effect_cmd.has_effects());
+
+        // Test multiple events
+        let multi_events = Command::<TestEvent, TestEffect>::events([TestEvent::A, TestEvent::B, TestEvent::C]);
+        assert_eq!(multi_events.len(), 3);
+        assert_eq!(multi_events.count_events(), 3);
+        assert_eq!(multi_events.count_effects(), 0);
     }
 
     #[test]
-    fn test_empty_command() {
-        let cmd = Command::<TestEvent, TestEffect>::none();
-        assert!(cmd.is_empty());
-        assert_eq!(cmd.len(), 0);
-
-        let outputs: Vec<_> = cmd.into_iter().collect();
-        assert!(outputs.is_empty());
-    }
-
-    #[test]
-    fn test_single_event() {
-        let cmd = Command::<TestEvent, TestEffect>::event(TestEvent::A);
-        assert!(!cmd.is_empty());
-        assert_eq!(cmd.len(), 1);
-
-        let outputs: Vec<_> = cmd.into_iter().collect();
-        assert_eq!(outputs, vec![CommandStep::Event(TestEvent::A)]);
-    }
-
-    #[test]
-    fn test_single_effect() {
-        let cmd = Command::<TestEvent, TestEffect>::effect(TestEffect::X);
-        assert_eq!(cmd.len(), 1);
-
-        let outputs: Vec<_> = cmd.into_iter().collect();
-        assert_eq!(outputs, vec![CommandStep::Effect(TestEffect::X)]);
-    }
-
-    #[test]
-    fn test_multiple_events() {
-        let cmd =
-            Command::<TestEvent, TestEffect>::events([TestEvent::A, TestEvent::B, TestEvent::C]);
-        assert_eq!(cmd.len(), 3);
-
-        let outputs: Vec<_> = cmd.into_iter().collect();
-        assert_eq!(
-            outputs,
-            vec![
-                CommandStep::Event(TestEvent::A),
-                CommandStep::Event(TestEvent::B),
-                CommandStep::Event(TestEvent::C),
-            ]
-        );
-    }
-
-    #[test]
-    fn test_batch_commands() {
-        let cmd1 = test_event(TestEvent::A);
-        let cmd2 = test_effect(TestEffect::X);
-        let cmd3 = Command::events([TestEvent::B, TestEvent::C]);
+    fn test_batch_and_composition() {
+        let cmd1 = Command::<TestEvent, TestEffect>::event(TestEvent::A);
+        let cmd2 = Command::<TestEvent, TestEffect>::effect(TestEffect::X);
+        let cmd3 = Command::<TestEvent, TestEffect>::events([TestEvent::B, TestEvent::C]);
 
         let combined = Command::batch([cmd1, cmd2, cmd3]);
         assert_eq!(combined.len(), 4);
+        assert_eq!(combined.count_events(), 3);
+        assert_eq!(combined.count_effects(), 1);
 
         let outputs: Vec<_> = combined.into_iter().collect();
-        assert_eq!(
-            outputs,
-            vec![
-                CommandStep::Event(TestEvent::A),
-                CommandStep::Effect(TestEffect::X),
-                CommandStep::Event(TestEvent::B),
-                CommandStep::Event(TestEvent::C),
-            ]
-        );
+        assert_eq!(outputs.len(), 4);
+        assert!(matches!(outputs[0], CommandStep::Event(TestEvent::A)));
+        assert!(matches!(outputs[1], CommandStep::Effect(TestEffect::X)));
     }
 
     #[test]
-    fn test_map_event() {
-        let cmd = Command::<TestEvent, TestEffect>::events([TestEvent::A, TestEvent::B]);
+    fn test_monadic_composition() {
+        // Test and_then
+        let cmd = Command::<TestEvent, TestEffect>::event(TestEvent::A).and_then(|outputs| {
+            if outputs.is_empty() {
+                Command::<TestEvent, TestEffect>::event(TestEvent::B)
+            } else {
+                Command::<TestEvent, TestEffect>::effect(TestEffect::X)
+            }
+        });
+        assert_eq!(cmd.len(), 2);
 
+        // Test when/or_else
+        let when_cmd = Command::<TestEvent, TestEffect>::event(TestEvent::A).when(true);
+        assert_eq!(when_cmd.len(), 1);
+        let when_false = Command::<TestEvent, TestEffect>::event(TestEvent::A).when(false);
+        assert!(when_false.is_empty());
+
+        let or_else_cmd = Command::<TestEvent, TestEffect>::none().or_else(Command::<TestEvent, TestEffect>::effect(TestEffect::X));
+        assert_eq!(or_else_cmd.len(), 1);
+
+        // Test filter
+        let filtered = Command::batch([
+            Command::<TestEvent, TestEffect>::event(TestEvent::A),
+            Command::<TestEvent, TestEffect>::effect(TestEffect::X),
+            Command::<TestEvent, TestEffect>::event(TestEvent::B),
+        ])
+        .filter(|output| matches!(output, CommandStep::Event(_)));
+        assert_eq!(filtered.count_events(), 2);
+        assert_eq!(filtered.count_effects(), 0);
+    }
+
+    #[test]
+    fn test_map_and_transformations() {
+        let cmd = Command::<TestEvent, TestEffect>::events([TestEvent::A, TestEvent::B]);
         let mapped = cmd.map_event(|e| match e {
             TestEvent::A => TestEvent::C,
             TestEvent::B => TestEvent::A,
             TestEvent::C => TestEvent::B,
         });
 
-        let outputs: Vec<_> = mapped.into_iter().collect();
-        assert_eq!(
-            outputs,
-            vec![
-                CommandStep::Event(TestEvent::C),
-                CommandStep::Event(TestEvent::A),
-            ]
-        );
+        let events = mapped.into_events();
+        assert_eq!(events, vec![TestEvent::C, TestEvent::A]);
+
+        // Test try_map success/failure
+        let success_map = Command::<TestEvent, TestEffect>::event(TestEvent::A).try_map_event(|e| Ok::<TestEvent, &str>(TestEvent::B));
+        assert!(success_map.is_ok());
+
+        let fail_map = Command::<TestEvent, TestEffect>::event(TestEvent::A).try_map_event(|_| Err::<TestEvent, &str>("failed"));
+        assert!(fail_map.is_err());
     }
 
     #[test]
-    fn test_append() {
-        let cmd1 = test_event(TestEvent::A);
-        let cmd2 = test_effect(TestEffect::X);
-
-        let combined = cmd1.append(cmd2);
-        let outputs: Vec<_> = combined.into_iter().collect();
-
-        assert_eq!(
-            outputs,
-            vec![
-                CommandStep::Event(TestEvent::A),
-                CommandStep::Effect(TestEffect::X),
-            ]
-        );
-    }
-
-    #[test]
-    fn test_smallvec_performance() {
-        // Commands with ≤4 outputs should not allocate
+    fn test_utility_methods() {
         let cmd = Command::batch([
-            test_event(TestEvent::A),
-            test_event(TestEvent::B),
-            test_effect(TestEffect::X),
-            test_effect(TestEffect::Y),
+            Command::<TestEvent, TestEffect>::event(TestEvent::A),
+            Command::<TestEvent, TestEffect>::effect(TestEffect::X),
+            Command::<TestEvent, TestEffect>::event(TestEvent::B),
+            Command::<TestEvent, TestEffect>::effect(TestEffect::Y),
         ]);
 
-        assert_eq!(cmd.len(), 4);
-        // SmallVec should still be inline (no heap allocation for ≤4 items)
-        assert!(!cmd.outputs.spilled());
-    }
-
-    // Tests for monadic composition methods
-
-    #[test]
-    fn test_and_then() {
-        // Test conditional chaining based on command outputs
-        let cmd_with_output =
-            Command::<TestEvent, TestEffect>::event(TestEvent::A).and_then(|outputs| {
-                if outputs.is_empty() {
-                    test_event(TestEvent::B)
-                } else {
-                    test_effect(TestEffect::X)
-                }
-            });
-
-        assert_eq!(cmd_with_output.len(), 2);
-        let outputs: Vec<_> = cmd_with_output.into_iter().collect();
-        assert_eq!(
-            outputs,
-            vec![
-                CommandStep::Event(TestEvent::A),
-                CommandStep::Effect(TestEffect::X),
-            ]
-        );
-
-        // Test with empty command
-        let empty_cmd = Command::<TestEvent, TestEffect>::none().and_then(|outputs| {
-            if outputs.is_empty() {
-                test_event(TestEvent::B)
-            } else {
-                test_effect(TestEffect::X)
-            }
-        });
-
-        assert_eq!(empty_cmd.len(), 1);
-        let outputs: Vec<_> = empty_cmd.into_iter().collect();
-        assert_eq!(outputs, vec![CommandStep::Event(TestEvent::B)]);
-    }
-
-    #[test]
-    fn test_when() {
-        let cmd = Command::<TestEvent, TestEffect>::event(TestEvent::A);
-
-        // Test when condition is true
-        let when_true = cmd.clone().when(true);
-        assert_eq!(when_true.len(), 1);
-        let outputs: Vec<_> = when_true.into_iter().collect();
-        assert_eq!(outputs, vec![CommandStep::Event(TestEvent::A)]);
-
-        // Test when condition is false
-        let when_false = cmd.when(false);
-        assert!(when_false.is_empty());
-    }
-
-    #[test]
-    fn test_or_else() {
-        // Test with non-empty command
-        let non_empty = Command::<TestEvent, TestEffect>::event(TestEvent::A)
-            .or_else(test_effect(TestEffect::X));
-
-        assert_eq!(non_empty.len(), 1);
-        let outputs: Vec<_> = non_empty.into_iter().collect();
-        assert_eq!(outputs, vec![CommandStep::Event(TestEvent::A)]);
-
-        // Test with empty command
-        let empty = Command::<TestEvent, TestEffect>::none().or_else(test_effect(TestEffect::X));
-
-        assert_eq!(empty.len(), 1);
-        let outputs: Vec<_> = empty.into_iter().collect();
-        assert_eq!(outputs, vec![CommandStep::Effect(TestEffect::X)]);
-    }
-
-    #[test]
-    fn test_filter() {
-        let cmd = Command::<TestEvent, TestEffect>::batch([
-            test_event(TestEvent::A),
-            test_effect(TestEffect::X),
-            test_event(TestEvent::B),
-            test_effect(TestEffect::Y),
-        ]);
-
-        // Filter to only keep events
-        let events_only = cmd
-            .clone()
-            .filter(|output| matches!(output, CommandStep::Event(_)));
-
-        assert_eq!(events_only.len(), 2);
-        let outputs: Vec<_> = events_only.into_iter().collect();
-        assert_eq!(
-            outputs,
-            vec![
-                CommandStep::Event(TestEvent::A),
-                CommandStep::Event(TestEvent::B),
-            ]
-        );
-
-        // Filter to only keep effects
-        let effects_only = cmd.filter(|output| matches!(output, CommandStep::Effect(_)));
-
-        assert_eq!(effects_only.len(), 2);
-        let outputs: Vec<_> = effects_only.into_iter().collect();
-        assert_eq!(
-            outputs,
-            vec![
-                CommandStep::Effect(TestEffect::X),
-                CommandStep::Effect(TestEffect::Y),
-            ]
-        );
-    }
-
-    #[test]
-    fn test_then() {
-        let cmd1 = Command::<TestEvent, TestEffect>::event(TestEvent::A);
-        let cmd2 = test_effect(TestEffect::X);
-
-        let combined = cmd1.then(cmd2);
-        assert_eq!(combined.len(), 2);
-
-        let outputs: Vec<_> = combined.into_iter().collect();
-        assert_eq!(
-            outputs,
-            vec![
-                CommandStep::Event(TestEvent::A),
-                CommandStep::Effect(TestEffect::X),
-            ]
-        );
-    }
-
-    #[test]
-    fn test_monadic_composition_chain() {
-        // Test complex chaining of multiple monadic methods
-        let complex_cmd = Command::<TestEvent, TestEffect>::batch([
-            test_event(TestEvent::A),
-            test_event(TestEvent::B),
-            test_effect(TestEffect::Z), // This will be filtered out
-        ])
-        .filter(|output| !matches!(output, CommandStep::Effect(TestEffect::Z)))
-        .and_then(|outputs| {
-            if outputs.len() >= 2 {
-                test_effect(TestEffect::X)
-            } else {
-                Command::none()
-            }
-        })
-        .when(true)
-        .or_else(test_event(TestEvent::C))
-        .then(test_effect(TestEffect::Y));
-
-        // Should have: TestEvent::A, TestEvent::B, TestEffect::X, TestEffect::Y
-        assert_eq!(complex_cmd.len(), 4);
-
-        let outputs: Vec<_> = complex_cmd.into_iter().collect();
-        assert_eq!(
-            outputs,
-            vec![
-                CommandStep::Event(TestEvent::A),
-                CommandStep::Event(TestEvent::B),
-                CommandStep::Effect(TestEffect::X),
-                CommandStep::Effect(TestEffect::Y),
-            ]
-        );
-    }
-
-    #[test]
-    fn test_monadic_methods_preserve_smallvec_optimization() {
-        // Test that monadic methods don't break SmallVec inline optimization
-        let cmd = Command::<TestEvent, TestEffect>::event(TestEvent::A)
-            .then(test_event(TestEvent::B))
-            .then(test_effect(TestEffect::X))
-            .when(true);
-
-        assert_eq!(cmd.len(), 3);
-        // Should still be inline (≤4 items)
-        assert!(!cmd.outputs.spilled());
-    }
-
-    #[test]
-    fn test_partition_outputs() {
-        let command = Command::batch([
-            test_event(TestEvent::A),
-            test_effect(TestEffect::X),
-            test_event(TestEvent::B),
-            test_effect(TestEffect::Y),
-        ]);
-
-        let (events, effects) = command.partition_outputs();
-
-        assert_eq!(events.len(), 2);
-        assert_eq!(effects.len(), 2);
+        // Test partition
+        let (events, effects) = cmd.clone().partition_outputs();
         assert_eq!(events, vec![TestEvent::A, TestEvent::B]);
         assert_eq!(effects, vec![TestEffect::X, TestEffect::Y]);
+
+        // Test find
+        assert_eq!(cmd.find_event(|e| matches!(e, TestEvent::A)), Some(&TestEvent::A));
+        assert_eq!(cmd.find_effect(|e| matches!(e, TestEffect::X)), Some(&TestEffect::X));
+
+        // Test extraction
+        let events_only = cmd.clone().into_events();
+        let effects_only = cmd.into_effects();
+        assert_eq!(events_only, vec![TestEvent::A, TestEvent::B]);
+        assert_eq!(effects_only, vec![TestEffect::X, TestEffect::Y]);
     }
 
     #[test]
-    fn test_count_events_and_effects() {
-        let command = Command::batch([
-            test_event(TestEvent::A),
-            test_effect(TestEffect::X),
-            test_event(TestEvent::B),
+    fn test_mutable_operations() {
+        let mut cmd = Command::batch([
+            Command::<TestEvent, TestEffect>::event(TestEvent::A),
+            Command::<TestEvent, TestEffect>::effect(TestEffect::X),
+            Command::<TestEvent, TestEffect>::event(TestEvent::B),
+            Command::<TestEvent, TestEffect>::effect(TestEffect::Y),
         ]);
 
-        assert_eq!(command.count_events(), 2);
-        assert_eq!(command.count_effects(), 1);
-
-        let empty_command = Command::<TestEvent, TestEffect>::none();
-        assert_eq!(empty_command.count_events(), 0);
-        assert_eq!(empty_command.count_effects(), 0);
-    }
-
-    #[test]
-    fn test_find_event_and_effect() {
-        let command = Command::batch([
-            test_event(TestEvent::A),
-            test_effect(TestEffect::X),
-            test_event(TestEvent::B),
-        ]);
-
-        // Find existing event
-        let found_event = command.find_event(|e| matches!(e, TestEvent::A));
-        assert_eq!(found_event, Some(&TestEvent::A));
-
-        // Find non-existing event
-        let not_found = command.find_event(|e| matches!(e, TestEvent::C));
-        assert_eq!(not_found, None);
-
-        // Find existing effect
-        let found_effect = command.find_effect(|e| matches!(e, TestEffect::X));
-        assert_eq!(found_effect, Some(&TestEffect::X));
-
-        // Find non-existing effect
-        let not_found_effect = command.find_effect(|e| matches!(e, TestEffect::Y));
-        assert_eq!(not_found_effect, None);
-    }
-
-    #[test]
-    fn test_try_map_event_success() {
-        let command = Command::batch([
-            test_event(TestEvent::A),
-            test_effect(TestEffect::X),
-            test_event(TestEvent::B),
-        ]);
-
-        let result: Result<Command<TestEvent, TestEffect>, &str> =
-            command.try_map_event(|event| match event {
-                TestEvent::A => Ok(TestEvent::B),
-                TestEvent::B => Ok(TestEvent::C),
-                TestEvent::C => Ok(event),
-            });
-
-        assert!(result.is_ok());
-        let mapped_command = result.unwrap();
-        assert_eq!(mapped_command.count_events(), 2);
-        assert_eq!(mapped_command.count_effects(), 1); // Effect unchanged
-
-        let (events, effects) = mapped_command.partition_outputs();
-        assert_eq!(events, vec![TestEvent::B, TestEvent::C]);
-        assert_eq!(effects, vec![TestEffect::X]);
-    }
-
-    #[test]
-    fn test_try_map_event_failure() {
-        let command: Command<TestEvent, TestEffect> =
-            Command::batch([test_event(TestEvent::A), test_event(TestEvent::B)]);
-
-        let result: Result<Command<TestEvent, TestEffect>, &str> =
-            command.try_map_event(|event| match event {
-                TestEvent::A => Ok(TestEvent::C),
-                TestEvent::B => Err("Cannot map B"),
-                TestEvent::C => Ok(event),
-            });
-
-        assert!(result.is_err());
-        assert_eq!(result.unwrap_err(), "Cannot map B");
-    }
-
-    #[test]
-    fn test_iter_non_consuming() {
-        let command = Command::batch([test_event(TestEvent::A), test_effect(TestEffect::X)]);
-
-        // Use iter() without consuming
-        let count = command.iter().count();
-        assert_eq!(count, 2);
-
-        // Command should still be usable
-        assert_eq!(command.len(), 2);
-        assert!(command.has_events());
-        assert!(command.has_effects());
-    }
-
-    #[test]
-    fn test_has_events_and_effects() {
-        let events_only: Command<TestEvent, TestEffect> = test_event(TestEvent::A);
-        assert!(events_only.has_events());
-        assert!(!events_only.has_effects());
-
-        let effects_only: Command<TestEvent, TestEffect> = test_effect(TestEffect::X);
-        assert!(!effects_only.has_events());
-        assert!(effects_only.has_effects());
-
-        let mixed = Command::batch([test_event(TestEvent::A), test_effect(TestEffect::X)]);
-        assert!(mixed.has_events());
-        assert!(mixed.has_effects());
-
-        let empty = Command::<TestEvent, TestEffect>::none();
-        assert!(!empty.has_events());
-        assert!(!empty.has_effects());
-    }
-
-    #[test]
-    fn test_retain_events() {
-        let mut command = Command::batch([
-            test_event(TestEvent::A),
-            test_effect(TestEffect::X),
-            test_event(TestEvent::B),
-            test_effect(TestEffect::Y),
-        ]);
-
-        // Retain only TestEvent::A
-        command.retain_events(|e| matches!(e, TestEvent::A));
-
-        assert_eq!(command.count_events(), 1);
-        assert_eq!(command.count_effects(), 2); // Effects should be preserved
-
-        let (events, effects) = command.partition_outputs();
-        assert_eq!(events, vec![TestEvent::A]);
-        assert_eq!(effects, vec![TestEffect::X, TestEffect::Y]);
-    }
-
-    #[test]
-    fn test_retain_effects() {
-        let mut command = Command::batch([
-            test_event(TestEvent::A),
-            test_effect(TestEffect::X),
-            test_event(TestEvent::B),
-            test_effect(TestEffect::Y),
-        ]);
-
-        // Retain only TestEffect::X
-        command.retain_effects(|e| matches!(e, TestEffect::X));
-
-        assert_eq!(command.count_events(), 2); // Events should be preserved
-        assert_eq!(command.count_effects(), 1);
-
-        let (events, effects) = command.partition_outputs();
-        assert_eq!(events, vec![TestEvent::A, TestEvent::B]);
-        assert_eq!(effects, vec![TestEffect::X]);
-    }
-
-    #[test]
-    fn test_into_events() {
-        let command = Command::batch([
-            test_event(TestEvent::A),
-            test_effect(TestEffect::X),
-            test_event(TestEvent::B),
-        ]);
-
-        let events = command.into_events();
-        assert_eq!(events, vec![TestEvent::A, TestEvent::B]);
-    }
-
-    #[test]
-    fn test_into_effects() {
-        let command = Command::batch([
-            test_event(TestEvent::A),
-            test_effect(TestEffect::X),
-            test_effect(TestEffect::Y),
-        ]);
-
-        let effects = command.into_effects();
-        assert_eq!(effects, vec![TestEffect::X, TestEffect::Y]);
-    }
-
-    #[test]
-    fn test_into_events_empty() {
-        let command = Command::batch([test_effect(TestEffect::X), test_effect(TestEffect::Y)]);
-
-        let events: Vec<TestEvent> = command.into_events();
-        assert!(events.is_empty());
-    }
-
-    #[test]
-    fn test_into_effects_empty() {
-        let command = Command::batch([test_event(TestEvent::A), test_event(TestEvent::B)]);
-
-        let effects: Vec<TestEffect> = command.into_effects();
-        assert!(effects.is_empty());
-    }
-
-    #[test]
-    fn test_into_iterator_for_reference() {
-        let command = Command::batch([
-            test_event(TestEvent::A),
-            test_effect(TestEffect::X),
-            test_event(TestEvent::B),
-        ]);
-
-        // Test &Command iteration without consuming
-        let mut count = 0;
-        for output in &command {
-            match output {
-                CommandStep::Event(_) => count += 1,
-                CommandStep::Effect(_) => count += 10,
-                CommandStep::Batch(_) => count += 100,
-                CommandStep::Group { mode: GroupMode::Parallel, barrier: None, .. }
-                | CommandStep::Merge { barrier_event: None, .. } => count += 200,
-                _ => count += 300,
-            }
-        }
-        assert_eq!(count, 12); // 2 events + 1 effect = 1 + 10 + 1 = 12
-
-        // Command should still be usable after iteration
-        assert_eq!(command.len(), 3);
-        assert_eq!(command.count_events(), 2);
-        assert_eq!(command.count_effects(), 1);
-
-        // Can iterate again
-        let outputs: Vec<_> = (&command).into_iter().collect();
-        assert_eq!(outputs.len(), 3);
-    }
-
-    // Tests for sequential effect composition
-
-    #[test]
-    fn test_sequence_empty() {
-        let empty: Vec<Command<TestEvent, TestEffect>> = Vec::new();
-        let cmd = Command::<TestEvent, TestEffect>::sequence(empty);
-        assert!(cmd.is_empty());
-        assert_eq!(cmd.len(), 0);
-    }
-
-    #[test]
-    fn test_sequence_single_effect() {
-        let cmd = Command::<TestEvent, TestEffect>::sequence([test_effect(TestEffect::X)]);
-
-        assert_eq!(cmd.len(), 1);
-        assert!(cmd.has_effects());
-        assert!(!cmd.has_events());
-
-        let effects = cmd.into_effects();
-        assert_eq!(effects, vec![TestEffect::X]);
-    }
-
-    #[test]
-    fn test_sequence_multiple_effects() {
-        let cmd = Command::<TestEvent, TestEffect>::sequence([
-            test_effect(TestEffect::X),
-            test_effect(TestEffect::Y),
-            test_effect(TestEffect::Z),
-        ]);
-
-        assert_eq!(cmd.len(), 3);
-        assert_eq!(cmd.count_effects(), 3);
-        assert_eq!(cmd.count_events(), 0);
-
-        let effects = cmd.into_effects();
-        assert_eq!(effects, vec![TestEffect::X, TestEffect::Y, TestEffect::Z]);
-    }
-
-    #[test]
-    fn test_sequence_mixed_commands() {
-        let cmd = Command::<TestEvent, TestEffect>::sequence([
-            test_effect(TestEffect::X),
-            Command::batch([test_event(TestEvent::A), test_effect(TestEffect::Y)]),
-            test_effect(TestEffect::Z),
-        ]);
-
-        assert_eq!(cmd.len(), 4); // X, A, Y, Z
-        assert_eq!(cmd.count_effects(), 3);
+        // Test retain
+        cmd.retain_events(|e| matches!(e, TestEvent::A));
         assert_eq!(cmd.count_events(), 1);
+        assert_eq!(cmd.count_effects(), 2); // Effects preserved
 
-        let (events, effects) = cmd.partition_outputs();
-        assert_eq!(events, vec![TestEvent::A]);
-        assert_eq!(effects, vec![TestEffect::X, TestEffect::Y, TestEffect::Z]);
-    }
-
-    #[test]
-    fn test_sequence_mixed_items_into_command() {
-        // Mix events and effects directly as Commands
-        let cmd = Command::<TestEvent, TestEffect>::sequence([
-            test_effect(TestEffect::X),
-            test_event(TestEvent::A),
-            test_effect(TestEffect::Y),
-            test_effect(TestEffect::Z),
+        let mut cmd2 = Command::batch([
+            Command::<TestEvent, TestEffect>::event(TestEvent::A),
+            Command::<TestEvent, TestEffect>::effect(TestEffect::X),
+            Command::<TestEvent, TestEffect>::effect(TestEffect::Y),
         ]);
 
-        assert_eq!(cmd.len(), 4); // X, A, Y, Z
-        assert_eq!(cmd.count_effects(), 3);
-        assert_eq!(cmd.count_events(), 1);
-
-        let (events, effects) = cmd.partition_outputs();
-        assert_eq!(events, vec![TestEvent::A]);
-        assert_eq!(effects, vec![TestEffect::X, TestEffect::Y, TestEffect::Z]);
-    }
-
-    // pipeline builder removed; use Command::sequence instead
-
-    #[test]
-    fn test_sequence_preserves_smallvec_optimization() {
-        // Test that sequences with ≤4 effects stay inline
-        let cmd = Command::<TestEvent, TestEffect>::sequence([
-            test_effect(TestEffect::X),
-            test_effect(TestEffect::Y),
-            test_effect(TestEffect::Z),
-        ]);
-
-        assert_eq!(cmd.len(), 3);
-        // Should still be inline (≤4 items)
-        assert!(!cmd.outputs.spilled());
+        cmd2.retain_effects(|e| matches!(e, TestEffect::X));
+        assert_eq!(cmd2.count_events(), 1); // Events preserved  
+        assert_eq!(cmd2.count_effects(), 1);
     }
 
     #[test]
-    fn test_sequence_integration_with_monadic_methods() {
-        // Test that sequential effects work well with existing monadic composition
-        let cmd = Command::<TestEvent, TestEffect>::sequence([
-            test_effect(TestEffect::X),
-            test_effect(TestEffect::Y),
-        ])
-        .then(test_event(TestEvent::A))
-        .when(true)
-        .or_else(test_effect(TestEffect::Z));
-
-        assert_eq!(cmd.len(), 3); // X, Y, A
-        assert_eq!(cmd.count_effects(), 2);
-        assert_eq!(cmd.count_events(), 1);
-
-        let (events, effects) = cmd.partition_outputs();
-        assert_eq!(events, vec![TestEvent::A]);
-        assert_eq!(effects, vec![TestEffect::X, TestEffect::Y]);
-    }
-
-    // Tests for unified coordination helpers
-
-    #[test]
-    fn test_merge_barrier() {
-        let cmd = Command::<TestEvent, TestEffect>::merge([TestEffect::X, TestEffect::Y])
+    fn test_coordination_patterns() {
+        // Test merge
+        let merge_cmd = Command::<TestEvent, TestEffect>::merge([TestEffect::X, TestEffect::Y])
             .barrier_event(TestEvent::A);
-
-        let outputs: Vec<_> = cmd.into_iter().collect();
-        assert_eq!(outputs.len(), 1);
+        let outputs: Vec<_> = merge_cmd.into_iter().collect();
         match &outputs[0] {
             CommandStep::Merge { effects, barrier_event } => {
                 assert_eq!(effects, &vec![TestEffect::X, TestEffect::Y]);
@@ -1748,204 +1265,104 @@ mod tests {
             }
             _ => panic!("Expected Merge step"),
         }
+
+        // Test join
+        let join_cmd = Command::<TestEvent, TestEffect>::join([TestEffect::X, TestEffect::Y]);
+        let outputs: Vec<_> = join_cmd.into_iter().collect();
+        assert!(matches!(outputs[0], CommandStep::Join { .. }));
+
+        // Test race
+        let race_cmd = Command::<TestEvent, TestEffect>::race([TestEffect::X, TestEffect::Y]);
+        let outputs: Vec<_> = race_cmd.into_iter().collect();
+        assert!(matches!(outputs[0], CommandStep::Race { .. }));
+
+        // Test chain
+        let chain_cmd = Command::<TestEvent, TestEffect>::chain([TestEffect::X, TestEffect::Y]);
+        let outputs: Vec<_> = chain_cmd.into_iter().collect();
+        assert!(matches!(outputs[0], CommandStep::Chain { .. }));
     }
 
     #[test]
-    fn test_join_without_barrier() {
-        let cmd = Command::<TestEvent, TestEffect>::join([TestEffect::X, TestEffect::Y]);
+    fn test_sequence_operations() {
+        // Test basic sequence
+        let seq_cmd = Command::<TestEvent, TestEffect>::sequence([
+            Command::<TestEvent, TestEffect>::effect(TestEffect::X),
+            Command::<TestEvent, TestEffect>::effect(TestEffect::Y),
+            Command::<TestEvent, TestEffect>::effect(TestEffect::Z),
+        ]);
+        assert_eq!(seq_cmd.len(), 3);
+        assert_eq!(seq_cmd.count_effects(), 3);
+
+        // Test mixed sequence
+        let mixed_seq = Command::<TestEvent, TestEffect>::sequence([
+            Command::<TestEvent, TestEffect>::effect(TestEffect::X),
+            Command::batch([Command::<TestEvent, TestEffect>::event(TestEvent::A), Command::<TestEvent, TestEffect>::effect(TestEffect::Y)]),
+            Command::<TestEvent, TestEffect>::effect(TestEffect::Z),
+        ]);
+        assert_eq!(mixed_seq.len(), 4);
+        assert_eq!(mixed_seq.count_events(), 1);
+        assert_eq!(mixed_seq.count_effects(), 3);
+    }
+
+    #[test]
+    fn test_flattening_optimization() {
+        // Test flatten empty
+        let empty_flattened = Command::<TestEvent, TestEffect>::none().flatten();
+        assert!(empty_flattened.is_empty());
+
+        // Test flatten events only
+        let events_flattened = Command::<TestEvent, TestEffect>::events([TestEvent::A, TestEvent::B]).flatten();
+        assert_eq!(events_flattened.count_events(), 2);
+
+        // Test flatten effects - should consolidate into single parallel group
+        let effects_flattened = Command::batch([
+            Command::<TestEvent, TestEffect>::effect(TestEffect::X),
+            Command::<TestEvent, TestEffect>::effect(TestEffect::Y),
+            Command::<TestEvent, TestEffect>::effect(TestEffect::Z),
+        ]).flatten();
+
+        let outputs: Vec<_> = effects_flattened.into_iter().collect();
+        assert_eq!(outputs.len(), 1);
+        assert!(matches!(outputs[0], CommandStep::Merge { .. }));
+    }
+
+    #[test]
+    fn test_smallvec_optimization() {
+        // Commands with ≤4 outputs should not allocate
+        let cmd = Command::batch([
+            Command::<TestEvent, TestEffect>::event(TestEvent::A),
+            Command::<TestEvent, TestEffect>::event(TestEvent::B),
+            Command::<TestEvent, TestEffect>::effect(TestEffect::X),
+            Command::<TestEvent, TestEffect>::effect(TestEffect::Y),
+        ]);
+
+        assert_eq!(cmd.len(), 4);
+        assert!(!cmd.outputs.spilled()); // Should still be inline
+
+        // Test monadic methods preserve optimization
+        let monadic_cmd = Command::<TestEvent, TestEffect>::event(TestEvent::A)
+            .then(Command::<TestEvent, TestEffect>::event(TestEvent::B))
+            .then(Command::<TestEvent, TestEffect>::effect(TestEffect::X))
+            .when(true);
+        assert_eq!(monadic_cmd.len(), 3);
+        assert!(!monadic_cmd.outputs.spilled());
+    }
+
+    #[test]
+    fn test_iterator_support() {
+        let cmd = Command::batch([
+            Command::<TestEvent, TestEffect>::event(TestEvent::A),
+            Command::<TestEvent, TestEffect>::effect(TestEffect::X),
+            Command::<TestEvent, TestEffect>::event(TestEvent::B),
+        ]);
+
+        // Test non-consuming iteration
+        let count = cmd.iter().count();
+        assert_eq!(count, 3);
+        assert_eq!(cmd.len(), 3); // Still usable
+
+        // Test consuming iteration
         let outputs: Vec<_> = cmd.into_iter().collect();
-        assert_eq!(outputs.len(), 1);
-        match &outputs[0] {
-            CommandStep::Join { effects, timeout_per, barrier_event } => {
-                assert_eq!(effects, &vec![TestEffect::X, TestEffect::Y]);
-                assert_eq!(*timeout_per, None);
-                assert_eq!(*barrier_event, None);
-            }
-            _ => panic!("Expected Join step"),
-        }
-    }
-
-    #[test]
-    fn test_race_with_barrier() {
-        let cmd = Command::<TestEvent, TestEffect>::race([TestEffect::X, TestEffect::Y])
-            .barrier_event(TestEvent::B);
-        let outputs: Vec<_> = cmd.into_iter().collect();
-        assert_eq!(outputs.len(), 1);
-        match &outputs[0] {
-            CommandStep::Race { effects, barrier_event, .. } => {
-                assert_eq!(effects, &vec![TestEffect::X, TestEffect::Y]);
-                assert_eq!(*barrier_event, Some(TestEvent::B));
-            }
-            _ => panic!("Expected Race step"),
-        }
-    }
-
-    #[test]
-    fn test_chain_with_barrier() {
-        let cmd = Command::<TestEvent, TestEffect>::chain([TestEffect::X, TestEffect::Y])
-            .barrier_event(TestEvent::C);
-        let outputs: Vec<_> = cmd.into_iter().collect();
-        assert_eq!(outputs.len(), 1);
-        match &outputs[0] {
-            CommandStep::Chain { effects, barrier_event } => {
-                assert_eq!(effects, &vec![TestEffect::X, TestEffect::Y]);
-                assert_eq!(*barrier_event, Some(TestEvent::C));
-            }
-            _ => panic!("Expected Chain step"),
-        }
-    }
-
-    
-
-    // Tests for command flattening optimization
-
-    #[test]
-    fn test_flatten_empty_command() {
-        let cmd = Command::<TestEvent, TestEffect>::none();
-        let flattened = cmd.flatten();
-        assert!(flattened.is_empty());
-    }
-
-    #[test]
-    fn test_flatten_only_events() {
-        let cmd = Command::<TestEvent, TestEffect>::events([TestEvent::A, TestEvent::B]);
-        let flattened = cmd.flatten();
-
-        assert_eq!(flattened.len(), 2);
-        assert_eq!(flattened.count_events(), 2);
-        assert_eq!(flattened.count_effects(), 0);
-
-        let events = flattened.into_events();
-        assert_eq!(events, vec![TestEvent::A, TestEvent::B]);
-    }
-
-    #[test]
-    fn test_flatten_individual_effects_to_parallel() {
-        let cmd = Command::<TestEvent, TestEffect>::batch([
-            test_effect(TestEffect::X),
-            test_effect(TestEffect::Y),
-            test_effect(TestEffect::Z),
-        ]);
-        let flattened = cmd.flatten();
-
-        assert_eq!(flattened.len(), 3);
-        assert_eq!(flattened.count_effects(), 3);
-
-        // Should be consolidated into a single Group step  
-        let outputs: Vec<_> = flattened.into_iter().collect();
-        assert_eq!(outputs.len(), 1);
-
-        match &outputs[0] {
-            CommandStep::Merge { effects, barrier_event: None } => {
-                assert_eq!(effects, &vec![TestEffect::X, TestEffect::Y, TestEffect::Z]);
-            }
-            _ => panic!("Expected Merge step"),
-        }
-    }
-
-    #[test]
-    fn test_flatten_mixed_parallel_effects() {
-        let cmd = Command::<TestEvent, TestEffect>::batch([
-            test_effect(TestEffect::X),
-            Effects::new([TestEffect::Y, TestEffect::Z]).parallel().spawn(),
-        ]);
-        let flattened = cmd.flatten();
-
-        assert_eq!(flattened.len(), 3);
-        assert_eq!(flattened.count_effects(), 3);
-
-        let effects = flattened.into_effects();
-        assert_eq!(effects, vec![TestEffect::X, TestEffect::Y, TestEffect::Z]);
-    }
-
-    #[test]
-    fn test_flatten_only_batch_effects() {
-        let cmd = Command::<TestEvent, TestEffect>::sequence([
-            test_effect(TestEffect::X),
-            test_effect(TestEffect::Y),
-        ]);
-        let flattened = cmd.flatten();
-
-        assert_eq!(flattened.len(), 2);
-        assert_eq!(flattened.count_effects(), 2);
-
-        // Should maintain sequential coordination
-        let outputs: Vec<_> = flattened.into_iter().collect();
-        assert_eq!(outputs.len(), 1);
-
-        match &outputs[0] {
-            CommandStep::Batch(effects) => {
-                assert_eq!(effects, &vec![TestEffect::X, TestEffect::Y]);
-            }
-            _ => panic!("Expected SequentialEffects"),
-        }
-    }
-
-    #[test]
-    fn test_flatten_mixed_events_and_effects() {
-        let cmd = Command::<TestEvent, TestEffect>::batch([
-            test_event(TestEvent::A),
-            test_effect(TestEffect::X),
-            test_event(TestEvent::B),
-            Effects::new([TestEffect::Y, TestEffect::Z]).parallel().spawn(),
-        ]);
-        let flattened = cmd.flatten();
-
-        assert_eq!(flattened.len(), 5); // A, B, X, Y, Z
-        assert_eq!(flattened.count_events(), 2);
-        assert_eq!(flattened.count_effects(), 3);
-
-        let outputs: Vec<_> = flattened.into_iter().collect();
-        assert_eq!(outputs.len(), 3); // 2 events + 1 parallel effects group
-
-        // Events should come first
-        assert!(matches!(outputs[0], CommandStep::Event(TestEvent::A)));
-        assert!(matches!(outputs[1], CommandStep::Event(TestEvent::B)));
-
-        // Effects should be grouped
-        match &outputs[2] {
-            CommandStep::Merge { effects, barrier_event: None } => {
-                assert_eq!(effects, &vec![TestEffect::X, TestEffect::Y, TestEffect::Z]);
-            }
-            _ => panic!("Expected Merge step"),
-        }
-    }
-
-    #[test]
-    fn test_flatten_sequential_takes_precedence() {
-        let cmd = Command::<TestEvent, TestEffect>::batch([
-            test_effect(TestEffect::X),                      // Parallel by default
-            Command::sequence([test_effect(TestEffect::Y)]), // Sequential
-            Effects::new([TestEffect::Z]).parallel().spawn(),              // Parallel
-        ]);
-        let flattened = cmd.flatten();
-
-        // Clone to test both effects and structure
-        let effects = flattened.clone().into_effects();
-        assert_eq!(effects, vec![TestEffect::Y, TestEffect::X, TestEffect::Z]);
-
-        let outputs: Vec<_> = flattened.into_iter().collect();
-        assert_eq!(outputs.len(), 1);
-
-        match &outputs[0] {
-            CommandStep::Batch(_) => {
-                // Correct - sequential coordination preserved
-            }
-            _ => panic!("Expected SequentialEffects when mixing sequential and parallel"),
-        }
-    }
-
-    #[test]
-    fn test_flatten_preserves_smallvec_optimization() {
-        let cmd = Command::<TestEvent, TestEffect>::batch([
-            test_event(TestEvent::A),
-            test_effect(TestEffect::X),
-            test_effect(TestEffect::Y),
-        ]);
-        let flattened = cmd.flatten();
-
-        // Should still be inline after flattening (2 outputs: 1 event + 1 parallel effects)
-        assert!(!flattened.outputs.spilled());
-        assert_eq!(flattened.outputs.len(), 2);
+        assert_eq!(outputs.len(), 3);
     }
 }

@@ -6,6 +6,7 @@
 use std::collections::HashMap;
 use std::time::Duration;
 use syzygy::prelude::*;
+use syzygy::streaming::EffectOutput;
 
 /// Events - including database results
 #[derive(Debug, Clone)]
@@ -147,7 +148,7 @@ fn database_update(
 async fn handle_effects(
     effect: AppEffect,
     ctx: EffectContext<AppEvent, Storage<AppResources, EmptyStorage>>,
-) {
+) -> EffectOutput<AppEvent> {
     match effect {
         AppEffect::GetUser { user_id, table } => {
             let resources: &AppResources = ctx.resource();
@@ -223,6 +224,7 @@ async fn handle_effects(
             println!("📝 {message}");
         }
     }
+    EffectOutput::None
 }
 
 /// Simulated database operations - in real app these would be SQLx, Diesel, etc.

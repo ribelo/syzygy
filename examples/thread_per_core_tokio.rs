@@ -24,33 +24,53 @@ impl HttpClient { async fn get(&self, _u: &str) -> Result<String, String> { Ok("
 struct Database;
 impl Database { async fn write(&self, _v: i32) -> Result<(), String> { Ok(()) } }
 
-type AppResources = Storage<HttpClient, EmptyStorage>;
+// Resources used by executors
+type NetResources = Storage<HttpClient, EmptyStorage>;
+type DbResources = Storage<Database, EmptyStorage>;
+
+// Executor types with their own resources
+type NetExec = ThreadPerCoreTokioExecutor<AppEvent, NetResources>;
+type DbExec = SingleThreadExecutor<AppEvent, DbResources>;
+
+// Executor storage chain (order matches builder: last-added is the head)
+type AppExecutors = syzygy::executor::ExecutorStorage<
+    NetExec,
+    syzygy::executor::ExecutorStorage<DbExec, syzygy::executor::EmptyExecutorStorage>,
+>;
 
 // Single effect handler using multi-executor routing
-async fn handle_effects(effect: AppEffect,
-                        ctx: EffectContext<AppEvent, AppResources, (DbExec, NetExec)>) {
+async fn handle_effects(
+    effect: AppEffect,
+    ctx: EffectContext<AppEvent, EmptyStorage, AppExecutors>,
+) -> syzygy::streaming::EffectOutput<AppEvent> {
     match effect {
         AppEffect::HttpRequest { url } => {
-            ctx.run_on::<NetExec, _>(url, |url: String, client: &HttpClient, tx: EventSender<AppEvent>| async move {
+            // Run on the network executor which carries HttpClient as its resource
+            let net: &NetExec = ctx.executor::<NetExec, syzygy::storage::Here>();
+            let client = net.resource::<HttpClient, syzygy::storage::Here>().clone();
+            let tx = ctx.event_sender().expect("event sender available");
+            net.spawn(async move {
                 match client.get(&url).await {
                     Ok(data) => { let _ = tx.send(AppEvent::HttpResponseReceived { data }); }
                     Err(e) => { let _ = tx.send(AppEvent::NetworkError { message: e }); }
                 }
-            }).await.unwrap();
+            }).unwrap();
+            syzygy::streaming::EffectOutput::None
         }
         AppEffect::DatabaseWrite { value } => {
-            ctx.run_on::<DbExec, _>(value, |v: i32, db: &Database, tx: EventSender<AppEvent>| async move {
-                if db.write(v).await.is_ok() { let _ = tx.send(AppEvent::DbWriteOk); }
-            }).await.unwrap();
+            // Run on the DB executor which carries Database as its resource
+            let db_exec: &DbExec = ctx.executor::<DbExec, syzygy::storage::There<syzygy::storage::Here>>();
+            let db = db_exec.resource::<Database, syzygy::storage::Here>().clone();
+            let tx = ctx.event_sender().expect("event sender available");
+            db_exec.spawn(async move {
+                if db.write(value).await.is_ok() { let _ = tx.send(AppEvent::DbWriteOk); }
+            }).unwrap();
+            syzygy::streaming::EffectOutput::None
         }
     }
 }
 
-// Newtype wrappers so both executors can coexist in storage
-#[derive(Clone)]
-struct DbExec(SingleThreadExecutor<AppEvent>);
-#[derive(Clone)]
-struct NetExec(ThreadPerCoreTokioExecutor<AppEvent>);
+// No newtype wrappers needed; distinct executor types can coexist in storage
 
 fn update(event: AppEvent, _ctx: &mut EventContext<AppEvent, AppEffect, Storage<Model, EmptyStorage>>) -> Command<AppEvent, AppEffect> {
     match event {
@@ -62,9 +82,9 @@ fn update(event: AppEvent, _ctx: &mut EventContext<AppEvent, AppEffect, Storage<
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (core, shell) = Syzygy::builder::<AppEvent, AppEffect>()
         .model(Model)
-        .resource(HttpClient)
-        .executor(DbExec(SingleThreadExecutor::new().with_resource(Database)))
-        .executor(NetExec(ThreadPerCoreTokioExecutor::new()))
+        // Attach resources to the executors that use them
+        .executor(SingleThreadExecutor::new().with_resource(Database))
+        .executor(ThreadPerCoreTokioExecutor::new().with_resource(HttpClient))
         .event_handler(update)
         .effect_handler(handle_effects)
         .build();
@@ -74,4 +94,3 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     runner.run_until(|_, _| true, syzygy::spawn::spawner()).await?;
     Ok(())
 }
-

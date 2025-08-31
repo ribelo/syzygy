@@ -53,10 +53,11 @@
 //! async fn handle_effects(
 //!     effect: CounterEffect,
 //!     _ctx: EffectContext<CounterEvent, EmptyStorage>
-//! ) {
+//! ) -> EffectOutput<CounterEvent> {
 //!     match effect {
 //!         CounterEffect::LogMessage(message) => {
 //!             println!("LOG: {}", message);
+//!             EffectOutput::None
 //!         }
 //!     }
 //! }
@@ -93,10 +94,12 @@
 //! # #[derive(Debug, Clone)] enum Event { Test }
 //! # #[derive(Debug, Clone)] enum Effect { Test }
 //! # fn update(e: Event, ctx: &mut EventContext<Event, Effect, Storage<ConfigModel, Storage<UserModel, EmptyStorage>>>) -> Command<Event, Effect> { Command::none() }
+//! # async fn effects(e: Effect, _ctx: syzygy::async_context::EffectContext<Event, EmptyStorage>) -> EffectOutput<Event> { EffectOutput::None }
 //! let (core, shell) = Syzygy::builder()
 //!     .model(UserModel::default())     // Add multiple models
 //!     .model(ConfigModel::default())   // Type-safe composition
 //!     .event_handler(update)
+//!     .effect_handler(effects)
 //!     .build();
 //! ```
 //!
@@ -284,18 +287,19 @@
 //!
 //! ## Advanced Patterns
 //!
-//! ### Bulk Model Extraction
+//! ### Multi-Model Access
 //! ```rust
 //! # use syzygy::prelude::*;
-//! # use syzygy::storage::BulkExtract;
+//! # use syzygy::storage::StorageBuilder;
 //! # #[derive(Debug, Default)] struct UserModel { name: String }
 //! # #[derive(Debug, Default)] struct ConfigModel { theme: String }
 //! # #[derive(Debug, Default)] struct SessionModel { active: bool }
 //! # type MyStorage = Storage<SessionModel, Storage<ConfigModel, Storage<UserModel, EmptyStorage>>>;
-//! # let storage: MyStorage = EmptyStorage.with_model(UserModel::default()).with_model(ConfigModel::default()).with_model(SessionModel::default());
-//! // Extract multiple models efficiently (30-41% faster than individual calls)
-//! let (user, config, session): (&UserModel, &ConfigModel, &SessionModel) =
-//!     storage.extract_bulk();
+//! # let storage: MyStorage = EmptyStorage::new().with_model(UserModel::default()).with_model(ConfigModel::default()).with_model(SessionModel::default());
+//! // Access individual models by type
+//! let user: &UserModel = storage.get();
+//! let config: &ConfigModel = storage.get();
+//! let session: &SessionModel = storage.get();
 //! ```
 //!
 //! ### Resource Management
@@ -307,11 +311,13 @@
 //! # #[derive(Debug, Clone)] enum Event { Test }
 //! # #[derive(Debug, Clone)] enum Effect { Test }
 //! # fn update(e: Event, ctx: &mut EventContext<Event, Effect, Storage<MyModel, EmptyStorage>>) -> Command<Event, Effect> { Command::none() }
+//! # async fn effects(e: Effect, _ctx: syzygy::async_context::EffectContext<Event, syzygy::storage::Storage<HttpClient, syzygy::storage::Storage<Database, EmptyStorage>>>) -> EffectOutput<Event> { EffectOutput::None }
 //! let (core, shell) = Syzygy::builder()
 //!     .model(MyModel::default())
 //!     .resource(Database { url: "postgres://...".to_string() })
 //!     .resource(HttpClient { base_url: "https://api.example.com".to_string() })
 //!     .event_handler(update)
+//!     .effect_handler(effects)
 //!     .build();
 //! ```
 //!
@@ -322,25 +328,13 @@
 //! # #[derive(Debug, Clone)] enum MyEffect { DoWork }
 //! async fn handle_effect(
 //!     effect: MyEffect,
-//!     ctx: EffectContext<Event, EmptyStorage>,
-//! ) {
+//!     _ctx: EffectContext<Event, EmptyStorage>,
+//! ) -> EffectOutput<Event> {
 //!     match effect {
 //!         MyEffect::DoWork => {
-//!             // All spawned tasks automatically cancelled when context drops
-//!             let ctx_clone = ctx.clone();
-//!             ctx.spawn(async move {
-//!                 // Long running background work
-//!                 tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
-//!                 let _ = ctx_clone.send_event(Event::TaskComplete);
-//!             }).unwrap();
-//!
-//!             // Spawn multiple tasks safely
-//!             for i in 0..10 {
-//!                 let ctx_clone = ctx.clone();
-//!                 ctx.spawn(async move {
-//!                     println!("Background task {}", i);
-//!                 }).unwrap();
-//!             }
+//!             // Do async work and return result as event
+//!             tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+//!             EffectOutput::Single(Event::TaskComplete)
 //!         }
 //!     }
 //! }
@@ -374,7 +368,7 @@
 //!
 //!     #[test]
 //!     fn test_counter_increment() {
-//!         let mut storage = EmptyStorage.with_model(CounterModel::default());
+//!         let mut storage = EmptyStorage::new().with_model(CounterModel::default());
 //!         let mut ctx = EventContext::new(&mut storage);
 //!
 //!         let command = update(CounterEvent::Increment, &mut ctx);

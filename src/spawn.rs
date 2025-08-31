@@ -8,13 +8,6 @@
 //!
 //! ## Auto-detection (Recommended)
 //!
-//! ```rust,ignore
-//! // This example shows usage within an application context
-//! use syzygy::spawn::auto_spawn_fn;
-//!
-//! // Zero-cost - no boxing!
-//! runner.run_until(condition, auto_spawn_fn()).await?;
-//! ```
 //!
 //! ## Async Closures (Zero-Cost)
 //!
@@ -203,12 +196,12 @@ where
 ///
 /// # Example
 ///
-/// ```rust,ignore
-/// use syzygy::spawn::auto_spawner;
+/// ```rust
+/// use syzygy::spawn::spawner;
 ///
 /// // Zero-cost spawner for Runner
 /// let spawner = spawner();
-/// runner.run_until(condition, spawner).await?;
+/// // Use with runner: runner.run_until(condition, spawner).await?;
 /// ```
 #[must_use]
 pub fn spawner() -> impl Spawn {

@@ -8,6 +8,7 @@
 //! - Clean handler composition
 
 use syzygy::prelude::*;
+use syzygy::streaming::EffectOutput;
 use syzygy::executor::{TokioExecutor, ExecutorStorage, EmptyExecutorStorage};
 
 // ============================================================================
@@ -243,7 +244,7 @@ fn update_app(
 async fn handle_effects(
     effect: AppEffect,
     ctx: EffectContext<AppEvent, Storage<DatabaseConfig, EmptyStorage>, ExecutorStorage<TokioExecutor<AppEvent>, EmptyExecutorStorage>>,
-) {
+) -> EffectOutput<AppEvent> {
     match &effect {
         AppEffect::LogActivity { message } => {
             println!("LOG: {message}");
@@ -261,6 +262,7 @@ async fn handle_effects(
             handle_with_full_context(effect, ctx);
         }
     }
+    EffectOutput::None
 }
 
 // ============================================================================

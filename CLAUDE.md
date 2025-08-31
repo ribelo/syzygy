@@ -325,6 +325,7 @@ Target metrics (measured):
 4. **User Responsibility**: Don't panic in effects - crashes should bring down the whole app
 5. **Testing First**: Write tests before implementation using magic handlers for decoupling
 6. **Safety First**: All spawned tasks are tracked and cancelled automatically
+7. **NO IGNORED DOCTESTS**: Every doctest must either compile and run successfully, or be removed entirely. Use `#[doc = ""]` to hide documentation rather than `ignore`. Ignored doctests hide problems and mislead users.
 
 ## Limitations & Anti-Patterns
 

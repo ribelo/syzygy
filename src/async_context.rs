@@ -12,15 +12,12 @@
 //! # use syzygy::prelude::*;
 //! # #[derive(Debug, Clone)] enum TestEvent { Done }
 //! # #[derive(Debug, Clone)] enum TestEffect { PerformAsyncWork }
-//! async fn handle_effects(effect: TestEffect, ctx: EffectContext<TestEvent, (), ()>) {
+//! async fn handle_effects(effect: TestEffect, ctx: EffectContext<TestEvent, EmptyStorage>) -> syzygy::streaming::EffectOutput<TestEvent> {
 //!     if let TestEffect::PerformAsyncWork = effect {
-//!         // Get executor and use it to spawn tasks
-//!         let executor = ctx.executor::<MyExecutor>();
-//!         executor.spawn(async move {
-//!             // Work happens here
-//!             let _ = ctx.send_event(TestEvent::Done);
-//!         }).await;
+//!         // Use direct async handling or return event output
+//!         return syzygy::streaming::EffectOutput::Single(TestEvent::Done);
 //!     }
+//!     syzygy::streaming::EffectOutput::None
 //! }
 //! ```
 //!
@@ -93,12 +90,6 @@ where
     /// This is a convenience method that delegates to the resources' get() method.
     /// The type must exist in the resources chain for this to compile.
     ///
-    /// # Example
-    /// ```rust,ignore
-    /// let client: &HttpClient = ctx.resource();
-    /// // Or with explicit type:
-    /// let client = ctx.resource::<HttpClient>();
-    /// ```
     #[must_use]
     pub fn resource<T, Index>(&self) -> &T
     where
@@ -112,12 +103,6 @@ where
     /// This is a convenience method that delegates to the executors' get() method.
     /// The type must exist in the executors chain for this to compile.
     ///
-    /// # Example
-    /// ```rust,ignore
-    /// let executor: &TokioExecutor<Event, Effect> = ctx.executor();
-    /// // Or with explicit type:
-    /// let executor = ctx.executor::<TokioExecutor<Event, Effect>>();
-    /// ```
     #[must_use]
     pub fn executor<T, Index>(&self) -> &T
     where
@@ -132,9 +117,14 @@ where
     /// but don't need the full EffectContext.
     ///
     /// # Example
-    /// ```rust,ignore
+    /// ```rust
+    /// # use syzygy::prelude::*;
+    /// # use crossbeam_channel::unbounded;
+    /// # #[derive(Debug, Clone)] enum MyEvent { Completed }
+    /// # let (tx, _rx) = unbounded();
+    /// # let ctx = EffectContext::<MyEvent, EmptyStorage>::new(Some(tx), EmptyStorage::new(), EmptyExecutorStorage::new());
     /// if let Some(sender) = ctx.event_sender() {
-    ///     sender.send(MyEvent::Completed);
+    ///     let _ = sender.send(MyEvent::Completed);
     /// }
     /// ```
     #[must_use]

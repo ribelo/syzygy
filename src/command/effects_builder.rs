@@ -18,43 +18,7 @@
 //!
 //! Just like iterators, you start neutral, chain operations, then terminate:
 //!
-//! ```rust,ignore
-//! // Iterator style
-//! let results: Vec<_> = data.iter()
-//!     .map(process)
-//!     .filter(is_valid)
-//!     .collect();
 //!
-//! // Effects style  
-//! let cmd = Effects::new([effect1, effect2])
-//!     .parallel()
-//!     .timeout_per(Duration::from_secs(5))
-//!     .barrier(AllComplete);
-//! ```
-//!
-//! # Examples
-//!
-//! ```rust,ignore
-//! use syzygy::command::Effects;
-//!
-//! // Parallel coordination with barrier
-//! Effects::new([load_config(), load_user()])
-//!     .parallel()
-//!     .timeout_per(Duration::from_secs(5))
-//!     .barrier(AppReady)
-//!
-//! // Race coordination (first-wins)
-//! Effects::new([mirror1(), mirror2()])
-//!     .race()
-//!     .timeout_per(Duration::from_secs(1))
-//!     .spawn()  // Fire-and-forget
-//!
-//! // Sequential execution
-//! Effects::new([step1(), step2(), step3()])
-//!     .sequence()
-//!     .stop_on_error()
-//!     .barrier(ProcessComplete)
-//! ```
 
 use crate::command::{Command, CommandStep, GroupMode};
 use smallvec::SmallVec;

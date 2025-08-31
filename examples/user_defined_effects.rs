@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::time::Duration;
 use syzygy::event_context::EventContext;
 use syzygy::prelude::*;
+use syzygy::streaming::EffectOutput;
 
 /// User-defined events for a simple todo app
 #[derive(Debug, Clone)]
@@ -204,7 +205,7 @@ fn todo_update(
 
 /// AFIT Effect handler - converts effects to async operations with zero-cost abstractions
 /// This is where users implement their own I/O logic using function pointers (no captures)
-async fn handle_effect(effect: TodoEffect, ctx: EffectContext<TodoEvent, EmptyStorage>) {
+async fn handle_effect(effect: TodoEffect, ctx: EffectContext<TodoEvent, EmptyStorage>) -> EffectOutput<TodoEvent> {
     // No more boxing overhead! Pure AFIT implementation
     match effect {
         TodoEffect::HttpRequest {
@@ -285,6 +286,7 @@ async fn handle_effect(effect: TodoEffect, ctx: EffectContext<TodoEvent, EmptySt
             let _ = ctx.send_event(TodoEvent::TodosSaved);
         }
     }
+    EffectOutput::None
 }
 
 #[cfg(feature = "tokio")]

@@ -8,6 +8,7 @@
 
 use syzygy::event_context::EventContext;
 use syzygy::prelude::*;
+use syzygy::streaming::EffectOutput;
 
 // Define our events
 #[derive(Debug, Clone)]
@@ -117,7 +118,7 @@ fn update(
 }
 
 // Effect handler
-async fn handle_effects(effect: AppEffect, _ctx: EffectContext<AppEvent, EmptyStorage>) {
+async fn handle_effects(effect: AppEffect, _ctx: EffectContext<AppEvent, EmptyStorage>) -> EffectOutput<AppEvent> {
     match effect {
         AppEffect::SaveUser { name, email } => {
             println!("💾 Saving user: {name} <{email}>");
@@ -140,6 +141,7 @@ async fn handle_effects(effect: AppEffect, _ctx: EffectContext<AppEvent, EmptySt
             println!("📝 LOG: {message}");
         }
     }
+    EffectOutput::None
 }
 
 #[tokio::main]

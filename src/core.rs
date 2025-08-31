@@ -12,7 +12,7 @@
 //! ```rust
 //! # use syzygy::prelude::*;
 //! # use syzygy::event_context::EventContext;
-//! # use syzygy::storage::{EmptyStorage, Storage};
+//! # use syzygy::storage::{EmptyStorage, Storage, StorageBuilder};
 //! # #[derive(Debug, Clone)] enum TestEvent { Increment }
 //! # #[derive(Debug, Clone)] enum TestEffect { Log }
 //! # #[derive(Debug, Default)] struct CounterModel { count: i32 }
@@ -181,12 +181,6 @@ where
     /// This is a convenience method that delegates to the storage's get() method.
     /// The type must exist in the storage chain for this to compile.
     ///
-    /// # Example
-    /// ```rust,ignore
-    /// let counter: &CounterModel = core.model();
-    /// // Or with explicit type:
-    /// let counter = core.model::<CounterModel>();
-    /// ```
     #[must_use]
     pub fn model<T, Index>(&self) -> &T
     where
@@ -202,12 +196,6 @@ where
     ///
     /// Note: This bypasses event processing, so prefer sending events for state changes.
     ///
-    /// # Example
-    /// ```rust,ignore
-    /// let counter: &mut CounterModel = core.model_mut();
-    /// // Or with explicit type:
-    /// let counter = core.model_mut::<CounterModel>();
-    /// ```
     pub fn model_mut<T, Index>(&mut self) -> &mut T
     where
         Storage: Selector<T, Index>,

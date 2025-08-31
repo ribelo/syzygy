@@ -23,6 +23,7 @@
 
 use std::time::Duration;
 use syzygy::prelude::*;
+use syzygy::streaming::EffectOutput;
 use tokio::time::sleep;
 
 #[derive(Debug, Clone)]
@@ -110,7 +111,7 @@ fn workflow_update(
 async fn create_effect_handler(
     effect: WorkflowEffect,
     ctx: EffectContext<WorkflowEvent, EmptyStorage>,
-) {
+) -> EffectOutput<WorkflowEvent> {
     match effect {
         WorkflowEffect::LoginUser {
             username,
@@ -124,7 +125,7 @@ async fn create_effect_handler(
                 let _ = ctx.send_event(WorkflowEvent::ErrorOccurred {
                     message: "Password too short".to_string(),
                 });
-                return;
+                return EffectOutput::None;
             }
 
             // Simulate successful login
@@ -166,6 +167,7 @@ async fn create_effect_handler(
             sleep(Duration::from_millis(90)).await;
         }
     }
+    EffectOutput::None
 }
 
 #[tokio::main]

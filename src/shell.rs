@@ -20,10 +20,11 @@
 //! # fn update(event: TestEvent, ctx: &mut EventContext<TestEvent, TestEffect, Storage<Model, EmptyStorage>>) -> Command<TestEvent, TestEffect> {
 //! #     Command::effect(TestEffect::DoPing)
 //! # }
-//! # async fn handle_effects(effect: TestEffect, ctx: EffectContext<TestEvent, EmptyStorage>) {
+//! # async fn handle_effects(effect: TestEffect, ctx: EffectContext<TestEvent, EmptyStorage>) -> EffectOutput<TestEvent> {
 //! #     if let TestEffect::DoPing = effect {
 //! #         println!("Pong!");
 //! #     }
+//! #     EffectOutput::None
 //! # }
 //! // In a real application, you would build the shell like this:
 //! let (core, shell) = Syzygy::builder()
@@ -275,18 +276,6 @@ where
     /// mutability, the resource itself should provide interior mutability
     /// (e.g., using Arc<Mutex<>>, RwLock, RefCell, atomic types, etc.).
     ///
-    /// # Example
-    /// ```rust,ignore
-    /// // For read-only resources (most common case)
-    /// let http_client: &HttpClient = shell.resource();
-    ///
-    /// // For resources needing mutability
-    /// struct Cache {
-    ///     data: Arc<Mutex<HashMap<String, String>>>,
-    /// }
-    /// let cache: &Cache = shell.resource();
-    /// // Use cache.data.lock() when you need to mutate
-    /// ```
     #[must_use]
     pub fn resource<T, Index>(&self) -> &T
     where
@@ -302,15 +291,6 @@ where
     /// Executors can be accessed by their NewType wrapper to distinguish
     /// multiple executors of the same base type.
     ///
-    /// # Example
-    /// ```rust,ignore
-    /// // Using NewType pattern for multiple executors
-    /// struct DatabaseExecutor(TokioExecutor);
-    /// struct NetworkExecutor(TokioExecutor);
-    ///
-    /// let db_executor: &DatabaseExecutor = shell.executor();
-    /// let net_executor: &NetworkExecutor = shell.executor();
-    /// ```
     #[must_use]
     pub fn executor<T, Index>(&self) -> &T
     where
@@ -965,23 +945,7 @@ where
     /// - **Non-blocking**: Returns immediately without waiting for tasks
     /// - **No cancellation**: Existing tasks continue running until completion
     ///
-    /// ## Recommended Shutdown Pattern
-    ///
-    /// For graceful shutdown with task completion:
-    ///
-    /// ```rust,ignore
-    /// use std::time::Duration;
-    ///
-    /// // 1. Signal shutdown intent (stop sending new events)
-    /// shell.shutdown();
-    ///
-    /// // 2. Wait for pending tasks to complete (if needed) - in async context
-    /// while shell.task_stats().active_tasks > 0 {
-    ///     tokio::time::sleep(Duration::from_millis(10)).await;
-    /// }
-    ///
-    /// // 3. Tasks complete naturally or reach their own timeouts
-    /// ```
+    /// See shell documentation for recommended shutdown patterns.
     ///
     /// For immediate shutdown with task cancellation, use EffectContext's
     /// drop-based cancellation by ensuring all EffectContext instances are dropped.
