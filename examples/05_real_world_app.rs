@@ -17,6 +17,7 @@
 use std::collections::HashMap;
 use syzygy::prelude::*;
 use syzygy::executor::{TokioExecutor, ExecutorStorage, EmptyExecutorStorage};
+use syzygy::streaming::EffectOutput;
 
 // ============================================================================
 // Domain Models - Separate concerns
@@ -813,7 +814,7 @@ fn handle_logging_effect(effect: AppEffect) {
 async fn handle_effects(
     effect: AppEffect, 
     ctx: EffectContext<AppEvent, ResourceStorage, ExecutorStorage<TokioExecutor<AppEvent>, EmptyExecutorStorage>>
-) {
+) -> EffectOutput<AppEvent> {
     let sender = EventSender(ctx.event_sender().unwrap());
     
     match &effect {
@@ -844,6 +845,7 @@ async fn handle_effects(
             handle_logging_effect(effect);
         }
     }
+    EffectOutput::None
 }
 
 // ============================================================================

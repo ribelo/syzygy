@@ -1,4 +1,5 @@
 use crate::async_context::EffectContext;
+use crate::streaming::EffectOutput;
 use std::future::Future;
 
 /// Zero-cost effect handler trait (AFIT-friendly)
@@ -12,7 +13,7 @@ pub trait EffectHandler<
     Executors = crate::executor::EmptyExecutorStorage,
 >: Send + Sync + Clone + Copy + 'static
 {
-    type Future: Future<Output = ()> + Send + 'static;
+    type Future: Future<Output = EffectOutput<Event>> + Send + 'static;
 
     fn handle(
         &self,
@@ -29,7 +30,7 @@ where
     Resources: Send + Sync + 'static,
     Executors: Send + Sync + 'static,
     F: Fn(Effect, EffectContext<Event, Resources, Executors>) -> Fut + Send + Sync + Clone + Copy + 'static,
-    Fut: Future<Output = ()> + Send + 'static,
+    Fut: Future<Output = EffectOutput<Event>> + Send + 'static,
 {
     type Future = Fut;
 
@@ -49,13 +50,13 @@ where
     Resources: Send + Sync + 'static,
     Executors: Send + Sync + 'static,
 {
-    type Future = std::future::Ready<()>;
+    type Future = std::future::Ready<EffectOutput<Event>>;
 
     fn handle(
         &self,
         _effect: Effect,
         _ctx: EffectContext<Event, Resources, Executors>,
     ) -> Self::Future {
-        std::future::ready(())
+        std::future::ready(crate::streaming::EffectOutput::None)
     }
 }

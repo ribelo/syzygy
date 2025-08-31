@@ -5,6 +5,7 @@
 
 use syzygy::event_context::EventContext;
 use syzygy::prelude::*;
+use syzygy::streaming::EffectOutput;
 
 #[derive(Debug, Clone)]
 enum AppEvent {
@@ -86,7 +87,7 @@ fn app_update(
 async fn handle_effects(
     effect: AppEffect,
     ctx: EffectContext<AppEvent, Storage<FileSystem, Storage<HttpClient, EmptyStorage>>>,
-) {
+) -> EffectOutput<AppEvent> {
     match effect {
         AppEffect::HttpGet { url } => {
             // Access HttpClient resource from storage
@@ -97,7 +98,7 @@ async fn handle_effects(
 
             // Simulate HTTP request
             let data = format!("Data from {full_url}");
-            let _ = ctx.send_event(AppEvent::DataFetched { data });
+            EffectOutput::Single(AppEvent::DataFetched { data })
         }
         AppEffect::WriteFile { path, content } => {
             // Access FileSystem resource from storage
@@ -108,7 +109,7 @@ async fn handle_effects(
             println!("Content: {content}");
 
             // Simulate file write
-            let _ = ctx.send_event(AppEvent::ConfigSaved);
+            EffectOutput::Single(AppEvent::ConfigSaved)
         }
     }
 }

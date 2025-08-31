@@ -171,7 +171,7 @@ where
         let (tx, rx) = oneshot::channel::<()>();
         // Spawn the magic handler on the chosen executor
         exec.spawn(async move {
-            effect_trigger_direct::<_, Event, ExecRes, _, _>(payload, exec_ctx, handler).await;
+            let _ = effect_trigger_direct::<_, Event, ExecRes, _, _>(payload, exec_ctx, handler).await;
             let _ = tx.send(());
         })?;
 

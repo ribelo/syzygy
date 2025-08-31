@@ -158,14 +158,14 @@ pub fn time() -> Time {
 ///
 /// Uses compile-time runtime selection (tokio > smol > async-std).
 /// Prefer this over `Time::timeout` when possible.
-pub async fn timeout<F>(duration: Duration, future: F) -> TimeoutResult<()>
+pub async fn timeout<F, T>(duration: Duration, future: F) -> TimeoutResult<T>
 where
-    F: Future<Output = ()> + Send + 'static,
+    F: Future<Output = T> + Send + 'static,
 {
     #[cfg(feature = "tokio")]
     {
         match tokio::time::timeout(duration, future).await {
-            Ok(()) => Ok(()),
+            Ok(v) => Ok(v),
             Err(_) => Err(TimeoutError::new(duration)),
         }
     }
@@ -178,14 +178,14 @@ where
         futures::pin_mut!(timer);
         match select(timer, future).await {
             Either::Left(_) => Err(TimeoutError::new(duration)),
-            Either::Right(((), _)) => Ok(()),
+            Either::Right((v, _)) => Ok(v),
         }
     }
 
     #[cfg(all(feature = "async-std", not(feature = "tokio"), not(feature = "smol")))]
     {
         match async_std::future::timeout(duration, future).await {
-            Ok(()) => Ok(()),
+            Ok(v) => Ok(v),
             Err(_) => Err(TimeoutError::new(duration)),
         }
     }

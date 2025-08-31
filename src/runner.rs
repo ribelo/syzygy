@@ -347,7 +347,7 @@ mod tests {
         let (core, shell) = Syzygy::builder::<TestEvent, TestEffect>()
             .model(TestModel { count: 0 })
             .event_handler(test_update)
-            .effect_handler(|_e: TestEffect, _ctx| async {})
+            .effect_handler(|_e: TestEffect, _ctx| async { crate::streaming::EffectOutput::None })
             .build();
 
         let event_sender = core.event_sender();
@@ -371,7 +371,7 @@ mod tests {
         let (core, shell) = Syzygy::builder::<TestEvent, TestEffect>()
             .model(TestModel { count: 0 })
             .event_handler(test_update)
-            .effect_handler(|_e: TestEffect, _ctx| async {})
+            .effect_handler(|_e: TestEffect, _ctx| async { crate::streaming::EffectOutput::None })
             .build();
 
         let event_sender = core.event_sender();

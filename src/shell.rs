@@ -42,13 +42,14 @@ use crate::async_context::EffectContext;
 use crate::command::executor::route_command;
 use crate::command::{Command, CommandStep, GroupMode};
 use crate::error::ShellError;
+use crate::executor::EmptyExecutorStorage;
+use crate::streaming::{EffectOutput, consume_effect_output};
 use crate::task::{TaskStats, TaskTracker};
 use crate::timer::{Time, time};
-use crate::executor::EmptyExecutorStorage;
 
 use crate::effect_handler::EffectHandler;
+use futures::{FutureExt, StreamExt};
 use futures_concurrency::prelude::*;
-use futures::FutureExt;
 
 #[cfg(feature = "tracing")]
 use tracing::{Level, debug, span, warn};
@@ -120,8 +121,13 @@ impl Default for ShellConfig {
 /// maximum flexibility in how they structure their applications.
 /// Resources are stored using the same Storage pattern as Core's models.
 /// Executors are also stored using the same Storage pattern for type-safe access.
-pub struct Shell<Event, Effect, Resources = crate::storage::EmptyStorage, Executors = EmptyExecutorStorage, H = ()>
-where
+pub struct Shell<
+    Event,
+    Effect,
+    Resources = crate::storage::EmptyStorage,
+    Executors = EmptyExecutorStorage,
+    H = (),
+> where
     Event: Clone + Send + 'static,
     Effect: Clone + Send + 'static,
     Resources: Clone + Send + Sync + 'static,
@@ -150,7 +156,8 @@ where
     pub(crate) config: ShellConfig,
 }
 
-impl<Event, Effect> Default for Shell<Event, Effect, crate::storage::EmptyStorage, EmptyExecutorStorage, ()>
+impl<Event, Effect> Default
+    for Shell<Event, Effect, crate::storage::EmptyStorage, EmptyExecutorStorage, ()>
 where
     Event: Clone + Send + 'static,
     Effect: Clone + Send + 'static,
@@ -203,7 +210,10 @@ where
 {
     /// Create a new Shell with custom configuration and explicit handler
     #[must_use]
-    pub fn with_config_and_handler<H2>(config: ShellConfig, handler: H2) -> Shell<Event, Effect, Resources, Executors, H2>
+    pub fn with_config_and_handler<H2>(
+        config: ShellConfig,
+        handler: H2,
+    ) -> Shell<Event, Effect, Resources, Executors, H2>
     where
         Resources: Default,
         Executors: Default,
@@ -229,7 +239,10 @@ where
 
     /// Replace the effect handler with a new AFIT handler
     #[must_use]
-    pub fn with_effect_handler<H2>(self, handler: H2) -> Shell<Event, Effect, Resources, Executors, H2>
+    pub fn with_effect_handler<H2>(
+        self,
+        handler: H2,
+    ) -> Shell<Event, Effect, Resources, Executors, H2>
     where
         H2: EffectHandler<Event, Effect, Resources, Executors> + 'static,
     {
@@ -244,8 +257,6 @@ where
             config: self.config,
         }
     }
-
-
 
     /// Set the resources storage for effect handlers
     ///
@@ -383,15 +394,60 @@ where
                     _effect_count += effects.len();
                     self.spawn_batch_effects(effects, &spawner);
                 }
-                CommandStep::Group { effects, mode: GroupMode::Parallel, barrier: None, timeout_per: None } => {
+                CommandStep::Group {
+                    effects,
+                    mode: GroupMode::Parallel,
+                    barrier: None,
+                    timeout_per: None,
+                } => {
                     did_work = true;
                     _effect_count += effects.len();
                     self.spawn_parallel_effects(effects, &spawner);
                 }
-                CommandStep::Group { effects, mode, barrier, timeout_per } => {
+                CommandStep::Group {
+                    effects,
+                    mode,
+                    barrier,
+                    timeout_per,
+                } => {
                     did_work = true;
                     _effect_count += effects.len();
                     self.spawn_group(effects, mode, barrier, timeout_per, &spawner);
+                }
+                CommandStep::Merge {
+                    effects,
+                    barrier_event,
+                } => {
+                    did_work = true;
+                    _effect_count += effects.len();
+                    self.spawn_streams_merge(effects, barrier_event, &spawner);
+                }
+                CommandStep::Join {
+                    effects,
+                    timeout_per,
+                    barrier_event,
+                } => {
+                    did_work = true;
+                    _effect_count += effects.len();
+                    self.spawn_futures_join(effects, timeout_per, barrier_event, &spawner);
+                }
+                CommandStep::Race {
+                    effects,
+                    timeout_per,
+                    barrier_event,
+                } => {
+                    did_work = true;
+                    _effect_count += effects.len();
+                    self.spawn_futures_race(effects, timeout_per, barrier_event, &spawner);
+                }
+
+                CommandStep::Chain {
+                    effects,
+                    barrier_event,
+                } => {
+                    did_work = true;
+                    _effect_count += effects.len();
+                    self.spawn_chain(effects, barrier_event, &spawner);
                 }
                 CommandStep::Event(_) => {
                     // Other command outputs should be handled by Core
@@ -420,6 +476,216 @@ where
         Ok(did_work)
     }
 
+    /// Spawn merging of multiple streams, forwarding items as they arrive
+    fn spawn_streams_merge<S>(&self, effects: Vec<Effect>, barrier: Option<Event>, spawner: &S)
+    where
+        S: crate::spawn::Spawn,
+        H: Clone,
+    {
+        let resources = self.resources.clone();
+        let event_tx = self.event_tx.clone();
+        let handler = self.effect_handler;
+        let executors = self.executors.clone();
+
+        spawner.spawn(async move {
+            use futures::StreamExt;
+            use futures::stream::SelectAll;
+            let mut select_all = SelectAll::new();
+
+            // Run all handlers concurrently to obtain streams
+            let futs: Vec<_> = effects
+                .into_iter()
+                .map(|effect| {
+                    let ctx =
+                        EffectContext::new(event_tx.clone(), resources.clone(), executors.clone());
+                    async move { handler.handle(effect, ctx).await }
+                })
+                .collect();
+
+            let results: Vec<_> = futs.into_iter().collect::<Vec<_>>().join().await;
+            for res in results {
+                match res {
+                    crate::streaming::EffectOutput::Stream(s) => select_all.push(s),
+                    crate::streaming::EffectOutput::Single(_) => {
+                        eprintln!("Invalid pattern: merge expects streams, got single");
+                    }
+                    crate::streaming::EffectOutput::None => {}
+                }
+            }
+
+            while let Some(ev) = select_all.next().await {
+                if let Some(tx) = event_tx.as_ref() {
+                    let _ = tx.send(ev);
+                }
+            }
+
+            if let (Some(ev), Some(tx)) = (barrier, event_tx.as_ref()) {
+                let _ = tx.send(ev);
+            }
+        });
+    }
+
+    /// Spawn join of futures (singles) with optional per-effect timeout
+    fn spawn_futures_join<S>(
+        &self,
+        effects: Vec<Effect>,
+        timeout_per: Option<Duration>,
+        barrier: Option<Event>,
+        spawner: &S,
+    ) where
+        S: crate::spawn::Spawn,
+        H: Clone,
+    {
+        let resources = self.resources.clone();
+        let event_tx = self.event_tx.clone();
+        let handler = self.effect_handler.clone();
+        let executors = self.executors.clone();
+
+        spawner.spawn(async move {
+            let futs: Vec<_> = effects
+                .into_iter()
+                .map(|effect| {
+                    let ctx =
+                        EffectContext::new(event_tx.clone(), resources.clone(), executors.clone());
+                    let h = handler.clone();
+                    async move {
+                        match timeout_per {
+                            Some(d) => crate::timer::timeout(d, h.handle(effect, ctx)).await.map_err(|_| ()),
+                            None => Ok(h.handle(effect, ctx).await),
+                        }
+                    }
+                })
+                .collect();
+
+            let results: Vec<_> = futs.into_iter().collect::<Vec<_>>().join().await;
+            for res in results {
+                if let Ok(out) = res {
+                    match out {
+                        crate::streaming::EffectOutput::Single(ev) => {
+                            if let Some(tx) = event_tx.as_ref() {
+                                let _ = tx.send(ev);
+                            }
+                        }
+                        crate::streaming::EffectOutput::Stream(_) => {
+                            eprintln!("Invalid pattern: join expects singles, got stream");
+                        }
+                        crate::streaming::EffectOutput::None => {}
+                    }
+                }
+            }
+
+            if let (Some(ev), Some(tx)) = (barrier, event_tx.as_ref()) {
+                let _ = tx.send(ev);
+            }
+        });
+    }
+
+    /// Spawn race over futures (singles) with optional per-effect timeout
+    fn spawn_futures_race<S>(
+        &self,
+        effects: Vec<Effect>,
+        timeout_per: Option<Duration>,
+        barrier: Option<Event>,
+        spawner: &S,
+    ) where
+        S: crate::spawn::Spawn,
+        H: Clone,
+    {
+        let resources = self.resources.clone();
+        let event_tx = self.event_tx.clone();
+        let handler = self.effect_handler.clone();
+        let executors = self.executors.clone();
+
+        spawner.spawn(async move {
+            use futures::StreamExt as _;
+            use futures::stream::FuturesUnordered;
+            let mut tasks = FuturesUnordered::new();
+
+            for effect in effects.into_iter() {
+                let ctx =
+                    EffectContext::new(event_tx.clone(), resources.clone(), executors.clone());
+                let h = handler.clone();
+                let fut = async move {
+                    match timeout_per {
+                        Some(d) => crate::timer::timeout(d, h.handle(effect, ctx)).await.map_err(|_| ()),
+                        None => Ok(h.handle(effect, ctx).await),
+                    }
+                };
+                tasks.push(fut);
+            }
+
+            while let Some(res) = tasks.next().await {
+                if let Ok(crate::streaming::EffectOutput::Single(ev)) = res {
+                    if let Some(tx) = event_tx.as_ref() {
+                        let _ = tx.send(ev);
+                    }
+                    if let (Some(bev), Some(tx)) = (barrier, event_tx.as_ref()) {
+                        let _ = tx.send(bev);
+                    }
+                    break;
+                }
+            }
+        });
+    }
+
+    /// Spawn sequential chain processing with optional barrier (streams-only)
+    fn spawn_chain<S>(&self, effects: Vec<Effect>, barrier: Option<Event>, spawner: &S)
+    where
+        S: crate::spawn::Spawn,
+    {
+        let resources = self.resources.clone();
+        let event_tx = self.event_tx.clone();
+        let timeout = self.config.effect_timeout;
+        let handler = self.effect_handler.clone();
+        let executors = self.executors.clone();
+
+        spawner.spawn(async move {
+            let ctx = EffectContext::new(event_tx.clone(), resources.clone(), executors.clone());
+            for effect in effects {
+                match timeout {
+                    Some(dur) => {
+                        if let Ok(out) = crate::timer::timeout(dur, handler.handle(effect, ctx.clone())).await {
+                            match out {
+                                crate::streaming::EffectOutput::Stream(mut s) => {
+                                    while let Some(ev) = s.next().await {
+                                        if let Some(tx) = event_tx.as_ref() {
+                                            let _ = tx.send(ev);
+                                        }
+                                    }
+                                }
+                                crate::streaming::EffectOutput::Single(ev) => {
+                                    if let Some(tx) = event_tx.as_ref() {
+                                        let _ = tx.send(ev);
+                                    }
+                                }
+                                crate::streaming::EffectOutput::None => {}
+                            }
+                        }
+                    }
+                    None => {
+                        let out = handler.handle(effect, ctx.clone()).await;
+                        match out {
+                            crate::streaming::EffectOutput::Stream(mut s) => {
+                                while let Some(ev) = s.next().await {
+                                    if let Some(tx) = event_tx.as_ref() {
+                                        let _ = tx.send(ev);
+                                    }
+                                }
+                            }
+                            crate::streaming::EffectOutput::Single(_) => {
+                                eprintln!("Invalid pattern: chain expects streams, got single");
+                            }
+                            crate::streaming::EffectOutput::None => {}
+                        }
+                    }
+                }
+            }
+            if let (Some(ev), Some(tx)) = (barrier, event_tx.as_ref()) {
+                let _ = tx.send(ev);
+            }
+        });
+    }
+
     /// Execute a single effect sequentially (no spawning)
     ///
     /// This processes effects one at a time for predictable ordering.
@@ -438,10 +704,15 @@ where
 
         match timeout {
             Some(dur) => {
-                let _ = crate::timer::timeout(dur, handler.handle(effect, ctx)).await;
+                if let Ok(out) =
+                    crate::timer::timeout(dur, handler.handle(effect, ctx.clone())).await
+                {
+                    consume_effect_output(out, &ctx).await;
+                }
             }
             None => {
-                handler.handle(effect, ctx).await;
+                let out = handler.handle(effect, ctx.clone()).await;
+                consume_effect_output(out, &ctx).await;
             }
         }
     }
@@ -462,10 +733,15 @@ where
             for effect in effects {
                 match timeout {
                     Some(dur) => {
-                        let _ = crate::timer::timeout(dur, handler.handle(effect, ctx.clone())).await;
+                        if let Ok(out) =
+                            crate::timer::timeout(dur, handler.handle(effect, ctx.clone())).await
+                        {
+                            consume_effect_output(out, &ctx).await;
+                        }
                     }
                     None => {
-                        handler.handle(effect, ctx.clone()).await;
+                        let out = handler.handle(effect, ctx.clone()).await;
+                        consume_effect_output(out, &ctx).await;
                     }
                 }
             }
@@ -484,16 +760,21 @@ where
         let handler = self.effect_handler.clone();
 
         for effect in effects {
-            let ctx = EffectContext::new(event_tx.clone(), resources.clone(), self.executors.clone());
+            let ctx =
+                EffectContext::new(event_tx.clone(), resources.clone(), self.executors.clone());
             if let Some(dur) = timeout {
                 let h = handler.clone();
                 spawner.spawn(async move {
-                    let _ = crate::timer::timeout(dur, h.handle(effect, ctx)).await;
+                    if let Ok(out) = crate::timer::timeout(dur, h.handle(effect, ctx.clone())).await
+                    {
+                        consume_effect_output(out, &ctx).await;
+                    }
                 });
             } else {
                 let h = handler.clone();
                 spawner.spawn(async move {
-                    h.handle(effect, ctx).await;
+                    let out = h.handle(effect, ctx.clone()).await;
+                    consume_effect_output(out, &ctx).await;
                 });
             }
         }
@@ -531,18 +812,25 @@ where
 
                 let barrier_event = barrier.unwrap();
                 spawner.spawn(async move {
-                    // Build child futures without pre-spawn; wrap with timeout if set
+                    // Build child futures that execute and forward outputs
                     let futures: Vec<futures_util::future::BoxFuture<'static, ()>> = effects
                         .into_iter()
                         .map(|effect| {
-                            let ctx = EffectContext::new(event_tx.clone(), resources.clone(), executors.clone());
+                            let ctx = EffectContext::new(
+                                event_tx.clone(),
+                                resources.clone(),
+                                executors.clone(),
+                            );
                             let h = handler.clone();
                             async move {
-                                let fut = h.handle(effect, ctx);
-                                if let Some(d) = timeout_per {
-                                    let _ = crate::timer::timeout(d, fut).await;
+                                let fut = h.handle(effect, ctx.clone());
+                                let res = if let Some(d) = timeout_per {
+                                    crate::timer::timeout(d, fut).await.ok()
                                 } else {
-                                    fut.await;
+                                    Some(fut.await)
+                                };
+                                if let Some(out) = res {
+                                    let _ = consume_effect_output(out, &ctx).await;
                                 }
                             }
                             .boxed()
@@ -550,30 +838,78 @@ where
                         .collect();
                     // Await all via futures_concurrency join
                     let _: Vec<_> = futures.join().await;
-                    if let Some(tx) = event_tx.as_ref() { let _ = tx.send(barrier_event); }
+                    if let Some(tx) = event_tx.as_ref() {
+                        let _ = tx.send(barrier_event);
+                    }
                 });
             }
             crate::command::GroupMode::Race => {
                 spawner.spawn(async move {
-                    let futures: Vec<futures_util::future::BoxFuture<'static, ()>> = effects
-                        .into_iter()
-                        .map(|effect| {
-                            let ctx = EffectContext::new(event_tx.clone(), resources.clone(), executors.clone());
-                            let h = handler.clone();
-                            async move {
-                                let fut = h.handle(effect, ctx);
-                                if let Some(d) = timeout_per {
-                                    let _ = crate::timer::timeout(d, fut).await;
-                                } else {
-                                    fut.await;
+                    // Build streams from each effect output and race the first event
+                    let mut streams: Vec<(usize, futures::stream::BoxStream<'static, Event>)> =
+                        Vec::new();
+                    for (idx, effect) in effects.into_iter().enumerate() {
+                        let ctx = EffectContext::new(
+                            event_tx.clone(),
+                            resources.clone(),
+                            executors.clone(),
+                        );
+                        let h = handler.clone();
+                        // Execute handler (with optional timeout) to acquire EffectOutput
+                        let fut = h.handle(effect, ctx.clone());
+                        let res = if let Some(d) = timeout_per {
+                            crate::timer::timeout(d, fut).await.ok()
+                        } else {
+                            Some(fut.await)
+                        };
+                        if let Some(out) = res {
+                            match out {
+                                EffectOutput::None => { /* no stream */ }
+                                EffectOutput::Single(ev) => {
+                                    let s = futures_util::stream::once(async move { ev }).boxed();
+                                    streams.push((idx, s));
+                                }
+                                EffectOutput::Stream(s) => {
+                                    streams.push((idx, s));
                                 }
                             }
-                            .boxed()
-                        })
-                        .collect();
-                    // Await first; losers canceled by dropping
-                    let _ = futures.race().await;
-                    if let (Some(ev), Some(tx)) = (barrier, event_tx.as_ref()) { let _ = tx.send(ev); }
+                        }
+                    }
+
+                    if streams.is_empty() {
+                        if let (Some(ev), Some(tx)) = (barrier, event_tx.as_ref()) {
+                            let _ = tx.send(ev);
+                        }
+                        return;
+                    }
+
+                    // Combine for first item
+                    let mut combined = futures_util::stream::SelectAll::new();
+                    // Tag each stream with its index
+                    for (idx, s) in streams.into_iter() {
+                        let tagged = s.map(move |ev| (idx, ev)).boxed();
+                        combined.push(tagged);
+                    }
+
+                    // First event wins
+                    if let Some((winner_idx, first_ev)) = combined.next().await {
+                        if let Some(tx) = event_tx.as_ref() {
+                            let _ = tx.send(first_ev);
+                        }
+                        // Drain remaining items only from the winning stream
+                        // Note: SelectAll has consumed one item; filter by index to keep only winner
+                        let mut rest = combined
+                            .filter(move |(idx, _)| core::future::ready(*idx == winner_idx))
+                            .map(|(_, ev)| ev);
+                        while let Some(ev) = rest.next().await {
+                            if let Some(tx) = event_tx.as_ref() {
+                                let _ = tx.send(ev);
+                            }
+                        }
+                        if let (Some(ev), Some(tx)) = (barrier, event_tx.as_ref()) {
+                            let _ = tx.send(ev);
+                        }
+                    }
                 });
             }
         }

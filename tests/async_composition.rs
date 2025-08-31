@@ -8,6 +8,7 @@ use std::time::{Duration, Instant};
 use syzygy::event_context::EventContext;
 use syzygy::prelude::*;
 use syzygy::command::Effects;
+use syzygy::streaming::EffectOutput;
 use tokio::time::sleep;
 
 #[derive(Debug, Clone)]
@@ -79,20 +80,20 @@ fn composition_update(
 async fn create_effect_handler(
     effect: CompositionEffect,
     ctx: EffectContext<CompositionEvent, EmptyStorage>,
-) {
+) -> EffectOutput<CompositionEvent> {
     match effect {
         CompositionEffect::DelayedLog { message, delay_ms } => {
             sleep(Duration::from_millis(delay_ms)).await;
-            // Send completion event instead of logging to captured state
-            let _ = ctx.send_event(CompositionEvent::StepCompleted(message));
+            // Return completion event using streaming API
+            EffectOutput::Single(CompositionEvent::StepCompleted(message))
         }
         CompositionEffect::FastLog { message } => {
             sleep(Duration::from_millis(5)).await;
-            let _ = ctx.send_event(CompositionEvent::StepCompleted(message));
+            EffectOutput::Single(CompositionEvent::StepCompleted(message))
         }
         CompositionEffect::SlowLog { message } => {
             sleep(Duration::from_millis(50)).await;
-            let _ = ctx.send_event(CompositionEvent::StepCompleted(message));
+            EffectOutput::Single(CompositionEvent::StepCompleted(message))
         }
     }
 }

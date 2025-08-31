@@ -9,6 +9,7 @@ use std::time::{Duration, Instant};
 use syzygy::event_context::EventContext;
 use syzygy::prelude::*;
 use syzygy::command::Effects;
+use syzygy::streaming::EffectOutput;
 use tokio::time::sleep;
 
 #[derive(Debug, Clone)]
@@ -63,7 +64,7 @@ fn parallel_update(
 async fn parallel_effect_handler(
     effect: ParallelEffect,
     ctx: EffectContext<ParallelEvent, Storage<ParallelResources, EmptyStorage>>,
-) {
+) -> EffectOutput<ParallelEvent> {
     let start_time = Instant::now();
     let resources: &ParallelResources = ctx.resource();
 
@@ -78,6 +79,7 @@ async fn parallel_effect_handler(
                 .push((id, start_time, end_time));
         }
     }
+    EffectOutput::None
 }
 
 #[tokio::test]

@@ -16,13 +16,21 @@ pub enum CommandStep<Event, Effect> {
     Effect(Effect),
     /// Batch execution - effects run sequentially (same as single effects, but batched for efficiency)
     Batch(Vec<Effect>),
-    /// Unified group execution with policy and optional barrier
+    /// Unified group execution with policy and optional barrier (legacy internal for futures paths)
     Group {
         effects: Vec<Effect>,
         mode: GroupMode,
         barrier: Option<Event>,
         timeout_per: Option<Duration>,
     },
+    /// Merge: stream merge; forwards items from all streams as they arrive; optional barrier when all complete
+    Merge { effects: Vec<Effect>, barrier_event: Option<Event> },
+    /// Join: futures join; forwards each Single result; optional per-effect timeout; optional barrier when all complete
+    Join { effects: Vec<Effect>, timeout_per: Option<Duration>, barrier_event: Option<Event> },
+    /// Race: first to produce event wins; optional timeout; optional barrier when winner selected
+    Race { effects: Vec<Effect>, timeout_per: Option<Duration>, barrier_event: Option<Event> },
+    /// Chain: sequential stream processing with optional barrier when final completes
+    Chain { effects: Vec<Effect>, barrier_event: Option<Event> },
 }
 
 /// Group execution policy
@@ -46,6 +54,22 @@ where
                 Self::Group { effects: ae, mode: am, barrier: ab, timeout_per: at },
                 Self::Group { effects: be, mode: bm, barrier: bb, timeout_per: bt },
             ) => ae == be && am == bm && ab == bb && at == bt,
+            (
+                Self::Merge { effects: ae, barrier_event: ab },
+                Self::Merge { effects: be, barrier_event: bb },
+            ) => ae == be && ab == bb,
+            (
+                Self::Join { effects: ae, timeout_per: at, barrier_event: ab },
+                Self::Join { effects: be, timeout_per: bt, barrier_event: bb },
+            ) => ae == be && at == bt && ab == bb,
+            (
+                Self::Race { effects: ae, timeout_per: at, barrier_event: ab },
+                Self::Race { effects: be, timeout_per: bt, barrier_event: bb },
+            ) => ae == be && at == bt && ab == bb,
+            (
+                Self::Chain { effects: ae, barrier_event: ab },
+                Self::Chain { effects: be, barrier_event: bb },
+            ) => ae == be && ab == bb,
             _ => false,
         }
     }
@@ -68,6 +92,18 @@ where
                     .field("barrier", barrier)
                     .field("timeout_per", timeout_per)
                     .finish()
+            }
+            Self::Merge { effects, barrier_event } => {
+                f.debug_struct("Merge").field("effects", effects).field("barrier_event", barrier_event).finish()
+            }
+            Self::Join { effects, timeout_per, barrier_event } => {
+                f.debug_struct("Join").field("effects", effects).field("timeout_per", timeout_per).field("barrier_event", barrier_event).finish()
+            }
+            Self::Race { effects, timeout_per, barrier_event } => {
+                f.debug_struct("Race").field("effects", effects).field("timeout_per", timeout_per).field("barrier_event", barrier_event).finish()
+            }
+            Self::Chain { effects, barrier_event } => {
+                f.debug_struct("Chain").field("effects", effects).field("barrier_event", barrier_event).finish()
             }
         }
     }
@@ -106,14 +142,11 @@ where
                 CommandStep::Event(e) => CommandStep::Event(e.clone()),
                 CommandStep::Effect(fx) => CommandStep::Effect(fx.clone()),
                 CommandStep::Batch(v) => CommandStep::Batch(v.clone()),
-                CommandStep::Group { effects, mode, barrier, timeout_per } => {
-                    CommandStep::Group {
-                        effects: effects.clone(),
-                        mode: *mode,
-                        barrier: barrier.clone(),
-                        timeout_per: *timeout_per,
-                    }
-                }
+                CommandStep::Group { effects, mode, barrier, timeout_per } => CommandStep::Group { effects: effects.clone(), mode: *mode, barrier: barrier.clone(), timeout_per: *timeout_per },
+                CommandStep::Merge { effects, barrier_event } => CommandStep::Merge { effects: effects.clone(), barrier_event: barrier_event.clone() },
+                CommandStep::Join { effects, timeout_per, barrier_event } => CommandStep::Join { effects: effects.clone(), timeout_per: *timeout_per, barrier_event: barrier_event.clone() },
+                CommandStep::Race { effects, timeout_per, barrier_event } => CommandStep::Race { effects: effects.clone(), timeout_per: *timeout_per, barrier_event: barrier_event.clone() },
+                CommandStep::Chain { effects, barrier_event } => CommandStep::Chain { effects: effects.clone(), barrier_event: barrier_event.clone() },
             };
             outputs.push(cloned);
         }
@@ -132,6 +165,108 @@ where
 }
 
 impl<Event, Effect> Command<Event, Effect> {
+    /// Create a command that merges multiple effect streams in parallel
+    ///
+    /// Effects run concurrently and their events are dispatched as they arrive.
+    /// No barrier event is emitted by default. Use `.barrier_event(event)` to
+    /// emit an event when all effects complete.
+    pub fn merge(effects: impl IntoIterator<Item = Effect>) -> Self {
+        let effects: Vec<Effect> = effects.into_iter().collect();
+        if effects.is_empty() {
+            return Self::none();
+        }
+        let mut outputs = SmallVec::new();
+        outputs.push(CommandStep::Merge { effects, barrier_event: None });
+        Self { outputs }
+    }
+
+    /// Create a command that joins multiple effect streams in parallel
+    ///
+    /// Effects run concurrently and their events are dispatched as they arrive.
+    /// Use `.barrier_event(event)` to emit an event when all effects complete.
+    #[inline]
+    pub fn join(effects: impl IntoIterator<Item = Effect>) -> Self {
+        let effects: Vec<Effect> = effects.into_iter().collect();
+        if effects.is_empty() { return Self::none(); }
+        let mut outputs = SmallVec::new();
+        outputs.push(CommandStep::Join { effects, timeout_per: None, barrier_event: None });
+        Self { outputs }
+    }
+
+    /// Create a command that races multiple effect streams
+    ///
+    /// The first effect to produce an event completes the race; other effects
+    /// are cancelled. Use `.barrier_event(event)` to emit an event when a winner
+    /// is selected.
+    pub fn race(effects: impl IntoIterator<Item = Effect>) -> Self {
+        let effects: Vec<Effect> = effects.into_iter().collect();
+        if effects.is_empty() {
+            return Self::none();
+        }
+        let mut outputs = SmallVec::new();
+        outputs.push(CommandStep::Race { effects, timeout_per: None, barrier_event: None });
+        Self { outputs }
+    }
+
+    /// Create a command that chains effects sequentially
+    ///
+    /// Effects execute one after another; subsequent effects start only after
+    /// the previous effect completes. Use `.barrier_event(event)` to emit an
+    /// event when the chain completes.
+    pub fn chain(effects: impl IntoIterator<Item = Effect>) -> Self {
+        let effects: Vec<Effect> = effects.into_iter().collect();
+        if effects.is_empty() {
+            return Self::none();
+        }
+        let mut outputs = SmallVec::new();
+        outputs.push(CommandStep::Chain { effects, barrier_event: None });
+        Self { outputs }
+    }
+
+    /// Create a command that tries to join multiple effect streams
+    ///
+    /// Currently behaves the same as `join()`. Short-circuit-on-failure semantics
+    /// require an application-specific failure classification and may be layered
+    /// via event handling. This placeholder exists for API completeness.
+    #[inline]
+    // TryJoin removed by design to avoid complexity debt.
+
+    /// Set a per-effect timeout on the most recent group step
+    ///
+    /// This modifies the last `Group` step in the command. If the command has
+    /// no group step, this is a no-op.
+    pub fn timeout_per(mut self, duration: Duration) -> Self {
+        if let Some(last) = self.outputs.last_mut() {
+            match last {
+                CommandStep::Group { timeout_per, .. } => *timeout_per = Some(duration),
+                CommandStep::Join { timeout_per, .. } => *timeout_per = Some(duration),
+                CommandStep::Race { timeout_per, .. } => *timeout_per = Some(duration),
+                
+                _ => {}
+            }
+        }
+        self
+    }
+
+    /// Set a barrier event emitted upon completion of the most recent step
+    ///
+    /// - For `Group` steps, sets the `barrier` event to dispatch when the
+    ///   group completes (all done for parallel/join, first done for race).
+    /// - For `Batch` steps (sequential chains), appends the barrier event as a
+    ///   subsequent `Event` step so it runs after the chain completes.
+    pub fn barrier_event(mut self, event: Event) -> Self {
+        match self.outputs.last_mut() {
+            Some(CommandStep::Group { barrier, .. }) => { *barrier = Some(event); }
+            Some(CommandStep::Merge { barrier_event, .. }) => { *barrier_event = Some(event); }
+            Some(CommandStep::Join { barrier_event, .. }) => { *barrier_event = Some(event); }
+            Some(CommandStep::Race { barrier_event, .. }) => { *barrier_event = Some(event); }
+            
+            Some(CommandStep::Chain { barrier_event, .. }) => { *barrier_event = Some(event); }
+            Some(CommandStep::Batch(_)) => { self.outputs.push(CommandStep::Event(event)); }
+            _ => { self.outputs.push(CommandStep::Event(event)); }
+        }
+        self
+    }
     /// Create a no-op command that produces no outputs
     #[must_use]
     pub fn none() -> Self {
@@ -232,14 +367,19 @@ impl<Event, Effect> Command<Event, Effect> {
                     // Individual effects default to parallel execution in Shell
                     parallel_effects.push(effect);
                 }
-                CommandStep::Group { effects, mode: GroupMode::Parallel, barrier: None, timeout_per: None } => {
+                CommandStep::Group { effects, mode: GroupMode::Parallel, barrier: None, timeout_per: None }
+                | CommandStep::Merge { effects, barrier_event: None } => {
                     parallel_effects.extend(effects);
                 }
                 CommandStep::Batch(effects) => {
                     batch_effects.extend(effects);
                     has_batch = true;
                 }
-                CommandStep::Group { .. } => {
+                CommandStep::Group { .. }
+                | CommandStep::Merge { barrier_event: Some(_), .. }
+                | CommandStep::Join { .. }
+                | CommandStep::Race { .. }
+                | CommandStep::Chain { .. } => {
                     // Preserve groups as they encode policy/barrier explicitly
                     groups.push(output);
                 }
@@ -262,12 +402,7 @@ impl<Event, Effect> Command<Event, Effect> {
         ) {
             // Only parallel effects
             (false, true, false) => {
-                optimized_outputs.push(CommandStep::Group {
-                    effects: parallel_effects,
-                    mode: GroupMode::Parallel,
-                    barrier: None,
-                    timeout_per: None,
-                });
+                optimized_outputs.push(CommandStep::Merge { effects: parallel_effects, barrier_event: None });
             }
             // Only batch effects
             (true, false, true) => {
@@ -282,12 +417,7 @@ impl<Event, Effect> Command<Event, Effect> {
             // Mixed without explicit batch - use parallel
             (false, true, true) => {
                 parallel_effects.extend(batch_effects);
-                optimized_outputs.push(CommandStep::Group {
-                    effects: parallel_effects,
-                    mode: GroupMode::Parallel,
-                    barrier: None,
-                    timeout_per: None,
-                });
+                optimized_outputs.push(CommandStep::Merge { effects: parallel_effects, barrier_event: None });
             }
             _ => {
                 // No effects to optimize
@@ -331,13 +461,12 @@ impl<Event, Effect> Command<Event, Effect> {
                     outputs.push(CommandStep::Batch(effects));
                 }
                 CommandStep::Group { effects, mode, barrier, timeout_per } => {
-                    outputs.push(CommandStep::Group {
-                        effects,
-                        mode,
-                        barrier: barrier.map(&mut f),
-                        timeout_per,
-                    });
+                    outputs.push(CommandStep::Group { effects, mode, barrier: barrier.map(&mut f), timeout_per });
                 }
+                CommandStep::Merge { effects, barrier_event } => outputs.push(CommandStep::Merge { effects, barrier_event: barrier_event.map(&mut f) }),
+                CommandStep::Join { effects, timeout_per, barrier_event } => outputs.push(CommandStep::Join { effects, timeout_per, barrier_event: barrier_event.map(&mut f) }),
+                CommandStep::Race { effects, timeout_per, barrier_event } => outputs.push(CommandStep::Race { effects, timeout_per, barrier_event: barrier_event.map(&mut f) }),
+                CommandStep::Chain { effects, barrier_event } => outputs.push(CommandStep::Chain { effects, barrier_event: barrier_event.map(&mut f) }),
             }
         }
         Command { outputs }
@@ -357,14 +486,11 @@ impl<Event, Effect> Command<Event, Effect> {
                 CommandStep::Batch(effects) => {
                     CommandStep::Batch(effects.into_iter().map(&mut f).collect())
                 }
-                CommandStep::Group { effects, mode, barrier, timeout_per } => {
-                    CommandStep::Group {
-                        effects: effects.into_iter().map(&mut f).collect(),
-                        mode,
-                        barrier,
-                        timeout_per,
-                    }
-                }
+                CommandStep::Group { effects, mode, barrier, timeout_per } => CommandStep::Group { effects: effects.into_iter().map(&mut f).collect(), mode, barrier, timeout_per },
+                CommandStep::Merge { effects, barrier_event } => CommandStep::Merge { effects: effects.into_iter().map(&mut f).collect(), barrier_event },
+                CommandStep::Join { effects, timeout_per, barrier_event } => CommandStep::Join { effects: effects.into_iter().map(&mut f).collect(), timeout_per, barrier_event },
+                CommandStep::Race { effects, timeout_per, barrier_event } => CommandStep::Race { effects: effects.into_iter().map(&mut f).collect(), timeout_per, barrier_event },
+                CommandStep::Chain { effects, barrier_event } => CommandStep::Chain { effects: effects.into_iter().map(&mut f).collect(), barrier_event },
             };
             outputs.push(new_output);
         }
@@ -384,9 +510,12 @@ impl<Event, Effect> Command<Event, Effect> {
         self.outputs
             .iter()
             .map(|o| match o {
-                CommandStep::Batch(effects) | CommandStep::Group { effects, .. } => {
-                    effects.len()
-                }
+                CommandStep::Batch(effects)
+                | CommandStep::Group { effects, .. }
+                | CommandStep::Merge { effects, .. }
+                | CommandStep::Join { effects, .. }
+                | CommandStep::Race { effects, .. }
+                | CommandStep::Chain { effects, .. } => effects.len(),
                 CommandStep::Event(_) | CommandStep::Effect(_) => 1,
             })
             .sum()
@@ -546,7 +675,11 @@ impl<Event, Effect> Command<Event, Effect> {
                     CommandStep::Batch(effects) => {
                         all_effects.extend(effects);
                     }
-                    CommandStep::Group { effects, .. } => {
+                    CommandStep::Group { effects, .. }
+                    | CommandStep::Merge { effects, .. }
+                    | CommandStep::Join { effects, .. }
+                    | CommandStep::Race { effects, .. }
+                    | CommandStep::Chain { effects, .. } => {
                         // Grouped effects become sequential in a sequence pipeline  
                         all_effects.extend(effects);
                     }
@@ -595,7 +728,11 @@ impl<Event, Effect> Command<Event, Effect> {
                 CommandStep::Event(event) => events.push(event),
                 CommandStep::Effect(effect) => effects.push(effect),
                 CommandStep::Batch(coordinated_effects)
-                | CommandStep::Group { effects: coordinated_effects, .. } => {
+                | CommandStep::Group { effects: coordinated_effects, .. }
+                | CommandStep::Merge { effects: coordinated_effects, .. }
+                | CommandStep::Join { effects: coordinated_effects, .. }
+                | CommandStep::Race { effects: coordinated_effects, .. }
+                | CommandStep::Chain { effects: coordinated_effects, .. } => {
                     effects.extend(coordinated_effects);
                 }
             }
@@ -622,7 +759,12 @@ impl<Event, Effect> Command<Event, Effect> {
         for output in &self.outputs {
             match output {
                 CommandStep::Effect(_) => count += 1,
-                CommandStep::Batch(effects) | CommandStep::Group { effects, .. } => {
+                CommandStep::Batch(effects)
+                | CommandStep::Group { effects, .. }
+                | CommandStep::Merge { effects, .. }
+                | CommandStep::Join { effects, .. }
+                | CommandStep::Race { effects, .. }
+                | CommandStep::Chain { effects, .. } => {
                     count += effects.len();
                 }
                 CommandStep::Event(_) => {}
@@ -696,19 +838,16 @@ impl<Event, Effect> Command<Event, Effect> {
             match output {
                 CommandStep::Event(event) => outputs.push(CommandStep::Event(f(event)?)),
                 CommandStep::Effect(effect) => outputs.push(CommandStep::Effect(effect)),
-                CommandStep::Batch(effects) => {
-                    outputs.push(CommandStep::Batch(effects));
-                }
-                CommandStep::Group { effects, mode: GroupMode::Parallel, barrier: None, timeout_per: None } => {
-                    outputs.push(CommandStep::Group { effects, mode: GroupMode::Parallel, barrier: None, timeout_per: None });
-                }
+                CommandStep::Batch(effects) => outputs.push(CommandStep::Batch(effects)),
+                CommandStep::Group { effects, mode: GroupMode::Parallel, barrier: None, timeout_per: None } => outputs.push(CommandStep::Group { effects, mode: GroupMode::Parallel, barrier: None, timeout_per: None }),
                 CommandStep::Group { effects, mode, barrier, timeout_per } => {
-                    let mapped = match barrier {
-                        Some(ev) => Some(f(ev)?),
-                        None => None,
-                    };
+                    let mapped = match barrier { Some(ev) => Some(f(ev)?), None => None };
                     outputs.push(CommandStep::Group { effects, mode, barrier: mapped, timeout_per });
                 }
+                CommandStep::Merge { effects, barrier_event } => outputs.push(CommandStep::Merge { effects, barrier_event: match barrier_event { Some(ev) => Some(f(ev)?), None => None } }),
+                CommandStep::Join { effects, timeout_per, barrier_event } => outputs.push(CommandStep::Join { effects, timeout_per, barrier_event: match barrier_event { Some(ev) => Some(f(ev)?), None => None } }),
+                CommandStep::Race { effects, timeout_per, barrier_event } => outputs.push(CommandStep::Race { effects, timeout_per, barrier_event: match barrier_event { Some(ev) => Some(f(ev)?), None => None } }),
+                CommandStep::Chain { effects, barrier_event } => outputs.push(CommandStep::Chain { effects, barrier_event: match barrier_event { Some(ev) => Some(f(ev)?), None => None } }),
             }
         }
 
@@ -736,6 +875,22 @@ impl<Event, Effect> Command<Event, Effect> {
                 CommandStep::Group { effects, mode, barrier, timeout_per } => {
                     let mapped_effects: Result<Vec<_>, _> = effects.into_iter().map(&mut f).collect();
                     CommandStep::Group { effects: mapped_effects?, mode, barrier, timeout_per }
+                }
+                CommandStep::Merge { effects, barrier_event } => {
+                    let mapped_effects: Result<Vec<_>, _> = effects.into_iter().map(&mut f).collect();
+                    CommandStep::Merge { effects: mapped_effects?, barrier_event }
+                }
+                CommandStep::Join { effects, timeout_per, barrier_event } => {
+                    let mapped_effects: Result<Vec<_>, _> = effects.into_iter().map(&mut f).collect();
+                    CommandStep::Join { effects: mapped_effects?, timeout_per, barrier_event }
+                }
+                CommandStep::Race { effects, timeout_per, barrier_event } => {
+                    let mapped_effects: Result<Vec<_>, _> = effects.into_iter().map(&mut f).collect();
+                    CommandStep::Race { effects: mapped_effects?, timeout_per, barrier_event }
+                }
+                CommandStep::Chain { effects, barrier_event } => {
+                    let mapped_effects: Result<Vec<_>, _> = effects.into_iter().map(&mut f).collect();
+                    CommandStep::Chain { effects: mapped_effects?, barrier_event }
                 }
             };
             outputs.push(new_output);
@@ -787,7 +942,11 @@ impl<Event, Effect> Command<Event, Effect> {
             CommandStep::Event(event) => predicate(event),
             CommandStep::Effect(_)
             | CommandStep::Batch(_)
-            | CommandStep::Group { .. } => true, // Always keep effects and coordination
+            | CommandStep::Group { .. }
+            | CommandStep::Merge { .. }
+            | CommandStep::Join { .. }
+            | CommandStep::Race { .. }
+            | CommandStep::Chain { .. } => true, // Always keep effects and coordination
         });
     }
 
@@ -808,7 +967,11 @@ impl<Event, Effect> Command<Event, Effect> {
             CommandStep::Effect(effect) => predicate(effect),
             CommandStep::Event(_)
             | CommandStep::Batch(_)
-            | CommandStep::Group { .. } => true, // Always keep events and coordinated effects
+            | CommandStep::Group { .. }
+            | CommandStep::Merge { .. }
+            | CommandStep::Join { .. }
+            | CommandStep::Race { .. }
+            | CommandStep::Chain { .. } => true, // Always keep events and coordinated effects
         });
     }
 
@@ -848,7 +1011,11 @@ impl<Event, Effect> Command<Event, Effect> {
             match output {
                 CommandStep::Effect(effect) => effects.push(effect),
                 CommandStep::Batch(coordinated_effects)
-                | CommandStep::Group { effects: coordinated_effects, .. } => {
+                | CommandStep::Group { effects: coordinated_effects, .. }
+                | CommandStep::Merge { effects: coordinated_effects, .. }
+                | CommandStep::Join { effects: coordinated_effects, .. }
+                | CommandStep::Race { effects: coordinated_effects, .. }
+                | CommandStep::Chain { effects: coordinated_effects, .. } => {
                     effects.extend(coordinated_effects);
                 }
                 CommandStep::Event(_) => {}
@@ -1438,8 +1605,9 @@ mod tests {
                 CommandStep::Event(_) => count += 1,
                 CommandStep::Effect(_) => count += 10,
                 CommandStep::Batch(_) => count += 100,
-                CommandStep::Group { mode: GroupMode::Parallel, barrier: None, .. } => count += 200,
-                CommandStep::Group { .. } => count += 300,
+                CommandStep::Group { mode: GroupMode::Parallel, barrier: None, .. }
+                | CommandStep::Merge { barrier_event: None, .. } => count += 200,
+                _ => count += 300,
             }
         }
         assert_eq!(count, 12); // 2 events + 1 effect = 1 + 10 + 1 = 12
@@ -1564,6 +1732,71 @@ mod tests {
         assert_eq!(effects, vec![TestEffect::X, TestEffect::Y]);
     }
 
+    // Tests for unified coordination helpers
+
+    #[test]
+    fn test_merge_barrier() {
+        let cmd = Command::<TestEvent, TestEffect>::merge([TestEffect::X, TestEffect::Y])
+            .barrier_event(TestEvent::A);
+
+        let outputs: Vec<_> = cmd.into_iter().collect();
+        assert_eq!(outputs.len(), 1);
+        match &outputs[0] {
+            CommandStep::Merge { effects, barrier_event } => {
+                assert_eq!(effects, &vec![TestEffect::X, TestEffect::Y]);
+                assert_eq!(*barrier_event, Some(TestEvent::A));
+            }
+            _ => panic!("Expected Merge step"),
+        }
+    }
+
+    #[test]
+    fn test_join_without_barrier() {
+        let cmd = Command::<TestEvent, TestEffect>::join([TestEffect::X, TestEffect::Y]);
+        let outputs: Vec<_> = cmd.into_iter().collect();
+        assert_eq!(outputs.len(), 1);
+        match &outputs[0] {
+            CommandStep::Join { effects, timeout_per, barrier_event } => {
+                assert_eq!(effects, &vec![TestEffect::X, TestEffect::Y]);
+                assert_eq!(*timeout_per, None);
+                assert_eq!(*barrier_event, None);
+            }
+            _ => panic!("Expected Join step"),
+        }
+    }
+
+    #[test]
+    fn test_race_with_barrier() {
+        let cmd = Command::<TestEvent, TestEffect>::race([TestEffect::X, TestEffect::Y])
+            .barrier_event(TestEvent::B);
+        let outputs: Vec<_> = cmd.into_iter().collect();
+        assert_eq!(outputs.len(), 1);
+        match &outputs[0] {
+            CommandStep::Race { effects, barrier_event, .. } => {
+                assert_eq!(effects, &vec![TestEffect::X, TestEffect::Y]);
+                assert_eq!(*barrier_event, Some(TestEvent::B));
+            }
+            _ => panic!("Expected Race step"),
+        }
+    }
+
+    #[test]
+    fn test_chain_with_barrier() {
+        let cmd = Command::<TestEvent, TestEffect>::chain([TestEffect::X, TestEffect::Y])
+            .barrier_event(TestEvent::C);
+        let outputs: Vec<_> = cmd.into_iter().collect();
+        assert_eq!(outputs.len(), 1);
+        match &outputs[0] {
+            CommandStep::Chain { effects, barrier_event } => {
+                assert_eq!(effects, &vec![TestEffect::X, TestEffect::Y]);
+                assert_eq!(*barrier_event, Some(TestEvent::C));
+            }
+            _ => panic!("Expected Chain step"),
+        }
+    }
+
+    
+
     // Tests for command flattening optimization
 
     #[test]
@@ -1603,10 +1836,10 @@ mod tests {
         assert_eq!(outputs.len(), 1);
 
         match &outputs[0] {
-            CommandStep::Group { effects, mode: GroupMode::Parallel, barrier: None, timeout_per: None } => {
+            CommandStep::Merge { effects, barrier_event: None } => {
                 assert_eq!(effects, &vec![TestEffect::X, TestEffect::Y, TestEffect::Z]);
             }
-            _ => panic!("Expected Group with Parallel mode"),
+            _ => panic!("Expected Merge step"),
         }
     }
 
@@ -1671,10 +1904,10 @@ mod tests {
 
         // Effects should be grouped
         match &outputs[2] {
-            CommandStep::Group { effects, mode: GroupMode::Parallel, barrier: None, timeout_per: None } => {
+            CommandStep::Merge { effects, barrier_event: None } => {
                 assert_eq!(effects, &vec![TestEffect::X, TestEffect::Y, TestEffect::Z]);
             }
-            _ => panic!("Expected Group with Parallel mode"),
+            _ => panic!("Expected Merge step"),
         }
     }
 

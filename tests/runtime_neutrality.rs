@@ -8,6 +8,7 @@
 use std::time::Duration;
 use syzygy::prelude::*;
 use syzygy::spawn::spawner;
+use syzygy::streaming::EffectOutput;
 
 #[derive(Debug, Clone)]
 enum TestEvent {
@@ -50,7 +51,7 @@ fn test_update(
     }
 }
 
-async fn test_effect_handler(effect: TestEffect, ctx: EffectContext<TestEvent, EmptyStorage>) {
+async fn test_effect_handler(effect: TestEffect, ctx: EffectContext<TestEvent, EmptyStorage>) -> EffectOutput<TestEvent> {
     match effect {
         TestEffect::Delay(duration) => {
             // Use runtime-neutral sleep
@@ -63,8 +64,8 @@ async fn test_effect_handler(effect: TestEffect, ctx: EffectContext<TestEvent, E
             #[cfg(all(feature = "async-std", not(feature = "tokio"), not(feature = "smol")))]
             async_std::task::sleep(duration).await;
 
-            // Send event back using EffectContext
-            let _ = ctx.send_event(TestEvent::Work);
+            // Return event using streaming API
+            EffectOutput::Single(TestEvent::Work)
         }
     }
 }

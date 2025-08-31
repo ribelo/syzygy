@@ -58,22 +58,38 @@ where
                     .send(CommandStep::Batch(effects))
                     .map_err(|_| CommandError::CommandPanic("Effect channel closed".to_string()))?;
             }
-            CommandStep::Group { effects, mode: crate::command::GroupMode::Parallel, barrier: None, timeout_per: None } => {
-                _effect_count += effects.len();
-                #[cfg(feature = "tracing")]
-                debug!(count = effects.len(), "Routing parallel effects to Shell");
-
-                // Send the entire parallel pattern to Shell for proper coordination
-                effect_sender
-                    .send(CommandStep::Group { effects, mode: crate::command::GroupMode::Parallel, barrier: None, timeout_per: None })
-                    .map_err(|_| CommandError::CommandPanic("Effect channel closed".to_string()))?;
-            }
             CommandStep::Group { effects, mode, barrier, timeout_per } => {
                 _effect_count += effects.len();
                 #[cfg(feature = "tracing")]
                 debug!(count = effects.len(), "Routing group to Shell");
                 effect_sender
                     .send(CommandStep::Group { effects, mode, barrier, timeout_per })
+                    .map_err(|_| CommandError::CommandPanic("Effect channel closed".to_string()))?;
+            }
+            
+            CommandStep::Merge { effects, barrier_event } => {
+                _effect_count += effects.len();
+                effect_sender
+                    .send(CommandStep::Merge { effects, barrier_event })
+                    .map_err(|_| CommandError::CommandPanic("Effect channel closed".to_string()))?;
+            }
+            CommandStep::Join { effects, timeout_per, barrier_event } => {
+                _effect_count += effects.len();
+                effect_sender
+                    .send(CommandStep::Join { effects, timeout_per, barrier_event })
+                    .map_err(|_| CommandError::CommandPanic("Effect channel closed".to_string()))?;
+            }
+            CommandStep::Race { effects, timeout_per, barrier_event } => {
+                _effect_count += effects.len();
+                effect_sender
+                    .send(CommandStep::Race { effects, timeout_per, barrier_event })
+                    .map_err(|_| CommandError::CommandPanic("Effect channel closed".to_string()))?;
+            }
+            
+            CommandStep::Chain { effects, barrier_event } => {
+                _effect_count += effects.len();
+                effect_sender
+                    .send(CommandStep::Chain { effects, barrier_event })
                     .map_err(|_| CommandError::CommandPanic("Effect channel closed".to_string()))?;
             }
         }

@@ -431,6 +431,9 @@ pub mod executor;
 pub mod extract;
 pub mod magic_handler;
 
+// Optional streaming helpers to unify single vs stream outputs
+pub mod streaming;
+
 pub mod prelude {
     // Contexts for update and effect functions
     pub use crate::async_context::EffectContext;
@@ -485,5 +488,8 @@ pub mod prelude {
     pub use crate::builder::{Syzygy, SyzygyBuilder};
 
     // Errors
-    pub use crate::error::{CommandError, CoreError, ShellError};
+    pub use crate::error::{CommandError, CoreError, ShellError, EffectError};
+
+    // Streaming helpers
+    pub use crate::streaming::{EffectOutput, consume_effect_output};
 }

@@ -134,6 +134,30 @@ fn main() {
                     println!("     {}.{}: {:?}", i + 1, j + 1, effect);
                 }
             }
+            CommandStep::Merge { effects, barrier_event } => {
+                println!("   {}: Merge Effects - {} effects, barrier: {:?}", i + 1, effects.len(), barrier_event);
+                for (j, effect) in effects.iter().enumerate() {
+                    println!("     {}.{}: {:?}", i + 1, j + 1, effect);
+                }
+            }
+            CommandStep::Join { effects, timeout_per, barrier_event } => {
+                println!("   {}: Join Effects - {} effects, timeout: {:?}, barrier: {:?}", i + 1, effects.len(), timeout_per, barrier_event);
+                for (j, effect) in effects.iter().enumerate() {
+                    println!("     {}.{}: {:?}", i + 1, j + 1, effect);
+                }
+            }
+            CommandStep::Race { effects, timeout_per, barrier_event } => {
+                println!("   {}: Race Effects - {} effects, timeout: {:?}, barrier: {:?}", i + 1, effects.len(), timeout_per, barrier_event);
+                for (j, effect) in effects.iter().enumerate() {
+                    println!("     {}.{}: {:?}", i + 1, j + 1, effect);
+                }
+            }
+            CommandStep::Chain { effects, barrier_event } => {
+                println!("   {}: Chain Effects - {} effects, barrier: {:?}", i + 1, effects.len(), barrier_event);
+                for (j, effect) in effects.iter().enumerate() {
+                    println!("     {}.{}: {:?}", i + 1, j + 1, effect);
+                }
+            }
         }
     }
 

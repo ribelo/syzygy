@@ -9,6 +9,7 @@ use std::time::{Duration, Instant};
 use syzygy::event_context::EventContext;
 use syzygy::prelude::*;
 use syzygy::command::Effects;
+use syzygy::streaming::EffectOutput;
 use tokio::time::sleep;
 
 #[derive(Debug, Clone)]
@@ -67,7 +68,7 @@ fn sequential_update(
 async fn sequential_effect_handler(
     effect: SequentialEffect,
     ctx: EffectContext<SequentialEvent, Storage<SequentialResources, EmptyStorage>>,
-) {
+) -> EffectOutput<SequentialEvent> {
     let start_time = Instant::now();
     let resources: &SequentialResources = ctx.resource();
 
@@ -82,6 +83,7 @@ async fn sequential_effect_handler(
                 .push((id, start_time, end_time));
         }
     }
+    EffectOutput::None
 }
 
 #[tokio::test]

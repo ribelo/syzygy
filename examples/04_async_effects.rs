@@ -14,6 +14,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 use syzygy::prelude::*;
 use syzygy::executor::{TokioExecutor, ExecutorStorage, EmptyExecutorStorage};
+use syzygy::streaming::EffectOutput;
 
 // ============================================================================
 // Application State
@@ -360,7 +361,7 @@ async fn handle_delayed_task(
 async fn handle_effects(
     effect: AppEffect, 
     ctx: EffectContext<AppEvent, Storage<CacheManager, Storage<DatabasePool, Storage<HttpClient, EmptyStorage>>>, ExecutorStorage<TokioExecutor<AppEvent>, EmptyExecutorStorage>>
-) {
+) -> EffectOutput<AppEvent> {
     let sender = EventSender(ctx.event_sender().unwrap());
     
     match &effect {
@@ -383,6 +384,7 @@ async fn handle_effects(
             handle_delayed_task(effect, sender).await;
         }
     }
+    EffectOutput::None
 }
 
 // ============================================================================

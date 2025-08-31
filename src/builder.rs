@@ -269,7 +269,7 @@ mod tests {
         let (mut core, _shell) = Syzygy::builder::<TestEvent, TestEffect>()
             .model(TestModel { count: 0 })
             .event_handler(test_update)
-            .effect_handler(|_e: TestEffect, _ctx| async {})
+            .effect_handler(|_e: TestEffect, _ctx| async { crate::streaming::EffectOutput::None })
             .build();
 
         let _command = core.handle_event(TestEvent::Increment);
@@ -321,7 +321,7 @@ mod tests {
                 theme: "light".to_string(),
             })
             .event_handler(multi_update)
-            .effect_handler(|_e: TestEffect, _ctx| async {})
+            .effect_handler(|_e: TestEffect, _ctx| async { crate::streaming::EffectOutput::None })
             .build();
 
         core.handle_event(TestEvent::Increment);

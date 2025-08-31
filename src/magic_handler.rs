@@ -8,6 +8,7 @@ use crate::async_context::EffectContext;
 use crate::command::Command;
 use crate::event_context::EventContext;
 use crate::extract::{FromEffectContext, FromEventContext};
+use crate::streaming::EffectOutput;
 use std::future::Future;
 
 /// Marker type for unit variant handlers
@@ -30,7 +31,7 @@ pub trait EffectMagicHandler<Variant, Effect, Event, Resources, Args> {
         self,
         effect_variant: Variant,
         ctx: EffectContext<Event, Resources>,
-    ) -> impl Future<Output = ()>;
+    ) -> impl Future<Output = EffectOutput<Event>>;
 }
 
 // ============================================================================
@@ -102,13 +103,13 @@ macro_rules! impl_effect_magic_handler {
         where
             F: Fn(Variant) -> Fut,
             Variant: TryFrom<Effect>,
-            Fut: Future<Output = ()>,
+            Fut: Future<Output = EffectOutput<Event>>,
         {
             fn call(
                 self,
                 effect_variant: Variant,
                 _ctx: EffectContext<Event, Resources>,
-            ) -> impl Future<Output = ()> {
+            ) -> impl Future<Output = EffectOutput<Event>> {
                 self(effect_variant)
             }
         }
@@ -122,13 +123,13 @@ macro_rules! impl_effect_magic_handler {
             F: Fn(Variant, $($T),+) -> Fut,
             Variant: TryFrom<Effect>,
             $($T: for<'a> FromEffectContext<'a, Event, Resources, $I>),+,
-            Fut: Future<Output = ()>,
+            Fut: Future<Output = EffectOutput<Event>>,
         {
             fn call(
                 self,
                 effect_variant: Variant,
                 ctx: EffectContext<Event, Resources>,
-            ) -> impl Future<Output = ()> {
+            ) -> impl Future<Output = EffectOutput<Event>> {
                 $(let $T = $T::from_context(&ctx);)+
                 self(effect_variant, $($T),+)
             }
@@ -187,6 +188,7 @@ mod magic_handler_impls {
 #[allow(non_snake_case)]
 mod effect_magic_handler_impls {
     use super::{EffectContext, EffectMagicHandler, FromEffectContext, Future};
+    use crate::streaming::EffectOutput;
 
     impl_effect_magic_handler!();
     impl_effect_magic_handler!(T1, I1);
@@ -250,7 +252,7 @@ pub fn effect_trigger<Variant, Effect, Event, Resources, Args, H>(
     effect_variant: Variant,
     context: EffectContext<Event, Resources>,
     handler: H,
-) -> impl Future<Output = ()>
+) -> impl Future<Output = EffectOutput<Event>>
 where
     H: EffectMagicHandler<Variant, Effect, Event, Resources, Args>,
     Variant: TryFrom<Effect>,
@@ -272,7 +274,7 @@ pub trait EffectMagicHandlerDirect<Variant, Event, Resources, Args> {
         self,
         effect_variant: Variant,
         ctx: EffectContext<Event, Resources>,
-    ) -> impl Future<Output = ()> + Send;
+    ) -> impl Future<Output = EffectOutput<Event>> + Send;
 }
 
 /// Generates EffectMagicHandlerDirect implementations for 0..=16 parameters
@@ -282,13 +284,13 @@ macro_rules! impl_effect_magic_handler_direct {
             for F
         where
             F: Fn(Variant) -> Fut,
-            Fut: Future<Output = ()> + Send + 'static,
+            Fut: Future<Output = EffectOutput<Event>> + Send + 'static,
         {
             fn call(
                 self,
                 effect_variant: Variant,
                 _ctx: EffectContext<Event, Resources>,
-            ) -> impl Future<Output = ()> + Send {
+            ) -> impl Future<Output = EffectOutput<Event>> + Send {
                 self(effect_variant)
             }
         }
@@ -300,13 +302,13 @@ macro_rules! impl_effect_magic_handler_direct {
         where
             F: Fn(Variant, $($T),+) -> Fut,
             $($T: for<'a> FromEffectContext<'a, Event, Resources, $I>),+,
-            Fut: Future<Output = ()> + Send + 'static,
+            Fut: Future<Output = EffectOutput<Event>> + Send + 'static,
         {
             fn call(
                 self,
                 effect_variant: Variant,
                 ctx: EffectContext<Event, Resources>,
-            ) -> impl Future<Output = ()> + Send {
+            ) -> impl Future<Output = EffectOutput<Event>> + Send {
                 $(let $T = $T::from_context(&ctx);)+
                 self(effect_variant, $($T),+)
             }
@@ -317,6 +319,7 @@ macro_rules! impl_effect_magic_handler_direct {
 #[allow(non_snake_case)]
 mod effect_magic_handler_direct_impls {
     use super::{EffectContext, EffectMagicHandlerDirect, FromEffectContext, Future};
+    use crate::streaming::EffectOutput;
 
     impl_effect_magic_handler_direct!();
     impl_effect_magic_handler_direct!(T1, I1);
@@ -365,7 +368,7 @@ pub fn effect_trigger_direct<Variant, Event, Resources, Args, H>(
     effect_variant: Variant,
     context: EffectContext<Event, Resources>,
     handler: H,
-) -> impl Future<Output = ()> + Send
+) -> impl Future<Output = EffectOutput<Event>> + Send
 where
     H: EffectMagicHandlerDirect<Variant, Event, Resources, Args>,
 {
@@ -400,7 +403,8 @@ macro_rules! effect_magic_handler {
             match $effect {
                 $(
                     $enum_name::$variant(variant) => {
-                        effect_trigger::<_, $enum_name, _, _, (), _>(variant, $ctx, $handler).await;
+                        // Forward the returned EffectOutput to the caller
+                        effect_trigger::<_, $enum_name, _, _, (), _>(variant, $ctx, $handler).await
                     }
                 )*
             }
