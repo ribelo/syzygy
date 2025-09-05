@@ -2,13 +2,14 @@
 //!
 //! This example demonstrates how to work with multiple models using magic handlers.
 //! You'll learn:
-//! - Creating storage chains with multiple model types
+//! - Creating storage chains with multiple model types using the storage_type! macro
 //! - Automatic model extraction in magic handlers
 //! - Model interactions and cross-model updates
 //! - Type-safe model access patterns with parameter injection
 
 use syzygy::prelude::*;
 use syzygy::streaming::EffectOutput;
+use syzygy::storage_type;
 
 // ============================================================================
 // Multiple Model Types
@@ -59,8 +60,10 @@ enum AppEffect {
     RefreshUI,
 }
 
-// Define our storage type
-type AppStorage = Storage<SessionModel, Storage<AppConfigModel, Storage<UserModel, EmptyStorage>>>;
+// Define our storage type using the storage_type! macro
+// Before: Storage<SessionModel, Storage<AppConfigModel, Storage<UserModel, EmptyStorage>>>
+// Now: Clean and readable!
+type AppStorage = storage_type!(UserModel, AppConfigModel, SessionModel);
 
 // ============================================================================
 // Magic Event Handlers - Clean Multi-Model Access

@@ -70,26 +70,24 @@ impl Default for RunnerConfig {
 /// This solves Grug's complaint about manual event loop orchestration.
 /// Instead of users manually calling poll_events → process → execute → tick,
 /// Runner handles the proper sequencing automatically.
-pub struct Runner<Event, Effect, Storage, Resources = (), Executors = (), H = ()>
+pub struct Runner<Event, Effect, Storage, Resources = (), Executors = ()>
 where
     Event: Clone + Send + 'static,
     Effect: Clone + Send + 'static,
     Resources: Clone + Send + Sync + 'static,
-    H: crate::effect_handler::EffectHandler<Event, Effect, Resources, Executors> + Clone + 'static,
 {
     core: Core<Event, Effect, Storage>,
-    shell: Shell<Event, Effect, Resources, Executors, H>,
+    shell: Shell<Event, Effect, Resources, Executors>,
     config: RunnerConfig,
 }
 
-impl<Event, Effect, Storage, Resources, Executors, H>
-    Runner<Event, Effect, Storage, Resources, Executors, H>
+impl<Event, Effect, Storage, Resources, Executors>
+    Runner<Event, Effect, Storage, Resources, Executors>
 where
     Event: Clone + Send + 'static,
     Effect: Clone + Send + 'static,
     Resources: Clone + Send + Sync + 'static,
     Executors: Clone + Send + Sync + 'static,
-    H: crate::effect_handler::EffectHandler<Event, Effect, Resources, Executors> + Clone + 'static,
 {
     /// Create a new Runner with Core and Shell
     ///
@@ -109,7 +107,7 @@ where
     /// ```
     pub fn new(
         core: Core<Event, Effect, Storage>,
-        shell: Shell<Event, Effect, Resources, Executors, H>,
+        shell: Shell<Event, Effect, Resources, Executors>,
     ) -> Self {
         Self {
             core,
@@ -121,7 +119,7 @@ where
     /// Create a new Runner with custom configuration
     pub fn with_config(
         core: Core<Event, Effect, Storage>,
-        shell: Shell<Event, Effect, Resources, Executors, H>,
+        shell: Shell<Event, Effect, Resources, Executors>,
         config: RunnerConfig,
     ) -> Self {
         Self {
@@ -159,7 +157,7 @@ where
     /// Useful for testing or conditional execution.
     pub async fn run_until<F, S>(&mut self, mut condition: F, spawner: S) -> Result<(), RunnerError>
     where
-        F: FnMut(&Core<Event, Effect, Storage>, &Shell<Event, Effect, Resources, Executors, H>) -> bool,
+        F: FnMut(&Core<Event, Effect, Storage>, &Shell<Event, Effect, Resources, Executors>) -> bool,
         S: Spawn,
     {
         let start_time = std::time::Instant::now();
@@ -261,12 +259,12 @@ where
     }
 
     /// Get a reference to the Shell
-    pub fn shell(&self) -> &Shell<Event, Effect, Resources, Executors, H> {
+    pub fn shell(&self) -> &Shell<Event, Effect, Resources, Executors> {
         &self.shell
     }
 
     /// Get a mutable reference to the Shell
-    pub fn shell_mut(&mut self) -> &mut Shell<Event, Effect, Resources, Executors, H> {
+    pub fn shell_mut(&mut self) -> &mut Shell<Event, Effect, Resources, Executors> {
         &mut self.shell
     }
 

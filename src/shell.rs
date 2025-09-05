@@ -44,6 +44,8 @@ use crate::command::executor::route_command;
 use crate::command::{Command, CommandStep, GroupMode};
 use crate::error::ShellError;
 use crate::executor::EmptyExecutorStorage;
+use crate::effect_handler::BoxedEffectHandler;
+use crate::storage::EmptyStorage;
 use crate::streaming::{EffectOutput, consume_effect_output};
 use crate::task::{TaskStats, TaskTracker};
 use crate::timer::{Time, time};
@@ -125,14 +127,12 @@ impl Default for ShellConfig {
 pub struct Shell<
     Event,
     Effect,
-    Resources = crate::storage::EmptyStorage,
+    Resources = EmptyStorage,
     Executors = EmptyExecutorStorage,
-    H = (),
 > where
     Event: Clone + Send + 'static,
     Effect: Clone + Send + 'static,
     Resources: Clone + Send + Sync + 'static,
-    H: EffectHandler<Event, Effect, Resources, Executors> + 'static,
 {
     /// Task tracker for managing async effects (wrapped for sharing with EffectContext)
     pub(crate) task_tracker: Arc<Mutex<TaskTracker>>,
@@ -150,15 +150,15 @@ pub struct Shell<
     /// Specialized executors for different effect handling strategies
     pub(crate) executors: Executors,
 
-    /// User-provided effect handler (AFIT, zero-alloc). Default is `()` which is a noop handler.
-    pub(crate) effect_handler: H,
+    /// User-provided effect handler (boxed for type erasure)
+    pub(crate) effect_handler: std::sync::Arc<dyn BoxedEffectHandler<Event, Effect, Resources, Executors>>,
 
     /// Configuration for error handling and timeouts
     pub(crate) config: ShellConfig,
 }
 
 impl<Event, Effect> Default
-    for Shell<Event, Effect, crate::storage::EmptyStorage, EmptyExecutorStorage, ()>
+    for Shell<Event, Effect, EmptyStorage, EmptyExecutorStorage>
 where
     Event: Clone + Send + 'static,
     Effect: Clone + Send + 'static,
@@ -168,7 +168,7 @@ where
     }
 }
 
-impl<Event, Effect> Shell<Event, Effect, crate::storage::EmptyStorage, EmptyExecutorStorage, ()>
+impl<Event, Effect> Shell<Event, Effect, EmptyStorage, EmptyExecutorStorage>
 where
     Event: Clone + Send + 'static,
     Effect: Clone + Send + 'static,
@@ -193,28 +193,27 @@ where
             effect_rx,
             effect_tx,
             event_tx: None,
-            resources: crate::storage::EmptyStorage::new(),
+            resources: EmptyStorage::new(),
             executors: EmptyExecutorStorage::default(),
-            effect_handler: (),
+            effect_handler: std::sync::Arc::new(()),
             config,
         }
     }
 }
 
-impl<Event, Effect, Resources, Executors, H> Shell<Event, Effect, Resources, Executors, H>
+impl<Event, Effect, Resources, Executors> Shell<Event, Effect, Resources, Executors>
 where
     Event: Clone + Send + 'static,
     Effect: Clone + Send + 'static,
     Resources: Clone + Send + Sync + 'static,
     Executors: Clone + Send + Sync + 'static,
-    H: EffectHandler<Event, Effect, Resources, Executors> + 'static + Clone,
 {
     /// Create a new Shell with custom configuration and explicit handler
     #[must_use]
     pub fn with_config_and_handler<H2>(
         config: ShellConfig,
         handler: H2,
-    ) -> Shell<Event, Effect, Resources, Executors, H2>
+    ) -> Self
     where
         Resources: Default,
         Executors: Default,
@@ -233,7 +232,7 @@ where
             event_tx: None,
             resources: Resources::default(),
             executors: Executors::default(),
-            effect_handler: handler,
+            effect_handler: std::sync::Arc::new(handler),
             config,
         }
     }
@@ -243,12 +242,12 @@ where
     pub fn with_effect_handler<H2>(
         self,
         handler: H2,
-    ) -> Shell<Event, Effect, Resources, Executors, H2>
+    ) -> Self
     where
         H2: EffectHandler<Event, Effect, Resources, Executors> + 'static,
     {
         Shell {
-            effect_handler: handler,
+            effect_handler: std::sync::Arc::new(handler),
             task_tracker: self.task_tracker,
             effect_rx: self.effect_rx,
             effect_tx: self.effect_tx,
@@ -460,11 +459,10 @@ where
     fn spawn_streams_merge<S>(&self, effects: Vec<Effect>, barrier: Option<Event>, spawner: &S)
     where
         S: crate::spawn::Spawn,
-        H: Clone,
     {
         let resources = self.resources.clone();
         let event_tx = self.event_tx.clone();
-        let handler = self.effect_handler;
+        let handler = self.effect_handler.clone();
         let executors = self.executors.clone();
 
         spawner.spawn(async move {
@@ -478,7 +476,8 @@ where
                 .map(|effect| {
                     let ctx =
                         EffectContext::new(event_tx.clone(), resources.clone(), executors.clone());
-                    async move { handler.handle(effect, ctx).await }
+                    let h = handler.clone();
+                    async move { h.handle_boxed(effect, ctx).await }
                 })
                 .collect();
 
@@ -514,7 +513,6 @@ where
         spawner: &S,
     ) where
         S: crate::spawn::Spawn,
-        H: Clone,
     {
         let resources = self.resources.clone();
         let event_tx = self.event_tx.clone();
@@ -530,8 +528,8 @@ where
                     let h = handler.clone();
                     async move {
                         match timeout_per {
-                            Some(d) => crate::timer::timeout(d, h.handle(effect, ctx)).await.map_err(|_| ()),
-                            None => Ok(h.handle(effect, ctx).await),
+                            Some(d) => crate::timer::timeout(d, h.handle_boxed(effect, ctx)).await.map_err(|_| ()),
+                            None => Ok(h.handle_boxed(effect, ctx).await),
                         }
                     }
                 })
@@ -569,7 +567,6 @@ where
         spawner: &S,
     ) where
         S: crate::spawn::Spawn,
-        H: Clone,
     {
         let resources = self.resources.clone();
         let event_tx = self.event_tx.clone();
@@ -587,8 +584,8 @@ where
                 let h = handler.clone();
                 let fut = async move {
                     match timeout_per {
-                        Some(d) => crate::timer::timeout(d, h.handle(effect, ctx)).await.map_err(|_| ()),
-                        None => Ok(h.handle(effect, ctx).await),
+                        Some(d) => crate::timer::timeout(d, h.handle_boxed(effect, ctx)).await.map_err(|_| ()),
+                        None => Ok(h.handle_boxed(effect, ctx).await),
                     }
                 };
                 tasks.push(fut);
@@ -624,7 +621,7 @@ where
             for effect in effects {
                 match timeout {
                     Some(dur) => {
-                        if let Ok(out) = crate::timer::timeout(dur, handler.handle(effect, ctx.clone())).await {
+                        if let Ok(out) = crate::timer::timeout(dur, handler.handle_boxed(effect, ctx.clone())).await {
                             match out {
                                 crate::streaming::EffectOutput::Stream(mut s) => {
                                     while let Some(ev) = s.next().await {
@@ -643,7 +640,7 @@ where
                         }
                     }
                     None => {
-                        let out = handler.handle(effect, ctx.clone()).await;
+                        let out = handler.handle_boxed(effect, ctx.clone()).await;
                         match out {
                             crate::streaming::EffectOutput::Stream(mut s) => {
                                 while let Some(ev) = s.next().await {
@@ -679,19 +676,19 @@ where
             self.resources.clone(),
             self.executors.clone(),
         );
-        let handler = self.effect_handler;
+        let handler = self.effect_handler.clone();
         let timeout = self.config.effect_timeout;
 
         match timeout {
             Some(dur) => {
                 if let Ok(out) =
-                    crate::timer::timeout(dur, handler.handle(effect, ctx.clone())).await
+                    crate::timer::timeout(dur, handler.handle_boxed(effect, ctx.clone())).await
                 {
                     consume_effect_output(out, &ctx).await;
                 }
             }
             None => {
-                let out = handler.handle(effect, ctx.clone()).await;
+                let out = handler.handle_boxed(effect, ctx.clone()).await;
                 consume_effect_output(out, &ctx).await;
             }
         }
@@ -705,7 +702,7 @@ where
         let resources = self.resources.clone();
         let event_tx = self.event_tx.clone();
         let timeout = self.config.effect_timeout;
-        let handler = self.effect_handler;
+        let handler = self.effect_handler.clone();
         let executors = self.executors.clone();
 
         let seq_future = async move {
@@ -714,13 +711,13 @@ where
                 match timeout {
                     Some(dur) => {
                         if let Ok(out) =
-                            crate::timer::timeout(dur, handler.handle(effect, ctx.clone())).await
+                            crate::timer::timeout(dur, handler.handle_boxed(effect, ctx.clone())).await
                         {
                             consume_effect_output(out, &ctx).await;
                         }
                     }
                     None => {
-                        let out = handler.handle(effect, ctx.clone()).await;
+                        let out = handler.handle_boxed(effect, ctx.clone()).await;
                         consume_effect_output(out, &ctx).await;
                     }
                 }
@@ -745,7 +742,7 @@ where
             if let Some(dur) = timeout {
                 let h = handler.clone();
                 spawner.spawn(async move {
-                    if let Ok(out) = crate::timer::timeout(dur, h.handle(effect, ctx.clone())).await
+                    if let Ok(out) = crate::timer::timeout(dur, h.handle_boxed(effect, ctx.clone())).await
                     {
                         consume_effect_output(out, &ctx).await;
                     }
@@ -753,7 +750,7 @@ where
             } else {
                 let h = handler.clone();
                 spawner.spawn(async move {
-                    let out = h.handle(effect, ctx.clone()).await;
+                    let out = h.handle_boxed(effect, ctx.clone()).await;
                     consume_effect_output(out, &ctx).await;
                 });
             }
@@ -770,7 +767,6 @@ where
         spawner: &S,
     ) where
         S: crate::spawn::Spawn,
-        H: Clone,
     {
         if effects.is_empty() {
             return;
@@ -803,7 +799,7 @@ where
                             );
                             let h = handler.clone();
                             async move {
-                                let fut = h.handle(effect, ctx.clone());
+                                let fut = h.handle_boxed(effect, ctx.clone());
                                 let res = if let Some(d) = timeout_per {
                                     crate::timer::timeout(d, fut).await.ok()
                                 } else {
@@ -836,7 +832,7 @@ where
                         );
                         let h = handler.clone();
                         // Execute handler (with optional timeout) to acquire EffectOutput
-                        let fut = h.handle(effect, ctx.clone());
+                        let fut = h.handle_boxed(effect, ctx.clone());
                         let res = if let Some(d) = timeout_per {
                             crate::timer::timeout(d, fut).await.ok()
                         } else {

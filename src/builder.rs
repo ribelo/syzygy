@@ -99,7 +99,7 @@ where
     pub fn event_handler(
         self,
         event_handler: EventHandler<Event, Effect, ModelStorage>,
-    ) -> ConfiguredBuilder<Event, Effect, ModelStorage, ResourceStorage, ExecutorStorage, ()> {
+    ) -> ConfiguredBuilder<Event, Effect, ModelStorage, ResourceStorage, ExecutorStorage> {
         ConfiguredBuilder {
             event_handler,
             effect_handler: None,
@@ -117,17 +117,16 @@ pub struct ConfiguredBuilder<
     ModelStorage,
     ResourceStorage,
     ExecutorStorage,
-    H = (),
 > {
     event_handler: EventHandler<Event, Effect, ModelStorage>,
-    effect_handler: Option<H>,
+    effect_handler: Option<std::sync::Arc<dyn crate::effect_handler::BoxedEffectHandler<Event, Effect, ResourceStorage, ExecutorStorage>>>,
     storage: ModelStorage,
     resources: ResourceStorage,
     executors: ExecutorStorage,
 }
 
-impl<Event, Effect, ModelStorage, ResourceStorage, ExecutorStorage, H>
-    ConfiguredBuilder<Event, Effect, ModelStorage, ResourceStorage, ExecutorStorage, H>
+impl<Event, Effect, ModelStorage, ResourceStorage, ExecutorStorage>
+    ConfiguredBuilder<Event, Effect, ModelStorage, ResourceStorage, ExecutorStorage>
 where
     Event: Clone + Send + 'static,
     Effect: Clone + Send + 'static,
@@ -136,13 +135,13 @@ where
 {
     /// Set the effect handler that processes effects
     #[must_use]
-    pub fn effect_handler<H2>(self, handler: H2) -> ConfiguredBuilder<Event, Effect, ModelStorage, ResourceStorage, ExecutorStorage, H2>
+    pub fn effect_handler<H2>(self, handler: H2) -> Self
     where
         H2: EffectHandler<Event, Effect, ResourceStorage, ExecutorStorage> + 'static,
     {
         ConfiguredBuilder {
             event_handler: self.event_handler,
-            effect_handler: Some(handler),
+            effect_handler: Some(std::sync::Arc::new(handler)),
             storage: self.storage,
             resources: self.resources,
             executors: self.executors,
@@ -154,10 +153,8 @@ where
         self,
     ) -> (
         Core<Event, Effect, ModelStorage>,
-        Shell<Event, Effect, ResourceStorage, ExecutorStorage, H>,
+        Shell<Event, Effect, ResourceStorage, ExecutorStorage>,
     )
-    where
-        H: EffectHandler<Event, Effect, ResourceStorage, ExecutorStorage> + 'static,
     {
         let (core, event_tx) = Core::new(self.event_handler, self.storage);
         let shell = Self::build_shell(self.resources, self.executors, self.effect_handler, event_tx);
@@ -169,10 +166,8 @@ where
         self,
     ) -> (
         Core<Event, Effect, ModelStorage>,
-        Shell<Event, Effect, ResourceStorage, ExecutorStorage, H>,
+        Shell<Event, Effect, ResourceStorage, ExecutorStorage>,
     )
-    where
-        H: EffectHandler<Event, Effect, ResourceStorage, ExecutorStorage> + 'static,
     {
         let (core, event_tx) = Core::new(self.event_handler, self.storage);
         let shell = Self::build_shell(self.resources, self.executors, self.effect_handler, event_tx);
@@ -183,11 +178,9 @@ where
     fn build_shell(
         resources: ResourceStorage,
         executors: ExecutorStorage,
-        effect_handler: Option<H>,
+        effect_handler: Option<std::sync::Arc<dyn crate::effect_handler::BoxedEffectHandler<Event, Effect, ResourceStorage, ExecutorStorage>>>,
         event_tx: crossbeam_channel::Sender<Event>,
-    ) -> Shell<Event, Effect, ResourceStorage, ExecutorStorage, H>
-    where
-        H: EffectHandler<Event, Effect, ResourceStorage, ExecutorStorage> + 'static,
+    ) -> Shell<Event, Effect, ResourceStorage, ExecutorStorage>
     {
         use crate::shell::ShellConfig;
         use crate::task::TaskTracker;
@@ -204,7 +197,7 @@ where
             event_tx: Some(event_tx),
             resources,
             effect_handler: effect_handler
-                .unwrap_or_else(|| panic!("Effect handler must be provided before building")),
+                .unwrap_or_else(|| std::sync::Arc::new(())),
             config,
             executors,
         }
@@ -273,6 +266,39 @@ mod tests {
             .build();
 
         let _command = core.handle_event(TestEvent::Increment);
+        let model: &TestModel = core.storage().get();
+        assert_eq!(model.count, 1);
+    }
+
+    #[test]
+    fn test_shell_type_with_models_only() {
+        // Test that Shell type remains simple when only models are added (no resources)
+        let (_core, shell) = Syzygy::builder::<TestEvent, TestEffect>()
+            .model(TestModel { count: 0 })
+            .event_handler(test_update)
+            .effect_handler(|_e: TestEffect, _ctx| async { crate::streaming::EffectOutput::None })
+            .build();
+
+        // Verify the shell has the expected type signature:
+        // Shell<TestEvent, TestEffect, EmptyStorage, EmptyExecutorStorage, EffectHandler>
+        // This should NOT have changed due to adding models
+        let _: Shell<TestEvent, TestEffect, EmptyStorage, crate::executor::EmptyExecutorStorage> = shell;
+
+        // The key test: adding models should NOT change the resource storage type
+        // This confirms that the builder correctly separates model storage from resource storage
+    }
+
+    #[test]
+    fn test_shell_type_inference_works() {
+        // Test that users don't need to specify complex types manually
+        let (mut core, _shell) = Syzygy::builder::<TestEvent, TestEffect>()
+            .model(TestModel { count: 0 })
+            .event_handler(test_update)
+            .effect_handler(|_e: TestEffect, _ctx| async { crate::streaming::EffectOutput::None })
+            .build();
+
+        // This should just work without any type annotations needed
+        core.handle_event(TestEvent::Increment);
         let model: &TestModel = core.storage().get();
         assert_eq!(model.count, 1);
     }

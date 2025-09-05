@@ -440,6 +440,29 @@ pub mod prelude {
     pub use crate::core::{Core, EventHandler};
     pub use crate::runner::{Runner, RunnerConfig, RunnerError};
     pub use crate::shell::{Shell, ShellConfig};
+    
+    // Type aliases for common use cases
+    /// A simple Shell for applications that only need models (no resources or executors).
+    /// This is the most common case for basic applications.
+    ///
+    /// # Example
+    /// ```rust
+    /// use syzygy::prelude::*;
+    /// use syzygy::SimpleShell;
+    /// 
+    /// #[derive(Debug, Clone)]
+    /// enum Event { Increment }
+    /// #[derive(Debug, Clone)] 
+    /// enum Effect { Log }
+    /// 
+    /// fn build() -> (Core<Event, Effect, _>, SimpleShell<Event, Effect>) {
+    ///     Syzygy::builder()
+    ///         .model(())  // Some model
+    ///         .event_handler(|_event, _ctx| Command::none())
+    ///         .effect_handler(|_effect, _ctx| async { EffectOutput::None })
+    ///         .build()
+    /// }
+    /// ```
 
     // Effect handlers with AFIT
     pub use crate::effect_handler::EffectHandler;
