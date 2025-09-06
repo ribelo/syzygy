@@ -5,7 +5,6 @@
 //! database writes where concurrent access must be avoided.
 
 use crate::error::ShellError;
-use crate::storage::{EmptyStorage, StorageBuilder};
 use crate::task::{TaskId, TaskStats, TaskTracker};
 use crate::timer::{Time, time};
 use crossbeam_channel::{unbounded, Sender};
@@ -48,7 +47,7 @@ where
         Self {
             task_tracker: Arc::new(Mutex::new(TaskTracker::new())),
             event_tx: None,
-            resources: EmptyStorage::new(),
+            resources: Default::default(),
             runtime: time(),
             job_tx,
         }
@@ -135,7 +134,7 @@ where
 }
 
 // Implement SpawnExecutor over a single-thread worker
-impl<Event, Resources> crate::executor::SpawnExecutor<Event, Resources> for SingleThreadExecutor<Event, Resources>
+impl<Event, Resources> crate::executor::Executor<Event, Resources> for SingleThreadExecutor<Event, Resources>
 where
     Event: Clone + Send + 'static,
     Resources: Clone + Send + Sync + 'static,
@@ -217,4 +216,3 @@ where
         self.resources.clone()
     }
 }
-

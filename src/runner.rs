@@ -12,7 +12,6 @@
 //! ```rust,no_run
 //! # use syzygy::prelude::*;
 //! # use syzygy::event_context::EventContext;
-//! # use syzygy::storage::{EmptyStorage, Storage};
 //! # #[derive(Debug, Clone)] enum TestEvent { Ping }
 //! # #[derive(Debug, Clone)] enum TestEffect { DoPing }
 //! # #[derive(Debug, Default)] struct Model;
@@ -301,7 +300,6 @@ pub enum RunnerError {
 mod tests {
     use super::*;
     use crate::prelude::*;
-    use crate::storage::{EmptyStorage, Storage};
 
     #[derive(Debug, Clone)]
     enum TestEvent {
@@ -347,7 +345,7 @@ mod tests {
         let (core, shell) = Syzygy::builder::<TestEvent, TestEffect>()
             .model(TestModel { count: 0 })
             .event_handler(test_update)
-            .effect_handler(|_e: TestEffect, _ctx| async { crate::streaming::EffectOutput::None })
+            .effect_handler(|_e: TestEffect, _ctx| async { crate::streaming::EffectResult::None })
             .build();
 
         let event_sender = core.event_sender();
@@ -371,7 +369,7 @@ mod tests {
         let (core, shell) = Syzygy::builder::<TestEvent, TestEffect>()
             .model(TestModel { count: 0 })
             .event_handler(test_update)
-            .effect_handler(|_e: TestEffect, _ctx| async { crate::streaming::EffectOutput::None })
+            .effect_handler(|_e: TestEffect, _ctx| async { crate::streaming::EffectResult::None })
             .build();
 
         let event_sender = core.event_sender();

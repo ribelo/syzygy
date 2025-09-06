@@ -5,7 +5,6 @@
 //! so handlers routed here should be pure compute (no tokio APIs).
 
 use crate::error::ShellError;
-use crate::storage::{EmptyStorage, StorageBuilder};
 use crate::task::{TaskId, TaskStats, TaskTracker};
 use crate::timer::{Time, time};
 use futures::executor::block_on;
@@ -47,7 +46,7 @@ where
         Self {
             task_tracker: Arc::new(Mutex::new(TaskTracker::new())),
             event_tx: None,
-            resources: EmptyStorage::new(),
+            resources: Default::default(),
             runtime: time(),
             pool: Arc::new(pool),
         }

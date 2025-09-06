@@ -9,36 +9,33 @@
 //! These helpers are entirely optional — the core library remains compatible
 //! with handlers that send events directly via `EffectContext::send_event`.
 
-use crate::async_context::EffectContext;
-use futures::stream::BoxStream;
+use crate::effect_context::EffectContext;
 use futures::StreamExt;
+use futures::future::BoxFuture;
+use futures::stream::BoxStream;
 
 /// Unified effect output: a single event, a stream of events, or none
-pub enum EffectOutput<Event> {
-    Single(Event),
-    Stream(BoxStream<'static, Event>),
+pub enum EffectResult<E> {
+    Future(BoxFuture<'static, Vec<E>>),
+    Stream(BoxStream<'static, E>),
     None,
 }
 
 /// Consume an `EffectOutput` by sending events via the provided context
-pub async fn consume_effect_output<Event, Resources, Executors>(
-    output: EffectOutput<Event>,
-    ctx: &EffectContext<Event, Resources, Executors>,
-)
+pub async fn consume_effect_output<E, R>(output: EffectResult<E>, ctx: &EffectContext<R>)
 where
-    Event: Send + 'static,
-    Resources: Clone + Send + Sync + 'static,
-    Executors: Clone + Send + Sync + 'static,
+    E: Send + 'static,
+    R: Clone + Send + Sync + 'static,
 {
     match output {
-        EffectOutput::Single(event) => {
+        EffectResult::Future(events) => {
             let _ = ctx.send_event(event);
         }
-        EffectOutput::Stream(mut stream) => {
+        EffectResult::Stream(mut stream) => {
             while let Some(event) = stream.next().await {
                 let _ = ctx.send_event(event);
             }
         }
-        EffectOutput::None => {}
+        EffectResult::None => {}
     }
 }

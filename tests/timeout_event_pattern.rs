@@ -8,7 +8,7 @@ use std::time::Duration;
 use syzygy::event_context::EventContext;
 use syzygy::prelude::*;
 use syzygy::spawn::spawner;
-use syzygy::streaming::EffectOutput;
+use syzygy::streaming::EffectResult;
 
 #[derive(Debug, Default)]
 struct TimeoutModel {
@@ -31,7 +31,6 @@ enum TimeoutEffect {
     SlowOperation { delay_ms: u64 },
 }
 
-use syzygy::storage::{EmptyStorage, Storage};
 
 fn timeout_update(
     event: TimeoutEvent,
@@ -80,7 +79,7 @@ fn timeout_update(
 async fn timeout_aware_effect_handler(
     effect: TimeoutEffect,
     ctx: EffectContext<TimeoutEvent, EmptyStorage>,
-) -> EffectOutput<TimeoutEvent> {
+) -> EffectResult<TimeoutEvent> {
     match effect {
         TimeoutEffect::SlowOperation { delay_ms } => {
             let operation_future = async move {
@@ -102,7 +101,7 @@ async fn timeout_aware_effect_handler(
             }
         }
     }
-    EffectOutput::None
+    EffectResult::None
 }
 
 /// Test that timeout events are properly emitted and handled

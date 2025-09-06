@@ -8,7 +8,6 @@
 use tokio::runtime;
 
 use crate::error::ShellError;
-use crate::storage::{EmptyStorage, StorageBuilder};
 use crate::task::{TaskId, TaskStats, TaskTracker};
 use crate::timer::{Time, time};
 
@@ -77,7 +76,7 @@ where
         Self {
             task_tracker: Arc::new(Mutex::new(TaskTracker::new())),
             event_tx: None,
-            resources: EmptyStorage::new(),
+            resources: Default::default(),
             runtime: time(),
             senders: Arc::new(senders),
             rr: AtomicUsize::new(0),
@@ -168,7 +167,7 @@ where
     }
 }
 
-impl<Event, Resources> crate::executor::SpawnExecutor<Event, Resources>
+impl<Event, Resources> crate::executor::Executor<Event, Resources>
     for ThreadPerCoreTokioExecutor<Event, Resources>
 where
     Event: Clone + Send + 'static,

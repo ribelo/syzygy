@@ -1,7 +1,6 @@
 use crate::core::{Core, EventHandler};
 use crate::prelude::EffectHandler;
 use crate::shell::Shell;
-use crate::storage::{EmptyStorage, StorageBuilder};
 
 /// Base builder phase: configure models, resources, executors
 pub struct SyzygyBuilder<
@@ -27,9 +26,9 @@ where
     #[must_use]
     pub fn new() -> Self {
         Self {
-            storage: EmptyStorage::new(),
-            resources: EmptyStorage::new(),
-            executors: crate::executor::EmptyExecutorStorage::default(),
+            storage: Default::default(),
+            resources: Default::default(),
+            executors: Default::default(),
             _marker: std::marker::PhantomData,
         }
     }
@@ -223,7 +222,6 @@ impl Syzygy {
 mod tests {
     use super::*;
     use crate::command::Command;
-    use crate::storage::{EmptyStorage, Storage};
 
     #[derive(Debug, Clone)]
     enum TestEvent {
@@ -262,7 +260,7 @@ mod tests {
         let (mut core, _shell) = Syzygy::builder::<TestEvent, TestEffect>()
             .model(TestModel { count: 0 })
             .event_handler(test_update)
-            .effect_handler(|_e: TestEffect, _ctx| async { crate::streaming::EffectOutput::None })
+            .effect_handler(|_e: TestEffect, _ctx| async { crate::streaming::EffectResult::None })
             .build();
 
         let _command = core.handle_event(TestEvent::Increment);
@@ -276,7 +274,7 @@ mod tests {
         let (_core, shell) = Syzygy::builder::<TestEvent, TestEffect>()
             .model(TestModel { count: 0 })
             .event_handler(test_update)
-            .effect_handler(|_e: TestEffect, _ctx| async { crate::streaming::EffectOutput::None })
+            .effect_handler(|_e: TestEffect, _ctx| async { crate::streaming::EffectResult::None })
             .build();
 
         // Verify the shell has the expected type signature:
@@ -294,7 +292,7 @@ mod tests {
         let (mut core, _shell) = Syzygy::builder::<TestEvent, TestEffect>()
             .model(TestModel { count: 0 })
             .event_handler(test_update)
-            .effect_handler(|_e: TestEffect, _ctx| async { crate::streaming::EffectOutput::None })
+            .effect_handler(|_e: TestEffect, _ctx| async { crate::streaming::EffectResult::None })
             .build();
 
         // This should just work without any type annotations needed
@@ -347,12 +345,11 @@ mod tests {
                 theme: "light".to_string(),
             })
             .event_handler(multi_update)
-            .effect_handler(|_e: TestEffect, _ctx| async { crate::streaming::EffectOutput::None })
+            .effect_handler(|_e: TestEffect, _ctx| async { crate::streaming::EffectResult::None })
             .build();
 
         core.handle_event(TestEvent::Increment);
 
-        let user: &UserModel = core.storage().get();
         let config: &ConfigModel = core.storage().get();
 
         assert_eq!(user.name, "Updated");

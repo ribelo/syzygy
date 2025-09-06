@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use syzygy::event_context::EventContext;
 use syzygy::prelude::*;
-use syzygy::streaming::EffectOutput;
+use syzygy::streaming::EffectResult;
 
 #[derive(Debug, Clone)]
 enum AppEvent {
@@ -114,7 +114,7 @@ fn app_update(
 async fn handle_effects(
     effect: AppEffect,
     ctx: EffectContext<AppEvent, Storage<Cache, Storage<HttpClient, EmptyStorage>>>,
-) -> EffectOutput<AppEvent> {
+) -> EffectResult<AppEvent> {
     match effect {
         AppEffect::HttpGet { url } => {
             // Access read-only HTTP client - no mutex overhead!
@@ -145,7 +145,7 @@ async fn handle_effects(
             println!("LOG: {message}");
         }
     }
-    EffectOutput::None
+    EffectResult::None
 }
 
 #[tokio::main]

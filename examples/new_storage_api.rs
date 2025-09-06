@@ -8,7 +8,7 @@
 
 use syzygy::event_context::EventContext;
 use syzygy::prelude::*;
-use syzygy::streaming::EffectOutput;
+use syzygy::streaming::EffectResult;
 
 // Define our events
 #[derive(Debug, Clone)]
@@ -118,7 +118,7 @@ fn update(
 }
 
 // Effect handler
-async fn handle_effects(effect: AppEffect, _ctx: EffectContext<AppEvent, EmptyStorage>) -> EffectOutput<AppEvent> {
+async fn handle_effects(effect: AppEffect, _ctx: EffectContext<AppEvent, EmptyStorage>) -> EffectResult<AppEvent> {
     match effect {
         AppEffect::SaveUser { name, email } => {
             println!("💾 Saving user: {name} <{email}>");
@@ -141,7 +141,7 @@ async fn handle_effects(effect: AppEffect, _ctx: EffectContext<AppEvent, EmptySt
             println!("📝 LOG: {message}");
         }
     }
-    EffectOutput::None
+    EffectResult::None
 }
 
 #[tokio::main]
@@ -171,7 +171,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut runner = Runner::new(core, shell);
 
     println!("📊 Initial state:");
-    let user: &UserModel = runner.core().storage().get();
     let config: &ConfigModel = runner.core().storage().get();
     let counter: &CounterModel = runner.core().storage().get();
 
@@ -219,7 +218,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     println!("\n📊 Final state:");
-    let user: &UserModel = runner.core().storage().get();
     let config: &ConfigModel = runner.core().storage().get();
     let counter: &CounterModel = runner.core().storage().get();
 

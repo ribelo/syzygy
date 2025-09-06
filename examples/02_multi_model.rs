@@ -8,8 +8,7 @@
 //! - Type-safe model access patterns with parameter injection
 
 use syzygy::prelude::*;
-use syzygy::streaming::EffectOutput;
-use syzygy::storage_type;
+use syzygy::streaming::EffectResult;
 
 // ============================================================================
 // Multiple Model Types
@@ -71,9 +70,9 @@ type AppStorage = storage_type!(UserModel, AppConfigModel, SessionModel);
 
 /// Handle user login with automatic multi-model extraction
 fn handle_user_login(
-    event: AppEvent, 
-    user: &mut UserModel, 
-    session: &mut SessionModel, 
+    event: AppEvent,
+    user: &mut UserModel,
+    session: &mut SessionModel,
     config: &AppConfigModel
 ) -> Command<AppEvent, AppEffect> {
     if let AppEvent::UserLogin { email } = event {
@@ -81,7 +80,7 @@ fn handle_user_login(
         user.email = email.clone();
         user.name = email.split('@').next().unwrap_or("user").to_string();
         user.login_count += 1;
-        
+
         // Update session model
         session.session_id = format!("session_{}", user.login_count);
         session.is_active = true;
@@ -89,12 +88,12 @@ fn handle_user_login(
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_secs();
-        
+
         println!(
             "User {} logged in (count: {}), session: {}, theme: {}",
             user.name, user.login_count, session.session_id, config.theme
         );
-        
+
         Command::batch([
             Command::effect(AppEffect::LogActivity {
                 message: format!("User {} logged in", user.name),
@@ -114,10 +113,10 @@ fn handle_user_logout(
 ) -> Command<AppEvent, AppEffect> {
     if let AppEvent::UserLogout = event {
         println!("User {} logging out from session {}", user.name, session.session_id);
-        
+
         session.is_active = false;
         session.session_id.clear();
-        
+
         Command::effect(AppEffect::LogActivity {
             message: format!("User {} logged out", user.name),
         })
@@ -135,9 +134,9 @@ fn handle_theme_change(
     if let AppEvent::ChangeTheme { theme } = event {
         let old_theme = config.theme.clone();
         config.theme = theme.clone();
-        
+
         println!("User {} changed theme from {} to {}", user.name, old_theme, theme);
-        
+
         Command::batch([
             Command::effect(AppEffect::SaveUserPreferences),
             Command::effect(AppEffect::RefreshUI),
@@ -155,9 +154,9 @@ fn handle_language_update(
 ) -> Command<AppEvent, AppEffect> {
     if let AppEvent::UpdateLanguage { language } = event {
         config.language = language.clone();
-        
+
         println!("User {} changed language to {}", user.name, language);
-        
+
         Command::effect(AppEffect::SaveUserPreferences)
     } else {
         Command::none()
@@ -172,9 +171,9 @@ fn handle_session_expired(
 ) -> Command<AppEvent, AppEffect> {
     if let AppEvent::SessionExpired = event {
         println!("Session {} expired for user {}", session.session_id, user.name);
-        
+
         session.is_active = false;
-        
+
         // Chain events - session expiry triggers logout
         Command::event(AppEvent::UserLogout)
     } else {
@@ -193,10 +192,10 @@ fn handle_activity_detected(
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
                 .as_secs();
-            
+
             println!("Activity detected, session updated: {}", session.session_id);
         }
-        
+
         Command::none()
     } else {
         Command::none()
@@ -248,13 +247,13 @@ fn handle_refresh_ui(effect: AppEffect) {
 }
 
 /// Main effect dispatcher using magic handlers
-async fn handle_effects(effect: AppEffect, _ctx: EffectContext<AppEvent, EmptyStorage>) -> EffectOutput<AppEvent> {
+async fn handle_effects(effect: AppEffect, _ctx: EffectContext<AppEvent, EmptyStorage>) -> EffectResult<AppEvent> {
     match effect {
         AppEffect::SaveUserPreferences => handle_save_preferences(effect),
         AppEffect::LogActivity { .. } => handle_log_activity(effect),
         AppEffect::RefreshUI => handle_refresh_ui(effect),
     }
-    EffectOutput::None
+    EffectResult::None
 }
 
 // ============================================================================
@@ -265,7 +264,7 @@ async fn handle_effects(effect: AppEffect, _ctx: EffectContext<AppEvent, EmptySt
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("=== Multi-Model Storage with Magic Handlers Demo ===");
     println!("Demonstrating automatic parameter extraction across multiple models\n");
-    
+
     // Build storage chain with multiple models
     let (core, shell) = Syzygy::builder()
         .model(UserModel::default())
@@ -278,7 +277,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .effect_handler(handle_effects)
         .build();
     let mut runner = Runner::new(core, shell);
-    
+
     // Print initial state
     println!("Initial state:");
     let user: &UserModel = runner.core().model();
@@ -287,53 +286,53 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("  User: {:?}", user);
     println!("  Config: {:?}", config);
     println!("  Session: {:?}\n", session);
-    
+
     // Test user login
     println!("1. User login");
     runner.core().send_event(AppEvent::UserLogin {
         email: "alice@example.com".to_string(),
     })?;
     runner.tick(syzygy::spawn::spawner()).await?;
-    
+
     // Show updated state
     let user: &UserModel = runner.core().model();
     let session: &SessionModel = runner.core().model();
     println!("  Updated User: {:?}", user);
     println!("  Updated Session: {:?}\n", session);
-    
+
     // Test theme change
     println!("2. Change theme");
     runner.core().send_event(AppEvent::ChangeTheme {
         theme: "dark".to_string(),
     })?;
     runner.tick(syzygy::spawn::spawner()).await?;
-    
+
     let config: &AppConfigModel = runner.core().model();
     println!("  Updated Config: {:?}\n", config);
-    
+
     // Test activity detection
     println!("3. Activity detection");
     runner.core().send_event(AppEvent::ActivityDetected)?;
     runner.tick(syzygy::spawn::spawner()).await?;
-    
+
     let session: &SessionModel = runner.core().model();
     println!("  Updated Session: {:?}\n", session);
-    
+
     // Test 4: Language update
     println!("4. Testing language update...");
     runner.core().send_event(AppEvent::UpdateLanguage {
         language: "fr".to_string(),
     })?;
     runner.tick(syzygy::spawn::spawner()).await?;
-    
+
     // Test session expiry (triggers logout)
     println!("5. Session expiry (chains to logout)");
     runner.core().send_event(AppEvent::SessionExpired)?;
     runner.tick(syzygy::spawn::spawner()).await?;
-    
+
     let session: &SessionModel = runner.core().model();
     println!("  Final Session: {:?}\n", session);
-    
+
     println!("Magic Handlers Multi-Model Key Points:");
     println!("✅ Automatic parameter extraction - no manual ctx.model() calls");
     println!("✅ Mix read-only (&T) and mutable (&mut T) access automatically");
@@ -341,6 +340,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("✅ Clean, focused handlers - each only declares what it needs");
     println!("✅ Storage chains support multiple model types seamlessly");
     println!("✅ Zero runtime overhead - compiles to direct function calls");
-    
+
     Ok(())
 }

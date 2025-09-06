@@ -60,7 +60,6 @@ struct TestModel {
     data_processed: bool,
 }
 
-use syzygy::storage::{EmptyStorage, Storage};
 
 // Move-by-value approach (current, efficient)
 fn move_update(

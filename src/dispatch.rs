@@ -23,7 +23,6 @@ pub trait Dispatch {
 mod tests {
     use super::*;
     use crate::prelude::*;
-    use crate::storage::EmptyStorage;
     use syzygy_macros::Dispatch;
 
     #[derive(Debug, Clone, PartialEq)]

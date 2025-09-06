@@ -290,14 +290,12 @@
 //! ### Multi-Model Access
 //! ```rust
 //! # use syzygy::prelude::*;
-//! # use syzygy::storage::StorageBuilder;
 //! # #[derive(Debug, Default)] struct UserModel { name: String }
 //! # #[derive(Debug, Default)] struct ConfigModel { theme: String }
 //! # #[derive(Debug, Default)] struct SessionModel { active: bool }
 //! # type MyStorage = Storage<SessionModel, Storage<ConfigModel, Storage<UserModel, EmptyStorage>>>;
-//! # let storage: MyStorage = EmptyStorage::new().with_model(UserModel::default()).with_model(ConfigModel::default()).with_model(SessionModel::default());
+//! # let storage: MyStorage = EmptyStorage.with_model(UserModel::default()).with_model(ConfigModel::default()).with_model(SessionModel::default());
 //! // Access individual models by type
-//! let user: &UserModel = storage.get();
 //! let config: &ConfigModel = storage.get();
 //! let session: &SessionModel = storage.get();
 //! ```
@@ -368,7 +366,7 @@
 //!
 //!     #[test]
 //!     fn test_counter_increment() {
-//!         let mut storage = EmptyStorage::new().with_model(CounterModel::default());
+//!         let mut storage = EmptyStorage.with_model(CounterModel::default());
 //!         let mut ctx = EventContext::new(&mut storage);
 //!
 //!         let command = update(CounterEvent::Increment, &mut ctx);
@@ -389,7 +387,7 @@
 //! ```
 
 // Core modules
-pub mod async_context;
+pub mod effect_context;
 pub mod command;
 pub mod core;
 pub mod runner;
@@ -416,21 +414,17 @@ pub mod timer;
 pub mod spawn;
 
 // Storage system with UnsafeCell-based chains
-pub mod storage;
+// Storage module removed - using direct FxHashMap for resources
 
 // Executor system for specialized effect handling
 pub mod executor;
-
-// Magic handler system for automatic parameter extraction
-pub mod extract;
-pub mod magic_handler;
 
 // Optional streaming helpers to unify single vs stream outputs
 pub mod streaming;
 
 pub mod prelude {
     // Contexts for update and effect functions
-    pub use crate::async_context::EffectContext;
+    pub use crate::effect_context::EffectContext;
     pub use crate::event_context::EventContext;
 
     // Command system
@@ -440,7 +434,7 @@ pub mod prelude {
     pub use crate::core::{Core, EventHandler};
     pub use crate::runner::{Runner, RunnerConfig, RunnerError};
     pub use crate::shell::{Shell, ShellConfig};
-    
+
     // Type aliases for common use cases
     /// A simple Shell for applications that only need models (no resources or executors).
     /// This is the most common case for basic applications.
@@ -448,14 +442,17 @@ pub mod prelude {
     /// # Example
     /// ```rust
     /// use syzygy::prelude::*;
-    /// use syzygy::SimpleShell;
-    /// 
+    ///
     /// #[derive(Debug, Clone)]
     /// enum Event { Increment }
-    /// #[derive(Debug, Clone)] 
+    /// #[derive(Debug, Clone)]
     /// enum Effect { Log }
-    /// 
-    /// fn build() -> (Core<Event, Effect, _>, SimpleShell<Event, Effect>) {
+    ///
+    /// type MyModel = ();
+    /// type MyCore = Core<Event, Effect, Storage<MyModel, EmptyStorage>>;
+    /// type MyShell = Shell<Event, Effect>;
+    ///
+    /// fn build() -> (MyCore, MyShell) {
     ///     Syzygy::builder()
     ///         .model(())  // Some model
     ///         .event_handler(|_event, _ctx| Command::none())
@@ -477,29 +474,14 @@ pub mod prelude {
     pub use crate::task::{TaskHandle, TaskId, TaskStats, TaskTracker};
 
     // Storage system
-    pub use crate::storage::{Contains, EmptyStorage, Storage};
+    // Storage types removed - using FxHashMap for resources
 
-    // Executor system
+    // Executor system (basic executors only - executor storage removed)
     pub use crate::executor::{
-        SpawnExecutor, ExecutorStorage, EmptyExecutorStorage,
-        TokioExecutor, SingleThreadExecutor, ThreadPerCoreTokioExecutor,
+        Executor, TokioExecutor, SingleThreadExecutor, ThreadPerCoreTokioExecutor,
     };
     #[cfg(feature = "rayon")]
     pub use crate::executor::RayonExecutor;
-
-    // Magic handler system
-    pub use crate::extract::{EventSender, FromEffectContext, FromEventContext};
-    pub use crate::magic_handler::{
-        EffectMagicHandler, EventMagicHandler, UnitHandler, event_trigger,
-        EffectMagicHandlerDirect, effect_trigger_direct,
-    };
-
-    // Magic handler macros
-    pub use crate::effect_magic_handler;
-    pub use crate::event_magic_handler;
-
-    // Derive macros
-    pub use syzygy_macros::MagicVariants;
 
     // Builder
     pub use crate::builder::{Syzygy, SyzygyBuilder};
@@ -508,5 +490,5 @@ pub mod prelude {
     pub use crate::error::{CommandError, CoreError, ShellError, EffectError};
 
     // Streaming helpers
-    pub use crate::streaming::{EffectOutput, consume_effect_output};
+    pub use crate::streaming::{EffectResult, consume_effect_output};
 }

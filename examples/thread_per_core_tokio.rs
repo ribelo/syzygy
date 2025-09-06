@@ -41,31 +41,33 @@ type AppExecutors = syzygy::executor::ExecutorStorage<
 // Single effect handler using multi-executor routing
 async fn handle_effects(
     effect: AppEffect,
-    ctx: EffectContext<AppEvent, EmptyStorage, AppExecutors>,
-) -> syzygy::streaming::EffectOutput<AppEvent> {
+    ctx: EffectContext<AppEvent>,
+) -> syzygy::streaming::EffectResult<AppEvent> {
     match effect {
         AppEffect::HttpRequest { url } => {
-            // Run on the network executor which carries HttpClient as its resource
-            let net: &NetExec = ctx.executor::<NetExec, syzygy::storage::Here>();
-            let client = net.resource::<HttpClient, syzygy::storage::Here>().clone();
-            let tx = ctx.event_sender().expect("event sender available");
-            net.spawn(async move {
-                match client.get(&url).await {
-                    Ok(data) => { let _ = tx.send(AppEvent::HttpResponseReceived { data }); }
-                    Err(e) => { let _ = tx.send(AppEvent::NetworkError { message: e }); }
+            // Use resource directly from context
+            let client: &HttpClient = ctx.resource().expect("HttpClient should be available");
+            let client_clone = client.clone();
+            let task = async move {
+                match client_clone.get(&url).await {
+                    Ok(data) => { let _ = ctx.send_event(AppEvent::HttpResponseReceived { data }); }
+                    Err(e) => { let _ = ctx.send_event(AppEvent::NetworkError { message: e }); }
                 }
-            }).unwrap();
-            syzygy::streaming::EffectOutput::None
+            };
+            ctx.spawn(task).unwrap();
+            syzygy::streaming::EffectResult::None
         }
         AppEffect::DatabaseWrite { value } => {
-            // Run on the DB executor which carries Database as its resource
-            let db_exec: &DbExec = ctx.executor::<DbExec, syzygy::storage::There<syzygy::storage::Here>>();
-            let db = db_exec.resource::<Database, syzygy::storage::Here>().clone();
-            let tx = ctx.event_sender().expect("event sender available");
-            db_exec.spawn(async move {
-                if db.write(value).await.is_ok() { let _ = tx.send(AppEvent::DbWriteOk); }
-            }).unwrap();
-            syzygy::streaming::EffectOutput::None
+            // Use resource directly from context
+            let db: &Database = ctx.resource().expect("Database should be available");
+            let db_clone = db.clone();
+            let task = async move {
+                if db_clone.write(value).await.is_ok() {
+                    let _ = ctx.send_event(AppEvent::DbWriteOk);
+                }
+            };
+            ctx.spawn(task).unwrap();
+            syzygy::streaming::EffectResult::None
         }
     }
 }
@@ -83,8 +85,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (core, shell) = Syzygy::builder::<AppEvent, AppEffect>()
         .model(Model)
         // Attach resources to the executors that use them
-        .executor(SingleThreadExecutor::new().with_resource(Database))
-        .executor(ThreadPerCoreTokioExecutor::new().with_resource(HttpClient))
         .event_handler(update)
         .effect_handler(handle_effects)
         .build();

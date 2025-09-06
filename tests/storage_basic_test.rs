@@ -1,7 +1,6 @@
 #![allow(dead_code, clippy::clone_on_ref_ptr, unused_variables, unused_imports, clippy::let_and_return, clippy::format_in_format_args)]
 //! Basic tests for simplified Storage functionality
 
-use syzygy::storage::*;
 
 #[cfg(test)]
 mod tests {
@@ -14,14 +13,12 @@ mod tests {
     }
 
     #[derive(Debug, Clone)]
-    #[allow(dead_code)] // Test model - fields used for storage verification
     struct Model2 {
         pub value: u64,
         pub name: String,
     }
 
     #[derive(Debug, Clone)]
-    #[allow(dead_code)] // Test model - fields used for storage verification
     struct Model3 {
         pub value: u64,
         pub count: i32,
@@ -29,7 +26,7 @@ mod tests {
 
 #[test]
 fn test_storage_mutable_access() {
-    let storage = EmptyStorage::new().with_model(Model1 {
+    let storage = EmptyStorage.with_model(Model1 {
         value: 10,
         active: false,
     });
@@ -47,7 +44,7 @@ fn test_storage_mutable_access() {
 
 #[test]
     fn test_storage_with_multiple_models() {
-    let storage = EmptyStorage::new()
+    let storage = EmptyStorage
         .with_model(Model1 {
             value: 1,
             active: true,
@@ -72,7 +69,7 @@ fn test_storage_mutable_access() {
 
 #[test]
 fn test_storage_contains_trait() {
-    let storage = EmptyStorage::new().with_model(Model1 {
+    let storage = EmptyStorage.with_model(Model1 {
         value: 1,
         active: true,
     });

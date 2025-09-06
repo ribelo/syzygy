@@ -9,7 +9,7 @@
 //! - Core/Shell orchestration with Runner
 
 use syzygy::prelude::*;
-use syzygy::streaming::EffectOutput;
+use syzygy::streaming::EffectResult;
 
 // ============================================================================
 // Step 1: Define your application state (Model)
@@ -60,7 +60,7 @@ fn handle_increment(event: CounterEvent, counter: &mut CounterModel) -> Command<
     if let CounterEvent::Increment = event {
         counter.count += 1;
         counter.message = format!("Count incremented to {}", counter.count);
-        
+
         Command::batch([
             Command::effect(CounterEffect::LogMessage(counter.message.clone())),
             Command::effect(CounterEffect::SaveCount(counter.count)),
@@ -77,7 +77,7 @@ fn handle_decrement(event: CounterEvent, counter: &mut CounterModel) -> Command<
     if let CounterEvent::Decrement = event {
         counter.count -= 1;
         counter.message = format!("Count decremented to {}", counter.count);
-        
+
         Command::batch([
             Command::effect(CounterEffect::LogMessage(counter.message.clone())),
             Command::effect(CounterEffect::SaveCount(counter.count)),
@@ -92,7 +92,7 @@ fn handle_reset(event: CounterEvent, counter: &mut CounterModel) -> Command<Coun
     if let CounterEvent::Reset = event {
         counter.count = 0;
         counter.message = "Counter reset".to_string();
-        
+
         Command::batch([
             Command::effect(CounterEffect::LogMessage("Counter was reset".to_string())),
             Command::effect(CounterEffect::SaveCount(0)),
@@ -198,7 +198,7 @@ fn handle_limit_check_effect(effect: CounterEffect, config: &AppConfig, _sender:
 }
 
 /// Main effect dispatcher using magic handlers
-async fn handle_effects(effect: CounterEffect, ctx: EffectContext<CounterEvent, Storage<AppConfig, EmptyStorage>>) -> EffectOutput<CounterEvent> {
+async fn handle_effects(effect: CounterEffect, ctx: EffectContext<CounterEvent, Storage<AppConfig, EmptyStorage>>) -> EffectResult<CounterEvent> {
     // Use magic handlers with automatic parameter extraction
     match &effect {
         CounterEffect::LogMessage(msg) if msg.contains("Checking limit") => {
@@ -222,7 +222,7 @@ async fn handle_effects(effect: CounterEffect, ctx: EffectContext<CounterEvent, 
             handle_save_effect(effect, sender);
         }
     }
-    EffectOutput::None
+    EffectResult::None
 }
 
 // ============================================================================
@@ -233,7 +233,7 @@ async fn handle_effects(effect: CounterEffect, ctx: EffectContext<CounterEvent, 
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("=== Basic TEA Pattern with Magic Handlers Demo ===");
     println!("A simple counter with logging, sound effects, and automatic parameter extraction\n");
-    
+
     // Build the system with model and resources
     let (core, shell) = Syzygy::builder()
         .model(CounterModel::default())
@@ -245,47 +245,47 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .effect_handler(handle_effects)
         .build();
     let mut runner = Runner::new(core, shell);
-    
+
     // Test the magic handlers
     println!("Initial state:");
     let counter: &CounterModel = runner.core().model();
     println!("  Counter: {:?}", counter);
     println!("  Config: max_count=5, enable_sound=true\n");
-    
+
     // Increment to test limit checking
     for i in 1..=6 {
         println!("Step {i}: Incrementing counter");
         runner.core().send_event(CounterEvent::Increment)?;
         runner.tick(syzygy::spawn::spawner()).await?;
-        
+
         let counter: &CounterModel = runner.core().model();
         println!("  Count: {}, Message: {}\n", counter.count, counter.message);
     }
-    
+
     // Test decrement with magic handler
     println!("Testing decrement magic handler:");
     runner.core().send_event(CounterEvent::Decrement)?;
     runner.tick(syzygy::spawn::spawner()).await?;
-    
+
     let counter: &CounterModel = runner.core().model();
     println!("  State: {:?}\n", counter);
-    
+
     // Test reset with config access
     println!("Testing reset magic handler (with sound):");
     runner.core().send_event(CounterEvent::Reset)?;
     runner.tick(syzygy::spawn::spawner()).await?;
-    
+
     let counter: &CounterModel = runner.core().model();
     println!("  State: {:?}\n", counter);
-    
+
     // Test message setting
     println!("Testing message setting magic handler:");
     runner.core().send_event(CounterEvent::SetMessage("Magic handlers working!".to_string()))?;
     runner.tick(syzygy::spawn::spawner()).await?;
-    
+
     let counter: &CounterModel = runner.core().model();
     println!("  Final state: {:?}\n", counter);
-    
+
     println!("Magic Handlers TEA Key Points:");
     println!("✅ Unidirectional data flow: Event -> Magic Handler -> Model + Effects");
     println!("✅ Automatic parameter extraction - no manual context manipulation");
@@ -293,6 +293,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("✅ Clean, focused handlers for each event type");
     println!("✅ Mix and match read/write access patterns as needed");
     println!("✅ Zero runtime overhead - compiles to direct function calls");
-    
+
     Ok(())
 }

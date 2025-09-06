@@ -8,7 +8,7 @@
 //! - Clean handler composition
 
 use syzygy::prelude::*;
-use syzygy::streaming::EffectOutput;
+use syzygy::streaming::EffectResult;
 use syzygy::executor::{TokioExecutor, ExecutorStorage, EmptyExecutorStorage};
 
 // ============================================================================
@@ -80,7 +80,7 @@ fn handle_with_user_model(event: AppEvent, user: &UserModel) -> Command<AppEvent
                 "Login attempt for {} (current user: {}, count: {})",
                 email, user.name, user.login_count
             );
-            
+
             Command::effect(AppEffect::SaveUser { email })
         }
         _ => Command::none(),
@@ -99,12 +99,12 @@ fn handle_with_multiple_models(
             user.email = email.clone();
             user.name = email.split('@').next().unwrap_or("user").to_string();
             user.login_count += 1;
-            
+
             println!(
                 "User {} logged in to {} v{} (count: {})",
                 user.name, config.app_name, config.version, user.login_count
             );
-            
+
             Command::batch([
                 Command::effect(AppEffect::SaveUser { email: email.clone() }),
                 Command::effect(AppEffect::LogActivity {
@@ -132,12 +132,12 @@ fn handle_config_update(
         AppEvent::UpdateConfig { debug_mode } => {
             let old_debug = config.debug_mode;
             config.debug_mode = debug_mode;
-            
+
             println!(
                 "User {} changed debug mode from {} to {} in {}",
                 user.name, old_debug, debug_mode, config.app_name
             );
-            
+
             Command::effect(AppEffect::LogActivity {
                 message: format!("Debug mode changed to {debug_mode}"),
             })
@@ -186,10 +186,10 @@ async fn handle_with_database(
 /// Effect handler with full context access
 fn handle_with_full_context(
     effect: AppEffect,
-    ctx: EffectContext<AppEvent, Storage<DatabaseConfig, EmptyStorage>, ExecutorStorage<TokioExecutor<AppEvent>, EmptyExecutorStorage>>,
+    ctx: EffectContext<AppEvent>,
 ) {
     if let AppEffect::SaveUser { email } = effect {
-        let db_config: &DatabaseConfig = ctx.resource();
+        let db_config: &DatabaseConfig = ctx.resource().expect("DatabaseConfig should be available");
 
         println!(
             "Saving user {} to database {} with pool size {}",
@@ -197,12 +197,13 @@ fn handle_with_full_context(
         );
 
         // Spawn background task
-        ctx.executor::<TokioExecutor<AppEvent>, _>().spawn(async move {
+        let task = async move {
             println!("Background: Processing user save for {email}");
             #[cfg(feature = "tokio")]
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
             println!("Background: User {email} saved successfully");
-        }).unwrap();
+        };
+        ctx.spawn(task).unwrap();
     }
 }
 
@@ -244,7 +245,7 @@ fn update_app(
 async fn handle_effects(
     effect: AppEffect,
     ctx: EffectContext<AppEvent, Storage<DatabaseConfig, EmptyStorage>, ExecutorStorage<TokioExecutor<AppEvent>, EmptyExecutorStorage>>,
-) -> EffectOutput<AppEvent> {
+) -> EffectResult<AppEvent> {
     match &effect {
         AppEffect::LogActivity { message } => {
             println!("LOG: {message}");
@@ -262,7 +263,7 @@ async fn handle_effects(
             handle_with_full_context(effect, ctx);
         }
     }
-    EffectOutput::None
+    EffectResult::None
 }
 
 // ============================================================================
@@ -273,7 +274,7 @@ async fn handle_effects(
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("=== Magic Handlers Demo ===");
     println!("Demonstrating automatic parameter extraction\n");
-    
+
     // Build system with models and resources
     let (core, shell) = Syzygy::builder()
         .model(UserModel::default())
@@ -286,38 +287,37 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             url: "postgresql://localhost/demo".to_string(),
             pool_size: 5,
         })
-        .executor(TokioExecutor::new())
         .event_handler(update_app)
         .effect_handler(handle_effects)
         .build();
     let mut runner = Runner::new(core, shell);
-    
+
     println!("Testing different magic handler patterns:\n");
-    
+
     // Test 1: Simple handler (event only)
     println!("1. Testing simple handler (event only)");
     runner.core().send_event(AppEvent::SystemReady)?;
     runner.tick(syzygy::spawn::spawner()).await?;
     println!();
-    
+
     // Test 2: Multi-model handler (with mutations)
     println!("2. Testing multi-model handler (with mutations)");
     runner.core().send_event(AppEvent::UserLogin {
         email: "alice@example.com".to_string(),
     })?;
     runner.tick(syzygy::spawn::spawner()).await?;
-    
+
     let user: &UserModel = runner.core().model();
     println!("   User state: {user:?}\n");
-    
+
     // Test 3: Config update handler
     println!("3. Testing config update handler");
     runner.core().send_event(AppEvent::UpdateConfig { debug_mode: true })?;
     runner.tick(syzygy::spawn::spawner()).await?;
-    
+
     let config: &ConfigModel = runner.core().model();
     println!("   Config state: {config:?}\n");
-    
+
     // Test 4: Effect handlers with resource extraction
     println!("4. Testing effect handlers with resources");
     runner.core().send_event(AppEvent::UserLogin {
@@ -325,23 +325,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     })?;
     runner.tick(syzygy::spawn::spawner()).await?;
     println!();
-    
+
     // Test 5: Logout demonstration
     println!("5. Testing logout handler");
     runner.core().send_event(AppEvent::UserLogout)?;
     runner.tick(syzygy::spawn::spawner()).await?;
     println!();
-    
+
     // Give background tasks time to complete
     #[cfg(feature = "tokio")]
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-    
+
     println!("Magic Handlers Key Points:");
     println!("✅ Automatic parameter extraction like Axum");
     println!("✅ Type-safe dependency injection at compile time");
     println!("✅ Mix and match extraction patterns as needed");
     println!("✅ Zero runtime overhead - compiles to direct calls");
     println!("✅ Clean, focused handler functions");
-    
+
     Ok(())
 }

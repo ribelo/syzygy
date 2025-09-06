@@ -7,7 +7,6 @@
 use syzygy::command::{CommandStep, GroupMode};
 use syzygy::event_context::EventContext;
 use syzygy::prelude::*;
-use syzygy::storage::StorageBuilder;
 
 #[derive(Debug, Clone, PartialEq)]
 enum UserEvent {
@@ -31,7 +30,6 @@ struct UserModel {
     authenticated: bool,
 }
 
-use syzygy::storage::{EmptyStorage, Storage};
 
 fn user_update(
     event: UserEvent,
@@ -79,7 +77,7 @@ fn main() {
     println!("Command Domain-Specific Operations Demo");
     println!("======================================");
 
-    let mut storage = syzygy::storage::EmptyStorage::new().with_model(UserModel {
+    let mut storage = EmptyStorage.with_model(UserModel {
         authenticated: true,
     });
 

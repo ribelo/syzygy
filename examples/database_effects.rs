@@ -6,7 +6,7 @@
 use std::collections::HashMap;
 use std::time::Duration;
 use syzygy::prelude::*;
-use syzygy::streaming::EffectOutput;
+use syzygy::streaming::EffectResult;
 
 /// Events - including database results
 #[derive(Debug, Clone)]
@@ -21,7 +21,7 @@ enum AppEvent {
     DatabaseError { operation: String, error: String },
 }
 
-/// Effects - describe what database operations to perform  
+/// Effects - describe what database operations to perform
 #[derive(Debug, Clone)]
 enum AppEffect {
     /// Get user from database - all data needed is in the effect
@@ -68,7 +68,6 @@ struct AppModel {
     last_error: Option<String>,
 }
 
-use syzygy::storage::{EmptyStorage, Storage};
 
 fn database_update(
     event: AppEvent,
@@ -81,13 +80,13 @@ fn database_update(
             model.is_connected = false; // Will be set to true when connection succeeds
             Command::effect(AppEffect::ConnectDatabase { connection_string })
         }
-        
+
         AppEvent::DatabaseConnected => {
             model.is_connected = true;
             model.last_error = None;
             Command::none()
         }
-        
+
         AppEvent::LoadUser { user_id } => {
             // Check if we already have the user in local state
             if let Some(user) = model.users.get(&user_id) {
@@ -147,11 +146,11 @@ fn database_update(
 
 async fn handle_effects(
     effect: AppEffect,
-    ctx: EffectContext<AppEvent, Storage<AppResources, EmptyStorage>>,
-) -> EffectOutput<AppEvent> {
+    ctx: EffectContext<AppEvent>,
+) -> EffectResult<AppEvent> {
     match effect {
         AppEffect::GetUser { user_id, table } => {
-            let resources: &AppResources = ctx.resource();
+            let resources: &AppResources = ctx.resource().expect("AppResources should be available");
             println!("🔍 Getting user {user_id} from table {table} (db: {})", resources.database_url);
 
             // Simulate database query
@@ -224,7 +223,7 @@ async fn handle_effects(
             println!("📝 {message}");
         }
     }
-    EffectOutput::None
+    EffectResult::None
 }
 
 /// Simulated database operations - in real app these would be SQLx, Diesel, etc.
@@ -301,11 +300,11 @@ async fn run_demo() -> Result<(), Box<dyn std::error::Error>> {
 
     // Connect to database first
     println!("🚀 Step 1: Connecting to database...");
-    runner.core().send_event(AppEvent::ConnectDatabase { 
-        connection_string: "postgresql://localhost/demo".to_string() 
+    runner.core().send_event(AppEvent::ConnectDatabase {
+        connection_string: "postgresql://localhost/demo".to_string()
     })?;
     runner.tick(syzygy::spawn::spawner()).await?;
-    
+
     // Load a user
     println!("🚀 Step 2: Loading user data...");
     runner
@@ -318,7 +317,7 @@ async fn run_demo() -> Result<(), Box<dyn std::error::Error>> {
     println!("\n🔍 Loading existing user...");
     runner
         .core()
-        .send_event(AppEvent::LoadUser { user_id: 2 })?; // Will find Bob  
+        .send_event(AppEvent::LoadUser { user_id: 2 })?; // Will find Bob
     runner.tick(syzygy::spawn::spawner()).await?;
     runner.tick(syzygy::spawn::spawner()).await?;
 

@@ -410,14 +410,12 @@ fn bench_storage_patterns(c: &mut Criterion) {
 
     group.bench_function("single_model_access", |b| {
         b.iter(|| {
-            let user: &UserModel = black_box(&storage).get();
             black_box(user.login_count)
         });
     });
 
     group.bench_function("multi_model_access", |b| {
         b.iter(|| {
-            let user: &UserModel = black_box(&storage).get();
             let config: &AppConfigModel = black_box(&storage).get();
             let notifications: &NotificationModel = black_box(&storage).get();
             let cache: &CacheModel = black_box(&storage).get();

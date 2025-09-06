@@ -4,7 +4,6 @@
 //! It demonstrates the core functionality using the current API.
 
 use syzygy::prelude::*;
-use syzygy::storage::StorageBuilder;
 
 // ============================================================================
 // Simple Models
@@ -138,7 +137,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("===========================================\n");
 
     // Create storage with multiple models
-    let mut storage = EmptyStorage::new()
+    let mut storage = EmptyStorage
         .with_model(UserModel {
             name: "Alice".to_string(),
             count: 5,

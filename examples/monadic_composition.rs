@@ -5,7 +5,6 @@
 
 use syzygy::command::{CommandStep, GroupMode};
 use syzygy::prelude::*;
-use syzygy::storage::StorageBuilder;
 
 #[derive(Debug, Clone)]
 enum DemoEvent {
@@ -32,7 +31,6 @@ struct DemoModel {
 }
 
 
-use syzygy::storage::{EmptyStorage, Storage};
 
 // ============================================================================
 // Magic Event Handlers - Clean Monadic Composition
@@ -131,7 +129,7 @@ fn main() {
     println!("• Complex command filtering and chaining");
     println!("• Clean separation of concerns\n");
 
-    let mut storage = syzygy::storage::EmptyStorage::new().with_model(DemoModel {
+    let mut storage = EmptyStorage.with_model(DemoModel {
         user_authenticated: true,
         click_count: 0,
         ..Default::default()
@@ -169,7 +167,7 @@ fn main() {
 
     // Test 2: Data processing with filtering (demonstrates command filtering)
     println!("\n=== Test 2: Data Processing with Filtering ===");
-    let mut storage2 = syzygy::storage::EmptyStorage::new().with_model(DemoModel::default());
+    let mut storage2 = EmptyStorage.with_model(DemoModel::default());
     let mut ctx2 = EventContext::new(&mut storage2);
     let command2 = demo_update(
         DemoEvent::DataLoaded {
@@ -198,7 +196,7 @@ fn main() {
     
     // Test 3: Unauthenticated user (demonstrates .or_else fallback)
     println!("\n=== Test 3: Unauthenticated User (Fallback) ===");
-    let mut storage3 = syzygy::storage::EmptyStorage::new().with_model(DemoModel {
+    let mut storage3 = EmptyStorage.with_model(DemoModel {
         user_authenticated: false,
         ..Default::default()
     });

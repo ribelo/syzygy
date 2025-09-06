@@ -12,18 +12,17 @@
 //! ```rust
 //! # use syzygy::prelude::*;
 //! # use syzygy::event_context::EventContext;
-//! # use syzygy::storage::{EmptyStorage, Storage, StorageBuilder};
 //! # #[derive(Debug, Clone)] enum TestEvent { Increment }
 //! # #[derive(Debug, Clone)] enum TestEffect { Log }
 //! # #[derive(Debug, Default)] struct CounterModel { count: i32 }
-//! # fn counter_update(event: TestEvent, ctx: &mut EventContext<TestEvent, TestEffect, Storage<CounterModel, EmptyStorage>>) -> Command<TestEvent, TestEffect> {
+//! # fn counter_update(event: TestEvent, ctx: &mut EventContext<TestEvent, TestEffect, CounterModel>) -> Command<TestEvent, TestEffect> {
 //! #     let model: &mut CounterModel = ctx.model_mut();
 //! #     model.count += 1;
 //! #     Command::none()
 //! # }
 //! // In a real application, you would build the core like this:
-//! let storage = EmptyStorage::new().with_model(CounterModel::default());
-//! let (mut core, sender) = Core::new(counter_update, storage);
+//! let model = CounterModel::default();
+//! let (mut core, sender) = Core::new(counter_update, model);
 //!
 //! // Send an event to the core
 //! sender.send(TestEvent::Increment).unwrap();
@@ -32,64 +31,61 @@
 //! core.process_events();
 //!
 //! // The model is now updated
-//! let model: &CounterModel = core.model();
-//! assert_eq!(model.count, 1);
+//! let model_ref: &CounterModel = core.model();
+//! assert_eq!(model_ref.count, 1);
 //! ```
-use crate::{command::Command, event_context::EventContext, storage::Selector};
 use crossbeam_channel::{Receiver, Sender, unbounded};
 use std::collections::VecDeque;
 
 #[cfg(feature = "tracing")]
 use tracing::{Level, debug, span};
 
-/// Update function type that takes an event and a mutable EventContext
-pub type EventHandler<Event, Effect, Storage> =
-    fn(event: Event, ctx: &mut EventContext<Event, Effect, Storage>) -> Command<Event, Effect>;
+use crate::{command::Command, event_context::EventContext};
 
-/// Core handles synchronous event processing and owns the model storage.
+/// Update function type that takes an event and a mutable EventContext
+pub type EventHandler<E, X, M> = fn(event: E, ctx: &mut EventContext<E, X, M>) -> Command<E, X>;
+
+/// Core handles synchronous event processing and owns the model.
 ///
 /// Core is designed to be used on any thread, including UI threads, as it
 /// never blocks and all operations are synchronous. It processes events,
-/// updates the models through storage, and returns Commands describing effects to execute.
-pub struct Core<Event, Effect, Storage>
+/// updates the model, and returns Commands describing effects to execute.
+pub struct Core<E, X, M>
 where
-    Event: Clone + Send + 'static,
-    Effect: Clone + Send + 'static,
+    E: Clone + Send + 'static,
+    X: Clone + Send + 'static,
 {
     /// The update function that processes events
-    update_fn: EventHandler<Event, Effect, Storage>,
+    event_handler: EventHandler<E, X, M>,
 
-    /// The storage containing all models - owned and mutable
-    models: Storage,
+    /// The model - owned and mutable
+    model: M,
 
     /// Queue of events to process
-    event_queue: VecDeque<Event>,
+    event_queue: VecDeque<E>,
 
     /// Pre-allocated command buffer to avoid reallocations
-    command_buffer: Vec<Command<Event, Effect>>,
+    command_buffer: Vec<Command<E, X>>,
 
     /// Channel for receiving external events
-    event_rx: Receiver<Event>,
+    event_rx: Receiver<E>,
 
     /// Channel for sending events (kept for cloning)
-    event_tx: Sender<Event>,
+    event_tx: Sender<E>,
 }
 
-impl<Event, Effect, Storage> Core<Event, Effect, Storage>
+impl<E, X, M> Core<E, X, M>
 where
-    Event: Clone + Send + 'static,
-    Effect: Clone + Send + 'static,
+    E: Clone + Send + 'static,
+    X: Clone + Send + 'static,
 {
     /// Create a new Core with update function and storage
-    pub fn new(
-        update_fn: EventHandler<Event, Effect, Storage>,
-        models: Storage,
-    ) -> (Self, Sender<Event>) {
+    pub fn new(event_handler: EventHandler<E, X, M>, models: M) -> (Self, Sender<E>) {
         let (event_tx, event_rx) = unbounded();
 
         let core = Self {
-            update_fn,
-            models,
+            event_handler,
+            model: models,
             event_queue: VecDeque::with_capacity(16), // Pre-size for typical usage
             command_buffer: Vec::with_capacity(16),   // Pre-allocated command buffer
             event_rx,
@@ -101,17 +97,17 @@ where
 
     /// Process a single event synchronously
     ///
-    /// This is the main entry point for event processing. It updates the storage
+    /// This is the main entry point for event processing. It updates the model
     /// and returns a Command describing any effects to execute.
-    pub fn handle_event(&mut self, event: Event) -> Command<Event, Effect> {
+    pub fn handle_event(&mut self, event: E) -> Command<E, X> {
         #[cfg(feature = "tracing")]
         let _span = span!(Level::DEBUG, "handle_event").entered();
 
         #[cfg(feature = "tracing")]
         debug!("Processing event");
 
-        let mut ctx = EventContext::new(&mut self.models);
-        let command = (self.update_fn)(event, &mut ctx);
+        let mut ctx = EventContext::new(&mut self.model);
+        let command = (self.event_handler)(event, &mut ctx);
 
         #[cfg(feature = "tracing")]
         debug!("Event processed, command created");
@@ -123,7 +119,7 @@ where
     ///
     /// This processes all pending events and collects their commands.
     /// Returns true if any events were processed, false if queue was empty.
-    pub fn process_events(&mut self) -> (bool, Vec<Command<Event, Effect>>) {
+    pub fn process_events(&mut self) -> (bool, Vec<Command<E, X>>) {
         #[cfg(feature = "tracing")]
         let _span = span!(Level::DEBUG, "process_events").entered();
 
@@ -152,55 +148,28 @@ where
     }
 
     /// Send an event to be processed in the next tick
-    pub fn send_event(&self, event: Event) -> Result<(), crossbeam_channel::SendError<Event>> {
+    pub fn send_event(&self, event: E) -> Result<(), crossbeam_channel::SendError<E>> {
         self.event_tx.send(event)
     }
 
     /// Get a sender for external events
     #[must_use]
-    pub fn event_sender(&self) -> Sender<Event> {
+    pub fn event_sender(&self) -> Sender<E> {
         self.event_tx.clone()
     }
 
-    /// Get immutable reference to the storage
+    /// Get immutable reference to the model
     #[must_use]
-    pub fn storage(&self) -> &Storage {
-        &self.models
+    pub fn model(&self) -> &M {
+        &self.model
     }
 
-    /// Get mutable reference to the storage
+    /// Get mutable reference to the model
     ///
     /// This should be used carefully as it bypasses event processing.
     /// Prefer sending events for state changes.
-    pub fn storage_mut(&mut self) -> &mut Storage {
-        &mut self.models
-    }
-
-    /// Get an immutable reference to a specific model by type
-    ///
-    /// This is a convenience method that delegates to the storage's get() method.
-    /// The type must exist in the storage chain for this to compile.
-    ///
-    #[must_use]
-    pub fn model<T, Index>(&self) -> &T
-    where
-        Storage: Selector<T, Index>,
-    {
-        self.models.get()
-    }
-
-    /// Get a mutable reference to a specific model by type
-    ///
-    /// This is a convenience method that delegates to the storage's get_mut() method.
-    /// The type must exist in the storage chain for this to compile.
-    ///
-    /// Note: This bypasses event processing, so prefer sending events for state changes.
-    ///
-    pub fn model_mut<T, Index>(&mut self) -> &mut T
-    where
-        Storage: Selector<T, Index>,
-    {
-        self.models.get_mut()
+    pub fn model_mut(&mut self) -> &mut M {
+        &mut self.model
     }
 
     /// Get the number of pending events
@@ -221,7 +190,6 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::storage::{EmptyStorage, Storage, StorageBuilder};
 
     #[derive(Debug, Clone)]
     enum TestEvent {
@@ -241,7 +209,7 @@ mod tests {
 
     fn counter_update(
         event: TestEvent,
-        ctx: &mut EventContext<TestEvent, TestEffect, Storage<CounterModel, EmptyStorage>>,
+        ctx: &mut EventContext<TestEvent, TestEffect, CounterModel>,
     ) -> Command<TestEvent, TestEffect> {
         let model: &mut CounterModel = ctx.model_mut();
 
@@ -259,30 +227,23 @@ mod tests {
 
     #[test]
     fn test_core_basic_functionality() {
-        let storage = EmptyStorage::new().with_model(CounterModel { count: 0 });
+        let model = CounterModel { count: 0 };
 
-        let (mut core, _) = Core::new(counter_update, storage);
+        let (mut core, _) = Core::new(counter_update, model);
 
         // Test event handling
         let _command = core.handle_event(TestEvent::Increment);
 
-        // Verify model was updated (using new model() API)
-        let model: &CounterModel = core.model();
-        assert_eq!(model.count, 1);
-
-        // Also verify with original storage API (both should work)
-        let storage_model: &CounterModel = core.storage().get();
-        assert_eq!(storage_model.count, 1);
-
-        // Verify command was created
-        // Just check it's not None - specific command type depends on implementation
+        // Verify model was updated
+        let model_ref: &CounterModel = core.model();
+        assert_eq!(model_ref.count, 1);
     }
 
     #[test]
     fn test_core_event_processing() {
-        let storage = EmptyStorage::new().with_model(CounterModel { count: 0 });
+        let model = CounterModel { count: 0 };
 
-        let (mut core, sender) = Core::new(counter_update, storage);
+        let (mut core, sender) = Core::new(counter_update, model);
 
         // Send events
         sender.send(TestEvent::Increment).unwrap();
@@ -296,15 +257,15 @@ mod tests {
         assert_eq!(commands.len(), 3);
 
         // Verify final model state
-        let model: &CounterModel = core.storage().get();
-        assert_eq!(model.count, 1); // +1 +1 -1 = 1
+        let model_ref: &CounterModel = core.model();
+        assert_eq!(model_ref.count, 1); // +1 +1 -1 = 1
     }
 
     #[test]
     fn test_core_pending_events() {
-        let storage = EmptyStorage::new().with_model(CounterModel { count: 0 });
+        let model = CounterModel { count: 0 };
 
-        let (mut core, sender) = Core::new(counter_update, storage);
+        let (mut core, sender) = Core::new(counter_update, model);
 
         assert_eq!(core.pending_events(), 0);
         assert!(!core.has_pending_events());
@@ -320,16 +281,12 @@ mod tests {
 
     #[test]
     fn test_core_model_access() {
-        let storage = EmptyStorage::new().with_model(CounterModel { count: 42 });
-        let (mut core, _) = Core::new(counter_update, storage);
+        let model = CounterModel { count: 42 };
+        let (mut core, _) = Core::new(counter_update, model);
 
         // Test immutable model access
-        let model: &CounterModel = core.model();
-        assert_eq!(model.count, 42);
-
-        // Test explicit type annotation (relies on type inference for Index)
-        let model_explicit: &CounterModel = core.model();
-        assert_eq!(model_explicit.count, 42);
+        let model_ref: &CounterModel = core.model();
+        assert_eq!(model_ref.count, 42);
 
         // Test mutable model access
         {
@@ -356,101 +313,91 @@ mod tests {
             debug: bool,
         }
 
-        type TestStorage = Storage<ConfigModel, Storage<UserModel, Storage<CounterModel, EmptyStorage>>>;
+        #[derive(Debug)]
+        struct AppModel {
+            counter: CounterModel,
+            user: UserModel,
+            config: ConfigModel,
+        }
 
-        // Update function for the multi-model storage
+        // Update function for the multi-model app
         fn multi_model_update(
             event: TestEvent,
-            ctx: &mut EventContext<TestEvent, TestEffect, TestStorage>,
+            ctx: &mut EventContext<TestEvent, TestEffect, AppModel>,
         ) -> Command<TestEvent, TestEffect> {
             // Just update the counter for simplicity
-            let counter: &mut CounterModel = ctx.model_mut();
+            let model = ctx.model_mut();
             match event {
                 TestEvent::Increment => {
-                    counter.count += 1;
+                    model.counter.count += 1;
                     Command::effect(TestEffect::Log)
                 }
                 TestEvent::Decrement => {
-                    counter.count -= 1;
+                    model.counter.count -= 1;
                     Command::effect(TestEffect::Log)
                 }
             }
         }
 
-        // Create storage with multiple models
-        let storage = EmptyStorage::new()
-            .with_model(CounterModel { count: 10 })
-            .with_model(UserModel {
+        // Create app model with multiple sub-models
+        let app_model = AppModel {
+            counter: CounterModel { count: 10 },
+            user: UserModel {
                 name: "Alice".to_string(),
                 age: 25,
-            })
-            .with_model(ConfigModel {
+            },
+            config: ConfigModel {
                 theme: "dark".to_string(),
                 debug: true,
-            });
+            },
+        };
 
-        let (mut core, _) = Core::new(multi_model_update, storage);
+        let (mut core, _) = Core::new(multi_model_update, app_model);
 
         // Test accessing different models
-        let counter: &CounterModel = core.model();
-        assert_eq!(counter.count, 10);
-
-        let user: &UserModel = core.model();
-        assert_eq!(user.name, "Alice");
-        assert_eq!(user.age, 25);
-
-        let config: &ConfigModel = core.model();
-        assert_eq!(config.theme, "dark");
-        assert!(config.debug);
+        let model = core.model();
+        assert_eq!(model.counter.count, 10);
+        assert_eq!(model.user.name, "Alice");
+        assert_eq!(model.user.age, 25);
+        assert_eq!(model.config.theme, "dark");
+        assert!(model.config.debug);
 
         // Test mutable access to different models
         {
-            let counter_mut: &mut CounterModel = core.model_mut();
-            counter_mut.count = 999;
-
-            let user_mut: &mut UserModel = core.model_mut();
-            user_mut.name = "Bob".to_string();
-            user_mut.age = 30;
-
-            let config_mut: &mut ConfigModel = core.model_mut();
-            config_mut.theme = "light".to_string();
-            config_mut.debug = false;
+            let model_mut = core.model_mut();
+            model_mut.counter.count = 999;
+            model_mut.user.name = "Bob".to_string();
+            model_mut.user.age = 30;
+            model_mut.config.theme = "light".to_string();
+            model_mut.config.debug = false;
         }
 
         // Verify all mutations worked
-        let counter_after: &CounterModel = core.model();
-        assert_eq!(counter_after.count, 999);
-
-        let user_after: &UserModel = core.model();
-        assert_eq!(user_after.name, "Bob");
-        assert_eq!(user_after.age, 30);
-
-        let config_after: &ConfigModel = core.model();
-        assert_eq!(config_after.theme, "light");
-        assert!(!config_after.debug);
+        let model_after = core.model();
+        assert_eq!(model_after.counter.count, 999);
+        assert_eq!(model_after.user.name, "Bob");
+        assert_eq!(model_after.user.age, 30);
+        assert_eq!(model_after.config.theme, "light");
+        assert!(!model_after.config.debug);
     }
 
     #[test]
-    fn test_core_model_vs_storage_api() {
-        let storage = EmptyStorage::new().with_model(CounterModel { count: 0 });
-        let (mut core, _) = Core::new(counter_update, storage);
+    fn test_core_model_access_api() {
+        let model = CounterModel { count: 0 };
+        let (mut core, _) = Core::new(counter_update, model);
 
-        // Test both APIs work equivalently
-        let model_via_storage: &CounterModel = core.storage().get();
-        let model_via_model: &CounterModel = core.model();
+        // Test model access
+        let model_ref: &CounterModel = core.model();
+        assert_eq!(model_ref.count, 0);
 
-        assert_eq!(model_via_storage.count, model_via_model.count);
-
-        // Mutate via new API
+        // Mutate via model API
         {
             let model_mut: &mut CounterModel = core.model_mut();
             model_mut.count = 123;
         }
 
-        // Verify via both APIs
-        let storage_model_after: &CounterModel = core.storage().get();
-        let direct_model_after: &CounterModel = core.model();
-        assert_eq!(storage_model_after.count, 123);
-        assert_eq!(direct_model_after.count, 123);
+        // Verify mutation worked
+        let model_after: &CounterModel = core.model();
+        assert_eq!(model_after.count, 123);
     }
 }

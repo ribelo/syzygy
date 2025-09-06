@@ -1,103 +1,62 @@
-//! Executor module providing specialized effect execution strategies
+//! Executors — pluggable async runtimes for side effects
 //!
-//! This module contains executor implementations for different execution models:
-//! - TokioExecutor: Spawns each effect as a tokio task
-//! - SingleCoreExecutor: Sequential execution on single thread
-//! - RayonExecutor: Parallel execution using rayon work-stealing
+//! Syzygy models are pure, but effects run on executors. This module
+//! defines a small, pluggable `SpawnExecutor` trait and implementations for
+//! different strategies (Tokio-based, single-threaded, etc.).
 //!
-//! Executors use the same Storage pattern as models/resources for type-safe
-//! multi-executor management.
+//! Refactor note:
+//! - TaskTracker has been removed from the executor API. Executors own their
+//!   tasks and ensure correct shutdown semantics (drop cancels, explicit
+//!   `shutdown`/`join` available) — following the dedicated executor pattern
+//!   from influxdb3_core.
 
-pub mod storage;
-pub mod tokio_executor;
-pub mod single_thread_executor;
-pub mod thread_per_core_tokio;
+// Executor storage module removed - using direct FxHashMap
 #[cfg(feature = "rayon")]
 pub mod rayon_executor;
+pub mod single_thread_executor;
+pub mod thread_per_core_tokio;
+pub mod tokio_executor;
 
-use crate::error::ShellError;
-use crate::task::{TaskId, TaskStats};
-use crate::timer::Time;
+use futures_util::future::BoxFuture;
 use std::future::Future;
-use std::time::Duration;
 
-// Re-export commonly used types
-pub use storage::{ExecutorStorage, EmptyExecutorStorage};
-pub use tokio_executor::TokioExecutor;
-pub use single_thread_executor::SingleThreadExecutor;
-pub use thread_per_core_tokio::ThreadPerCoreTokioExecutor;
+use thiserror::Error;
+// Executor storage types removed
 #[cfg(feature = "rayon")]
 pub use rayon_executor::RayonExecutor;
+pub use single_thread_executor::SingleThreadExecutor;
+pub use thread_per_core_tokio::ThreadPerCoreTokioExecutor;
+pub use tokio_executor::TokioExecutor;
 
-/// Accessor for an executor's resource storage
-///
-/// This trait enables higher-level helpers (like EffectContext::run_on_magic)
-/// to construct an EffectContext backed by the executor's own resources.
-pub trait HasExecutorResources<Event>: Send + Sync + 'static
-where
-    Event: Clone + Send + 'static,
-{
-    /// Resource storage type carried by this executor
-    type Resources: Clone + Send + Sync + 'static;
+use crate::prelude::{EffectContext, EffectResult};
 
-    /// Clone the executor's resources for use in a new EffectContext
-    fn clone_resources(&self) -> Self::Resources;
+/// Error type for executor job management
+#[derive(Debug, Error)]
+pub enum ExecutorError {
+    /// The executor has been shut down and cannot accept new work
+    #[error("Worker thread gone, executor was likely shut down")]
+    WorkerGone,
+    /// The spawned task panicked; contains message if available
+    #[error("Panic: {msg}")]
+    Panic { msg: String },
 }
 
-/// Legacy trait for effect executors (DEPRECATED)
+/// Minimal, pluggable executor API following the DedicatedExecutor pattern
 ///
-/// This trait was used when executors managed effects directly.
-/// New architecture: Shell distributes effects, executors provide spawning/runtime services.
-///
-/// # Type Parameters
-/// - `Event`: Event type that can be sent back to Core
-/// - `Effect`: Effect type this executor can handle
-/// - `Resources`: Resources available to this executor
-// Deprecated Executor trait removed - use SpawnExecutor and HasExecutorResources instead
-
-/// Simplified executor trait focused on spawning and runtime services
-/// 
-/// Executors provide task spawning with safety guarantees and runtime services.
-/// Shell handles effect distribution and calls executor methods directly.
-///
-/// # Type Parameters
-/// - `Event`: Event type that can be sent back to Core
-/// - `Resources`: Resources available to this executor
-pub trait SpawnExecutor<Event, Resources>: Send + Sync + 'static
-where
-    Event: Clone + Send + 'static,
-    Resources: Clone + Send + Sync + 'static,
-{
-    /// Spawn a task with cleanup guarantees
-    ///
-    /// All tasks spawned through this method will be tracked and cleaned up
-    /// when the executor is dropped.
-    fn spawn<F>(&self, future: F) -> Result<TaskId, ShellError>
+/// - Owns a runtime/thread(s) and ensures tasks are cancelled when the
+///   executor is dropped or explicitly shut down
+/// - `spawn` returns a cancel-on-drop future that resolves to the task's
+///   output or an `ExecError`
+pub trait Executor<E, R>: Send + Sync + 'static {
+    /// Spawn a task on this executor and get a cancel-on-drop join future
+    fn spawn<F, Fut>(&self, task: F) -> BoxFuture<'static, Result<Fut::Output, ExecutorError>>
     where
-        F: Future<Output = ()> + Send + 'static;
+        F: Fn(EffectContext<E, R>) -> Fut,
+        Fut: Future<Ouptut = EffectResult<E>> + Send + 'static;
 
-    /// Batch spawn multiple tasks efficiently
-    fn spawn_batch<I>(&self, futures: I) -> Result<Vec<TaskId>, ShellError>
-    where
-        I: IntoIterator,
-        I::Item: Future<Output = ()> + Send + 'static;
+    /// Signal the executor to begin shutdown; no further tasks will be accepted
+    fn shutdown(&self);
 
-    /// Spawn a task with timeout
-    fn spawn_with_timeout<F>(&self, duration: Duration, future: F) -> Result<TaskId, ShellError>
-    where
-        F: Future<Output = ()> + Send + 'static;
-
-    /// Get runtime implementation for timeout operations
-    fn runtime(&self) -> Time;
-
-    /// Get immutable reference to a resource by type
-    fn resource<T, Index>(&self) -> &T
-    where
-        Resources: crate::storage::Selector<T, Index>;
-
-    /// Get task statistics for monitoring
-    fn task_stats(&self) -> TaskStats;
-
-    /// Clean up finished tasks
-    fn cleanup_finished_tasks(&self) -> (usize, usize);
+    /// Wait for executor shutdown completion
+    fn join(&self) -> BoxFuture<'static, ()>;
 }
