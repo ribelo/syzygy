@@ -220,6 +220,69 @@ fn update(&self, event: Event, model: &mut Model) -> Command<Event, Effect> {
 }
 ```
 
+## Specialized Executor Architecture
+
+Syzygy uses a specialized two-trait executor system for optimal performance:
+
+### Executor Traits
+
+```rust
+/// Shared lifecycle management for all executor types
+pub trait ExecutorLifecycle: Send + Sync + 'static {
+    fn shutdown(&self);
+    fn join(&self) -> BoxFuture<'static, ()>;
+}
+
+/// Executor specialized for async work (futures)
+pub trait AsyncExecutor<E>: ExecutorLifecycle {
+    fn spawn_future(
+        &self,
+        fut: BoxFuture<'static, EffectOutput<E>>,
+    ) -> BoxFuture<'static, Result<EffectOutput<E>, ExecutorError>>;
+}
+
+/// Executor specialized for blocking/synchronous work  
+pub trait SyncExecutor<E>: ExecutorLifecycle {
+    fn spawn_sync(
+        &self,
+        job: Box<dyn FnOnce() -> EffectOutput<E> + Send>,
+    ) -> BoxFuture<'static, Result<EffectOutput<E>, ExecutorError>>;
+}
+```
+
+### Two-Registry System
+
+The `ExecutorRegistry<E>` maintains separate registries for async and sync executors:
+
+```rust
+pub struct ExecutorRegistry<E> {
+    async_map: FxHashMap<TypeId, Arc<dyn AsyncExecutor<E>>>,
+    sync_map: FxHashMap<TypeId, Arc<dyn SyncExecutor<E>>>,
+}
+
+// Marker traits for type safety
+pub trait AsyncKey: 'static {}  // For I/O-bound work  
+pub trait SyncKey: 'static {}   // For CPU-bound work
+
+// Pre-defined markers
+pub struct Io;     // impl AsyncKey for Io  
+pub struct Cpu;    // impl SyncKey for Cpu
+```
+
+### Key Benefits
+
+1. **Performance**: No more impedance mismatches - async executors don't use `spawn_blocking`, sync executors don't use `block_on`
+2. **Type Safety**: `AsyncKey`/`SyncKey` marker traits prevent async/sync confusion
+3. **Clarity**: API explicitly shows work type intent
+4. **Extensibility**: Easy to register different executors per capability
+
+### Available Executors
+
+- **`TokioExecutor`**: Implements `AsyncExecutor<E>` - dedicated Tokio runtime on own thread
+- **`RayonSyncExecutor`**: Implements `SyncExecutor<E>` - Rayon thread pool for CPU work
+- **`SingleThreadExecutor`**: Implements both traits - single thread with `block_on`/`spawn`
+- **`ThreadPerCoreTokioExecutor`**: Implements `AsyncExecutor<E>` - thread-per-core Tokio
+
 ## High-Performance EffectContext
 
 The EffectContext provides safe, high-performance task spawning:
@@ -367,18 +430,24 @@ cargo test
 Current implementation files:
 - `src/core.rs` - Synchronous Core implementation
 - `src/shell.rs` - Asynchronous Shell implementation
-- `src/command.rs` - Command type and execution
-- `src/async_context.rs` - High-performance EffectContext (24x faster)
+- `src/command/` - Command type and execution (moved to directory)
+- `src/effect_context.rs` - High-performance EffectContext (24x faster)
 - `src/builder.rs` - Simple builder pattern for system construction
 - `src/runner.rs` - Application orchestration
 - `src/event_context.rs` - Context for synchronous update functions
 - `src/effect_handler.rs` - Effect handlers with async function traits
-- `src/extract.rs` - Magic handler parameter extraction
-- `src/magic_handler.rs` - Magic handler implementation
 - `src/spawn.rs` - Runtime-neutral spawn functions
-- `src/task.rs` - Task tracking and management
+
 - `src/timer.rs` - Runtime-neutral timer operations
 - `src/storage/` - UnsafeCell-based storage chains
+- `src/executor/` - **Specialized executor architecture**:
+  - `mod.rs` - `AsyncExecutor<E>`, `SyncExecutor<E>`, `ExecutorLifecycle` traits
+  - `registry.rs` - Two-registry system with `AsyncKey`/`SyncKey` marker traits
+  - `tokio_executor.rs` - Tokio-based async executor
+  - `single_thread_executor.rs` - Single-threaded executor (both async & sync)
+  - `rayon_sync_executor.rs` - Rayon-based sync executor
+  - `thread_per_core_tokio.rs` - Thread-per-core Tokio executor
+  - `spec.rs` - Effect plan routing to appropriate executors
 - `src/error/` - Error types
 - `src/lib.rs` - Public API exports
 
@@ -394,12 +463,14 @@ Current implementation files:
 
 ## Current Status & Knowledge Gaps
 
-✅ **Core Implementation Complete**: EffectContext, magic handlers, storage chains working
-✅ **All Tests Pass**: 57 Rust source files, comprehensive test coverage including 5 critical safety tests  
+✅ **Core Implementation Complete**: EffectContext, magic handlers, storage chains, specialized executors working
+✅ **All Tests Pass**: 29 tests passing, comprehensive test coverage including 5 critical safety tests  
 ✅ **Performance Verified**: 24x faster task spawning, 100K+ events/sec capability
 ✅ **Memory Safety**: All spawned tasks cancelled on context drop
 ✅ **Documentation Updated**: README and examples reflect current API
 ✅ **No App Trait**: Simplified API using direct function handlers
+✅ **Specialized Executors**: Two-trait architecture with `AsyncExecutor<E>` and `SyncExecutor<E>`
+✅ **Proper Feature Gating**: Runtime-specific types only available when features are enabled
 
 ### ✅ **Architecture Questions - ANSWERED**
 

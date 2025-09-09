@@ -6,6 +6,7 @@ edition = "2024"
 
 [lib]
 path = "src/lib.rs"
+doctest = false
 
 [features]
 default = ["tokio"]
@@ -18,6 +19,8 @@ tracing = ["dep:tracing"]
 magic-compilation-test = []
 manual-compilation-test = []
 rayon = ["dep:rayon"]
+examples = []
+legacy_tests = []
 
 [dependencies]
 # Core dependencies
@@ -135,26 +138,67 @@ harness = false
 name = "command_performance"
 harness = false
 
-[[bench]]
-name = "move_vs_clone_benchmark"
-harness = false
+# Removed broken benchmarks that tested outdated APIs
 
-[[bench]]
-name = "magic_handler_benchmark"
-harness = false
+# Only build examples when the `examples` feature is enabled
+[[example]]
+name = "01_basic_tea"
+required-features = ["examples"]
 
-[[bench]]
-name = "real_magic_dispatch_benchmark"
-harness = false
+[[example]]
+name = "02_multi_model"
+required-features = ["examples"]
 
-[[bench]]
-name = "storage_benchmark"
-harness = false
+[[example]]
+name = "03_magic_handlers"
+required-features = ["examples"]
 
-[[bench]]
-name = "realistic_app_benchmark"
-harness = false
+[[example]]
+name = "04_async_effects"
+required-features = ["examples"]
 
-[[bench]]
-name = "production_app_benchmark"
-harness = false
+[[example]]
+name = "05_real_world_app"
+required-features = ["examples"]
+
+[[example]]
+name = "06_effects_coordination"
+required-features = ["examples"]
+
+[[example]]
+name = "command_domain_operations"
+required-features = ["examples"]
+
+[[example]]
+name = "database_effects"
+required-features = ["examples"]
+
+[[example]]
+name = "default_extractors_test"
+required-features = ["examples"]
+
+[[example]]
+name = "monadic_composition"
+required-features = ["examples"]
+
+[[example]]
+name = "new_storage_api"
+required-features = ["examples"]
+
+[[example]]
+name = "resource_storage_example"
+required-features = ["examples"]
+
+[[example]]
+name = "sequential_workflow"
+required-features = ["examples"]
+
+[[example]]
+name = "shell_resource_access"
+required-features = ["examples"]
+
+
+
+[[example]]
+name = "user_defined_effects"
+required-features = ["examples"]

@@ -7,9 +7,10 @@
 //! - Type-safe dependency injection similar to Axum
 //! - Clean handler composition
 
+#[cfg(feature = "tokio")]
 use syzygy::prelude::*;
+#[cfg(feature = "tokio")]
 use syzygy::streaming::EffectResult;
-use syzygy::executor::{TokioExecutor, ExecutorStorage, EmptyExecutorStorage};
 
 // ============================================================================
 // Models and Resources
@@ -106,7 +107,9 @@ fn handle_with_multiple_models(
             );
 
             Command::batch([
-                Command::effect(AppEffect::SaveUser { email: email.clone() }),
+                Command::effect(AppEffect::SaveUser {
+                    email: email.clone(),
+                }),
                 Command::effect(AppEffect::LogActivity {
                     message: format!("Login successful for {}", user.name),
                 }),
@@ -114,7 +117,10 @@ fn handle_with_multiple_models(
                     message: format!("Welcome back, {}!", user.name),
                 }),
                 Command::effect(AppEffect::DatabaseQuery {
-                    query: format!("UPDATE users SET last_login = NOW() WHERE email = '{}'", email),
+                    query: format!(
+                        "UPDATE users SET last_login = NOW() WHERE email = '{}'",
+                        email
+                    ),
                 }),
             ])
         }
@@ -151,10 +157,7 @@ fn handle_config_update(
 // ============================================================================
 
 /// Effect handler with EventSender extraction
-fn handle_with_event_sender(
-    effect: AppEffect,
-    sender: EventSender<AppEvent>,
-) {
+fn handle_with_event_sender(effect: AppEffect, sender: EventSender<AppEvent>) {
     if let AppEffect::SendNotification { message } = effect {
         println!("Sending notification: {message}");
         // Send follow-up event
@@ -184,12 +187,10 @@ async fn handle_with_database(
 }
 
 /// Effect handler with full context access
-fn handle_with_full_context(
-    effect: AppEffect,
-    ctx: EffectContext<AppEvent>,
-) {
+fn handle_with_full_context(effect: AppEffect, ctx: EffectContext<AppEvent>) {
     if let AppEffect::SaveUser { email } = effect {
-        let db_config: &DatabaseConfig = ctx.resource().expect("DatabaseConfig should be available");
+        let db_config: &DatabaseConfig =
+            ctx.resource().expect("DatabaseConfig should be available");
 
         println!(
             "Saving user {} to database {} with pool size {}",
@@ -221,16 +222,12 @@ fn update_app(
 ) -> Command<AppEvent, AppEffect> {
     // Dispatch to appropriate magic handler based on event type
     match event {
-        AppEvent::SystemReady => {
-            event_trigger(event, ctx, handle_simple_event)
-        }
+        AppEvent::SystemReady => event_trigger(event, ctx, handle_simple_event),
         AppEvent::UserLogin { .. } => {
             // Use the multi-model handler for login
             event_trigger(event, ctx, handle_with_multiple_models)
         }
-        AppEvent::UpdateConfig { .. } => {
-            event_trigger(event, ctx, handle_config_update)
-        }
+        AppEvent::UpdateConfig { .. } => event_trigger(event, ctx, handle_config_update),
         AppEvent::UserLogout => {
             // Use single model handler for logout
             event_trigger(event, ctx, handle_with_user_model)
@@ -244,7 +241,11 @@ fn update_app(
 
 async fn handle_effects(
     effect: AppEffect,
-    ctx: EffectContext<AppEvent, Storage<DatabaseConfig, EmptyStorage>, ExecutorStorage<TokioExecutor<AppEvent>, EmptyExecutorStorage>>,
+    ctx: EffectContext<
+        AppEvent,
+        Storage<DatabaseConfig, EmptyStorage>,
+        ExecutorStorage<TokioExecutor<AppEvent>, EmptyExecutorStorage>,
+    >,
 ) -> EffectResult<AppEvent> {
     match &effect {
         AppEffect::LogActivity { message } => {
@@ -270,12 +271,13 @@ async fn handle_effects(
 // Main Demo
 // ============================================================================
 
+#[cfg(all(feature = "tokio", feature = "examples"))]
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("=== Magic Handlers Demo ===");
     println!("Demonstrating automatic parameter extraction\n");
 
-    // Build system with models and resources
+    // Build system with models and resources and default executors
     let (core, shell) = Syzygy::builder()
         .model(UserModel::default())
         .model(ConfigModel {
@@ -289,6 +291,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         })
         .event_handler(update_app)
         .effect_handler(handle_effects)
+        .with_default_executors()
         .build();
     let mut runner = Runner::new(core, shell);
 
@@ -312,7 +315,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Test 3: Config update handler
     println!("3. Testing config update handler");
-    runner.core().send_event(AppEvent::UpdateConfig { debug_mode: true })?;
+    runner
+        .core()
+        .send_event(AppEvent::UpdateConfig { debug_mode: true })?;
     runner.tick(syzygy::spawn::spawner()).await?;
 
     let config: &ConfigModel = runner.core().model();

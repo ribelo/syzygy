@@ -554,6 +554,82 @@ impl syzygy::spawn::Spawn for MySpawner {
 runner.run_until(condition, MySpawner).await?;
 ```
 
+## Executor Architecture
+
+Syzygy provides a specialized executor system for optimal performance with different workload types:
+
+### Executor Types
+
+- **TokioIo**: Async executor optimized for IO-bound work (network, file operations)
+  - Uses `enable_all()` runtime features
+  - Best for network requests, file I/O, database queries
+
+- **TokioCpu**: Async executor optimized for CPU-bound async work
+  - Uses only `enable_time()` for lighter runtime
+  - Best for computation-heavy async tasks
+
+- **RayonSyncExecutor**: Parallel sync executor for CPU-bound work
+  - Uses Rayon's work-stealing thread pool
+  - Best for parallel data processing
+
+- **SingleThreadExecutor**: Single-threaded sync executor
+  - Strict FIFO ordering
+  - Best for sequential operations or single-writer patterns
+
+### Configuration
+
+```rust
+use syzygy::prelude::*;
+
+// Simple default setup (TokioIo + RayonSync)
+let (core, shell) = Syzygy::builder()
+    .model(MyModel::default())
+    .update(my_event_handler)
+    .with_default_executors()
+    .build();
+
+// Custom executor configuration
+let (core, shell) = Syzygy::builder()
+    .model(MyModel::default())
+    .update(my_event_handler)
+    .with_io_executor(Some(8))        // 8 threads for IO
+    .with_cpu_async_executor(Some(4)) // 4 threads for CPU async
+    .with_default_sync_executor()     // Rayon for sync CPU work
+    .build();
+
+// Dual async executors for mixed workloads
+let (core, shell) = Syzygy::builder()
+    .model(MyModel::default())
+    .update(my_event_handler)
+    .with_dual_async_executors()      // Both TokioIo and TokioCpu
+    .with_default_sync_executor()     // Plus sync executor
+    .build();
+```
+
+### IO Runtime Registration
+
+When using IO operations, you must explicitly register the IO runtime:
+
+```rust
+use syzygy::executor::{register_current_runtime_for_io, spawn_io};
+
+#[tokio::main]
+async fn main() {
+    // Register the current runtime for IO operations
+    register_current_runtime_for_io();
+
+    // Now spawn_io will work
+    spawn_io(async {
+        // IO operations here
+        println!("Running on IO runtime");
+    });
+
+    // Your app logic...
+}
+```
+
+**Important**: There is no implicit fallback to the current runtime. You must explicitly call `register_current_runtime_for_io()` or `register_io_runtime()` before using `spawn_io()`.
+
 ## Multi-Executor Routing
 
 Route a single `Effect` enum to different executors using magic extraction. `EffectContext::run_on` builds a per-executor context with that executor’s resources and awaits completion (Batch stays strictly ordered; ParallelEffects fans out and each branch awaits on its chosen executor).

@@ -5,11 +5,11 @@
 
 pub mod command;
 pub mod core;
-pub mod shell;
 pub mod effect;
+pub mod shell;
 
 // Re-export commonly used error types
 pub use command::CommandError;
 pub use core::CoreError;
-pub use shell::ShellError;
 pub use effect::EffectError;
+pub use shell::ShellError;

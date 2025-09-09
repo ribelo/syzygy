@@ -10,32 +10,45 @@
 //! with handlers that send events directly via `EffectContext::send_event`.
 
 use crate::effect_context::EffectContext;
-use futures::StreamExt;
 use futures::future::BoxFuture;
 use futures::stream::BoxStream;
+use futures::StreamExt;
 
 /// Unified effect output: a single event, a stream of events, or none
-pub enum EffectResult<E> {
+pub enum EffectOutput<E> {
     Future(BoxFuture<'static, Vec<E>>),
     Stream(BoxStream<'static, E>),
     None,
 }
 
 /// Consume an `EffectOutput` by sending events via the provided context
-pub async fn consume_effect_output<E, R>(output: EffectResult<E>, ctx: &EffectContext<R>)
+pub async fn consume_effect_output<E, R>(output: EffectOutput<E>, ctx: &EffectContext<E, R>)
 where
     E: Send + 'static,
     R: Clone + Send + Sync + 'static,
 {
     match output {
-        EffectResult::Future(events) => {
-            let _ = ctx.send_event(event);
-        }
-        EffectResult::Stream(mut stream) => {
-            while let Some(event) = stream.next().await {
-                let _ = ctx.send_event(event);
+        EffectOutput::Future(events_future) => {
+            let events = events_future.await;
+            for event in events {
+                ctx.send_event(event);
             }
         }
-        EffectResult::None => {}
+        EffectOutput::Stream(mut stream) => {
+            while let Some(event) = stream.next().await {
+                ctx.send_event(event);
+            }
+        }
+        EffectOutput::None => {}
+    }
+}
+
+impl<E: std::fmt::Debug> std::fmt::Debug for EffectOutput<E> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            EffectOutput::Future(_) => f.debug_tuple("Future").field(&"<future>").finish(),
+            EffectOutput::Stream(_) => f.debug_tuple("Stream").field(&"<stream>").finish(),
+            EffectOutput::None => f.debug_tuple("None").finish(),
+        }
     }
 }

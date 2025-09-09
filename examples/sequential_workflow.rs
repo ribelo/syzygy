@@ -52,7 +52,6 @@ struct WorkflowModel {
     errors: Vec<String>,
 }
 
-
 fn workflow_update(
     event: WorkflowEvent,
     ctx: &mut EventContext<WorkflowEvent, WorkflowEffect, Storage<WorkflowModel, EmptyStorage>>,
@@ -112,10 +111,7 @@ async fn create_effect_handler(
     ctx: EffectContext<WorkflowEvent, EmptyStorage>,
 ) -> EffectResult<WorkflowEvent> {
     match effect {
-        WorkflowEffect::LoginUser {
-            username,
-            password,
-        } => {
+        WorkflowEffect::LoginUser { username, password } => {
             println!("🔐 Logging in user: {username}");
             sleep(Duration::from_millis(100)).await;
 

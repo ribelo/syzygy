@@ -1,4 +1,19 @@
-#![allow(dead_code, clippy::clone_on_ref_ptr, unused_variables, unused_imports, clippy::let_and_return, clippy::format_in_format_args, clippy::unnecessary_wraps, clippy::unused_self, clippy::derivable_impls, clippy::match_same_arms, clippy::cast_possible_truncation, clippy::items_after_statements, clippy::type_complexity, clippy::duplicated_attributes)]
+#![allow(
+    dead_code,
+    clippy::clone_on_ref_ptr,
+    unused_variables,
+    unused_imports,
+    clippy::let_and_return,
+    clippy::format_in_format_args,
+    clippy::unnecessary_wraps,
+    clippy::unused_self,
+    clippy::derivable_impls,
+    clippy::match_same_arms,
+    clippy::cast_possible_truncation,
+    clippy::items_after_statements,
+    clippy::type_complexity,
+    clippy::duplicated_attributes
+)]
 //! Performance Benchmark for Syzygy Optimizations
 //!
 //! This benchmark measures the impact of the implemented performance optimizations:

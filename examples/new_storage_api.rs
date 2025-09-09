@@ -118,7 +118,10 @@ fn update(
 }
 
 // Effect handler
-async fn handle_effects(effect: AppEffect, _ctx: EffectContext<AppEvent, EmptyStorage>) -> EffectResult<AppEvent> {
+async fn handle_effects(
+    effect: AppEffect,
+    _ctx: EffectContext<AppEvent, EmptyStorage>,
+) -> EffectResult<AppEvent> {
     match effect {
         AppEffect::SaveUser { name, email } => {
             println!("💾 Saving user: {name} <{email}>");
@@ -144,6 +147,7 @@ async fn handle_effects(effect: AppEffect, _ctx: EffectContext<AppEvent, EmptySt
     EffectResult::None
 }
 
+#[cfg(feature = "examples")]
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("🚀 Starting Syzygy Storage API Example");

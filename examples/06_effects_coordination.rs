@@ -64,25 +64,32 @@ enum AppEffect {
 // Event Handler - Demonstrating New Effects API
 // ============================================================================
 
-fn handle_event(event: AppEvent, ctx: &mut EventContext<AppEvent, AppEffect, Storage<AppModel, EmptyStorage>>) -> Command<AppEvent, AppEffect> {
+fn handle_event(
+    event: AppEvent,
+    ctx: &mut EventContext<AppEvent, AppEffect, Storage<AppModel, EmptyStorage>>,
+) -> Command<AppEvent, AppEffect> {
     let model = ctx.model_mut();
 
     match event {
         AppEvent::StartBootstrap => {
-            model.messages.push("Starting application bootstrap...".to_string());
+            model
+                .messages
+                .push("Starting application bootstrap...".to_string());
 
             // NEW API: Parallel coordination with barrier
             // Both effects run concurrently, barrier event emitted when both complete
             Effects::new([AppEffect::LoadConfig, AppEffect::LoadUserData])
                 .parallel()
-                .timeout_per(Duration::from_secs(10))  // 10s timeout per effect
-                .label("bootstrap")                    // For tracing/debugging
-                .barrier(AppEvent::BootstrapComplete)  // Emit when all complete
+                .timeout_per(Duration::from_secs(10)) // 10s timeout per effect
+                .label("bootstrap") // For tracing/debugging
+                .barrier(AppEvent::BootstrapComplete) // Emit when all complete
         }
 
         AppEvent::BootstrapComplete => {
             model.bootstrap_complete = true;
-            model.messages.push("Bootstrap completed successfully!".to_string());
+            model
+                .messages
+                .push("Bootstrap completed successfully!".to_string());
             Command::none()
         }
 
@@ -99,29 +106,41 @@ fn handle_event(event: AppEvent, ctx: &mut EventContext<AppEvent, AppEffect, Sto
         }
 
         AppEvent::SelectFastestMirror => {
-            model.messages.push("Selecting fastest mirror...".to_string());
+            model
+                .messages
+                .push("Selecting fastest mirror...".to_string());
 
             // NEW API: Race coordination with barrier
             // First effect to complete wins, others are cancelled, then barrier emitted
             Effects::new([
-                AppEffect::TryMirror { url: "https://mirror1.example.com".to_string() },
-                AppEffect::TryMirror { url: "https://mirror2.example.com".to_string() },
-                AppEffect::TryMirror { url: "https://mirror3.example.com".to_string() },
+                AppEffect::TryMirror {
+                    url: "https://mirror1.example.com".to_string(),
+                },
+                AppEffect::TryMirror {
+                    url: "https://mirror2.example.com".to_string(),
+                },
+                AppEffect::TryMirror {
+                    url: "https://mirror3.example.com".to_string(),
+                },
             ])
             .race()
-            .timeout_per(Duration::from_secs(5))      // 5s timeout per mirror
+            .timeout_per(Duration::from_secs(5)) // 5s timeout per mirror
             .label("mirror-selection")
-            .barrier(AppEvent::MirrorSelected("winner".to_string()))  // Emit when first completes
+            .barrier(AppEvent::MirrorSelected("winner".to_string())) // Emit when first completes
         }
 
         AppEvent::MirrorSelected(mirror) => {
             model.fastest_mirror = Some(mirror.clone());
-            model.messages.push(format!("Fastest mirror selected: {}", mirror));
+            model
+                .messages
+                .push(format!("Fastest mirror selected: {}", mirror));
             Command::none()
         }
 
         AppEvent::StartWorkflow { items } => {
-            model.messages.push(format!("Starting workflow with {} items", items.len()));
+            model
+                .messages
+                .push(format!("Starting workflow with {} items", items.len()));
             model.workflow_step = 0;
 
             // NEW API: Sequential coordination
@@ -131,25 +150,29 @@ fn handle_event(event: AppEvent, ctx: &mut EventContext<AppEvent, AppEffect, Sto
                 .enumerate()
                 .map(|(i, item)| AppEffect::ProcessWorkflowStep {
                     step: i as u32 + 1,
-                    item
+                    item,
                 })
                 .collect();
 
             Effects::new(workflow_effects)
                 .sequence()
-                .stop_on_error(true)                  // Stop if any step fails
+                .stop_on_error(true) // Stop if any step fails
                 .label("workflow")
-                .barrier(AppEvent::WorkflowComplete)  // Emit when all steps complete
+                .barrier(AppEvent::WorkflowComplete) // Emit when all steps complete
         }
 
         AppEvent::WorkflowStepComplete(step) => {
             model.workflow_step = step;
-            model.messages.push(format!("Workflow step {} completed", step));
+            model
+                .messages
+                .push(format!("Workflow step {} completed", step));
             Command::none()
         }
 
         AppEvent::WorkflowComplete => {
-            model.messages.push("Workflow completed successfully!".to_string());
+            model
+                .messages
+                .push("Workflow completed successfully!".to_string());
             Command::none()
         }
 
@@ -163,9 +186,7 @@ fn handle_event(event: AppEvent, ctx: &mut EventContext<AppEvent, AppEffect, Sto
 
             // NEW API: Fire-and-forget parallel cleanup
             // Multiple cleanup tasks run in parallel, no barrier needed
-            Effects::new([AppEffect::Cleanup])
-                .parallel()
-                .spawn()  // Fire-and-forget - don't wait for completion
+            Effects::new([AppEffect::Cleanup]).parallel().spawn() // Fire-and-forget - don't wait for completion
         }
     }
 }
@@ -174,7 +195,10 @@ fn handle_event(event: AppEvent, ctx: &mut EventContext<AppEvent, AppEffect, Sto
 // Effect Handlers
 // ============================================================================
 
-async fn handle_effects(effect: AppEffect, ctx: EffectContext<AppEvent, EmptyStorage>) -> EffectResult<AppEvent> {
+async fn handle_effects(
+    effect: AppEffect,
+    ctx: EffectContext<AppEvent, EmptyStorage>,
+) -> EffectResult<AppEvent> {
     match effect {
         AppEffect::LoadConfig => {
             println!("Loading application config...");
@@ -205,9 +229,9 @@ async fn handle_effects(effect: AppEffect, ctx: EffectContext<AppEvent, EmptySto
 
             // Simulate mirror response time (some are faster than others)
             let delay = if url.contains("mirror1") {
-                Duration::from_millis(300)  // Fastest
+                Duration::from_millis(300) // Fastest
             } else if url.contains("mirror2") {
-                Duration::from_millis(800)  // Medium
+                Duration::from_millis(800) // Medium
             } else {
                 Duration::from_millis(1500) // Slowest
             };
@@ -252,6 +276,8 @@ async fn handle_effects(effect: AppEffect, ctx: EffectContext<AppEvent, EmptySto
 // Demo Scenarios
 // ============================================================================
 
+#[cfg(feature = "examples")]
+#[cfg(feature = "examples")]
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("=== Effects Coordination Demo ===\n");
@@ -283,8 +309,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    println!("Bootstrap status: {}\n",
-        if runner.core().model().bootstrap_complete { "✓ Complete" } else { "✗ Failed" });
+    println!(
+        "Bootstrap status: {}\n",
+        if runner.core().model().bootstrap_complete {
+            "✓ Complete"
+        } else {
+            "✗ Failed"
+        }
+    );
 
     // Demo 2: Race coordination with barrier
     println!("Demo 2: Mirror Selection (Race + Barrier)");
@@ -306,7 +338,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    println!("Selected mirror: {:?}\n", runner.core().model().fastest_mirror);
+    println!(
+        "Selected mirror: {:?}\n",
+        runner.core().model().fastest_mirror
+    );
 
     // Demo 3: Sequential coordination with barrier
     println!("Demo 3: Workflow Processing (Sequential + Barrier)");
@@ -321,7 +356,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "send_notifications".to_string(),
     ];
 
-    runner.core().send_event(AppEvent::StartWorkflow { items: workflow_items })?;
+    runner.core().send_event(AppEvent::StartWorkflow {
+        items: workflow_items,
+    })?;
 
     // Wait for workflow completion
     for _ in 0..30 {
@@ -334,7 +371,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    println!("Workflow steps completed: {}\n", runner.core().model().workflow_step);
+    println!(
+        "Workflow steps completed: {}\n",
+        runner.core().model().workflow_step
+    );
 
     // Demo 4: Fire-and-forget coordination
     println!("Demo 4: Shutdown (Fire-and-forget)");
@@ -350,11 +390,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Print final state
     println!("=== Final Application State ===");
-    println!("Bootstrap: {}",
-        if runner.core().model().bootstrap_complete { "✓" } else { "✗" });
+    println!(
+        "Bootstrap: {}",
+        if runner.core().model().bootstrap_complete {
+            "✓"
+        } else {
+            "✗"
+        }
+    );
     println!("Config: {:?}", runner.core().model().config);
     println!("User Data: {:?}", runner.core().model().user_data);
-    println!("Selected Mirror: {:?}", runner.core().model().fastest_mirror);
+    println!(
+        "Selected Mirror: {:?}",
+        runner.core().model().fastest_mirror
+    );
     println!("Workflow Steps: {}", runner.core().model().workflow_step);
     println!("\nMessage Log:");
     for (i, msg) in runner.core().model().messages.iter().enumerate() {

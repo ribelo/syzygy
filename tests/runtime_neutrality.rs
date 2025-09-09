@@ -1,4 +1,11 @@
-#![allow(dead_code, clippy::clone_on_ref_ptr, unused_variables, unused_imports, clippy::let_and_return, clippy::format_in_format_args)]
+#![allow(
+    dead_code,
+    clippy::clone_on_ref_ptr,
+    unused_variables,
+    unused_imports,
+    clippy::let_and_return,
+    clippy::format_in_format_args
+)]
 //! Minimal runtime neutrality test
 //!
 //! Verifies Syzygy works with the primary runtime (tokio) and auto-detection.
@@ -7,7 +14,12 @@
 use std::time::Duration;
 use syzygy::prelude::*;
 use syzygy::spawn::spawner;
-use syzygy::streaming::EffectResult;
+use syzygy::storage::Selector;
+use syzygy::streaming::EffectOutput;
+use syzygy::executor::TokioIo;
+use futures::FutureExt;
+
+
 
 #[derive(Debug, Clone)]
 enum TestEvent {
@@ -27,12 +39,12 @@ enum TestEffect {
     Delay(Duration),
 }
 
-
 fn test_update(
     event: TestEvent,
-    ctx: &mut EventContext<TestEvent, TestEffect, Storage<TestModel, EmptyStorage>>
+    ctx: &mut EventContext<TestEvent, TestEffect, Storage<TestModel, EmptyStorage>>,
 ) -> Command<TestEvent, TestEffect> {
-    let model: &mut TestModel = ctx.model_mut();
+    let storage: &mut Storage<TestModel, EmptyStorage> = ctx.model_mut();
+    let model: &mut TestModel = storage.get_mut();
     match event {
         TestEvent::Start => {
             model.step = 1;
@@ -49,10 +61,16 @@ fn test_update(
     }
 }
 
-async fn test_effect_handler(effect: TestEffect, ctx: EffectContext<TestEvent, EmptyStorage>) -> EffectResult<TestEvent> {
+fn test_effect_handler(
+    effect: TestEffect,
+    _ctx: &EffectContext<TestEvent, EmptyStorage>,
+) -> syzygy::executor::EffectPlan<TestEvent, EmptyStorage> {
     match effect {
-        TestEffect::Delay(duration) => {
-            // Use runtime-neutral sleep
+        TestEffect::Delay(duration) => syzygy::executor::EffectPlan::future_on::<
+            TokioIo,
+            _,
+            _,
+        >(move |_ctx| async move {
             #[cfg(feature = "tokio")]
             tokio::time::sleep(duration).await;
 
@@ -62,9 +80,8 @@ async fn test_effect_handler(effect: TestEffect, ctx: EffectContext<TestEvent, E
             #[cfg(all(feature = "async-std", not(feature = "tokio"), not(feature = "smol")))]
             async_std::task::sleep(duration).await;
 
-            // Return event using streaming API
-            EffectResult::Single(TestEvent::Work)
-        }
+            EffectOutput::Future(async move { vec![TestEvent::Work] }.boxed())
+        }),
     }
 }
 
@@ -75,6 +92,7 @@ async fn test_runtime_auto_detection() {
         .model(TestModel::default())
         .event_handler(test_update)
         .effect_handler(test_effect_handler)
+        .with_default_executors()
         .build();
 
     let mut runner = Runner::new(core, shell);
@@ -85,16 +103,13 @@ async fn test_runtime_auto_detection() {
 
     // Run until completed - using auto-detection spawner
     runner
-        .run_until(
-            |core, _shell| core.model().completed,
-            spawner(),
-        )
+        .run_until(|core, _shell| core.model().get().completed, spawner())
         .await
         .unwrap();
 
     // Verify the sequence completed
-    assert_eq!(runner.core().model().step, 2);
-    assert!(runner.core().model().completed);
+    assert_eq!(runner.core().model().get().step, 2);
+    assert!(runner.core().model().get().completed);
 }
 
 #[cfg(feature = "tokio")]
@@ -104,6 +119,7 @@ async fn test_explicit_tokio_runtime() {
         .model(TestModel::default())
         .event_handler(test_update)
         .effect_handler(test_effect_handler)
+        .with_default_executors()
         .build();
 
     let mut runner = Runner::new(core, shell);
@@ -114,12 +130,12 @@ async fn test_explicit_tokio_runtime() {
     // Run with explicit tokio spawn
     runner
         .run_until(
-            |core, _shell| core.model().completed,
+            |core, _shell| core.model().get().completed,
             syzygy::spawn::TokioSpawn,
         )
         .await
         .unwrap();
 
-    assert_eq!(runner.core().model().step, 2);
-    assert!(runner.core().model().completed);
+    assert_eq!(runner.core().model().get().step, 2);
+    assert!(runner.core().model().get().completed);
 }

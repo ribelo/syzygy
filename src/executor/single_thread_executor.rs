@@ -1,218 +1,262 @@
-//! SingleThreadExecutor - Sequential, single-threaded executor for serialized tasks
-//!
-//! This executor runs all submitted futures on a dedicated OS thread, one after another,
-//! guaranteeing strict FIFO ordering. It's ideal for single-writer patterns like
-//! database writes where concurrent access must be avoided.
-
-use crate::error::ShellError;
-use crate::task::{TaskId, TaskStats, TaskTracker};
-use crate::timer::{Time, time};
-use crossbeam_channel::{unbounded, Sender};
-use futures_util::future::BoxFuture;
-use std::future::Future;
+use std::any::Any;
+use std::fmt;
 use std::sync::{Arc, Mutex};
 
-/// Internal work queue type
-type Job = BoxFuture<'static, ()>;
+use crossbeam_channel::{unbounded, Receiver, Sender};
+use futures::channel::oneshot;
+use futures_util::future::{BoxFuture, FutureExt, Shared};
 
-/// SingleThreadExecutor provides FIFO, single-threaded task execution
-pub struct SingleThreadExecutor<Event, Resources = EmptyStorage>
-where
-    Event: Clone + Send + 'static,
-    Resources: Clone + Send + Sync + 'static,
-{
-    task_tracker: Arc<Mutex<TaskTracker>>,
-    event_tx: Option<Sender<Event>>,
-    resources: Resources,
-    runtime: Time,
-    job_tx: Sender<Job>,
+use std::panic::{catch_unwind, AssertUnwindSafe};
+
+use crate::executor::{ExecutorError, ExecutorLifecycle, SyncExecutor};
+use crate::streaming::EffectOutput;
+
+/// SingleThreadExecutor — FIFO, single-worker executor for sync work only
+///
+/// - Sync jobs: executed in strict FIFO order on a dedicated worker thread
+/// - Cancellation is supported via oneshot close (cancel-on-drop of the join future)
+/// - Panic isolation: panics in jobs are caught and mapped to ExecutorError::Panic
+///
+/// Notes:
+/// - This executor is runtime-neutral and only supports synchronous work
+/// - For single-threaded async work, use TokioExecutor::current_thread_* instead
+/// - All jobs run on a dedicated worker thread to avoid blocking the main thread
+pub struct SingleThreadExecutor {
+    state: Arc<State>,
 }
 
-impl<Event> SingleThreadExecutor<Event, EmptyStorage>
-where
-    Event: Clone + Send + 'static,
-{
-    /// Create a new SingleThreadExecutor with default configuration
+impl fmt::Debug for SingleThreadExecutor {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        "SingleThreadExecutor".fmt(f)
+    }
+}
+
+impl SingleThreadExecutor {
+    /// Create a new single-threaded executor for synchronous work
+    ///
+    /// This executor runs all jobs on a single dedicated thread in strict FIFO order.
+    /// It's ideal for:
+    /// - Database writes that must be sequential
+    /// - State mutations that require ordering guarantees
+    /// - Work that should not block async runtimes
+    ///
+    /// # Panics
+    /// 
+    /// Panics if the worker thread cannot be spawned.
+    #[must_use]
     pub fn new() -> Self {
-        let (job_tx, job_rx) = unbounded::<Job>();
+        let (tx, rx) = unbounded::<Job>();
+        let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
 
-        // Spawn dedicated worker thread that runs jobs sequentially
-        std::thread::spawn(move || {
-            while let Ok(job) = job_rx.recv() {
-                // Run the future to completion sequentially
-                futures::executor::block_on(job);
-            }
-        });
+        let thread = std::thread::Builder::new()
+            .name("syzygy-single-executor".to_string())
+            .spawn(move || worker_loop(rx, shutdown_tx))
+            .expect("failed to spawn single-thread executor worker");
+
+        let completed_shutdown: Shared<BoxFuture<'static, ()>> = futures_util::FutureExt::boxed(async move {
+            // Ignore errors if the sender was dropped without sending
+            let _ = shutdown_rx.await;
+        })
+        .shared();
+
+        let state = State {
+            tx: Mutex::new(Some(tx)),
+            completed_shutdown,
+            thread: Mutex::new(Some(thread)),
+        };
 
         Self {
-            task_tracker: Arc::new(Mutex::new(TaskTracker::new())),
-            event_tx: None,
-            resources: Default::default(),
-            runtime: time(),
-            job_tx,
+            state: Arc::new(state),
         }
     }
 }
 
-impl<Event> Default for SingleThreadExecutor<Event, EmptyStorage>
+
+
+impl<E> SyncExecutor<E> for SingleThreadExecutor
 where
-    Event: Clone + Send + 'static,
+    E: Send + 'static,
 {
-    fn default() -> Self {
-        Self::new()
+    /// Spawn a synchronous job on the single worker thread
+    ///
+    /// Jobs are executed in strict FIFO order on a dedicated thread.
+    /// This provides deterministic execution ordering and prevents
+    /// blocking of async runtimes.
+    ///
+    /// # Cancellation
+    ///
+    /// Dropping the returned future cancels the job if it hasn't started
+    /// execution yet. Once a job starts running, cancellation is cooperative
+    /// and depends on the job's implementation.
+    fn spawn_sync(
+        &self,
+        job: Box<dyn FnOnce() -> EffectOutput<E> + Send>,
+    ) -> BoxFuture<'static, Result<EffectOutput<E>, ExecutorError>> {
+        // Wrap job to type erase its output
+        let wrapped_job: Box<dyn FnOnce() -> Box<dyn Any + Send> + Send> =
+            Box::new(move || -> Box<dyn Any + Send> { Box::new(job()) });
+
+        let (tx_result, rx_result) = oneshot::channel::<Result<Box<dyn Any + Send>, ExecutorError>>();
+
+        let send_res = {
+            let guard = self.state.tx.lock().expect("executor state poisoned");
+            if let Some(sender) = guard.as_ref() {
+                sender.send(Job::Sync {
+                    job: wrapped_job,
+                    tx: tx_result,
+                })
+            } else {
+                Err(crossbeam_channel::SendError(Job::Shutdown))
+            }
+        };
+
+        if send_res.is_err() {
+            return futures_util::future::err(ExecutorError::WorkerGone).boxed();
+        }
+
+        // No cancellation for sync jobs, just await completion
+        JoinFuture::<E>::new(rx_result).boxed()
     }
 }
 
-impl<Event, Resources> SingleThreadExecutor<Event, Resources>
-where
-    Event: Clone + Send + 'static,
-    Resources: Clone + Send + Sync + 'static,
-{
-    /// Set the event sender for this executor
-    pub fn with_event_sender(mut self, event_tx: Sender<Event>) -> Self {
-        self.event_tx = Some(event_tx);
-        self
-    }
-
-    /// Add a resource to this executor
-    pub fn with_resource<R: Send + Sync + 'static>(
-        self,
-        resource: R,
-    ) -> SingleThreadExecutor<Event, <Resources as StorageBuilder<R>>::Output>
-    where
-        Resources: StorageBuilder<R>,
-        <Resources as StorageBuilder<R>>::Output: Clone + Send + Sync + 'static,
-    {
-        SingleThreadExecutor {
-            task_tracker: self.task_tracker.clone(),
-            event_tx: self.event_tx.clone(),
-            resources: self.resources.clone().with_model(resource),
-            runtime: self.runtime,
-            job_tx: self.job_tx.clone(),
+impl ExecutorLifecycle for SingleThreadExecutor {
+    fn shutdown(&self) {
+        let mut guard = self.state.tx.lock().expect("executor state poisoned");
+        if let Some(sender) = guard.take() {
+            // Signal shutdown; ignoring send error if worker already exited
+            let _ = sender.send(Job::Shutdown);
         }
     }
 
-    /// Get task statistics
-    pub fn task_stats(&self) -> TaskStats {
-        if let Ok(tracker) = self.task_tracker.lock() {
-            TaskStats {
-                active_tasks: tracker.active_count(),
-                is_closed: tracker.is_closed(),
+    fn join(&self) -> BoxFuture<'static, ()> {
+        // Initiate shutdown and then await completion
+        self.shutdown();
+        let fut = self.state.completed_shutdown.clone();
+        async move {
+            let _ = fut.await;
+        }
+        .boxed()
+    }
+}
+
+struct State {
+    tx: Mutex<Option<Sender<Job>>>,
+    completed_shutdown: Shared<BoxFuture<'static, ()>>,
+    thread: Mutex<Option<std::thread::JoinHandle<()>>>,
+}
+
+impl Drop for State {
+    fn drop(&mut self) {
+        // Ensure shutdown signal is sent
+        if let Ok(mut guard) = self.tx.lock() {
+            if let Some(sender) = guard.take() {
+                let _ = sender.send(Job::Shutdown);
+            }
+        }
+
+        // Try to advance completion without blocking runtime executors
+        let _ = self.completed_shutdown.clone().now_or_never();
+
+        // Join OS thread to avoid leaks
+        if let Ok(mut th) = self.thread.lock() {
+            if let Some(handle) = th.take() {
+                let _ = handle.join();
+            }
+        }
+    }
+}
+
+enum Job {
+    Sync {
+        job: Box<dyn FnOnce() -> Box<dyn Any + Send> + Send>,
+        tx: oneshot::Sender<Result<Box<dyn Any + Send>, ExecutorError>>,
+    },
+    Shutdown,
+}
+
+fn worker_loop(rx: Receiver<Job>, shutdown_tx: oneshot::Sender<()>) {
+    // FIFO processing of sync jobs on this single worker thread
+    while let Ok(job) = rx.recv() {
+        match job {
+            Job::Sync { job, tx } => {
+                // Catch panics and map to ExecutorError::Panic
+                let res = catch_unwind(AssertUnwindSafe(job))
+                    .map_err(|p| ExecutorError::Panic { msg: panic_to_msg(p) });
+
+                let _ = tx.send(res);
+            }
+            Job::Shutdown => break,
+        }
+    }
+
+    // Notify completion
+    let _ = shutdown_tx.send(());
+}
+
+fn panic_to_msg(p: Box<dyn Any + Send>) -> String {
+    if let Some(s) = p.downcast_ref::<String>() {
+        s.clone()
+    } else if let Some(s) = p.downcast_ref::<&str>() {
+        (*s).to_string()
+    } else {
+        "unknown internal error".to_string()
+    }
+}
+
+struct JoinFuture<E> {
+    rx: Option<oneshot::Receiver<Result<Box<dyn Any + Send>, ExecutorError>>>,
+    _phantom: std::marker::PhantomData<E>,
+}
+
+impl<E> JoinFuture<E> {
+    fn new(
+        rx: oneshot::Receiver<Result<Box<dyn Any + Send>, ExecutorError>>,
+    ) -> Self {
+        Self {
+            rx: Some(rx),
+            _phantom: std::marker::PhantomData,
+        }
+    }
+}
+
+impl<E> std::future::Future for JoinFuture<E>
+where
+    E: Send + 'static,
+{
+    type Output = Result<EffectOutput<E>, ExecutorError>;
+
+    fn poll(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Self::Output> {
+        use futures_util::FutureExt;
+
+        // SAFETY: JoinFuture contains no self-referential or pinned fields. We only access
+        // interior state (rx) and do not move the struct after it has been pinned. Using
+        // get_unchecked_mut here avoids requiring Unpin while remaining sound.
+        let this = unsafe { self.get_unchecked_mut() };
+        if let Some(rx) = &mut this.rx {
+            match rx.poll_unpin(cx) {
+                std::task::Poll::Pending => std::task::Poll::Pending,
+                std::task::Poll::Ready(res) => {
+                    this.rx = None;
+                    let out = match res {
+                        Ok(Ok(boxed)) => {
+                            // Downcast to the expected EffectOutput<E>
+                            match boxed.downcast::<EffectOutput<E>>() {
+                                Ok(typed) => Ok(*typed),
+                                Err(_boxed) => Err(ExecutorError::WorkerGone),
+                            }
+                        }
+                        Ok(Err(err)) => Err(err),
+                        Err(_canceled) => Err(ExecutorError::WorkerGone),
+                    };
+                    std::task::Poll::Ready(out)
+                }
             }
         } else {
-            TaskStats { active_tasks: 0, is_closed: true }
+            // Already resolved
+            std::task::Poll::Ready(Err(ExecutorError::WorkerGone))
         }
-    }
-
-    /// Cleanup finished tasks and return (cleaned_count, active_count)
-    pub fn cleanup_finished_tasks(&self) -> (usize, usize) {
-        if let Ok(mut tracker) = self.task_tracker.lock() {
-            let cleaned = tracker.active_count();
-            tracker.cleanup_finished();
-            let active = tracker.active_count();
-            (cleaned, active)
-        } else {
-            (0, 0)
-        }
-    }
-}
-
-impl<Event, Resources> Clone for SingleThreadExecutor<Event, Resources>
-where
-    Event: Clone + Send + 'static,
-    Resources: Clone + Send + Sync + 'static,
-{
-    fn clone(&self) -> Self {
-        Self {
-            task_tracker: Arc::clone(&self.task_tracker),
-            event_tx: self.event_tx.clone(),
-            resources: self.resources.clone(),
-            runtime: self.runtime,
-            job_tx: self.job_tx.clone(),
-        }
-    }
-}
-
-// Implement SpawnExecutor over a single-thread worker
-impl<Event, Resources> crate::executor::Executor<Event, Resources> for SingleThreadExecutor<Event, Resources>
-where
-    Event: Clone + Send + 'static,
-    Resources: Clone + Send + Sync + 'static,
-{
-    fn spawn<F>(&self, future: F) -> Result<TaskId, ShellError>
-    where
-        F: Future<Output = ()> + Send + 'static,
-    {
-        // Use TaskTracker to register the task and enqueue the job
-        if let Ok(mut tracker) = self.task_tracker.lock() {
-            let handle = tracker.spawn(
-                |fut| {
-                    // Enqueue the future into the single-thread queue
-                    // Wrap in a BoxFuture to unify type at the queue boundary
-                    let _ = self.job_tx.send(Box::pin(fut));
-                },
-                move |is_finished| async move {
-                    future.await;
-                    is_finished.store(true, std::sync::atomic::Ordering::Relaxed);
-                },
-            )?;
-            Ok(handle.id())
-        } else {
-            Err(ShellError::TaskTrackerClosed)
-        }
-    }
-
-    fn spawn_batch<I>(&self, futures: I) -> Result<Vec<TaskId>, ShellError>
-    where
-        I: IntoIterator,
-        I::Item: Future<Output = ()> + Send + 'static,
-    {
-        let mut ids = Vec::new();
-        for fut in futures {
-            ids.push(self.spawn(fut)?);
-        }
-        Ok(ids)
-    }
-
-    fn spawn_with_timeout<F>(&self, _duration: std::time::Duration, future: F) -> Result<TaskId, ShellError>
-    where
-        F: Future<Output = ()> + Send + 'static,
-    {
-        // Best-effort: single-threaded executor does not enforce timeouts.
-        // Users should implement cooperative cancellation within the future.
-        self.spawn(future)
-    }
-
-    fn runtime(&self) -> Time {
-        self.runtime
-    }
-
-    fn resource<T, Index>(&self) -> &T
-    where
-        Resources: crate::storage::Selector<T, Index>,
-    {
-        self.resources.get()
-    }
-
-    fn task_stats(&self) -> TaskStats {
-        self.task_stats()
-    }
-
-    fn cleanup_finished_tasks(&self) -> (usize, usize) {
-        self.cleanup_finished_tasks()
-    }
-}
-
-// Provide access to the executor's resource storage for magic handler helpers
-impl<Event, Resources> crate::executor::HasExecutorResources<Event>
-    for SingleThreadExecutor<Event, Resources>
-where
-    Event: Clone + Send + 'static,
-    Resources: Clone + Send + Sync + 'static,
-{
-    type Resources = Resources;
-
-    fn clone_resources(&self) -> Self::Resources {
-        self.resources.clone()
     }
 }

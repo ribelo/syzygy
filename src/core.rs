@@ -147,9 +147,13 @@ where
         (processed_any, self.command_buffer.clone())
     }
 
-    /// Send an event to be processed in the next tick
-    pub fn send_event(&self, event: E) -> Result<(), crossbeam_channel::SendError<E>> {
-        self.event_tx.send(event)
+    /// Send an event to be processed in the next tick.
+    ///
+    /// This expects the Core is alive and will panic if the event channel is closed.
+    pub fn send_event(&self, event: E) {
+        self.event_tx
+            .send(event)
+            .expect("event channel is closed; Runner/Core should own the receiver while running");
     }
 
     /// Get a sender for external events
@@ -172,17 +176,26 @@ where
         &mut self.model
     }
 
-    /// Get the number of pending events
+    /// Get the current count of pending events.
+    ///
+    /// Returns a snapshot count of events waiting to be processed: queue + channel.
+    /// This value can change immediately due to concurrent senders. Intended for
+    /// metrics, logging, or heuristic backpressure decisions.
     #[must_use]
-    pub fn pending_events(&self) -> usize {
-        // Count both queue and channel
+    pub fn pending_count(&self) -> usize {
         let channel_count = self.event_rx.len();
         self.event_queue.len() + channel_count
     }
 
-    /// Check if there are any pending events
+    /// Check if there are any pending events.
+    ///
+    /// Returns `true` if either the internal queue or inbound channel currently
+    /// holds at least one event. This is a snapshot only; new events may arrive
+    /// immediately after this returns. Use for control flow decisions like
+    /// whether to continue ticking.
     #[must_use]
     pub fn has_pending_events(&self) -> bool {
+        // Early-out optimization: check local queue first since it's cheaper
         !self.event_queue.is_empty() || !self.event_rx.is_empty()
     }
 }
@@ -267,15 +280,15 @@ mod tests {
 
         let (mut core, sender) = Core::new(counter_update, model);
 
-        assert_eq!(core.pending_events(), 0);
+        assert_eq!(core.pending_count(), 0);
         assert!(!core.has_pending_events());
 
         sender.send(TestEvent::Increment).unwrap();
-        assert!(core.pending_events() > 0);
+        assert!(core.pending_count() > 0);
         assert!(core.has_pending_events());
 
         core.process_events();
-        assert_eq!(core.pending_events(), 0);
+        assert_eq!(core.pending_count(), 0);
         assert!(!core.has_pending_events());
     }
 

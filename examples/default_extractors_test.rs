@@ -130,7 +130,7 @@ fn handle_with_multiple_models(
 // Test Runner
 // ============================================================================
 
-
+#[cfg(feature = "examples")]
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("🧪 Testing Default Magic Handler Extractors");

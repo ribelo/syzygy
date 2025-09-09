@@ -30,8 +30,6 @@ struct DemoModel {
     click_count: u32,
 }
 
-
-
 // ============================================================================
 // Magic Event Handlers - Clean Monadic Composition
 // ============================================================================
@@ -40,7 +38,7 @@ struct DemoModel {
 fn handle_user_click(event: DemoEvent, model: &mut DemoModel) -> Command<DemoEvent, DemoEffect> {
     if let DemoEvent::UserClicked = event {
         model.click_count += 1;
-        
+
         // Demonstrate monadic composition with conditional logic
         Command::effect(DemoEffect::LoadUser)
             .and_then(|outputs| {
@@ -96,7 +94,7 @@ fn handle_simple_message(event: DemoEvent) -> Command<DemoEvent, DemoEffect> {
         DemoEvent::UserNotFound | DemoEvent::ProcessComplete => {
             Command::effect(DemoEffect::ShowMessage)
         }
-        _ => Command::none()
+        _ => Command::none(),
     }
 }
 
@@ -119,10 +117,11 @@ fn demo_update(
     }
 }
 
+#[cfg(feature = "examples")]
 fn main() {
     println!("Monadic Command Composition with Magic Handlers Demo");
     println!("===================================================");
-    
+
     println!("This example demonstrates:");
     println!("• Monadic command composition (.and_then, .when, .or_else, .then)");
     println!("• Magic handlers with automatic parameter extraction");
@@ -139,23 +138,32 @@ fn main() {
     println!("=== Test 1: Authenticated User Click ===");
     let mut ctx = EventContext::new(&mut storage);
     let command = demo_update(DemoEvent::UserClicked, &mut ctx);
-    
+
     let model: &DemoModel = ctx.model();
     println!("Click count after processing: {}", model.click_count);
     println!("User authenticated: {}", model.user_authenticated);
     println!("Command created with {} outputs:", command.len());
-    
+
     for (i, output) in command.into_iter().enumerate() {
         match output {
             CommandStep::Event(event) => println!("  {}: Event - {:?}", i + 1, event),
             CommandStep::Effect(effect) => println!("  {}: Effect - {:?}", i + 1, effect),
             CommandStep::Batch(effects) => {
-                println!("  {}: Sequential Effects - {} effects", i + 1, effects.len());
+                println!(
+                    "  {}: Sequential Effects - {} effects",
+                    i + 1,
+                    effects.len()
+                );
                 for (j, effect) in effects.iter().enumerate() {
                     println!("    {}.{}: {:?}", i + 1, j + 1, effect);
                 }
             }
-            CommandStep::Group { effects, mode: GroupMode::Parallel, barrier: None, timeout_per: None } => {
+            CommandStep::Group {
+                effects,
+                mode: GroupMode::Parallel,
+                barrier: None,
+                timeout_per: None,
+            } => {
                 println!("  {}: Parallel Effects - {} effects", i + 1, effects.len());
                 for (j, effect) in effects.iter().enumerate() {
                     println!("    {}.{}: {:?}", i + 1, j + 1, effect);
@@ -175,17 +183,21 @@ fn main() {
         },
         &mut ctx2,
     );
-    
+
     let model2: &DemoModel = ctx2.model();
     println!("Data loaded: {:?}", model2.data);
     println!("Filtered command with {} outputs:", command2.len());
-    
+
     for (i, output) in command2.into_iter().enumerate() {
         match output {
             CommandStep::Event(event) => println!("  {}: Event - {:?}", i + 1, event),
             CommandStep::Effect(effect) => println!("  {}: Effect - {:?}", i + 1, effect),
             CommandStep::Batch(effects) => {
-                println!("  {}: Sequential Effects - {} effects", i + 1, effects.len());
+                println!(
+                    "  {}: Sequential Effects - {} effects",
+                    i + 1,
+                    effects.len()
+                );
                 for (j, effect) in effects.iter().enumerate() {
                     println!("    {}.{}: {:?}", i + 1, j + 1, effect);
                 }
@@ -193,7 +205,7 @@ fn main() {
             _ => println!("  {}: Other command step", i + 1),
         }
     }
-    
+
     // Test 3: Unauthenticated user (demonstrates .or_else fallback)
     println!("\n=== Test 3: Unauthenticated User (Fallback) ===");
     let mut storage3 = EmptyStorage.with_model(DemoModel {
@@ -202,7 +214,7 @@ fn main() {
     });
     let mut ctx3 = EventContext::new(&mut storage3);
     let command3 = demo_update(DemoEvent::UserClicked, &mut ctx3);
-    
+
     println!("Unauthenticated command with {} outputs:", command3.len());
     for (i, output) in command3.into_iter().enumerate() {
         match output {

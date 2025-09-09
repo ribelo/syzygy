@@ -1,4 +1,19 @@
-#![allow(dead_code, clippy::clone_on_ref_ptr, unused_variables, unused_imports, clippy::let_and_return, clippy::format_in_format_args, clippy::unnecessary_wraps, clippy::unused_self, clippy::derivable_impls, clippy::match_same_arms, clippy::cast_possible_truncation, clippy::items_after_statements, clippy::type_complexity, clippy::duplicated_attributes)]
+#![allow(
+    dead_code,
+    clippy::clone_on_ref_ptr,
+    unused_variables,
+    unused_imports,
+    clippy::let_and_return,
+    clippy::format_in_format_args,
+    clippy::unnecessary_wraps,
+    clippy::unused_self,
+    clippy::derivable_impls,
+    clippy::match_same_arms,
+    clippy::cast_possible_truncation,
+    clippy::items_after_statements,
+    clippy::type_complexity,
+    clippy::duplicated_attributes
+)]
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
 use syzygy::command::CommandStep;
 use syzygy::prelude::*;
@@ -90,7 +105,7 @@ fn bench_command_iteration(c: &mut Criterion) {
             for output in black_box(small_cmd.clone()) {
                 count += match output {
                     CommandStep::Event(_) | CommandStep::Effect(_) => 1,
-                    CommandStep::Batch(e) | CommandStep::Group { effects: e, .. } => e.len(),
+                    CommandStep::Batch(e) => e.len(),
                 };
             }
             black_box(count)
@@ -103,7 +118,7 @@ fn bench_command_iteration(c: &mut Criterion) {
             for output in black_box(large_cmd.clone()) {
                 count += match output {
                     CommandStep::Event(_) | CommandStep::Effect(_) => 1,
-                    CommandStep::Batch(e) | CommandStep::Group { effects: e, .. } => e.len(),
+                    CommandStep::Batch(e) => e.len(),
                 };
             }
             black_box(count)
@@ -130,13 +145,11 @@ fn bench_command_composition(c: &mut Criterion) {
         });
     });
 
-    c.bench_function("append_commands", |b| {
+    c.bench_function("batch_commands", |b| {
         b.iter(|| {
-            let mut cmd = Command::<BenchEvent, BenchEffect>::none();
-            for base_cmd in &base_commands {
-                cmd = cmd.append(base_cmd.clone());
-            }
-            black_box(cmd)
+            black_box(Command::<BenchEvent, BenchEffect>::batch(
+                base_commands.clone()
+            ))
         });
     });
 }

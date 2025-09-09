@@ -68,7 +68,6 @@ struct AppModel {
     last_error: Option<String>,
 }
 
-
 fn database_update(
     event: AppEvent,
     ctx: &mut EventContext<AppEvent, AppEffect, Storage<AppModel, EmptyStorage>>,
@@ -143,15 +142,15 @@ fn database_update(
     }
 }
 
-
-async fn handle_effects(
-    effect: AppEffect,
-    ctx: EffectContext<AppEvent>,
-) -> EffectResult<AppEvent> {
+async fn handle_effects(effect: AppEffect, ctx: EffectContext<AppEvent>) -> EffectResult<AppEvent> {
     match effect {
         AppEffect::GetUser { user_id, table } => {
-            let resources: &AppResources = ctx.resource().expect("AppResources should be available");
-            println!("🔍 Getting user {user_id} from table {table} (db: {})", resources.database_url);
+            let resources: &AppResources =
+                ctx.resource().expect("AppResources should be available");
+            println!(
+                "🔍 Getting user {user_id} from table {table} (db: {})",
+                resources.database_url
+            );
 
             // Simulate database query
             #[cfg(feature = "tokio")]
@@ -258,18 +257,21 @@ fn simulate_database_save(_table: &str, user: &User) -> Result<(), String> {
     Ok(())
 }
 
+#[cfg(feature = "examples")]
 #[cfg(feature = "tokio")]
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     run_demo().await
 }
 
+#[cfg(feature = "examples")]
 #[cfg(all(not(feature = "tokio"), feature = "async-std"))]
 #[async_std::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     run_demo().await
 }
 
+#[cfg(feature = "examples")]
 #[cfg(all(not(feature = "tokio"), not(feature = "async-std")))]
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("This example requires either 'tokio' or 'async-std' feature");
@@ -301,7 +303,7 @@ async fn run_demo() -> Result<(), Box<dyn std::error::Error>> {
     // Connect to database first
     println!("🚀 Step 1: Connecting to database...");
     runner.core().send_event(AppEvent::ConnectDatabase {
-        connection_string: "postgresql://localhost/demo".to_string()
+        connection_string: "postgresql://localhost/demo".to_string(),
     })?;
     runner.tick(syzygy::spawn::spawner()).await?;
 

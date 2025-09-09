@@ -387,13 +387,11 @@
 //! ```
 
 // Core modules
-pub mod effect_context;
 pub mod command;
 pub mod core;
+pub mod effect_context;
 pub mod runner;
 pub mod shell;
-pub mod task;
-pub mod task_collector;
 
 // Builder pattern
 pub mod builder;
@@ -418,6 +416,7 @@ pub mod spawn;
 
 // Executor system for specialized effect handling
 pub mod executor;
+pub mod storage;
 
 // Optional streaming helpers to unify single vs stream outputs
 pub mod streaming;
@@ -428,7 +427,7 @@ pub mod prelude {
     pub use crate::event_context::EventContext;
 
     // Command system
-    pub use crate::command::{Command, CommandStep, Effects};
+    pub use crate::command::{Command, CommandStep};
 
     // Core/Shell architecture
     pub use crate::core::{Core, EventHandler};
@@ -460,7 +459,6 @@ pub mod prelude {
     ///         .build()
     /// }
     /// ```
-
     // Effect handlers with AFIT
     pub use crate::effect_handler::EffectHandler;
 
@@ -470,25 +468,27 @@ pub mod prelude {
     // Spawn adapters for runtime neutrality
     pub use crate::spawn::{AsyncStdSpawn, SmolSpawn, Spawn, TokioSpawn, spawner};
 
-    // Task management
-    pub use crate::task::{TaskHandle, TaskId, TaskStats, TaskTracker};
+
 
     // Storage system
-    // Storage types removed - using FxHashMap for resources
+    pub use crate::storage::{EmptyStorage, Storage, StorageBuilder};
 
     // Executor system (basic executors only - executor storage removed)
-    pub use crate::executor::{
-        Executor, TokioExecutor, SingleThreadExecutor, ThreadPerCoreTokioExecutor,
-    };
     #[cfg(feature = "rayon")]
     pub use crate::executor::RayonExecutor;
+
+
+    pub use crate::executor::spec::drive_spec;
+    #[cfg(feature = "tokio")]
+    pub use crate::executor::TokioExecutor;
+    pub use crate::executor::{EffectPlan, ExecutorRegistry, SingleThreadExecutor};
 
     // Builder
     pub use crate::builder::{Syzygy, SyzygyBuilder};
 
     // Errors
-    pub use crate::error::{CommandError, CoreError, ShellError, EffectError};
+    pub use crate::error::{CommandError, CoreError, EffectError, ShellError};
 
     // Streaming helpers
-    pub use crate::streaming::{EffectResult, consume_effect_output};
+    pub use crate::streaming::{EffectOutput, consume_effect_output};
 }

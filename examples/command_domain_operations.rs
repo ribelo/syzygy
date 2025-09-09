@@ -30,7 +30,6 @@ struct UserModel {
     authenticated: bool,
 }
 
-
 fn user_update(
     event: UserEvent,
     ctx: &mut EventContext<UserEvent, UserEffect, Storage<UserModel, EmptyStorage>>,
@@ -73,6 +72,7 @@ fn user_update(
     }
 }
 
+#[cfg(feature = "examples")]
 fn main() {
     println!("Command Domain-Specific Operations Demo");
     println!("======================================");
@@ -114,13 +114,22 @@ fn main() {
                     println!("     {}.{}: {:?}", i + 1, j + 1, effect);
                 }
             }
-            CommandStep::Group { effects, mode: GroupMode::Parallel, barrier: None, timeout_per: None } => {
+            CommandStep::Group {
+                effects,
+                mode: GroupMode::Parallel,
+                barrier: None,
+                timeout_per: None,
+            } => {
                 println!("   {}: Parallel Effects - {} effects", i + 1, effects.len());
                 for (j, effect) in effects.iter().enumerate() {
                     println!("     {}.{}: {:?}", i + 1, j + 1, effect);
                 }
             }
-            CommandStep::Group { effects, mode: GroupMode::Race, .. } => {
+            CommandStep::Group {
+                effects,
+                mode: GroupMode::Race,
+                ..
+            } => {
                 println!("   {}: Race Effects - {} effects", i + 1, effects.len());
                 for (j, effect) in effects.iter().enumerate() {
                     println!("     {}.{}: {:?}", i + 1, j + 1, effect);
@@ -132,26 +141,62 @@ fn main() {
                     println!("     {}.{}: {:?}", i + 1, j + 1, effect);
                 }
             }
-            CommandStep::Merge { effects, barrier_event } => {
-                println!("   {}: Merge Effects - {} effects, barrier: {:?}", i + 1, effects.len(), barrier_event);
+            CommandStep::Merge {
+                effects,
+                barrier_event,
+            } => {
+                println!(
+                    "   {}: Merge Effects - {} effects, barrier: {:?}",
+                    i + 1,
+                    effects.len(),
+                    barrier_event
+                );
                 for (j, effect) in effects.iter().enumerate() {
                     println!("     {}.{}: {:?}", i + 1, j + 1, effect);
                 }
             }
-            CommandStep::Join { effects, timeout_per, barrier_event } => {
-                println!("   {}: Join Effects - {} effects, timeout: {:?}, barrier: {:?}", i + 1, effects.len(), timeout_per, barrier_event);
+            CommandStep::Join {
+                effects,
+                timeout_per,
+                barrier_event,
+            } => {
+                println!(
+                    "   {}: Join Effects - {} effects, timeout: {:?}, barrier: {:?}",
+                    i + 1,
+                    effects.len(),
+                    timeout_per,
+                    barrier_event
+                );
                 for (j, effect) in effects.iter().enumerate() {
                     println!("     {}.{}: {:?}", i + 1, j + 1, effect);
                 }
             }
-            CommandStep::Race { effects, timeout_per, barrier_event } => {
-                println!("   {}: Race Effects - {} effects, timeout: {:?}, barrier: {:?}", i + 1, effects.len(), timeout_per, barrier_event);
+            CommandStep::Race {
+                effects,
+                timeout_per,
+                barrier_event,
+            } => {
+                println!(
+                    "   {}: Race Effects - {} effects, timeout: {:?}, barrier: {:?}",
+                    i + 1,
+                    effects.len(),
+                    timeout_per,
+                    barrier_event
+                );
                 for (j, effect) in effects.iter().enumerate() {
                     println!("     {}.{}: {:?}", i + 1, j + 1, effect);
                 }
             }
-            CommandStep::Chain { effects, barrier_event } => {
-                println!("   {}: Chain Effects - {} effects, barrier: {:?}", i + 1, effects.len(), barrier_event);
+            CommandStep::Chain {
+                effects,
+                barrier_event,
+            } => {
+                println!(
+                    "   {}: Chain Effects - {} effects, barrier: {:?}",
+                    i + 1,
+                    effects.len(),
+                    barrier_event
+                );
                 for (j, effect) in effects.iter().enumerate() {
                     println!("     {}.{}: {:?}", i + 1, j + 1, effect);
                 }

@@ -114,6 +114,7 @@ async fn handle_effects(
     }
 }
 
+#[cfg(feature = "examples")]
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Resource Storage API Example");

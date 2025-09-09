@@ -73,7 +73,6 @@ impl Default for TodoModel {
     }
 }
 
-
 fn todo_update(
     event: TodoEvent,
     ctx: &mut EventContext<TodoEvent, TodoEffect, Storage<TodoModel, EmptyStorage>>,
@@ -204,7 +203,10 @@ fn todo_update(
 
 /// AFIT Effect handler - converts effects to async operations with zero-cost abstractions
 /// This is where users implement their own I/O logic using function pointers (no captures)
-async fn handle_effect(effect: TodoEffect, ctx: EffectContext<TodoEvent, EmptyStorage>) -> EffectResult<TodoEvent> {
+async fn handle_effect(
+    effect: TodoEffect,
+    ctx: EffectContext<TodoEvent, EmptyStorage>,
+) -> EffectResult<TodoEvent> {
     // No more boxing overhead! Pure AFIT implementation
     match effect {
         TodoEffect::HttpRequest {

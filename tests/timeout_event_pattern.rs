@@ -1,4 +1,11 @@
-#![allow(dead_code, clippy::clone_on_ref_ptr, unused_variables, unused_imports, clippy::let_and_return, clippy::format_in_format_args)]
+#![allow(
+    dead_code,
+    clippy::clone_on_ref_ptr,
+    unused_variables,
+    unused_imports,
+    clippy::let_and_return,
+    clippy::format_in_format_args
+)]
 //! Tests demonstrating proper timeout event patterns
 //!
 //! These tests show how to handle timeouts as events rather than
@@ -6,9 +13,11 @@
 
 use std::time::Duration;
 use syzygy::event_context::EventContext;
+use syzygy::executor::TokioIo;
 use syzygy::prelude::*;
 use syzygy::spawn::spawner;
-use syzygy::streaming::EffectResult;
+use syzygy::storage::Selector;
+use syzygy::streaming::EffectOutput;
 
 #[derive(Debug, Default)]
 struct TimeoutModel {
@@ -31,12 +40,12 @@ enum TimeoutEffect {
     SlowOperation { delay_ms: u64 },
 }
 
-
 fn timeout_update(
     event: TimeoutEvent,
     ctx: &mut EventContext<TimeoutEvent, TimeoutEffect, Storage<TimeoutModel, EmptyStorage>>,
 ) -> Command<TimeoutEvent, TimeoutEffect> {
-    let model: &mut TimeoutModel = ctx.model_mut();
+    let storage: &mut Storage<TimeoutModel, EmptyStorage> = ctx.model_mut();
+    let model: &mut TimeoutModel = storage.get_mut();
     match event {
         TimeoutEvent::StartSlowOperation => {
             model.is_loading = true;
@@ -75,33 +84,35 @@ fn timeout_update(
     }
 }
 
-// Effect handler that implements manual timeout detection
-async fn timeout_aware_effect_handler(
+// Effect handler that implements manual timeout detection using the new EffectSpec plan
+fn timeout_aware_effect_handler(
     effect: TimeoutEffect,
-    ctx: EffectContext<TimeoutEvent, EmptyStorage>,
-) -> EffectResult<TimeoutEvent> {
+    _ctx: &EffectContext<TimeoutEvent, EmptyStorage>,
+) -> syzygy::executor::EffectPlan<TimeoutEvent, EmptyStorage> {
     match effect {
         TimeoutEffect::SlowOperation { delay_ms } => {
-            let operation_future = async move {
-                tokio::time::sleep(Duration::from_millis(delay_ms)).await;
-                format!("Operation completed after {delay_ms}ms")
-            };
+            syzygy::executor::EffectPlan::future_on::<TokioIo, _, _>(move |ctx| async move {
+                let operation_future = async move {
+                    tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+                    format!("Operation completed after {delay_ms}ms")
+                };
 
-            // Use manual timeout with event emission
-            let timeout_duration = Duration::from_millis(200);
-            match tokio::time::timeout(timeout_duration, operation_future).await {
-                Ok(data) => {
-                    let _ = ctx.send_event(TimeoutEvent::OperationCompleted { data });
+                // Use manual timeout with event emission
+                let timeout_duration = Duration::from_millis(200);
+                match tokio::time::timeout(timeout_duration, operation_future).await {
+                    Ok(data) => {
+                        ctx.send_event(TimeoutEvent::OperationCompleted { data });
+                    }
+                    Err(_timeout) => {
+                        ctx.send_event(TimeoutEvent::OperationTimeout {
+                            duration: timeout_duration,
+                        });
+                    }
                 }
-                Err(_timeout) => {
-                    let _ = ctx.send_event(TimeoutEvent::OperationTimeout {
-                        duration: timeout_duration,
-                    });
-                }
-            }
+                EffectOutput::None
+            })
         }
     }
-    EffectResult::None
 }
 
 /// Test that timeout events are properly emitted and handled
@@ -112,6 +123,7 @@ async fn test_timeout_event_pattern() {
         .model(TimeoutModel::default())
         .event_handler(timeout_update)
         .effect_handler(timeout_aware_effect_handler)
+        .with_default_executors()
         .build();
 
     let event_sender = core.event_sender();
@@ -123,13 +135,13 @@ async fn test_timeout_event_pattern() {
     // Run until operation completes or times out
     runner
         .run_until(
-            |core, _shell| !core.model().is_loading,
+            |core, _shell| !core.model().get().is_loading,
             spawner(), // Auto-detect runtime for maximum compatibility
         )
         .await
         .unwrap();
 
-    let model = runner.core().model();
+    let model = runner.core().model().get();
 
     // Should have completed successfully (100ms delay < 200ms timeout)
     assert!(!model.is_loading);

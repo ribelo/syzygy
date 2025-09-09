@@ -56,7 +56,10 @@ enum CounterEffect {
 // ============================================================================
 
 /// Handle increment with automatic model extraction
-fn handle_increment(event: CounterEvent, counter: &mut CounterModel) -> Command<CounterEvent, CounterEffect> {
+fn handle_increment(
+    event: CounterEvent,
+    counter: &mut CounterModel,
+) -> Command<CounterEvent, CounterEffect> {
     if let CounterEvent::Increment = event {
         counter.count += 1;
         counter.message = format!("Count incremented to {}", counter.count);
@@ -65,7 +68,7 @@ fn handle_increment(event: CounterEvent, counter: &mut CounterModel) -> Command<
             Command::effect(CounterEffect::LogMessage(counter.message.clone())),
             Command::effect(CounterEffect::SaveCount(counter.count)),
             Command::effect(CounterEffect::PlaySound), // Config will be checked in effect handler
-            Command::event(CounterEvent::CheckLimit), // Always check limit
+            Command::event(CounterEvent::CheckLimit),  // Always check limit
         ])
     } else {
         Command::none()
@@ -73,7 +76,10 @@ fn handle_increment(event: CounterEvent, counter: &mut CounterModel) -> Command<
 }
 
 /// Handle decrement with automatic model extraction
-fn handle_decrement(event: CounterEvent, counter: &mut CounterModel) -> Command<CounterEvent, CounterEffect> {
+fn handle_decrement(
+    event: CounterEvent,
+    counter: &mut CounterModel,
+) -> Command<CounterEvent, CounterEffect> {
     if let CounterEvent::Decrement = event {
         counter.count -= 1;
         counter.message = format!("Count decremented to {}", counter.count);
@@ -88,7 +94,10 @@ fn handle_decrement(event: CounterEvent, counter: &mut CounterModel) -> Command<
 }
 
 /// Handle reset - simple model mutation
-fn handle_reset(event: CounterEvent, counter: &mut CounterModel) -> Command<CounterEvent, CounterEffect> {
+fn handle_reset(
+    event: CounterEvent,
+    counter: &mut CounterModel,
+) -> Command<CounterEvent, CounterEffect> {
     if let CounterEvent::Reset = event {
         counter.count = 0;
         counter.message = "Counter reset".to_string();
@@ -104,22 +113,32 @@ fn handle_reset(event: CounterEvent, counter: &mut CounterModel) -> Command<Coun
 }
 
 /// Handle message setting - simple event-only handler
-fn handle_set_message(event: CounterEvent, counter: &mut CounterModel) -> Command<CounterEvent, CounterEffect> {
+fn handle_set_message(
+    event: CounterEvent,
+    counter: &mut CounterModel,
+) -> Command<CounterEvent, CounterEffect> {
     if let CounterEvent::SetMessage(message) = event {
         counter.message = message;
-        Command::effect(CounterEffect::LogMessage(format!("Message set to: {}", counter.message)))
+        Command::effect(CounterEffect::LogMessage(format!(
+            "Message set to: {}",
+            counter.message
+        )))
     } else {
         Command::none()
     }
 }
 
 /// Handle limit checking - read-only access to model
-fn handle_check_limit(event: CounterEvent, counter: &CounterModel) -> Command<CounterEvent, CounterEffect> {
+fn handle_check_limit(
+    event: CounterEvent,
+    counter: &CounterModel,
+) -> Command<CounterEvent, CounterEffect> {
     if let CounterEvent::CheckLimit = event {
         // Config max_count will be checked in effect handler
-        Command::effect(CounterEffect::LogMessage(
-            format!("Checking limit for current count: {}", counter.count)
-        ))
+        Command::effect(CounterEffect::LogMessage(format!(
+            "Checking limit for current count: {}",
+            counter.count
+        )))
     } else {
         Command::none()
     }
@@ -175,7 +194,11 @@ fn handle_save_effect(effect: CounterEffect, _sender: EventSender<CounterEvent>)
 }
 
 /// Handle limit checking in effects - combines resource and EventSender extraction
-fn handle_limit_check_effect(effect: CounterEffect, config: &AppConfig, _sender: EventSender<CounterEvent>) {
+fn handle_limit_check_effect(
+    effect: CounterEffect,
+    config: &AppConfig,
+    _sender: EventSender<CounterEvent>,
+) {
     if let CounterEffect::LogMessage(message) = effect {
         if message.contains("Checking limit") {
             // Extract count from message or use context
@@ -183,7 +206,10 @@ fn handle_limit_check_effect(effect: CounterEffect, config: &AppConfig, _sender:
                 if let Ok(count) = count_str.parse::<i32>() {
                     if count >= config.max_count {
                         println!("LOG: {message}");
-                        println!("WARNING: Counter reached maximum value of {}!", config.max_count);
+                        println!(
+                            "WARNING: Counter reached maximum value of {}!",
+                            config.max_count
+                        );
                         // Could send warning event
                         // let _ = sender.send(CounterEvent::SetMessage("Limit reached!".to_string()));
                     } else {
@@ -198,7 +224,10 @@ fn handle_limit_check_effect(effect: CounterEffect, config: &AppConfig, _sender:
 }
 
 /// Main effect dispatcher using magic handlers
-async fn handle_effects(effect: CounterEffect, ctx: EffectContext<CounterEvent, Storage<AppConfig, EmptyStorage>>) -> EffectResult<CounterEvent> {
+async fn handle_effects(
+    effect: CounterEffect,
+    ctx: EffectContext<CounterEvent, Storage<AppConfig, EmptyStorage>>,
+) -> EffectResult<CounterEvent> {
     // Use magic handlers with automatic parameter extraction
     match &effect {
         CounterEffect::LogMessage(msg) if msg.contains("Checking limit") => {
@@ -229,6 +258,7 @@ async fn handle_effects(effect: CounterEffect, ctx: EffectContext<CounterEvent, 
 // Step 6: Put it all together
 // ============================================================================
 
+#[cfg(feature = "examples")]
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("=== Basic TEA Pattern with Magic Handlers Demo ===");
@@ -280,7 +310,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Test message setting
     println!("Testing message setting magic handler:");
-    runner.core().send_event(CounterEvent::SetMessage("Magic handlers working!".to_string()))?;
+    runner.core().send_event(CounterEvent::SetMessage(
+        "Magic handlers working!".to_string(),
+    ))?;
     runner.tick(syzygy::spawn::spawner()).await?;
 
     let counter: &CounterModel = runner.core().model();

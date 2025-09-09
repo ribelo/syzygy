@@ -89,7 +89,7 @@ impl<'a, E, X, M> EventContext<'a, E, X, M> {
     /// ```
     #[must_use]
     pub fn model(&self) -> &M {
-        &self.model
+        self.model
     }
 
     /// Get mutable reference to the model

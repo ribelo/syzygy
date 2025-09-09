@@ -9,9 +9,9 @@ use tracing::debug;
 ///
 /// This is now a simple synchronous function that iterates over command outputs
 /// and routes them to the correct channels. Events go to Core, Effects go to Shell.
-pub fn route_command<Event, Effect>(
+pub(crate) fn route_command<Event, Effect>(
     command: Command<Event, Effect>,
-    event_sender: Option<&Sender<Event>>,
+    event_sender: &Sender<Event>,
     effect_sender: &Sender<CommandStep<Event, Effect>>,
 ) -> Result<(), CommandError>
 where
@@ -32,12 +32,9 @@ where
                 #[cfg(feature = "tracing")]
                 debug!("Routing event to Core");
 
-                if let Some(sender) = event_sender {
-                    sender.send(event).map_err(|_| {
-                        CommandError::CommandPanic("Event channel closed".to_string())
-                    })?;
-                }
-                // If no event sender, just drop the event (for testing scenarios)
+                event_sender
+                    .send(event)
+                    .map_err(|_| CommandError::CommandPanic("Event channel closed".to_string()))?;
             }
             CommandStep::Effect(effect) => {
                 _effect_count += 1;
@@ -58,40 +55,7 @@ where
                     .send(CommandStep::Batch(effects))
                     .map_err(|_| CommandError::CommandPanic("Effect channel closed".to_string()))?;
             }
-            CommandStep::Group { effects, mode, barrier, timeout_per } => {
-                _effect_count += effects.len();
-                #[cfg(feature = "tracing")]
-                debug!(count = effects.len(), "Routing group to Shell");
-                effect_sender
-                    .send(CommandStep::Group { effects, mode, barrier, timeout_per })
-                    .map_err(|_| CommandError::CommandPanic("Effect channel closed".to_string()))?;
-            }
-            
-            CommandStep::Merge { effects, barrier_event } => {
-                _effect_count += effects.len();
-                effect_sender
-                    .send(CommandStep::Merge { effects, barrier_event })
-                    .map_err(|_| CommandError::CommandPanic("Effect channel closed".to_string()))?;
-            }
-            CommandStep::Join { effects, timeout_per, barrier_event } => {
-                _effect_count += effects.len();
-                effect_sender
-                    .send(CommandStep::Join { effects, timeout_per, barrier_event })
-                    .map_err(|_| CommandError::CommandPanic("Effect channel closed".to_string()))?;
-            }
-            CommandStep::Race { effects, timeout_per, barrier_event } => {
-                _effect_count += effects.len();
-                effect_sender
-                    .send(CommandStep::Race { effects, timeout_per, barrier_event })
-                    .map_err(|_| CommandError::CommandPanic("Effect channel closed".to_string()))?;
-            }
-            
-            CommandStep::Chain { effects, barrier_event } => {
-                _effect_count += effects.len();
-                effect_sender
-                    .send(CommandStep::Chain { effects, barrier_event })
-                    .map_err(|_| CommandError::CommandPanic("Effect channel closed".to_string()))?;
-            }
+            // No other variants
         }
     }
 
@@ -126,12 +90,14 @@ mod tests {
     #[test]
     fn test_execute_empty_command() {
         let (effect_tx, effect_rx) = unbounded::<CommandStep<TestEvent, TestEffect>>();
+        let (event_tx, event_rx) = unbounded::<TestEvent>();
         let command = Command::<TestEvent, TestEffect>::none();
 
-        route_command(command, None, &effect_tx).unwrap();
+        route_command(command, &event_tx, &effect_tx).unwrap();
 
-        // Should have no effects
+        // Should have no effects, no events
         assert!(effect_rx.try_recv().is_err());
+        assert!(event_rx.try_recv().is_err());
     }
 
     #[test]
@@ -141,7 +107,7 @@ mod tests {
 
         let command = Command::event(TestEvent::A);
 
-        route_command(command, Some(&event_tx), &effect_tx).unwrap();
+        route_command(command, &event_tx, &effect_tx).unwrap();
 
         // Should have one event, no effects
         assert_eq!(event_rx.recv().unwrap(), TestEvent::A);
@@ -152,10 +118,11 @@ mod tests {
     #[test]
     fn test_execute_effect_command() {
         let (effect_tx, effect_rx) = unbounded::<CommandStep<TestEvent, TestEffect>>();
+        let (event_tx, _event_rx) = unbounded::<TestEvent>();
 
         let command = Command::<TestEvent, TestEffect>::effect(TestEffect::X);
 
-        route_command(command, None, &effect_tx).unwrap();
+        route_command(command, &event_tx, &effect_tx).unwrap();
 
         // Should have one effect wrapped in CommandStep
         let cmd_output = effect_rx.recv().unwrap();
@@ -180,7 +147,7 @@ mod tests {
             Command::effect(TestEffect::Y),
         ]);
 
-        route_command(command, Some(&event_tx), &effect_tx).unwrap();
+        route_command(command, &event_tx, &effect_tx).unwrap();
 
         // Should have events in order
         assert_eq!(event_rx.recv().unwrap(), TestEvent::A);
@@ -209,7 +176,7 @@ mod tests {
         drop(event_rx);
 
         let command = Command::event(TestEvent::A);
-        let result = route_command(command, Some(&event_tx), &effect_tx);
+        let result = route_command(command, &event_tx, &effect_tx);
 
         assert!(result.is_err());
         assert!(matches!(result.unwrap_err(), CommandError::CommandPanic(_)));
@@ -218,12 +185,13 @@ mod tests {
     #[test]
     fn test_closed_effect_channel_error() {
         let (effect_tx, effect_rx) = unbounded::<CommandStep<TestEvent, TestEffect>>();
+        let (event_tx, _event_rx) = unbounded::<TestEvent>();
 
         // Drop receiver to close channel
         drop(effect_rx);
 
         let command = Command::<TestEvent, TestEffect>::effect(TestEffect::X);
-        let result = route_command(command, None, &effect_tx);
+        let result = route_command(command, &event_tx, &effect_tx);
 
         assert!(result.is_err());
         assert!(matches!(result.unwrap_err(), CommandError::CommandPanic(_)));

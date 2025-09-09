@@ -73,7 +73,7 @@ fn handle_user_login(
     event: AppEvent,
     user: &mut UserModel,
     session: &mut SessionModel,
-    config: &AppConfigModel
+    config: &AppConfigModel,
 ) -> Command<AppEvent, AppEffect> {
     if let AppEvent::UserLogin { email } = event {
         // Update user model
@@ -109,10 +109,13 @@ fn handle_user_login(
 fn handle_user_logout(
     event: AppEvent,
     user: &UserModel,
-    session: &mut SessionModel
+    session: &mut SessionModel,
 ) -> Command<AppEvent, AppEffect> {
     if let AppEvent::UserLogout = event {
-        println!("User {} logging out from session {}", user.name, session.session_id);
+        println!(
+            "User {} logging out from session {}",
+            user.name, session.session_id
+        );
 
         session.is_active = false;
         session.session_id.clear();
@@ -129,13 +132,16 @@ fn handle_user_logout(
 fn handle_theme_change(
     event: AppEvent,
     config: &mut AppConfigModel,
-    user: &UserModel
+    user: &UserModel,
 ) -> Command<AppEvent, AppEffect> {
     if let AppEvent::ChangeTheme { theme } = event {
         let old_theme = config.theme.clone();
         config.theme = theme.clone();
 
-        println!("User {} changed theme from {} to {}", user.name, old_theme, theme);
+        println!(
+            "User {} changed theme from {} to {}",
+            user.name, old_theme, theme
+        );
 
         Command::batch([
             Command::effect(AppEffect::SaveUserPreferences),
@@ -150,7 +156,7 @@ fn handle_theme_change(
 fn handle_language_update(
     event: AppEvent,
     config: &mut AppConfigModel,
-    user: &UserModel
+    user: &UserModel,
 ) -> Command<AppEvent, AppEffect> {
     if let AppEvent::UpdateLanguage { language } = event {
         config.language = language.clone();
@@ -167,10 +173,13 @@ fn handle_language_update(
 fn handle_session_expired(
     event: AppEvent,
     session: &mut SessionModel,
-    user: &UserModel
+    user: &UserModel,
 ) -> Command<AppEvent, AppEffect> {
     if let AppEvent::SessionExpired = event {
-        println!("Session {} expired for user {}", session.session_id, user.name);
+        println!(
+            "Session {} expired for user {}",
+            session.session_id, user.name
+        );
 
         session.is_active = false;
 
@@ -184,7 +193,7 @@ fn handle_session_expired(
 /// Handle activity detection - only session needed
 fn handle_activity_detected(
     event: AppEvent,
-    session: &mut SessionModel
+    session: &mut SessionModel,
 ) -> Command<AppEvent, AppEffect> {
     if let AppEvent::ActivityDetected = event {
         if session.is_active {
@@ -247,7 +256,10 @@ fn handle_refresh_ui(effect: AppEffect) {
 }
 
 /// Main effect dispatcher using magic handlers
-async fn handle_effects(effect: AppEffect, _ctx: EffectContext<AppEvent, EmptyStorage>) -> EffectResult<AppEvent> {
+async fn handle_effects(
+    effect: AppEffect,
+    _ctx: EffectContext<AppEvent, EmptyStorage>,
+) -> EffectResult<AppEvent> {
     match effect {
         AppEffect::SaveUserPreferences => handle_save_preferences(effect),
         AppEffect::LogActivity { .. } => handle_log_activity(effect),
@@ -260,6 +272,7 @@ async fn handle_effects(effect: AppEffect, _ctx: EffectContext<AppEvent, EmptySt
 // Main Demo
 // ============================================================================
 
+#[cfg(feature = "examples")]
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("=== Multi-Model Storage with Magic Handlers Demo ===");

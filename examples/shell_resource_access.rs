@@ -148,6 +148,7 @@ async fn handle_effects(
     EffectResult::None
 }
 
+#[cfg(feature = "examples")]
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Shell Resource Access Example");

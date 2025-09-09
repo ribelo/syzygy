@@ -10,10 +10,9 @@
 //! - Background task coordination
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
 use syzygy::prelude::*;
-use syzygy::executor::{TokioExecutor, ExecutorStorage, EmptyExecutorStorage};
 use syzygy::streaming::EffectResult;
 
 // ============================================================================
@@ -39,9 +38,7 @@ struct HttpClient {
 
 impl HttpClient {
     fn new(base_url: String) -> Self {
-        Self {
-            base_url,
-        }
+        Self { base_url }
     }
 
     async fn get(&self, path: &str) -> Result<String, String> {
@@ -145,7 +142,8 @@ enum CacheOp {
 }
 
 // Define our resource storage type
-type ResourceStorage = Storage<CacheManager, Storage<DatabasePool, Storage<HttpClient, EmptyStorage>>>;
+type ResourceStorage =
+    Storage<CacheManager, Storage<DatabasePool, Storage<HttpClient, EmptyStorage>>>;
 
 // ============================================================================
 // Event Handlers
@@ -193,7 +191,9 @@ fn update_app(
             model.active_tasks = model.active_tasks.saturating_sub(1);
             model.completed_tasks += 1;
             model.last_result = Some(result.clone());
-            model.messages.push(format!("Completed task: {} - {}", task_id, result));
+            model
+                .messages
+                .push(format!("Completed task: {} - {}", task_id, result));
 
             // Cache the result
             Command::effect(AppEffect::CacheOperation {
@@ -206,29 +206,32 @@ fn update_app(
 
         AppEvent::TaskFailed { task_id, error } => {
             model.active_tasks = model.active_tasks.saturating_sub(1);
-            model.messages.push(format!("Failed task: {} - {}", task_id, error));
+            model
+                .messages
+                .push(format!("Failed task: {} - {}", task_id, error));
 
             Command::none()
         }
 
-
-        AppEvent::SaveData { key, value } => {
-            Command::batch([
-                Command::effect(AppEffect::CacheOperation {
-                    operation: CacheOp::Set { key: key.clone(), value: value.clone() },
-                }),
-                Command::effect(AppEffect::DatabaseQuery {
-                    task_id: format!("save_{}", key),
-                    query: format!("INSERT INTO data (key, value) VALUES ('{}', '{}')", key, value),
-                }),
-            ])
-        }
-
-        AppEvent::LoadCachedData { key } => {
+        AppEvent::SaveData { key, value } => Command::batch([
             Command::effect(AppEffect::CacheOperation {
-                operation: CacheOp::Get { key },
-            })
-        }
+                operation: CacheOp::Set {
+                    key: key.clone(),
+                    value: value.clone(),
+                },
+            }),
+            Command::effect(AppEffect::DatabaseQuery {
+                task_id: format!("save_{}", key),
+                query: format!(
+                    "INSERT INTO data (key, value) VALUES ('{}', '{}')",
+                    key, value
+                ),
+            }),
+        ]),
+
+        AppEvent::LoadCachedData { key } => Command::effect(AppEffect::CacheOperation {
+            operation: CacheOp::Get { key },
+        }),
 
         AppEvent::BatchProcess { items } => {
             let task_ids: Vec<String> = items
@@ -285,11 +288,7 @@ async fn handle_database_query(
     }
 }
 
-fn handle_cache_operation(
-    effect: AppEffect,
-    cache: &CacheManager,
-    sender: EventSender<AppEvent>,
-) {
+fn handle_cache_operation(effect: AppEffect, cache: &CacheManager, sender: EventSender<AppEvent>) {
     if let AppEffect::CacheOperation { operation } = effect {
         match operation {
             CacheOp::Get { key } => {
@@ -311,10 +310,10 @@ fn handle_cache_operation(
     }
 }
 
-fn handle_parallel_tasks(
+async fn handle_parallel_tasks(
     effect: AppEffect,
-    ctx: EffectContext<AppEvent, ResourceStorage, ExecutorStorage<TokioExecutor<AppEvent>, EmptyExecutorStorage>>,
-) {
+    ctx: EffectContext<AppEvent, ResourceStorage>,
+) -> EffectResult<AppEvent> {
     if let AppEffect::ParallelTasks { task_ids } = effect {
         println!("Starting {} parallel tasks", task_ids.len());
 
@@ -332,15 +331,15 @@ fn handle_parallel_tasks(
                     result,
                 });
             };
-            // TODO: Replace with direct spawning
+
+            // Spawn the task using the new executor API
+            ctx.spawn(task).unwrap();
         }
     }
+    EffectResult::None
 }
 
-async fn handle_delayed_task(
-    effect: AppEffect,
-    sender: EventSender<AppEvent>,
-) {
+async fn handle_delayed_task(effect: AppEffect, sender: EventSender<AppEvent>) {
     if let AppEffect::DelayedTask { task_id, delay_ms } = effect {
         println!("Starting delayed task {} ({}ms)", task_id, delay_ms);
 
@@ -360,7 +359,10 @@ async fn handle_delayed_task(
 
 async fn handle_effects(
     effect: AppEffect,
-    ctx: EffectContext<AppEvent, Storage<CacheManager, Storage<DatabasePool, Storage<HttpClient, EmptyStorage>>>, ExecutorStorage<TokioExecutor<AppEvent>, EmptyExecutorStorage>>
+    ctx: EffectContext<
+        AppEvent,
+        Storage<CacheManager, Storage<DatabasePool, Storage<HttpClient, EmptyStorage>>>,
+    >,
 ) -> EffectResult<AppEvent> {
     let sender = EventSender(ctx.event_sender().unwrap());
 
@@ -378,7 +380,7 @@ async fn handle_effects(
             handle_cache_operation(effect, cache, sender);
         }
         AppEffect::ParallelTasks { .. } => {
-            handle_parallel_tasks(effect, ctx);
+            handle_parallel_tasks(effect, ctx).await;
         }
         AppEffect::DelayedTask { .. } => {
             handle_delayed_task(effect, sender).await;
@@ -391,12 +393,13 @@ async fn handle_effects(
 // Main Demo
 // ============================================================================
 
+#[cfg(feature = "examples")]
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("=== Async Effects and Resources Demo ===");
     println!("Demonstrating resource management and async task coordination\n");
 
-    // Build system with resources
+    // Build system with resources and default executors
     let (core, shell) = Syzygy::builder()
         .model(AppModel::default())
         .resource(HttpClient::new("https://api.example.com".to_string()))
@@ -404,6 +407,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .resource(CacheManager::new())
         .event_handler(update_app)
         .effect_handler(handle_effects)
+        .with_default_executors()
         .build();
     let mut runner = Runner::new(core, shell);
 
@@ -426,7 +430,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Test 3: Batch parallel processing
     println!("3. Starting batch processing");
     runner.core().send_event(AppEvent::BatchProcess {
-        items: vec!["item1".to_string(), "item2".to_string(), "item3".to_string()],
+        items: vec![
+            "item1".to_string(),
+            "item2".to_string(),
+            "item3".to_string(),
+        ],
     })?;
     runner.tick(syzygy::spawn::spawner()).await?;
 
