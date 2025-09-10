@@ -3,9 +3,12 @@ use std::sync::{Arc, Barrier};
 use std::time::Duration;
 use tokio::time::sleep;
 
-use syzygy::executor::{AsyncExecutor, ExecutorError, ExecutorLifecycle, TokioExecutor, register_current_runtime_for_io, spawn_io};
-use syzygy::streaming::EffectOutput;
 use futures_util::future::FutureExt;
+use syzygy::executor::{
+    AsyncExecutor, ExecutorError, ExecutorLifecycle, TokioExecutor,
+    register_current_runtime_for_io, spawn_io,
+};
+use syzygy::streaming::EffectOutput;
 
 #[derive(Debug, Clone)]
 enum TestEvent {
@@ -18,7 +21,8 @@ async fn executor_spawns_and_completes_basic_future_successfully() {
     let executor = TokioExecutor::current_thread_io("test_basic");
 
     // When: Spawning a future that produces a success event
-    let fut = async { EffectOutput::Future(async { vec![TestEvent::Success(42)] }.boxed()) }.boxed();
+    let fut =
+        async { EffectOutput::Future(async { vec![TestEvent::Success(42)] }.boxed()) }.boxed();
     let result = executor.spawn_future(fut).await;
 
     // Then: The future completes with the expected event
@@ -27,9 +31,10 @@ async fn executor_spawns_and_completes_basic_future_successfully() {
         EffectOutput::Future(fut) => {
             let events = fut.await;
             assert_eq!(events.len(), 1);
+            #[allow(clippy::match_wildcard_for_single_variants)]
             match &events[0] {
-                TestEvent::Success(42) => {},
-                other => panic!("Expected Success(42), got {:?}", other),
+                TestEvent::Success(42) => {}
+                other => panic!("Expected Success(42), got {other:?}"),
             }
         }
         _other => panic!("Expected Future output"),
@@ -50,7 +55,8 @@ async fn executor_cancels_task_on_drop_without_leaking_resources() {
         barrier_clone.wait(); // Signal start
         sleep(Duration::from_secs(10)).await; // Long sleep
         EffectOutput::Future(async { vec![TestEvent::Success(999)] }.boxed())
-    }.boxed();
+    }
+    .boxed();
 
     let join_future = executor.spawn_future(fut);
     barrier.wait(); // Wait for task to start
@@ -70,16 +76,21 @@ async fn executor_handles_cancellation_error_and_continues_processing_new_tasks(
     let fut = async {
         sleep(Duration::from_secs(10)).await;
         EffectOutput::Future(async { vec![TestEvent::Success(999)] }.boxed())
-    }.boxed();
+    }
+    .boxed();
 
     let mut join_future = Box::pin(executor.spawn_future(fut));
     let waker = futures::task::noop_waker();
     let mut cx = futures::task::Context::from_waker(&waker);
-    assert!(matches!(join_future.as_mut().poll(&mut cx), std::task::Poll::Pending));
+    assert!(matches!(
+        join_future.as_mut().poll(&mut cx),
+        std::task::Poll::Pending
+    ));
     drop(join_future); // Cancel
 
     // Then: Executor remains functional for new tasks
-    let short_fut = async { EffectOutput::Future(async { vec![TestEvent::Success(1)] }.boxed()) }.boxed();
+    let short_fut =
+        async { EffectOutput::Future(async { vec![TestEvent::Success(1)] }.boxed()) }.boxed();
     let result = executor.spawn_future(short_fut).await;
     assert!(result.is_ok());
 
@@ -96,17 +107,18 @@ async fn executor_propagates_string_panic_as_error_event_with_correct_message() 
         panic!("test panic message");
         #[allow(unreachable_code)]
         EffectOutput::Future(async { vec![TestEvent::Success(0)] }.boxed())
-    }.boxed();
+    }
+    .boxed();
 
     let result = executor.spawn_future(fut).await;
 
     // Then: Panic is propagated as ExecutorError::Panic with the message
     assert!(result.is_err());
-    match result.err().expect("Expected error") {
+    match result.expect_err("Expected error") {
         ExecutorError::Panic { msg } => {
             assert_eq!(msg, "test panic message");
         }
-        other => panic!("Expected Panic error, got {:?}", other),
+        other => panic!("Expected Panic error, got {other:?}"),
     }
 
     executor.join().await;
@@ -122,17 +134,18 @@ async fn executor_propagates_static_str_panic_as_error_event_with_correct_messag
         panic!("static str panic");
         #[allow(unreachable_code)]
         EffectOutput::Future(async { vec![TestEvent::Success(0)] }.boxed())
-    }.boxed();
+    }
+    .boxed();
 
     let result = executor.spawn_future(fut).await;
 
     // Then: Panic is propagated as ExecutorError::Panic with the message
     assert!(result.is_err());
-    match result.err().expect("Expected error") {
+    match result.expect_err("Expected error") {
         ExecutorError::Panic { msg } => {
             assert_eq!(msg, "static str panic");
         }
-        other => panic!("Expected Panic error, got {:?}", other),
+        other => panic!("Expected Panic error, got {other:?}"),
     }
 
     executor.join().await;
@@ -148,17 +161,18 @@ async fn executor_propagates_non_string_panic_as_error_event_with_generic_messag
         std::panic::panic_any(42i32);
         #[allow(unreachable_code)]
         EffectOutput::Future(async { vec![TestEvent::Success(0)] }.boxed())
-    }.boxed();
+    }
+    .boxed();
 
     let result = executor.spawn_future(fut).await;
 
     // Then: Panic is propagated as ExecutorError::Panic with a generic message
     assert!(result.is_err());
-    match result.err().expect("Expected error") {
+    match result.expect_err("Expected error") {
         ExecutorError::Panic { msg } => {
             assert_eq!(msg, "unknown internal error");
         }
-        other => panic!("Expected Panic error, got {:?}", other),
+        other => panic!("Expected Panic error, got {other:?}"),
     }
 
     executor.join().await;
@@ -171,14 +185,15 @@ async fn executor_shutdown_prevents_new_task_spawning_and_returns_worker_gone_er
 
     // When: Shutting down and attempting to spawn a new task
     executor.shutdown();
-    let fut = async { EffectOutput::Future(async { vec![TestEvent::Success(42)] }.boxed()) }.boxed();
+    let fut =
+        async { EffectOutput::Future(async { vec![TestEvent::Success(42)] }.boxed()) }.boxed();
     let result = executor.spawn_future(fut).await;
 
     // Then: Spawning fails with WorkerGone error
     assert!(result.is_err());
-    match result.err().expect("Expected error") {
-        ExecutorError::WorkerGone => {},
-        other => panic!("Expected WorkerGone error, got {:?}", other),
+    match result.expect_err("Expected error") {
+        ExecutorError::WorkerGone => {}
+        other => panic!("Expected WorkerGone error, got {other:?}"),
     }
 
     executor.join().await;
@@ -194,7 +209,8 @@ async fn executor_handles_multiple_concurrent_tasks_efficiently_with_correct_res
         let fut = async move {
             sleep(Duration::from_millis(10)).await;
             EffectOutput::Future(async move { vec![TestEvent::Success(i)] }.boxed())
-        }.boxed();
+        }
+        .boxed();
         executor.spawn_future(fut)
     });
 
@@ -203,17 +219,23 @@ async fn executor_handles_multiple_concurrent_tasks_efficiently_with_correct_res
     // Then: All tasks complete successfully with correct events
     assert_eq!(results.len(), 5);
     for (i, result) in results.into_iter().enumerate() {
-        assert!(result.is_ok(), "Task {} failed", i);
+        assert!(result.is_ok(), "Task {i} failed");
         match result.unwrap() {
             EffectOutput::Future(fut) => {
                 let events = fut.await;
                 assert_eq!(events.len(), 1);
+                #[allow(unreachable_patterns)]
                 match &events[0] {
-                    TestEvent::Success(val) => assert_eq!(*val, i as u32),
-                    other => panic!("Task {} returned unexpected event: {:?}", i, other),
+                    TestEvent::Success(val) => assert_eq!(*val, {
+                        #[allow(clippy::cast_possible_truncation)]
+                        {
+                            i as u32
+                        }
+                    }),
+                    other => panic!("Task {i} returned unexpected event: {other:?}"),
                 }
             }
-            _other => panic!("Task {} returned unexpected result type", i),
+            _other => panic!("Task {i} returned unexpected result type"),
         }
     }
 
@@ -227,8 +249,10 @@ async fn executor_clone_shares_runtime_and_shutdown_affects_all_instances() {
     let executor_clone = executor.clone();
 
     // When: Spawning tasks on both instances
-    let fut1 = async { EffectOutput::Future(async { vec![TestEvent::Success(1)] }.boxed()) }.boxed();
-    let fut2 = async { EffectOutput::Future(async { vec![TestEvent::Success(2)] }.boxed()) }.boxed();
+    let fut1 =
+        async { EffectOutput::Future(async { vec![TestEvent::Success(1)] }.boxed()) }.boxed();
+    let fut2 =
+        async { EffectOutput::Future(async { vec![TestEvent::Success(2)] }.boxed()) }.boxed();
 
     let result1 = executor.spawn_future(fut1).await;
     let result2 = executor_clone.spawn_future(fut2).await;
@@ -241,7 +265,8 @@ async fn executor_clone_shares_runtime_and_shutdown_affects_all_instances() {
     executor.shutdown();
 
     // Then: New spawns on clone fail
-    let fut3 = async { EffectOutput::Future(async { vec![TestEvent::Success(3)] }.boxed()) }.boxed();
+    let fut3 =
+        async { EffectOutput::Future(async { vec![TestEvent::Success(3)] }.boxed()) }.boxed();
     let result3 = executor_clone.spawn_future(fut3).await;
     assert!(matches!(result3, Err(ExecutorError::WorkerGone)));
 
@@ -261,12 +286,13 @@ async fn executor_registers_io_runtime_and_routes_io_work_correctly() {
         let _dedicated_thread_id = std::thread::current().id();
 
         // IO work should run on the registered runtime
-        let _io_result = spawn_io(async move {
-            std::thread::current().id()
-        }).await.unwrap();
+        let _io_result = spawn_io(async move { std::thread::current().id() })
+            .await
+            .unwrap();
 
         EffectOutput::Future(async { vec![TestEvent::Success(42)] }.boxed())
-    }.boxed();
+    }
+    .boxed();
 
     let result = executor.spawn_future(fut).await;
 
@@ -288,7 +314,7 @@ async fn executor_handles_effect_output_none_correctly() {
     // Then: Result is Ok with None
     assert!(result.is_ok());
     match result.unwrap() {
-        EffectOutput::None => {},
+        EffectOutput::None => {}
         _other => panic!("Expected None"),
     }
 
@@ -302,17 +328,22 @@ async fn executor_handles_effect_output_stream_correctly() {
 
     // When: Spawning a future that returns a Stream
     let fut = async {
-        let events = vec![TestEvent::Success(1), TestEvent::Success(2), TestEvent::Success(3)];
+        let events = vec![
+            TestEvent::Success(1),
+            TestEvent::Success(2),
+            TestEvent::Success(3),
+        ];
         let stream = futures::stream::iter(events);
         EffectOutput::Stream(Box::pin(stream))
-    }.boxed();
+    }
+    .boxed();
 
     let result = executor.spawn_future(fut).await;
 
     // Then: Result is Ok with Stream
     assert!(result.is_ok());
     match result.unwrap() {
-        EffectOutput::Stream(_) => {},
+        EffectOutput::Stream(_) => {}
         _other => panic!("Expected Stream"),
     }
 
@@ -358,7 +389,8 @@ async fn executor_handles_concurrent_shutdown_gracefully_without_deadlocks() {
         let fut = async move {
             sleep(Duration::from_millis(100)).await;
             EffectOutput::Future(async move { vec![TestEvent::Success(i)] }.boxed())
-        }.boxed();
+        }
+        .boxed();
         handles.push(executor.spawn_future(fut));
     }
 
@@ -367,13 +399,19 @@ async fn executor_handles_concurrent_shutdown_gracefully_without_deadlocks() {
 
     // Then: All tasks complete or are cancelled, and join doesn't hang
     let join_result = tokio::time::timeout(Duration::from_secs(2), executor.join()).await;
-    assert!(join_result.is_ok(), "Join should complete without hanging during concurrent shutdown");
+    assert!(
+        join_result.is_ok(),
+        "Join should complete without hanging during concurrent shutdown"
+    );
 
     // Verify tasks were handled (either completed or cancelled)
     for (i, handle) in handles.into_iter().enumerate() {
         let result = tokio::time::timeout(Duration::from_millis(10), handle).await;
         // Either completed or was cancelled - no hanging
-        assert!(result.is_ok() || matches!(result, Err(_)), "Task {} should not hang", i);
+        assert!(
+            result.is_ok() || result.is_err(),
+            "Task {i} should not hang"
+        );
     }
 }
 
@@ -387,7 +425,10 @@ async fn executor_handles_zero_tasks_boundary_condition_without_errors() {
     let join_result = tokio::time::timeout(Duration::from_secs(1), executor.join()).await;
 
     // Then: Shutdown and join complete successfully without errors
-    assert!(join_result.is_ok(), "Join with zero tasks should complete without hanging");
+    assert!(
+        join_result.is_ok(),
+        "Join with zero tasks should complete without hanging"
+    );
 }
 
 #[tokio::test]
@@ -399,15 +440,16 @@ async fn executor_propagates_errors_from_effects_as_events_in_pipeline() {
     let fut = async {
         // Simulate an effect that produces no events
         EffectOutput::<TestEvent>::None
-    }.boxed();
+    }
+    .boxed();
 
     let result = executor.spawn_future(fut).await;
 
     // Then: Effect completes successfully with None output
     assert!(result.is_ok());
     match result.unwrap() {
-        EffectOutput::None => {}, // Expected None output
-        other => panic!("Expected None, got {:?}", other),
+        EffectOutput::None => {} // Expected None output
+        other => panic!("Expected None, got {other:?}"),
     }
 
     executor.join().await;
@@ -420,21 +462,27 @@ async fn executor_handles_boundary_of_maximum_concurrent_tasks_without_resource_
 
     // When: Spawning a large number of concurrent tasks (boundary test)
     let task_count = 100; // Reasonable boundary for testing
-    let handles: Vec<_> = (0..task_count).map(|i| {
-        let fut = async move {
-            sleep(Duration::from_millis(1)).await; // Minimal work
-            EffectOutput::Future(async move { vec![TestEvent::Success(i as u32)] }.boxed())
-        }.boxed();
-        executor.spawn_future(fut)
-    }).collect();
+    let handles: Vec<_> = (0..task_count)
+        .map(|i| {
+            let fut = async move {
+                sleep(Duration::from_millis(1)).await; // Minimal work
+                #[allow(clippy::cast_possible_truncation)]
+                EffectOutput::Future(async move { vec![TestEvent::Success(i as u32)] }.boxed())
+            }
+            .boxed();
+            executor.spawn_future(fut)
+        })
+        .collect();
 
     // Then: All tasks complete without resource exhaustion errors
     let results = futures::future::join_all(handles).await;
     assert_eq!(results.len(), task_count);
     for result in results {
-        assert!(result.is_ok(), "Task should complete without exhaustion error");
+        assert!(
+            result.is_ok(),
+            "Task should complete without exhaustion error"
+        );
     }
 
     executor.join().await;
 }
-

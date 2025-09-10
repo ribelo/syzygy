@@ -16,7 +16,7 @@ use syzygy::event_context::EventContext;
 use syzygy::executor::TokioIo;
 use syzygy::prelude::*;
 use syzygy::spawn::spawner;
-use syzygy::storage::Selector;
+
 use syzygy::streaming::EffectOutput;
 
 #[derive(Debug, Default)]
@@ -42,10 +42,9 @@ enum TimeoutEffect {
 
 fn timeout_update(
     event: TimeoutEvent,
-    ctx: &mut EventContext<TimeoutEvent, TimeoutEffect, Storage<TimeoutModel, EmptyStorage>>,
+    ctx: &mut EventContext<TimeoutEvent, TimeoutEffect, TimeoutModel>,
 ) -> Command<TimeoutEvent, TimeoutEffect> {
-    let storage: &mut Storage<TimeoutModel, EmptyStorage> = ctx.model_mut();
-    let model: &mut TimeoutModel = storage.get_mut();
+    let model: &mut TimeoutModel = ctx.model_mut();
     match event {
         TimeoutEvent::StartSlowOperation => {
             model.is_loading = true;
@@ -87,8 +86,8 @@ fn timeout_update(
 // Effect handler that implements manual timeout detection using the new EffectSpec plan
 fn timeout_aware_effect_handler(
     effect: TimeoutEffect,
-    _ctx: &EffectContext<TimeoutEvent, EmptyStorage>,
-) -> syzygy::executor::EffectPlan<TimeoutEvent, EmptyStorage> {
+    _ctx: &EffectContext<TimeoutEvent, ()>,
+) -> syzygy::executor::EffectPlan<TimeoutEvent, ()> {
     match effect {
         TimeoutEffect::SlowOperation { delay_ms } => {
             syzygy::executor::EffectPlan::future_on::<TokioIo, _, _>(move |ctx| async move {
@@ -135,13 +134,13 @@ async fn test_timeout_event_pattern() {
     // Run until operation completes or times out
     runner
         .run_until(
-            |core, _shell| !core.model().get().is_loading,
+            |core, _shell| !core.model().is_loading,
             spawner(), // Auto-detect runtime for maximum compatibility
         )
         .await
         .unwrap();
 
-    let model = runner.core().model().get();
+    let model = runner.core().model();
 
     // Should have completed successfully (100ms delay < 200ms timeout)
     assert!(!model.is_loading);

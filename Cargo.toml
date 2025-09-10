@@ -146,14 +146,6 @@ name = "01_basic_tea"
 required-features = ["examples"]
 
 [[example]]
-name = "02_multi_model"
-required-features = ["examples"]
-
-[[example]]
-name = "03_magic_handlers"
-required-features = ["examples"]
-
-[[example]]
 name = "04_async_effects"
 required-features = ["examples"]
 
@@ -166,39 +158,5 @@ name = "06_effects_coordination"
 required-features = ["examples"]
 
 [[example]]
-name = "command_domain_operations"
-required-features = ["examples"]
-
-[[example]]
 name = "database_effects"
-required-features = ["examples"]
-
-[[example]]
-name = "default_extractors_test"
-required-features = ["examples"]
-
-[[example]]
-name = "monadic_composition"
-required-features = ["examples"]
-
-[[example]]
-name = "new_storage_api"
-required-features = ["examples"]
-
-[[example]]
-name = "resource_storage_example"
-required-features = ["examples"]
-
-[[example]]
-name = "sequential_workflow"
-required-features = ["examples"]
-
-[[example]]
-name = "shell_resource_access"
-required-features = ["examples"]
-
-
-
-[[example]]
-name = "user_defined_effects"
 required-features = ["examples"]

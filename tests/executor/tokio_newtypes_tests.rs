@@ -1,13 +1,13 @@
 #[cfg(feature = "tokio")]
 mod tokio_newtype_tests {
-    use syzygy::executor::{
-        TokioIo, TokioCpu, ExecutorRegistry, AsyncExecutor, ExecutorLifecycle
-    };
-    use syzygy::streaming::EffectOutput;
     use futures_util::future::FutureExt;
     use std::any::TypeId;
+    use std::time::Duration;
+    use syzygy::executor::{AsyncExecutor, ExecutorLifecycle, ExecutorRegistry, TokioCpu, TokioIo};
+    use syzygy::streaming::EffectOutput;
 
     #[derive(Debug, Clone)]
+    #[allow(dead_code)]
     enum TestEvent {
         Done,
         Progress(u32),
@@ -20,7 +20,10 @@ mod tokio_newtype_tests {
         let cpu_type_id = TypeId::of::<TokioCpu>();
 
         // Then: They have different TypeIds
-        assert_ne!(io_type_id, cpu_type_id, "TokioIo and TokioCpu must have distinct TypeIds");
+        assert_ne!(
+            io_type_id, cpu_type_id,
+            "TokioIo and TokioCpu must have distinct TypeIds"
+        );
     }
 
     #[test]
@@ -35,8 +38,14 @@ mod tokio_newtype_tests {
         registry.insert_async(cpu_exec);
 
         // Then: Both can be retrieved by their types
-        assert!(registry.async_exec::<TokioIo>().is_some(), "TokioIo should be in registry");
-        assert!(registry.async_exec::<TokioCpu>().is_some(), "TokioCpu should be in registry");
+        assert!(
+            registry.async_exec::<TokioIo>().is_some(),
+            "TokioIo should be in registry"
+        );
+        assert!(
+            registry.async_exec::<TokioCpu>().is_some(),
+            "TokioCpu should be in registry"
+        );
     }
 
     #[tokio::test]
@@ -48,7 +57,8 @@ mod tokio_newtype_tests {
         let fut = async {
             tokio::time::sleep(std::time::Duration::from_millis(1)).await;
             EffectOutput::Future(async { vec![TestEvent::Done] }.boxed())
-        }.boxed();
+        }
+        .boxed();
 
         let result = executor.spawn_future(fut).await;
 
@@ -76,8 +86,10 @@ mod tokio_newtype_tests {
             for i in 0..1000 {
                 sum = sum.wrapping_add(i);
             }
+            #[allow(clippy::cast_possible_truncation)]
             EffectOutput::Future(async move { vec![TestEvent::Progress(sum as u32)] }.boxed())
-        }.boxed();
+        }
+        .boxed();
 
         let result = executor.spawn_future(fut).await;
 
@@ -94,53 +106,57 @@ mod tokio_newtype_tests {
     }
 
     #[tokio::test]
+    #[allow(clippy::match_wildcard_for_single_variants)]
     async fn tokio_io_multi_thread_constructor_works() {
         // Given: Multi-thread TokioIo with 2 threads
         let executor = TokioIo::multi_thread(2);
 
         // When: Spawning work
         let fut = async {
+            tokio::time::sleep(Duration::from_millis(1)).await;
             EffectOutput::<TestEvent>::None
-        }.boxed();
+        }
+        .boxed();
 
         let result = executor.spawn_future(fut).await;
 
         // Then: Works correctly
         assert!(result.is_ok());
         match result.unwrap() {
-            EffectOutput::None => {
+            EffectOutput::<TestEvent>::None => {
                 // Multi-thread executors may return None for empty work
             }
             EffectOutput::Future(events_future) => {
                 let events = events_future.await;
                 assert_eq!(events.len(), 0);
             }
+            #[allow(clippy::match_wildcard_for_single_variants)]
             _ => panic!("Unexpected output"),
         }
     }
 
     #[tokio::test]
+    #[allow(clippy::match_wildcard_for_single_variants)]
     async fn tokio_cpu_multi_thread_constructor_works() {
         // Given: Multi-thread TokioCpu with 2 threads
         let executor = TokioCpu::multi_thread(2);
 
         // When: Spawning work
-        let fut = async {
-            EffectOutput::<TestEvent>::None
-        }.boxed();
+        let fut = async { EffectOutput::<TestEvent>::None }.boxed();
 
         let result = executor.spawn_future(fut).await;
 
         // Then: Works correctly
         assert!(result.is_ok());
         match result.unwrap() {
-            EffectOutput::None => {
+            EffectOutput::<TestEvent>::None => {
                 // Multi-thread executors may return None for empty work
             }
             EffectOutput::Future(events_future) => {
                 let events = events_future.await;
                 assert_eq!(events.len(), 0);
             }
+            #[allow(clippy::match_wildcard_for_single_variants)]
             _ => panic!("Unexpected output"),
         }
     }
@@ -156,14 +172,11 @@ mod tokio_newtype_tests {
         cpu_exec.shutdown();
 
         // Then: Join completes
-        tokio::time::timeout(
-            std::time::Duration::from_secs(1),
-            async {
-                io_exec.join().await;
-                cpu_exec.join().await;
-            }
-        ).await.expect("Executors should shutdown within timeout");
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            io_exec.join().await;
+            cpu_exec.join().await;
+        })
+        .await
+        .expect("Executors should shutdown within timeout");
     }
-
-
 }

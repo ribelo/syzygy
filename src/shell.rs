@@ -84,13 +84,10 @@ where
     X: Clone + Send + 'static,
     R: Clone + Send + Sync + 'static,
 {
-    /// Get an immutable reference to a specific resource by type
+    /// Get an immutable reference to resources
     #[must_use]
-    pub fn resource<T, Index>(&self) -> &T
-    where
-        R: crate::storage::Selector<T, Index>,
-    {
-        self.resources.get()
+    pub fn resource(&self) -> &R {
+        &self.resources
     }
 
     // No public effect sender accessors to keep the API minimal.
@@ -126,13 +123,14 @@ where
         let _span = span!(Level::DEBUG, "shell_tick").entered();
 
         let mut did_work = false;
-        let mut _effect_count = 0usize;
+        #[allow(unused_variables)]
+        let mut effect_count = 0usize;
 
         while let Ok(step) = self.effect_rx.try_recv() {
             match step {
                 CommandStep::Effect(fx) => {
                     did_work = true;
-                    _effect_count += 1;
+                    effect_count += 1;
                     let ctx = EffectContext::new(
                         self.event_tx.clone(),
                         self.resources.clone(),
@@ -143,7 +141,7 @@ where
                 }
                 CommandStep::Batch(effects) => {
                     did_work = true;
-                    _effect_count += effects.len();
+                    effect_count += effects.len();
                     let ctx = EffectContext::new(
                         self.event_tx.clone(),
                         self.resources.clone(),
@@ -163,12 +161,11 @@ where
 
         #[cfg(feature = "tracing")]
         if did_work {
-            debug!(effects = _effect_count, "Shell tick completed");
+            debug!(effects = effect_count, "Shell tick completed");
         }
 
         Ok(did_work)
     }
-
 
     /// Check if the shell is closed
     #[must_use]
@@ -195,21 +192,16 @@ where
 
 #[cfg(all(test, feature = "legacy_tests"))]
 mod tests {
-    use super::*;
 
     #[derive(Debug, Clone)]
+    #[allow(dead_code)]
     enum TestEvent {
         Dummy,
     }
 
     #[derive(Debug, Clone)]
+    #[allow(dead_code)]
     enum TestEffect {
         Log,
-    }
-
-    #[test]
-    fn test_shell_creation() {
-        let shell = Shell::<TestEvent, TestEffect>::new();
-        assert!(!shell.is_closed());
     }
 }

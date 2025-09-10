@@ -45,7 +45,7 @@ use crate::timer::{Time, time};
 pub struct RunnerConfig {
     /// How often to yield control when no work is being done
     pub idle_sleep: Duration,
-    /// Maximum time to run before yielding (for run_until scenarios)
+    /// Maximum time to run before yielding (for `run_until` scenarios)
     pub max_run_duration: Option<Duration>,
     /// Whether to print debug info about work being done
     pub debug_logging: bool,
@@ -67,7 +67,7 @@ impl Default for RunnerConfig {
 /// Runner automatically orchestrates Core/Shell interaction
 ///
 /// This solves Grug's complaint about manual event loop orchestration.
-/// Instead of users manually calling poll_events → process → execute → tick,
+/// Instead of users manually calling `poll_events` → process → execute → tick,
 /// Runner handles the proper sequencing automatically.
 pub struct Runner<Event, Effect, Storage, Resources = ()>
 where
@@ -336,9 +336,7 @@ mod tests {
         let (core, shell) = Syzygy::builder::<TestEvent, TestEffect>()
             .model(TestModel { count: 0 })
             .event_handler(test_update)
-            .effect_handler(|_e: TestEffect, _ctx| {
-                crate::executor::EffectPlan::events(Vec::new())
-            })
+            .effect_handler(|_e: TestEffect, _ctx| crate::executor::EffectPlan::events(Vec::new()))
             .build();
 
         let event_sender = core.event_sender();
@@ -361,9 +359,7 @@ mod tests {
         let (core, shell) = Syzygy::builder::<TestEvent, TestEffect>()
             .model(TestModel { count: 0 })
             .event_handler(test_update)
-            .effect_handler(|_e: TestEffect, _ctx| {
-                crate::executor::EffectPlan::events(Vec::new())
-            })
+            .effect_handler(|_e: TestEffect, _ctx| crate::executor::EffectPlan::events(Vec::new()))
             .build();
 
         let event_sender = core.event_sender();

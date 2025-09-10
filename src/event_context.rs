@@ -1,4 +1,4 @@
-//! # EventContext - Synchronous context for update functions
+//! # `EventContext` - Synchronous context for update functions
 //!
 //! This module provides the `EventContext`, a component that gives update functions
 //! safe and controlled access to the application's model. It is designed to be
@@ -25,12 +25,12 @@
 //! ```
 //!
 //! This provides controlled access to the model within update functions, mirroring
-//! the EffectContext pattern for consistency. EventContext is designed to be:
-//! - Synchronous (unlike EffectContext)
+//! the `EffectContext` pattern for consistency. `EventContext` is designed to be:
+//! - Synchronous (unlike `EffectContext`)
 //! - Lightweight with zero overhead
 //! - Extensible for future features like debugging, tracing, etc.
 
-/// EventContext provides controlled access to the model within update functions
+/// `EventContext` provides controlled access to the model within update functions
 ///
 /// This context ensures a consistent API pattern between synchronous update functions
 /// and asynchronous effect handlers. Key features:
@@ -62,7 +62,7 @@ pub struct EventContext<'a, E, X, M> {
 }
 
 impl<'a, E, X, M> EventContext<'a, E, X, M> {
-    /// Create a new EventContext with access to the model
+    /// Create a new `EventContext` with access to the model
     pub fn new(model: &'a mut M) -> Self {
         Self {
             model,

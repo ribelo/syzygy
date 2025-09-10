@@ -50,7 +50,7 @@ where
 /// event handler to implementation details. Think of it as a shopping list
 /// for side effects - your event handler writes it, the Shell executes it.
 ///
-/// Uses SmallVec because most commands contain 0-4 steps. If you're building
+/// Uses `SmallVec` because most commands contain 0-4 steps. If you're building
 /// commands with more steps, reconsider your architecture - you're probably
 /// doing too much in one event handler.
 #[derive(Debug)]
@@ -112,6 +112,7 @@ impl<Event, Effect> Command<Event, Effect> {
             outputs: SmallVec::new(),
         }
     }
+
     /// Creates a command that immediately triggers another event.
     ///
     /// The event gets processed synchronously in the same tick. No async
@@ -135,6 +136,7 @@ impl<Event, Effect> Command<Event, Effect> {
         outputs.push(CommandStep::Event(event.into()));
         Self { outputs }
     }
+
     /// Creates a command that triggers an async side effect.
     ///
     /// Effects run in the Shell's async context. They can spawn tasks, make
@@ -153,6 +155,7 @@ impl<Event, Effect> Command<Event, Effect> {
         outputs.push(CommandStep::Effect(effect.into()));
         Self { outputs }
     }
+
     /// Creates a command that fires multiple events in order.
     ///
     /// Events are processed sequentially in the order provided. Each event
@@ -174,6 +177,18 @@ impl<Event, Effect> Command<Event, Effect> {
         let outputs = events.into_iter().map(CommandStep::Event).collect();
         Self { outputs }
     }
+
+    /// Creates a command that runs multiple effects sequentially as a single Batch step.
+    ///
+    /// The Shell executes the effects in order, with no parallelism. This is equivalent
+    /// to constructing `CommandStep::Batch` manually.
+    pub fn effects(effects: impl IntoIterator<Item = Effect>) -> Self {
+        let mut outputs = SmallVec::new();
+        let batch: Vec<Effect> = effects.into_iter().collect();
+        outputs.push(CommandStep::Batch(batch));
+        Self { outputs }
+    }
+
     /// Combines multiple commands into one.
     ///
     /// Flattens all the steps from all commands into a single command.
@@ -186,7 +201,7 @@ impl<Event, Effect> Command<Event, Effect> {
     /// let cmd1 = Command::event(Event::StartLoading);
     /// let cmd2 = Command::effect(Effect::FetchData);
     /// let cmd3 = Command::event(Event::ShowSpinner);
-    /// 
+    ///
     /// // Combines all three into one command
     /// let combined = Command::batch(vec![cmd1, cmd2, cmd3]);
     /// ```
@@ -197,6 +212,7 @@ impl<Event, Effect> Command<Event, Effect> {
         }
         Self { outputs }
     }
+
     /// Returns true if this command does nothing.
     ///
     /// Equivalent to checking if `len() == 0`, but doesn't need to
@@ -205,11 +221,12 @@ impl<Event, Effect> Command<Event, Effect> {
     pub fn is_empty(&self) -> bool {
         self.outputs.is_empty()
     }
+
     /// Returns the total number of steps in this command.
     ///
     /// Counts individual events and effects as 1 each. Batch effects
     /// contribute their length to the total. This walks through all
-    /// steps, so it's O(n) where n is the number of CommandSteps.
+    /// steps, so it's O(n) where n is the number of `CommandSteps`.
     pub fn len(&self) -> usize {
         self.outputs
             .iter()
@@ -218,6 +235,55 @@ impl<Event, Effect> Command<Event, Effect> {
                 _ => 1,
             })
             .sum()
+    }
+
+    // ---------------------------
+    // Builder-style chaining API
+    // ---------------------------
+
+    /// Chain another event to this command.
+    ///
+    /// # Example
+    /// ```
+    /// let cmd = Command::event(Event::Start)
+    ///     .and_event(Event::Initialize)
+    ///     .and_event(Event::Ready);
+    /// ```
+    #[must_use]
+    #[inline]
+    pub fn and_event(mut self, event: impl Into<Event>) -> Self {
+        self.outputs.push(CommandStep::Event(event.into()));
+        self
+    }
+
+    /// Chain another effect to this command.
+    ///
+    /// # Example
+    /// ```
+    /// let cmd = Command::effect(Effect::LoadConfig)
+    ///     .and_effect(Effect::ConnectDatabase)
+    ///     .and_effect(Effect::StartServer);
+    /// ```
+    #[must_use]
+    #[inline]
+    pub fn and_effect(mut self, effect: impl Into<Effect>) -> Self {
+        self.outputs.push(CommandStep::Effect(effect.into()));
+        self
+    }
+
+    /// Chain another command to this one (concatenates all steps).
+    ///
+    /// # Example
+    /// ```
+    /// let init = Command::event(Event::Init);
+    /// let load = Command::effect(Effect::LoadData);
+    /// let combined = init.and(load);
+    /// ```
+    #[must_use]
+    #[inline]
+    pub fn and(mut self, other: Self) -> Self {
+        self.outputs.extend(other.outputs);
+        self
     }
 }
 
@@ -258,5 +324,117 @@ impl<Event, Effect> FromIterator<CommandStep<Event, Effect>> for Command<Event, 
 impl<Event, Effect> From<()> for Command<Event, Effect> {
     fn from((): ()) -> Self {
         Self::none()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[derive(Debug, Clone, PartialEq)]
+    enum TestEvent {
+        Start,
+        Middle,
+        End,
+    }
+
+    #[derive(Debug, Clone, PartialEq)]
+    enum TestEffect {
+        Log(String),
+        Save,
+        Load,
+    }
+
+    #[test]
+    fn test_chaining_events() {
+        let cmd: Command<TestEvent, TestEffect> = Command::event(TestEvent::Start)
+            .and_event(TestEvent::Middle)
+            .and_event(TestEvent::End);
+
+        let steps: Vec<_> = cmd.into_iter().collect();
+        assert_eq!(steps.len(), 3);
+        assert_eq!(steps[0], CommandStep::Event(TestEvent::Start));
+        assert_eq!(steps[1], CommandStep::Event(TestEvent::Middle));
+        assert_eq!(steps[2], CommandStep::Event(TestEvent::End));
+    }
+
+    #[test]
+    fn test_chaining_effects() {
+        let cmd: Command<TestEvent, TestEffect> = Command::effect(TestEffect::Load)
+            .and_effect(TestEffect::Save)
+            .and_effect(TestEffect::Log("done".into()));
+
+        let steps: Vec<_> = cmd.into_iter().collect();
+        assert_eq!(steps.len(), 3);
+        assert_eq!(steps[0], CommandStep::Effect(TestEffect::Load));
+        assert_eq!(steps[1], CommandStep::Effect(TestEffect::Save));
+        assert_eq!(
+            steps[2],
+            CommandStep::Effect(TestEffect::Log("done".into()))
+        );
+    }
+
+    #[test]
+    fn test_chaining_mixed() {
+        let cmd: Command<TestEvent, TestEffect> = Command::event(TestEvent::Start)
+            .and_effect(TestEffect::Load)
+            .and_event(TestEvent::Middle)
+            .and_effect(TestEffect::Save)
+            .and_event(TestEvent::End);
+
+        let steps: Vec<_> = cmd.into_iter().collect();
+        assert_eq!(steps.len(), 5);
+        assert_eq!(steps[0], CommandStep::Event(TestEvent::Start));
+        assert_eq!(steps[1], CommandStep::Effect(TestEffect::Load));
+        assert_eq!(steps[2], CommandStep::Event(TestEvent::Middle));
+        assert_eq!(steps[3], CommandStep::Effect(TestEffect::Save));
+        assert_eq!(steps[4], CommandStep::Event(TestEvent::End));
+    }
+
+    #[test]
+    fn test_and_command() {
+        let cmd1: Command<TestEvent, TestEffect> =
+            Command::event(TestEvent::Start).and_effect(TestEffect::Load);
+
+        let cmd2: Command<TestEvent, TestEffect> =
+            Command::event(TestEvent::Middle).and_effect(TestEffect::Save);
+
+        let combined = cmd1.and(cmd2);
+
+        let steps: Vec<_> = combined.into_iter().collect();
+        assert_eq!(steps.len(), 4);
+        assert_eq!(steps[0], CommandStep::Event(TestEvent::Start));
+        assert_eq!(steps[1], CommandStep::Effect(TestEffect::Load));
+        assert_eq!(steps[2], CommandStep::Event(TestEvent::Middle));
+        assert_eq!(steps[3], CommandStep::Effect(TestEffect::Save));
+    }
+
+    #[test]
+    fn test_chaining_from_none() {
+        let cmd: Command<TestEvent, TestEffect> = Command::none()
+            .and_event(TestEvent::Start)
+            .and_effect(TestEffect::Log("hello".into()));
+
+        let steps: Vec<_> = cmd.into_iter().collect();
+        assert_eq!(steps.len(), 2);
+        assert_eq!(steps[0], CommandStep::Event(TestEvent::Start));
+        assert_eq!(
+            steps[1],
+            CommandStep::Effect(TestEffect::Log("hello".into()))
+        );
+    }
+
+    #[test]
+    fn test_chaining_preserves_batch() {
+        let cmd: Command<TestEvent, TestEffect> =
+            Command::effects(vec![TestEffect::Load, TestEffect::Save]).and_event(TestEvent::End);
+
+        let steps: Vec<_> = cmd.into_iter().collect();
+        assert_eq!(steps.len(), 2);
+        assert_eq!(
+            steps[0],
+            CommandStep::Batch(vec![TestEffect::Load, TestEffect::Save])
+        );
+        assert_eq!(steps[1], CommandStep::Event(TestEvent::End));
     }
 }

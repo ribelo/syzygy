@@ -19,8 +19,8 @@
 //! This benchmark measures the impact of the implemented performance optimizations:
 //! 1. Pre-allocated command buffer (eliminates Vec reallocations)
 //! 2. Smart event loop optimization (conditional polling)
-//! 3. O(1) task counting (atomic counter vs O(n) HashMap scan)
-//! 4. Pre-sized collections (VecDeque and Vec with capacity)
+//! 3. O(1) task counting (atomic counter vs O(n) `HashMap` scan)
+//! 4. Pre-sized collections (`VecDeque` and Vec with capacity)
 //!
 //! All optimizations use safe Rust and follow zero-copy patterns where possible.
 

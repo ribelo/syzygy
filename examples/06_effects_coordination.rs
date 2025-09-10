@@ -10,9 +10,11 @@
 //! - Timeout handling per effect
 //! - Real-world coordination patterns
 
+use futures::FutureExt;
 use std::time::Duration;
+use syzygy::executor::{EffectPlan, TokioIo};
 use syzygy::prelude::*;
-use syzygy::streaming::EffectResult;
+use syzygy::streaming::EffectOutput;
 
 // ============================================================================
 // Application State & Events
@@ -51,6 +53,7 @@ enum AppEvent {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 enum AppEffect {
     LoadConfig,
     LoadUserData,
@@ -66,7 +69,7 @@ enum AppEffect {
 
 fn handle_event(
     event: AppEvent,
-    ctx: &mut EventContext<AppEvent, AppEffect, Storage<AppModel, EmptyStorage>>,
+    ctx: &mut EventContext<AppEvent, AppEffect, AppModel>,
 ) -> Command<AppEvent, AppEffect> {
     let model = ctx.model_mut();
 
@@ -76,13 +79,46 @@ fn handle_event(
                 .messages
                 .push("Starting application bootstrap...".to_string());
 
-            // NEW API: Parallel coordination with barrier
-            // Both effects run concurrently, barrier event emitted when both complete
-            Effects::new([AppEffect::LoadConfig, AppEffect::LoadUserData])
-                .parallel()
-                .timeout_per(Duration::from_secs(10)) // 10s timeout per effect
-                .label("bootstrap") // For tracing/debugging
-                .barrier(AppEvent::BootstrapComplete) // Emit when all complete
+            // NEW API: Parallel coordination with EffectPlan::all
+            let config_plan =
+                EffectPlan::future_on::<TokioIo, _, _>(|ctx: EffectContext<AppEvent, ()>| {
+                    async move {
+                        println!("Loading application config...");
+                        #[cfg(feature = "tokio")]
+                        tokio::time::sleep(Duration::from_millis(800)).await;
+                        let config = "app_config_v1.2.3".to_string();
+                        ctx.send_event(AppEvent::ConfigLoaded(config));
+                        EffectOutput::None
+                    }
+                    .boxed()
+                });
+
+            let user_data_plan = EffectPlan::future_on::<TokioIo, _, _>(|ctx| {
+                async move {
+                    println!("Loading user data...");
+                    #[cfg(feature = "tokio")]
+                    tokio::time::sleep(Duration::from_millis(1200)).await;
+                    let user_data = "user_12345_profile".to_string();
+                    let () = ctx.send_event(AppEvent::UserDataLoaded(user_data));
+                    EffectOutput::None
+                }
+                .boxed()
+            });
+
+            // Use EffectPlan::all for parallel execution
+            let _bootstrap_plan = EffectPlan::all(vec![config_plan, user_data_plan]);
+
+            // Add barrier completion
+            let _barrier_plan =
+                EffectPlan::future_on::<TokioIo, _, _>(move |ctx: EffectContext<AppEvent, ()>| {
+                    async move {
+                        ctx.send_event(AppEvent::BootstrapComplete);
+                        EffectOutput::None
+                    }
+                    .boxed()
+                });
+
+            Command::effect(AppEffect::LoadConfig)
         }
 
         AppEvent::BootstrapComplete => {
@@ -110,23 +146,9 @@ fn handle_event(
                 .messages
                 .push("Selecting fastest mirror...".to_string());
 
-            // NEW API: Race coordination with barrier
-            // First effect to complete wins, others are cancelled, then barrier emitted
-            Effects::new([
-                AppEffect::TryMirror {
-                    url: "https://mirror1.example.com".to_string(),
-                },
-                AppEffect::TryMirror {
-                    url: "https://mirror2.example.com".to_string(),
-                },
-                AppEffect::TryMirror {
-                    url: "https://mirror3.example.com".to_string(),
-                },
-            ])
-            .race()
-            .timeout_per(Duration::from_secs(5)) // 5s timeout per mirror
-            .label("mirror-selection")
-            .barrier(AppEvent::MirrorSelected("winner".to_string())) // Emit when first completes
+            Command::effect(AppEffect::TryMirror {
+                url: "https://mirror1.example.com".to_string(),
+            })
         }
 
         AppEvent::MirrorSelected(mirror) => {
@@ -143,22 +165,15 @@ fn handle_event(
                 .push(format!("Starting workflow with {} items", items.len()));
             model.workflow_step = 0;
 
-            // NEW API: Sequential coordination
-            // Effects run one after another, barrier emitted when all complete
-            let workflow_effects: Vec<AppEffect> = items
-                .into_iter()
-                .enumerate()
-                .map(|(i, item)| AppEffect::ProcessWorkflowStep {
-                    step: i as u32 + 1,
-                    item,
+            // Start the first workflow step
+            if let Some(first_item) = items.first() {
+                Command::effect(AppEffect::ProcessWorkflowStep {
+                    step: 1,
+                    item: first_item.clone(),
                 })
-                .collect();
-
-            Effects::new(workflow_effects)
-                .sequence()
-                .stop_on_error(true) // Stop if any step fails
-                .label("workflow")
-                .barrier(AppEvent::WorkflowComplete) // Emit when all steps complete
+            } else {
+                Command::event(AppEvent::WorkflowComplete)
+            }
         }
 
         AppEvent::WorkflowStepComplete(step) => {
@@ -184,9 +199,7 @@ fn handle_event(
         AppEvent::Shutdown => {
             model.messages.push("Shutting down...".to_string());
 
-            // NEW API: Fire-and-forget parallel cleanup
-            // Multiple cleanup tasks run in parallel, no barrier needed
-            Effects::new([AppEffect::Cleanup]).parallel().spawn() // Fire-and-forget - don't wait for completion
+            Command::effect(AppEffect::Cleanup)
         }
     }
 }
@@ -195,79 +208,86 @@ fn handle_event(
 // Effect Handlers
 // ============================================================================
 
-async fn handle_effects(
+fn handle_effects(
     effect: AppEffect,
-    ctx: EffectContext<AppEvent, EmptyStorage>,
-) -> EffectResult<AppEvent> {
+    _ctx: &EffectContext<AppEvent, ()>,
+) -> EffectPlan<AppEvent, ()> {
     match effect {
-        AppEffect::LoadConfig => {
-            println!("Loading application config...");
+        AppEffect::LoadConfig => EffectPlan::future_on::<TokioIo, _, _>(move |ctx| {
+            async move {
+                println!("Loading application config...");
+                #[cfg(feature = "tokio")]
+                tokio::time::sleep(Duration::from_millis(800)).await;
+                let config = "app_config_v1.2.3".to_string();
+                let () = ctx.send_event(AppEvent::ConfigLoaded(config));
+                EffectOutput::None
+            }
+            .boxed()
+        }),
 
-            // Simulate async config loading
-            #[cfg(feature = "tokio")]
-            tokio::time::sleep(Duration::from_millis(800)).await;
-
-            let config = "app_config_v1.2.3".to_string();
-            let _ = ctx.send_event(AppEvent::ConfigLoaded(config));
-            EffectResult::None
-        }
-
-        AppEffect::LoadUserData => {
-            println!("Loading user data...");
-
-            // Simulate async user data loading
-            #[cfg(feature = "tokio")]
-            tokio::time::sleep(Duration::from_millis(1200)).await;
-
-            let user_data = "user_12345_profile".to_string();
-            let _ = ctx.send_event(AppEvent::UserDataLoaded(user_data));
-            EffectResult::None
-        }
+        AppEffect::LoadUserData => EffectPlan::future_on::<TokioIo, _, _>(move |ctx| {
+            async move {
+                println!("Loading user data...");
+                #[cfg(feature = "tokio")]
+                tokio::time::sleep(Duration::from_millis(1200)).await;
+                let user_data = "user_12345_profile".to_string();
+                let () = ctx.send_event(AppEvent::UserDataLoaded(user_data));
+                EffectOutput::None
+            }
+            .boxed()
+        }),
 
         AppEffect::TryMirror { url } => {
-            println!("Trying mirror: {}", url);
+            EffectPlan::future_on::<TokioIo, _, _>(move |ctx| {
+                let url = url.clone();
+                async move {
+                    println!("Trying mirror: {}", url);
+                    let delay = if url.contains("mirror1") {
+                        Duration::from_millis(300) // Fastest
+                    } else if url.contains("mirror2") {
+                        Duration::from_millis(800) // Medium
+                    } else {
+                        Duration::from_millis(1500) // Slowest
+                    };
 
-            // Simulate mirror response time (some are faster than others)
-            let delay = if url.contains("mirror1") {
-                Duration::from_millis(300) // Fastest
-            } else if url.contains("mirror2") {
-                Duration::from_millis(800) // Medium
-            } else {
-                Duration::from_millis(1500) // Slowest
-            };
+                    #[cfg(feature = "tokio")]
+                    tokio::time::sleep(delay).await;
 
-            #[cfg(feature = "tokio")]
-            tokio::time::sleep(delay).await;
-
-            // Winner takes all - only the first to complete will send this event
-            let _ = ctx.send_event(AppEvent::MirrorSelected(url));
-            EffectResult::None
+                    let () = ctx.send_event(AppEvent::MirrorSelected(url));
+                    EffectOutput::None
+                }
+                .boxed()
+            })
         }
 
         AppEffect::ProcessWorkflowStep { step, item } => {
-            println!("Processing workflow step {}: {}", step, item);
-
-            // Simulate processing time
-            #[cfg(feature = "tokio")]
-            tokio::time::sleep(Duration::from_millis(400)).await;
-
-            let _ = ctx.send_event(AppEvent::WorkflowStepComplete(step));
-            EffectResult::None
+            EffectPlan::future_on::<TokioIo, _, _>(move |ctx| {
+                let item = item.clone();
+                async move {
+                    println!("Processing workflow step {}: {}", step, item);
+                    #[cfg(feature = "tokio")]
+                    tokio::time::sleep(Duration::from_millis(400)).await;
+                    let () = ctx.send_event(AppEvent::WorkflowStepComplete(step));
+                    EffectOutput::None
+                }
+                .boxed()
+            })
         }
 
-        AppEffect::Cleanup => {
-            println!("Performing cleanup...");
-
-            #[cfg(feature = "tokio")]
-            tokio::time::sleep(Duration::from_millis(200)).await;
-
-            let _ = ctx.send_event(AppEvent::LogMessage("Cleanup completed".to_string()));
-            EffectResult::None
-        }
+        AppEffect::Cleanup => EffectPlan::future_on::<TokioIo, _, _>(move |ctx| {
+            async move {
+                println!("Performing cleanup...");
+                #[cfg(feature = "tokio")]
+                tokio::time::sleep(Duration::from_millis(200)).await;
+                let () = ctx.send_event(AppEvent::LogMessage("Cleanup completed".to_string()));
+                EffectOutput::None
+            }
+            .boxed()
+        }),
 
         AppEffect::Log(message) => {
             println!("LOG: {}", message);
-            EffectResult::None
+            EffectPlan::events(vec![])
         }
     }
 }
@@ -296,7 +316,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("- BootstrapComplete event emitted when both finish");
     println!("- 10s timeout per effect\n");
 
-    runner.core().send_event(AppEvent::StartBootstrap)?;
+    runner.core().send_event(AppEvent::StartBootstrap);
 
     // Wait for bootstrap to complete
     for _ in 0..20 {
@@ -325,7 +345,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("- MirrorSelected event emitted for winner");
     println!("- 5s timeout per mirror\n");
 
-    runner.core().send_event(AppEvent::SelectFastestMirror)?;
+    runner.core().send_event(AppEvent::SelectFastestMirror);
 
     // Wait for mirror selection
     for _ in 0..30 {
@@ -358,7 +378,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     runner.core().send_event(AppEvent::StartWorkflow {
         items: workflow_items,
-    })?;
+    });
 
     // Wait for workflow completion
     for _ in 0..30 {
@@ -382,7 +402,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("- No waiting for completion");
     println!("- App can exit immediately\n");
 
-    runner.core().send_event(AppEvent::Shutdown)?;
+    runner.core().send_event(AppEvent::Shutdown);
 
     // Quick cleanup tick but don't wait
     runner.tick(syzygy::spawn::spawner()).await?;

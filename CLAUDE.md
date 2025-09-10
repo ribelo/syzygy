@@ -143,7 +143,7 @@ struct MyModel {
 }
 
 // Event handler function (no trait needed!)
-fn my_event_handler(event: MyEvent, ctx: &mut EventContext<MyEvent, MyEffect, Storage<MyModel, EmptyStorage>>) -> Command<MyEvent, MyEffect> {
+fn my_event_handler(event: MyEvent, ctx: &mut EventContext<MyEvent, MyEffect, MyModel>) -> Command<MyEvent, MyEffect> {
     let model: &mut MyModel = ctx.model_mut();
     
     match event {
@@ -185,7 +185,6 @@ let mut runner = Runner::new(core, shell);
 6. **EventContext**: Safe access to models and resources in update functions
 7. **Runner**: Simple orchestration of Core ↔ Shell communication
 8. **Magic Handlers**: Parameter extraction for testable, decoupled functions
-9. **Storage**: UnsafeCell-based model/resource chains with compile-time safety
 
 ### Error-as-Events Pattern
 
@@ -288,7 +287,7 @@ pub struct Cpu;    // impl SyncKey for Cpu
 The EffectContext provides safe, high-performance task spawning:
 
 ```rust
-async fn handle_effects(effect: MyEffect, ctx: EffectContext<MyEvent, EmptyStorage>) {
+async fn handle_effects(effect: MyEffect, ctx: EffectContext<MyEvent, ()>) {
     match effect {
         MyEffect::HttpRequest { url } => {
             // Spawn tasks safely - all will be cancelled on context drop
@@ -337,13 +336,12 @@ mod tests {
 
     #[test]
     fn test_event_processing() {
-        let mut storage = EmptyStorage.with_model(MyModel::default());
+        let mut model = MyModel::default();
         let event = MyEvent::UserClicked;
 
-        let mut ctx = EventContext::new(&mut storage);
+        let mut ctx = EventContext::new(&mut model);
         let command = my_update(event, &mut ctx);
 
-        let model: &MyModel = storage.get();
         assert_eq!(model.count, 1);
         // Check command contains expected effects/events
     }

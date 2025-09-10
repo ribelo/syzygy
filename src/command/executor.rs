@@ -54,8 +54,7 @@ where
                 effect_sender
                     .send(CommandStep::Batch(effects))
                     .map_err(|_| CommandError::CommandPanic("Effect channel closed".to_string()))?;
-            }
-            // No other variants
+            } // No other variants
         }
     }
 

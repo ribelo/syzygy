@@ -8,8 +8,10 @@
 //! - Event processing and command creation
 //! - Core/Shell orchestration with Runner
 
+use futures::FutureExt;
+use syzygy::executor::{EffectPlan, TokioIo};
 use syzygy::prelude::*;
-use syzygy::streaming::EffectResult;
+use syzygy::streaming::EffectOutput;
 
 // ============================================================================
 // Step 1: Define your application state (Model)
@@ -150,15 +152,15 @@ fn handle_check_limit(
 
 fn update_counter(
     event: CounterEvent,
-    ctx: &mut EventContext<CounterEvent, CounterEffect, Storage<CounterModel, EmptyStorage>>,
+    ctx: &mut EventContext<CounterEvent, CounterEffect, CounterModel>,
 ) -> Command<CounterEvent, CounterEffect> {
     // Dispatch to appropriate magic handler based on event type
     match event {
-        CounterEvent::Increment => event_trigger(event, ctx, handle_increment),
-        CounterEvent::Decrement => event_trigger(event, ctx, handle_decrement),
-        CounterEvent::Reset => event_trigger(event, ctx, handle_reset),
-        CounterEvent::SetMessage(_) => event_trigger(event, ctx, handle_set_message),
-        CounterEvent::CheckLimit => event_trigger(event, ctx, handle_check_limit),
+        CounterEvent::Increment => handle_increment(event, ctx.model_mut()),
+        CounterEvent::Decrement => handle_decrement(event, ctx.model_mut()),
+        CounterEvent::Reset => handle_reset(event, ctx.model_mut()),
+        CounterEvent::SetMessage(_) => handle_set_message(event, ctx.model_mut()),
+        CounterEvent::CheckLimit => handle_check_limit(event, ctx.model()),
     }
 }
 
@@ -184,74 +186,92 @@ fn handle_sound_effect(effect: CounterEffect, config: &AppConfig) {
     }
 }
 
-/// Handle save effects with event sending - EventSender extraction magic handler
-fn handle_save_effect(effect: CounterEffect, _sender: EventSender<CounterEvent>) {
+/// Handle save effects - now returns `EffectPlan`
+fn handle_save_effect(effect: CounterEffect) -> EffectPlan<CounterEvent, AppConfig> {
     if let CounterEffect::SaveCount(count) = effect {
-        println!("SAVE: Counter value {} saved to storage", count);
+        println!("SAVE: Counter value {count} saved to storage");
         // Could send a completion event if needed
-        // let _ = sender.send(CounterEvent::SetMessage("Saved!".to_string()));
+        EffectPlan::future_on::<TokioIo, _, _>(move |ctx| {
+            async move {
+                // Simulate async save operation
+                #[cfg(feature = "tokio")]
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+                // Send completion event
+                let () = ctx.send_event(CounterEvent::SetMessage("Saved!".to_string()));
+                EffectOutput::None
+            }
+            .boxed()
+        })
+    } else {
+        EffectPlan::events(vec![])
     }
 }
 
-/// Handle limit checking in effects - combines resource and EventSender extraction
+/// Handle limit checking in effects - now returns `EffectPlan`
 fn handle_limit_check_effect(
     effect: CounterEffect,
     config: &AppConfig,
-    _sender: EventSender<CounterEvent>,
-) {
+) -> EffectPlan<CounterEvent, AppConfig> {
     if let CounterEffect::LogMessage(message) = effect {
         if message.contains("Checking limit") {
             // Extract count from message or use context
-            if let Some(count_str) = message.split(": ").nth(1) {
-                if let Ok(count) = count_str.parse::<i32>() {
-                    if count >= config.max_count {
-                        println!("LOG: {message}");
-                        println!(
-                            "WARNING: Counter reached maximum value of {}!",
-                            config.max_count
-                        );
-                        // Could send warning event
-                        // let _ = sender.send(CounterEvent::SetMessage("Limit reached!".to_string()));
-                    } else {
-                        println!("LOG: {message} - OK (limit: {})", config.max_count);
-                    }
-                    return;
+            if let Some(count_str) = message.split(": ").nth(1)
+                && let Ok(count) = count_str.parse::<i32>()
+            {
+                if count >= config.max_count {
+                    println!("LOG: {message}");
+                    println!(
+                        "WARNING: Counter reached maximum value of {}!",
+                        config.max_count
+                    );
+                    // Send warning event
+                    return EffectPlan::future_on::<TokioIo, _, _>(move |ctx| {
+                        async move {
+                            let () = ctx
+                                .send_event(CounterEvent::SetMessage("Limit reached!".to_string()));
+                            EffectOutput::None
+                        }
+                        .boxed()
+                    });
                 }
+                println!("LOG: {message} - OK (limit: {})", config.max_count);
+                return EffectPlan::events(vec![]);
             }
         }
         println!("LOG: {message}");
     }
+    EffectPlan::events(vec![])
 }
 
-/// Main effect dispatcher using magic handlers
-async fn handle_effects(
+/// Main effect dispatcher using `EffectPlan`
+fn handle_effects(
     effect: CounterEffect,
-    ctx: EffectContext<CounterEvent, Storage<AppConfig, EmptyStorage>>,
-) -> EffectResult<CounterEvent> {
+    ctx: &EffectContext<CounterEvent, AppConfig>,
+) -> EffectPlan<CounterEvent, AppConfig> {
     // Use magic handlers with automatic parameter extraction
     match &effect {
         CounterEffect::LogMessage(msg) if msg.contains("Checking limit") => {
             // Use magic handler with both config and sender extraction
-            let config: &AppConfig = ctx.resource();
-            let sender = EventSender(ctx.event_sender().unwrap());
-            handle_limit_check_effect(effect, config, sender);
+            let config: &AppConfig = ctx.resources();
+            handle_limit_check_effect(effect, config)
         }
         CounterEffect::LogMessage(_) => {
-            // Simple effect-only magic handler
+            // Simple effect-only magic handler - convert to EffectPlan
             handle_log_effect(effect);
+            EffectPlan::events(vec![])
         }
         CounterEffect::PlaySound => {
             // Magic handler with resource extraction
-            let config: &AppConfig = ctx.resource();
+            let config: &AppConfig = ctx.resources();
             handle_sound_effect(effect, config);
+            EffectPlan::events(vec![])
         }
         CounterEffect::SaveCount(_) => {
-            // Magic handler with EventSender extraction
-            let sender = EventSender(ctx.event_sender().unwrap());
-            handle_save_effect(effect, sender);
+            // Magic handler that returns EffectPlan
+            handle_save_effect(effect)
         }
     }
-    EffectResult::None
 }
 
 // ============================================================================
@@ -279,13 +299,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Test the magic handlers
     println!("Initial state:");
     let counter: &CounterModel = runner.core().model();
-    println!("  Counter: {:?}", counter);
+    println!("  Counter: {counter:?}");
     println!("  Config: max_count=5, enable_sound=true\n");
 
     // Increment to test limit checking
     for i in 1..=6 {
         println!("Step {i}: Incrementing counter");
-        runner.core().send_event(CounterEvent::Increment)?;
+        runner.core().send_event(CounterEvent::Increment);
         runner.tick(syzygy::spawn::spawner()).await?;
 
         let counter: &CounterModel = runner.core().model();
@@ -294,29 +314,29 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Test decrement with magic handler
     println!("Testing decrement magic handler:");
-    runner.core().send_event(CounterEvent::Decrement)?;
+    runner.core().send_event(CounterEvent::Decrement);
     runner.tick(syzygy::spawn::spawner()).await?;
 
     let counter: &CounterModel = runner.core().model();
-    println!("  State: {:?}\n", counter);
+    println!("  State: {counter:?}\n");
 
     // Test reset with config access
     println!("Testing reset magic handler (with sound):");
-    runner.core().send_event(CounterEvent::Reset)?;
+    runner.core().send_event(CounterEvent::Reset);
     runner.tick(syzygy::spawn::spawner()).await?;
 
     let counter: &CounterModel = runner.core().model();
-    println!("  State: {:?}\n", counter);
+    println!("  State: {counter:?}\n");
 
     // Test message setting
     println!("Testing message setting magic handler:");
     runner.core().send_event(CounterEvent::SetMessage(
         "Magic handlers working!".to_string(),
-    ))?;
+    ));
     runner.tick(syzygy::spawn::spawner()).await?;
 
     let counter: &CounterModel = runner.core().model();
-    println!("  Final state: {:?}\n", counter);
+    println!("  Final state: {counter:?}\n");
 
     println!("Magic Handlers TEA Key Points:");
     println!("✅ Unidirectional data flow: Event -> Magic Handler -> Model + Effects");

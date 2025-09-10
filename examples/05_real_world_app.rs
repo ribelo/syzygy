@@ -15,8 +15,11 @@
 #![allow(dead_code)]
 
 use std::collections::HashMap;
+use syzygy::executor::{EffectPlan, TokioIo};
 use syzygy::prelude::*;
-use syzygy::streaming::EffectResult;
+use syzygy::streaming::EffectOutput;
+
+use futures::FutureExt;
 
 // ============================================================================
 // Domain Models - Separate concerns
@@ -124,7 +127,7 @@ struct DatabaseService {
 
 impl DatabaseService {
     async fn authenticate(&self, username: &str, password: &str) -> Result<User, String> {
-        println!("DB: Authenticating user {}", username);
+        println!("DB: Authenticating user {username}");
 
         // Simulate database lookup
         #[cfg(feature = "tokio")]
@@ -160,10 +163,7 @@ impl DatabaseService {
         user_id: u32,
         preferences: &UserPreferences,
     ) -> Result<(), String> {
-        println!(
-            "DB: Saving preferences for user {}: {:?}",
-            user_id, preferences
-        );
+        println!("DB: Saving preferences for user {user_id}: {preferences:?}");
 
         // Simulate database operation
         #[cfg(feature = "tokio")]
@@ -221,7 +221,7 @@ struct CacheService {
 }
 
 impl CacheService {
-    fn get(&self, key: &str, cache: &HashMap<String, CachedItem>) -> Option<String> {
+    fn get(key: &str, cache: &HashMap<String, CachedItem>) -> Option<String> {
         if let Some(item) = cache.get(key) {
             let now = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -229,20 +229,20 @@ impl CacheService {
                 .as_secs();
 
             if now - item.timestamp < item.ttl_seconds {
-                println!("CACHE HIT: {}", key);
+                println!("CACHE HIT: {key}");
                 Some(item.data.clone())
             } else {
-                println!("CACHE EXPIRED: {}", key);
+                println!("CACHE EXPIRED: {key}");
                 None
             }
         } else {
-            println!("CACHE MISS: {}", key);
+            println!("CACHE MISS: {key}");
             None
         }
     }
 
     fn set(&self, key: String, data: String) -> CachedItem {
-        println!("CACHE SET: {} -> {}", key, data);
+        println!("CACHE SET: {key} -> {data}");
         CachedItem {
             data,
             timestamp: std::time::SystemTime::now()
@@ -385,10 +385,9 @@ enum AppEffect {
 }
 
 // Define our complete storage type
-type CompleteStorage = Storage<DataState, Storage<AppState, Storage<UserState, EmptyStorage>>>;
+type CompleteStorage = (UserState, AppState, DataState);
 
-type ResourceStorage =
-    Storage<CacheService, Storage<NotificationService, Storage<DatabaseService, EmptyStorage>>>;
+type ResourceStorage = (DatabaseService, NotificationService, CacheService);
 
 // ============================================================================
 // Update Functions - Domain logic
@@ -401,8 +400,7 @@ fn update_app(
     match event {
         // User domain
         AppEvent::UserLoginAttempt { username, password } => {
-            let user_state: &mut UserState = ctx.model_mut();
-            let app_state: &mut AppState = ctx.model_mut();
+            let (user_state, app_state, _) = ctx.model_mut();
 
             user_state.login_attempts += 1;
             app_state.is_loading = true;
@@ -427,8 +425,7 @@ fn update_app(
             user,
             session_token,
         } => {
-            let user_state: &mut UserState = ctx.model_mut();
-            let app_state: &mut AppState = ctx.model_mut();
+            let (user_state, app_state, _) = ctx.model_mut();
 
             user_state.current_user = Some(user.clone());
             user_state.session_token = Some(session_token);
@@ -463,15 +460,14 @@ fn update_app(
         }
 
         AppEvent::UserLoginFailed { error } => {
-            let user_state: &UserState = ctx.model();
-            let app_state: &mut AppState = ctx.model_mut();
+            let (user_state, app_state, _) = ctx.model_mut();
 
             app_state.is_loading = false;
             app_state.error_message = Some(error.clone());
 
             let error_notification = Notification {
                 id: "login_error".to_string(),
-                message: format!("Login failed: {}", error),
+                message: format!("Login failed: {error}"),
                 level: NotificationLevel::Error,
                 timestamp: std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
@@ -493,7 +489,7 @@ fn update_app(
         }
 
         AppEvent::UserLogout => {
-            let user_state: &mut UserState = ctx.model_mut();
+            let (user_state, _, _) = ctx.model_mut();
             let session_token = user_state.session_token.clone();
 
             user_state.current_user = None;
@@ -522,7 +518,7 @@ fn update_app(
         }
 
         AppEvent::UserUpdatePreferences { preferences } => {
-            let user_state: &mut UserState = ctx.model_mut();
+            let (user_state, _, _) = ctx.model_mut();
 
             if let Some(ref mut user) = user_state.current_user {
                 user.preferences = preferences.clone();
@@ -548,8 +544,7 @@ fn update_app(
 
         // App state management
         AppEvent::ShowNotification { notification } => {
-            let app_state: &mut AppState = ctx.model_mut();
-            let user_state: &UserState = ctx.model();
+            let (user_state, app_state, _) = ctx.model_mut();
 
             app_state.notification_queue.push(notification.clone());
 
@@ -565,7 +560,7 @@ fn update_app(
         }
 
         AppEvent::DismissNotification { notification_id } => {
-            let app_state: &mut AppState = ctx.model_mut();
+            let (_, app_state, _) = ctx.model_mut();
 
             app_state
                 .notification_queue
@@ -575,7 +570,7 @@ fn update_app(
         }
 
         AppEvent::ClearAllNotifications => {
-            let app_state: &mut AppState = ctx.model_mut();
+            let (_, app_state, _) = ctx.model_mut();
 
             app_state.notification_queue.clear();
 
@@ -586,7 +581,7 @@ fn update_app(
             operation_id,
             description,
         } => {
-            let app_state: &mut AppState = ctx.model_mut();
+            let (_, app_state, _) = ctx.model_mut();
 
             app_state.active_operations.insert(
                 operation_id.clone(),
@@ -607,7 +602,7 @@ fn update_app(
             operation_id,
             progress,
         } => {
-            let app_state: &mut AppState = ctx.model_mut();
+            let (_, app_state, _) = ctx.model_mut();
 
             if let Some(op) = app_state.active_operations.get_mut(&operation_id) {
                 op.progress = progress;
@@ -622,13 +617,13 @@ fn update_app(
         }
 
         AppEvent::OperationCompleted { operation_id } => {
-            let app_state: &mut AppState = ctx.model_mut();
+            let (_, app_state, _) = ctx.model_mut();
 
             app_state.active_operations.remove(&operation_id);
 
             let notification = Notification {
-                id: format!("op_complete_{}", operation_id),
-                message: format!("Operation {} completed successfully", operation_id),
+                id: format!("op_complete_{operation_id}"),
+                message: format!("Operation {operation_id} completed successfully"),
                 level: NotificationLevel::Success,
                 timestamp: std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
@@ -643,19 +638,19 @@ fn update_app(
             operation_id,
             error,
         } => {
-            let app_state: &mut AppState = ctx.model_mut();
+            let (_, app_state, _) = ctx.model_mut();
 
             app_state.active_operations.remove(&operation_id);
 
             Command::event(AppEvent::ErrorOccurred {
-                error: format!("Operation {} failed: {}", operation_id, error),
+                error: format!("Operation {operation_id} failed: {error}"),
                 context: "background_operation".to_string(),
             })
         }
 
         // Data management
         AppEvent::DataChangeRequested { change } => {
-            let data_state: &mut DataState = ctx.model_mut();
+            let (_, _, data_state) = ctx.model_mut();
 
             data_state.pending_changes.push(change);
 
@@ -668,9 +663,11 @@ fn update_app(
         }
 
         AppEvent::DataSyncRequested => {
-            let data_state: &DataState = ctx.model();
+            let (_, _, data_state) = ctx.model();
 
-            if !data_state.pending_changes.is_empty() {
+            if data_state.pending_changes.is_empty() {
+                Command::none()
+            } else {
                 Command::batch([
                     Command::event(AppEvent::OperationStarted {
                         operation_id: "data_sync".to_string(),
@@ -680,13 +677,11 @@ fn update_app(
                         changes: data_state.pending_changes.clone(),
                     }),
                 ])
-            } else {
-                Command::none()
             }
         }
 
         AppEvent::DataSyncCompleted { synced_ids } => {
-            let data_state: &mut DataState = ctx.model_mut();
+            let (_, _, data_state) = ctx.model_mut();
 
             // Remove synced changes
             data_state
@@ -710,7 +705,7 @@ fn update_app(
         }),
 
         AppEvent::CacheDataRequested { key } => {
-            let data_state: &DataState = ctx.model();
+            let (_, _, data_state) = ctx.model();
 
             // This would normally use the cache service, but we'll simulate it
             if let Some(item) = data_state.cache.get(&key) {
@@ -733,24 +728,24 @@ fn update_app(
         }
 
         AppEvent::CacheDataFound { key, data } => {
-            println!("Cache hit for {}: {}", key, data);
+            println!("Cache hit for {key}: {data}");
             Command::none()
         }
 
         AppEvent::CacheDataNotFound { key } => {
-            println!("Cache miss for {}", key);
+            println!("Cache miss for {key}");
             // Could trigger a fetch from external source
             Command::none()
         }
 
         // Error handling
         AppEvent::ErrorOccurred { error, context } => {
-            let app_state: &mut AppState = ctx.model_mut();
+            let (_, app_state, _) = ctx.model_mut();
 
             app_state.error_message = Some(error.clone());
 
             let error_notification = Notification {
-                id: format!("error_{}", context),
+                id: format!("error_{context}"),
                 message: error.clone(),
                 level: NotificationLevel::Error,
                 timestamp: std::time::SystemTime::now()
@@ -772,7 +767,7 @@ fn update_app(
         }
 
         AppEvent::ErrorRecovered { context } => {
-            let app_state: &mut AppState = ctx.model_mut();
+            let (_, app_state, _) = ctx.model_mut();
 
             app_state.error_message = None;
 
@@ -789,131 +784,210 @@ fn update_app(
 // Effect Handlers - External integrations
 // ============================================================================
 
-async fn handle_authentication_effect(
+fn handle_authentication_effect(
     effect: AppEffect,
-    db_service: &DatabaseService,
-    sender: EventSender<AppEvent>,
-) {
+    db_service: DatabaseService,
+) -> EffectPlan<AppEvent, ResourceStorage> {
     match effect {
         AppEffect::AuthenticateUser { username, password } => {
-            match db_service.authenticate(&username, &password).await {
-                Ok(user) => {
-                    let session_token = format!(
-                        "session_{}_{}",
-                        user.id,
-                        std::time::SystemTime::now()
-                            .duration_since(std::time::UNIX_EPOCH)
-                            .unwrap()
-                            .as_secs()
-                    );
+            EffectPlan::future_on::<TokioIo, _, _>(move |ctx| {
+                let db_service = db_service.clone();
+                let username = username.clone();
+                let password = password.clone();
+                async move {
+                    match db_service.authenticate(&username, &password).await {
+                        Ok(user) => {
+                            let session_token = format!(
+                                "session_{}_{}",
+                                user.id,
+                                std::time::SystemTime::now()
+                                    .duration_since(std::time::UNIX_EPOCH)
+                                    .unwrap()
+                                    .as_secs()
+                            );
 
-                    let _ = sender.send(AppEvent::UserLoginSuccess {
-                        user,
-                        session_token,
-                    });
+                            let () = ctx.send_event(AppEvent::UserLoginSuccess {
+                                user,
+                                session_token,
+                            });
+                        }
+                        Err(error) => {
+                            let () = ctx.send_event(AppEvent::UserLoginFailed { error });
+                        }
+                    }
+                    EffectOutput::None
                 }
-                Err(error) => {
-                    let _ = sender.send(AppEvent::UserLoginFailed { error });
-                }
-            }
+                .boxed()
+            })
         }
-        _ => {}
+        AppEffect::GenerateSessionToken { user_id } => {
+            EffectPlan::future_on::<TokioIo, _, _>(move |_ctx| {
+                let session_token = format!(
+                    "session_{}_{}",
+                    user_id,
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap()
+                        .as_secs()
+                );
+                async move {
+                    // In a real app, you'd store this token
+                    println!("Generated session token: {session_token}");
+                    EffectOutput::None
+                }
+                .boxed()
+            })
+        }
+        AppEffect::InvalidateSession { session_token } => {
+            EffectPlan::future_on::<TokioIo, _, _>(move |_| {
+                let session_token = session_token.clone();
+                async move {
+                    println!("Invalidated session: {session_token}");
+                    EffectOutput::None
+                }
+                .boxed()
+            })
+        }
+        _ => EffectPlan::events(vec![]),
     }
 }
 
-async fn handle_persistence_effect(
+fn handle_persistence_effect(
     effect: AppEffect,
-    db_service: &DatabaseService,
-    sender: EventSender<AppEvent>,
-) {
+    db_service: DatabaseService,
+) -> EffectPlan<AppEvent, ResourceStorage> {
     match effect {
         AppEffect::SaveUserPreferences {
             user_id,
             preferences,
-        } => {
-            match db_service
-                .save_user_preferences(user_id, &preferences)
-                .await
-            {
-                Ok(()) => {
-                    println!("User preferences saved successfully");
+        } => EffectPlan::future_on::<TokioIo, _, _>(move |ctx| {
+            let db_service = db_service.clone();
+            let preferences = preferences.clone();
+            async move {
+                match db_service
+                    .save_user_preferences(user_id, &preferences)
+                    .await
+                {
+                    Ok(()) => {
+                        println!("User preferences saved successfully");
+                    }
+                    Err(error) => {
+                        let () = ctx.send_event(AppEvent::ErrorOccurred {
+                            error: format!("Failed to save preferences: {error}"),
+                            context: "persistence".to_string(),
+                        });
+                    }
                 }
-                Err(error) => {
-                    let _ = sender.send(AppEvent::ErrorOccurred {
-                        error: format!("Failed to save preferences: {}", error),
-                        context: "persistence".to_string(),
-                    });
-                }
+                EffectOutput::None
             }
+            .boxed()
+        }),
+        AppEffect::SyncDataChanges { changes } => {
+            EffectPlan::future_on::<TokioIo, _, _>(move |ctx| {
+                let db_service = db_service.clone();
+                let changes = changes.clone();
+                async move {
+                    match db_service.sync_data(&changes).await {
+                        Ok(synced_ids) => {
+                            let () = ctx.send_event(AppEvent::DataSyncCompleted { synced_ids });
+                        }
+                        Err(error) => {
+                            let () = ctx.send_event(AppEvent::DataSyncFailed { error });
+                        }
+                    }
+                    EffectOutput::None
+                }
+                .boxed()
+            })
         }
-        AppEffect::SyncDataChanges { changes } => match db_service.sync_data(&changes).await {
-            Ok(synced_ids) => {
-                let _ = sender.send(AppEvent::DataSyncCompleted { synced_ids });
-            }
-            Err(error) => {
-                let _ = sender.send(AppEvent::DataSyncFailed { error });
-            }
-        },
-        _ => {}
+        _ => EffectPlan::events(vec![]),
     }
 }
 
-async fn handle_notification_effect(
+fn handle_notification_effect(
     effect: AppEffect,
-    _notification_service: &NotificationService,
-    _sender: EventSender<AppEvent>,
-) {
-    if let AppEffect::SendNotification { notification, .. } = effect {
-        // In a real app, we'd need to get the user from somewhere
-        // For demo purposes, we'll just print the notification
-        println!(
-            "NOTIFICATION: [{:?}] {}",
-            notification.level, notification.message
-        );
+    notification_service: NotificationService,
+) -> EffectPlan<AppEvent, ResourceStorage> {
+    if let AppEffect::SendNotification {
+        user_id,
+        notification,
+    } = effect
+    {
+        EffectPlan::future_on::<TokioIo, _, _>(move |_ctx| {
+            let notification_service = notification_service.clone();
+            let notification = notification.clone();
+            async move {
+                // In a real app, we'd need to get the user from somewhere
+                // For demo purposes, we'll just print the notification
+                println!(
+                    "NOTIFICATION: [{:?}] {} (user: {})",
+                    notification.level, notification.message, user_id
+                );
+
+                // Simulate sending notification
+                match notification_service
+                    .send_notification(
+                        &User {
+                            id: user_id,
+                            username: "demo_user".to_string(),
+                            email: "demo@example.com".to_string(),
+                            role: UserRole::User,
+                            preferences: UserPreferences::default(),
+                        },
+                        &notification,
+                    )
+                    .await
+                {
+                    Ok(()) => println!("Notification sent successfully"),
+                    Err(e) => println!("Failed to send notification: {e}"),
+                }
+
+                EffectOutput::None
+            }
+            .boxed()
+        })
+    } else {
+        EffectPlan::events(vec![])
     }
 }
 
-async fn handle_background_operation(
-    effect: AppEffect,
-    ctx: EffectContext<AppEvent, ResourceStorage>,
-) -> EffectResult<AppEvent> {
+fn handle_background_operation(effect: AppEffect) -> EffectPlan<AppEvent, ResourceStorage> {
     if let AppEffect::StartBackgroundOperation {
         operation_id,
         task_type,
     } = effect
     {
-        let operation_id_clone = operation_id.clone();
+        EffectPlan::future_on::<TokioIo, _, _>(move |ctx| {
+            let operation_id = operation_id.clone();
+            let task_type = task_type.clone();
+            async move {
+                println!("Background operation {operation_id} started ({task_type})");
 
-        let ctx_clone = ctx.clone();
-        // TODO: Replace with direct spawning - spawn task for background operation
-        let task = async move {
-            println!(
-                "Background operation {} started ({})",
-                operation_id_clone, task_type
-            );
+                // Simulate work with progress updates
+                for i in 1..=5 {
+                    #[cfg(feature = "tokio")]
+                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
-            // Simulate work with progress updates
-            for i in 1..=5 {
-                #[cfg(feature = "tokio")]
-                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                    #[allow(clippy::cast_precision_loss)]
+                    let progress = (i as f32) / 5.0;
+                    let () = ctx.send_event(AppEvent::OperationProgress {
+                        operation_id: operation_id.clone(),
+                        progress,
+                    });
+                }
 
-                let progress = (i as f32) / 5.0;
-                let _ = ctx_clone.send_event(AppEvent::OperationProgress {
-                    operation_id: operation_id_clone.clone(),
-                    progress,
-                });
+                // Complete the operation
+                let () = ctx.send_event(AppEvent::OperationCompleted { operation_id });
+                EffectOutput::None
             }
-
-            // Complete the operation
-            let _ = ctx_clone.send_event(AppEvent::OperationCompleted {
-                operation_id: operation_id_clone,
-            });
-        };
-        ctx.spawn(task).unwrap();
+            .boxed()
+        })
+    } else {
+        EffectPlan::events(vec![])
     }
 }
 
-fn handle_logging_effect(effect: AppEffect) {
+fn handle_logging_effect(effect: AppEffect) -> EffectPlan<AppEvent, ResourceStorage> {
     match effect {
         AppEffect::LogEvent {
             level,
@@ -925,49 +999,46 @@ fn handle_logging_effect(effect: AppEffect) {
                 .unwrap()
                 .as_secs();
 
-            println!("[{}] [{}] {} ({})", timestamp, level, message, context);
+            println!("[{timestamp}] [{level}] {message} ({context})");
+            EffectPlan::events(vec![])
         }
         AppEffect::RecordMetric { metric_name, value } => {
-            println!("METRIC: {} = {}", metric_name, value);
+            println!("METRIC: {metric_name} = {value}");
+            EffectPlan::events(vec![])
         }
-        _ => {}
+        _ => EffectPlan::events(vec![]),
     }
 }
 
 // Main effect dispatcher
-async fn handle_effects(
+fn handle_effects(
     effect: AppEffect,
-    ctx: EffectContext<AppEvent, ResourceStorage>,
-) -> EffectResult<AppEvent> {
-    let sender = EventSender(ctx.event_sender().unwrap());
-
+    ctx: &EffectContext<AppEvent, ResourceStorage>,
+) -> EffectPlan<AppEvent, ResourceStorage> {
     match &effect {
         AppEffect::AuthenticateUser { .. }
         | AppEffect::GenerateSessionToken { .. }
         | AppEffect::InvalidateSession { .. } => {
-            let db_service: &DatabaseService = ctx.resource();
-            handle_authentication_effect(effect, db_service, sender).await;
+            let (db_service, _, _) = ctx.resources().clone();
+            handle_authentication_effect(effect, db_service)
         }
 
         AppEffect::SaveUserPreferences { .. } | AppEffect::SyncDataChanges { .. } => {
-            let db_service: &DatabaseService = ctx.resource();
-            handle_persistence_effect(effect, db_service, sender).await;
+            let (db_service, _, _) = ctx.resources().clone();
+            handle_persistence_effect(effect, db_service)
         }
 
         AppEffect::SendNotification { .. } => {
-            let notification_service: &NotificationService = ctx.resource();
-            handle_notification_effect(effect, notification_service, sender).await;
+            let (_, notification_service, _) = ctx.resources().clone();
+            handle_notification_effect(effect, notification_service)
         }
 
-        AppEffect::StartBackgroundOperation { .. } => {
-            handle_background_operation(effect, ctx).await;
-        }
+        AppEffect::StartBackgroundOperation { .. } => handle_background_operation(effect),
 
         AppEffect::LogEvent { .. } | AppEffect::RecordMetric { .. } => {
-            handle_logging_effect(effect);
+            handle_logging_effect(effect)
         }
     }
-    EffectResult::None
 }
 
 // ============================================================================
@@ -983,24 +1054,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Build the complete system with default executors
     let (core, shell) = Syzygy::builder()
         // Application state
-        .model(UserState::default())
-        .model(AppState::default())
-        .model(DataState::default())
+        .model((
+            UserState::default(),
+            AppState::default(),
+            DataState::default(),
+        ))
         // External services
-        .resource(DatabaseService {
-            connection_string: "postgresql://localhost/myapp".to_string(),
-            max_connections: 10,
-            retry_attempts: 3,
-        })
-        .resource(NotificationService {
-            email_enabled: true,
-            push_enabled: true,
-            webhook_url: Some("https://api.example.com/notify".to_string()),
-        })
-        .resource(CacheService {
-            default_ttl: 3600, // 1 hour
-            max_size: 1000,
-        })
+        .resource((
+            DatabaseService {
+                connection_string: "postgresql://localhost/myapp".to_string(),
+                max_connections: 10,
+                retry_attempts: 3,
+            },
+            NotificationService {
+                email_enabled: true,
+                push_enabled: true,
+                webhook_url: Some("https://api.example.com/notify".to_string()),
+            },
+            CacheService {
+                default_ttl: 3600, // 1 hour
+                max_size: 1000,
+            },
+        ))
         .event_handler(update_app)
         .effect_handler(handle_effects)
         .with_default_executors()
@@ -1014,7 +1089,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     runner.core().send_event(AppEvent::UserLoginAttempt {
         username: "admin".to_string(),
         password: "secret".to_string(),
-    })?;
+    });
     runner.tick(syzygy::spawn::spawner()).await?;
 
     // Wait a bit for async operations
@@ -1023,8 +1098,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     runner.tick(syzygy::spawn::spawner()).await?;
 
     // Show current state
-    let user_state: &UserState = runner.core().model();
-    let app_state: &AppState = runner.core().model();
+    let (user_state, app_state, _) = runner.core().model();
     println!(
         "Current user: {:?}",
         user_state.current_user.as_ref().map(|u| &u.username)
@@ -1040,7 +1114,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             language: "es".to_string(),
             notifications_enabled: true,
         },
-    })?;
+    });
     runner.tick(syzygy::spawn::spawner()).await?;
 
     #[cfg(feature = "tokio")]
@@ -1054,11 +1128,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         // This will trigger auto-sync at 5 changes
         runner.core().send_event(AppEvent::DataChangeRequested {
             change: DataChange {
-                id: format!("change_{}", i),
+                id: format!("change_{i}"),
                 change_type: ChangeType::Create,
-                data: format!("data_{}", i),
+                data: format!("data_{i}"),
             },
-        })?;
+        });
     }
     runner.tick(syzygy::spawn::spawner()).await?;
 
@@ -1068,7 +1142,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         #[cfg(feature = "tokio")]
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
-        let app_state: &AppState = runner.core().model();
+        let (_, app_state, _) = runner.core().model();
         if app_state.active_operations.is_empty() {
             break;
         }
@@ -1077,13 +1151,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Scenario 4: Error handling
     println!("4. Error handling (invalid login)");
-    runner.core().send_event(AppEvent::UserLogout)?;
+    runner.core().send_event(AppEvent::UserLogout);
     runner.tick(syzygy::spawn::spawner()).await?;
 
     runner.core().send_event(AppEvent::UserLoginAttempt {
         username: "invalid".to_string(),
         password: "wrong".to_string(),
-    })?;
+    });
     runner.tick(syzygy::spawn::spawner()).await?;
 
     #[cfg(feature = "tokio")]
@@ -1092,9 +1166,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!();
 
     // Final state
-    let user_state: &UserState = runner.core().model();
-    let app_state: &AppState = runner.core().model();
-    let data_state: &DataState = runner.core().model();
+    let (user_state, app_state, data_state) = runner.core().model();
 
     println!("Final Application State:");
     println!("  User logged in: {}", user_state.current_user.is_some());

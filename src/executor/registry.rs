@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use super::{AsyncExecutor, SyncExecutor};
 
-/// Registry of executors keyed by TypeId markers with separate async and sync capabilities.
+/// Registry of executors keyed by `TypeId` markers with separate async and sync capabilities.
 pub struct ExecutorRegistry<E> {
     async_map: FxHashMap<TypeId, Arc<dyn AsyncExecutor<E>>>,
     sync_map: FxHashMap<TypeId, Arc<dyn SyncExecutor<E>>>,
@@ -36,7 +36,10 @@ where
     where
         T: AsyncExecutor<E> + 'static,
     {
-        self.async_map.insert(TypeId::of::<T>(), Arc::new(exec) as Arc<dyn AsyncExecutor<E>>);
+        self.async_map.insert(
+            TypeId::of::<T>(),
+            Arc::new(exec) as Arc<dyn AsyncExecutor<E>>,
+        );
     }
 
     /// Insert a sync executor using concrete type T as key.
@@ -44,7 +47,10 @@ where
     where
         T: SyncExecutor<E> + 'static,
     {
-        self.sync_map.insert(TypeId::of::<T>(), Arc::new(exec) as Arc<dyn SyncExecutor<E>>);
+        self.sync_map.insert(
+            TypeId::of::<T>(),
+            Arc::new(exec) as Arc<dyn SyncExecutor<E>>,
+        );
     }
 
     /// Get an async executor by marker type.
@@ -59,13 +65,13 @@ where
         self.sync_map.get(&TypeId::of::<T>()).cloned()
     }
 
-    /// Get an async executor by raw TypeId key.
+    /// Get an async executor by raw `TypeId` key.
     #[must_use]
     pub(crate) fn async_exec_by_key(&self, key: TypeId) -> Option<Arc<dyn AsyncExecutor<E>>> {
         self.async_map.get(&key).cloned()
     }
 
-    /// Get a sync executor by raw TypeId key.
+    /// Get a sync executor by raw `TypeId` key.
     #[must_use]
     pub(crate) fn sync_exec_by_key(&self, key: TypeId) -> Option<Arc<dyn SyncExecutor<E>>> {
         self.sync_map.get(&key).cloned()
@@ -75,15 +81,18 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::executor::{TokioExecutor, SingleThreadExecutor};
+    use crate::executor::{SingleThreadExecutor, TokioExecutor};
 
     #[derive(Debug, Clone)]
+    #[allow(dead_code)]
     enum TestEvent {
         Done,
     }
 
     // Marker types for testing type safety
+    #[allow(dead_code)]
     struct IoKey;
+    #[allow(dead_code)]
     struct CpuKey;
 
     fn setup_registry_with_executors() -> ExecutorRegistry<TestEvent> {
@@ -107,7 +116,7 @@ mod tests {
 
     #[test]
     fn registry_stores_and_retrieves_sync_executor_by_type() {
-        // Given: A registry with executors  
+        // Given: A registry with executors
         let registry = setup_registry_with_executors();
 
         // When: Retrieve sync executor by type
@@ -126,7 +135,10 @@ mod tests {
         let missing_exec = registry.async_exec::<SingleThreadExecutor>(); // Wrong category
 
         // Then: None is returned
-        assert!(missing_exec.is_none(), "Should not find async executor for sync type");
+        assert!(
+            missing_exec.is_none(),
+            "Should not find async executor for sync type"
+        );
     }
 
     #[test]
@@ -139,8 +151,14 @@ mod tests {
         let sync_exec = registry.sync_exec::<SingleThreadExecutor>();
 
         // Then: No executors found
-        assert!(async_exec.is_none(), "Empty registry should not have async executors");
-        assert!(sync_exec.is_none(), "Empty registry should not have sync executors");
+        assert!(
+            async_exec.is_none(),
+            "Empty registry should not have async executors"
+        );
+        assert!(
+            sync_exec.is_none(),
+            "Empty registry should not have sync executors"
+        );
     }
 
     #[test]

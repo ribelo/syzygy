@@ -93,6 +93,7 @@ fn benchmark_effect_execution(c: &mut Criterion) {
             let cloned_handler = Arc::clone(&arc_handler);
             let effect_clone = effect.clone();
             let future = cloned_handler(effect_clone, ctx);
+            #[allow(unused_must_use)]
             black_box(future);
         });
     });
@@ -102,6 +103,7 @@ fn benchmark_effect_execution(c: &mut Criterion) {
         b.iter(|| {
             let effect_clone = effect.clone();
             let future = fn_handler(effect_clone, ctx);
+            #[allow(unused_must_use)]
             black_box(future);
         });
     });
@@ -131,6 +133,7 @@ fn benchmark_batch_effects(c: &mut Criterion) {
                 let cloned_handler = Arc::clone(&arc_handler);
                 let effect_clone = effect.clone();
                 let future = cloned_handler(effect_clone, ctx);
+                #[allow(unused_must_use)]
                 black_box(future);
             }
         });
@@ -142,6 +145,7 @@ fn benchmark_batch_effects(c: &mut Criterion) {
             for effect in &effects {
                 let effect_clone = effect.clone();
                 let future = fn_handler(effect_clone, ctx);
+                #[allow(unused_must_use)]
                 black_box(future);
             }
         });
@@ -172,6 +176,7 @@ fn benchmark_memory_access_patterns(c: &mut Criterion) {
 
             // The actual function call through Arc indirection
             let future = cloned(effect_clone, ctx);
+            #[allow(unused_must_use)]
             black_box(future);
         });
     });
@@ -181,6 +186,7 @@ fn benchmark_memory_access_patterns(c: &mut Criterion) {
         b.iter(|| {
             let effect_clone = effect.clone();
             let future = fn_handler(effect_clone, ctx);
+            #[allow(unused_must_use)]
             black_box(future);
         });
     });

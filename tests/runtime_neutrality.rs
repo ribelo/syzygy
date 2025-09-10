@@ -14,12 +14,10 @@
 use std::time::Duration;
 use syzygy::prelude::*;
 use syzygy::spawn::spawner;
-use syzygy::storage::Selector;
-use syzygy::streaming::EffectOutput;
-use syzygy::executor::TokioIo;
+
 use futures::FutureExt;
-
-
+use syzygy::executor::TokioIo;
+use syzygy::streaming::EffectOutput;
 
 #[derive(Debug, Clone)]
 enum TestEvent {
@@ -41,10 +39,9 @@ enum TestEffect {
 
 fn test_update(
     event: TestEvent,
-    ctx: &mut EventContext<TestEvent, TestEffect, Storage<TestModel, EmptyStorage>>,
+    ctx: &mut EventContext<TestEvent, TestEffect, TestModel>,
 ) -> Command<TestEvent, TestEffect> {
-    let storage: &mut Storage<TestModel, EmptyStorage> = ctx.model_mut();
-    let model: &mut TestModel = storage.get_mut();
+    let model: &mut TestModel = ctx.model_mut();
     match event {
         TestEvent::Start => {
             model.step = 1;
@@ -63,25 +60,23 @@ fn test_update(
 
 fn test_effect_handler(
     effect: TestEffect,
-    _ctx: &EffectContext<TestEvent, EmptyStorage>,
-) -> syzygy::executor::EffectPlan<TestEvent, EmptyStorage> {
+    _ctx: &EffectContext<TestEvent, ()>,
+) -> syzygy::executor::EffectPlan<TestEvent, ()> {
     match effect {
-        TestEffect::Delay(duration) => syzygy::executor::EffectPlan::future_on::<
-            TokioIo,
-            _,
-            _,
-        >(move |_ctx| async move {
-            #[cfg(feature = "tokio")]
-            tokio::time::sleep(duration).await;
+        TestEffect::Delay(duration) => {
+            syzygy::executor::EffectPlan::future_on::<TokioIo, _, _>(move |_ctx| async move {
+                #[cfg(feature = "tokio")]
+                tokio::time::sleep(duration).await;
 
-            #[cfg(all(feature = "smol", not(feature = "tokio")))]
-            smol::Timer::after(duration).await;
+                #[cfg(all(feature = "smol", not(feature = "tokio")))]
+                smol::Timer::after(duration).await;
 
-            #[cfg(all(feature = "async-std", not(feature = "tokio"), not(feature = "smol")))]
-            async_std::task::sleep(duration).await;
+                #[cfg(all(feature = "async-std", not(feature = "tokio"), not(feature = "smol")))]
+                async_std::task::sleep(duration).await;
 
-            EffectOutput::Future(async move { vec![TestEvent::Work] }.boxed())
-        }),
+                EffectOutput::Future(async move { vec![TestEvent::Work] }.boxed())
+            })
+        }
     }
 }
 
@@ -103,13 +98,13 @@ async fn test_runtime_auto_detection() {
 
     // Run until completed - using auto-detection spawner
     runner
-        .run_until(|core, _shell| core.model().get().completed, spawner())
+        .run_until(|core, _shell| core.model().completed, spawner())
         .await
         .unwrap();
 
     // Verify the sequence completed
-    assert_eq!(runner.core().model().get().step, 2);
-    assert!(runner.core().model().get().completed);
+    assert_eq!(runner.core().model().step, 2);
+    assert!(runner.core().model().completed);
 }
 
 #[cfg(feature = "tokio")]
@@ -130,12 +125,12 @@ async fn test_explicit_tokio_runtime() {
     // Run with explicit tokio spawn
     runner
         .run_until(
-            |core, _shell| core.model().get().completed,
+            |core, _shell| core.model().completed,
             syzygy::spawn::TokioSpawn,
         )
         .await
         .unwrap();
 
-    assert_eq!(runner.core().model().get().step, 2);
-    assert!(runner.core().model().get().completed);
+    assert_eq!(runner.core().model().step, 2);
+    assert!(runner.core().model().completed);
 }

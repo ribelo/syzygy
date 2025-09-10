@@ -4,16 +4,18 @@
 //!
 //! This example demonstrates advanced async effect handling with resources.
 //! You'll learn:
-//! - Resource management in EffectContext
+//! - Resource management in `EffectContext`
 //! - Async task spawning and management
 //! - Event-driven async workflows
 //! - Background task coordination
 
+use futures::FutureExt;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
+use syzygy::executor::{EffectPlan, TokioIo};
 use syzygy::prelude::*;
-use syzygy::streaming::EffectResult;
+use syzygy::streaming::EffectOutput;
 
 // ============================================================================
 // Application State
@@ -142,8 +144,7 @@ enum CacheOp {
 }
 
 // Define our resource storage type
-type ResourceStorage =
-    Storage<CacheManager, Storage<DatabasePool, Storage<HttpClient, EmptyStorage>>>;
+type ResourceStorage = (HttpClient, DatabasePool, CacheManager);
 
 // ============================================================================
 // Event Handlers
@@ -151,7 +152,7 @@ type ResourceStorage =
 
 fn update_app(
     event: AppEvent,
-    ctx: &mut EventContext<AppEvent, AppEffect, Storage<AppModel, EmptyStorage>>,
+    ctx: &mut EventContext<AppEvent, AppEffect, AppModel>,
 ) -> Command<AppEvent, AppEffect> {
     let model: &mut AppModel = ctx.model_mut();
 
@@ -251,105 +252,152 @@ fn update_app(
 // Async Effect Handlers with Resource Extraction
 // ============================================================================
 
-async fn handle_http_request(
+fn handle_http_request(
     effect: AppEffect,
     http_client: &HttpClient,
-    sender: EventSender<AppEvent>,
-) {
+) -> EffectPlan<AppEvent, ResourceStorage> {
     if let AppEffect::HttpRequest { task_id, path } = effect {
-        match http_client.get(&path).await {
-            Ok(response) => {
-                let _ = sender.send(AppEvent::TaskCompleted {
-                    task_id,
-                    result: response,
-                });
+        let http_client = http_client.clone();
+        EffectPlan::future_on::<TokioIo, _, _>(move |ctx| {
+            let task_id = task_id.clone();
+            let path = path.clone();
+            async move {
+                match http_client.get(&path).await {
+                    Ok(response) => {
+                        let () = ctx.send_event(AppEvent::TaskCompleted {
+                            task_id,
+                            result: response,
+                        });
+                    }
+                    Err(error) => {
+                        let () = ctx.send_event(AppEvent::TaskFailed { task_id, error });
+                    }
+                }
+                EffectOutput::None
             }
-            Err(error) => {
-                let _ = sender.send(AppEvent::TaskFailed { task_id, error });
-            }
-        }
+            .boxed()
+        })
+    } else {
+        EffectPlan::events(vec![])
     }
 }
 
-async fn handle_database_query(
+fn handle_database_query(
     effect: AppEffect,
     db_pool: &DatabasePool,
-    sender: EventSender<AppEvent>,
-) {
+) -> EffectPlan<AppEvent, ResourceStorage> {
     if let AppEffect::DatabaseQuery { task_id, query } = effect {
-        match db_pool.execute(&query).await {
-            Ok(result) => {
-                let _ = sender.send(AppEvent::TaskCompleted { task_id, result });
+        let db_pool = db_pool.clone();
+        EffectPlan::future_on::<TokioIo, _, _>(move |ctx| {
+            let task_id = task_id.clone();
+            let query = query.clone();
+            async move {
+                match db_pool.execute(&query).await {
+                    Ok(result) => {
+                        let () = ctx.send_event(AppEvent::TaskCompleted { task_id, result });
+                    }
+                    Err(error) => {
+                        let () = ctx.send_event(AppEvent::TaskFailed { task_id, error });
+                    }
+                }
+                EffectOutput::None
             }
-            Err(error) => {
-                let _ = sender.send(AppEvent::TaskFailed { task_id, error });
-            }
-        }
+            .boxed()
+        })
+    } else {
+        EffectPlan::events(vec![])
     }
 }
 
-fn handle_cache_operation(effect: AppEffect, cache: &CacheManager, sender: EventSender<AppEvent>) {
+fn handle_cache_operation(
+    effect: AppEffect,
+    cache: &CacheManager,
+) -> EffectPlan<AppEvent, ResourceStorage> {
     if let AppEffect::CacheOperation { operation } = effect {
         match operation {
             CacheOp::Get { key } => {
                 if let Some(value) = cache.get(&key) {
                     println!("CACHE HIT: {} -> {}", key, value);
-                    let _ = sender.send(AppEvent::TaskCompleted {
-                        task_id: format!("cache_get_{}", key),
-                        result: value,
-                    });
+                    EffectPlan::future_on::<TokioIo, _, _>(move |ctx| {
+                        let key = key.clone();
+                        let value = value.clone();
+                        async move {
+                            let () = ctx.send_event(AppEvent::TaskCompleted {
+                                task_id: format!("cache_get_{}", key),
+                                result: value,
+                            });
+                            EffectOutput::None
+                        }
+                        .boxed()
+                    })
                 } else {
                     println!("CACHE MISS: {}", key);
+                    EffectPlan::events(vec![])
                 }
             }
             CacheOp::Set { key, value } => {
                 cache.set(key.clone(), value.clone());
                 println!("CACHE SET: {} -> {}", key, value);
+                EffectPlan::events(vec![])
             }
         }
+    } else {
+        EffectPlan::events(vec![])
     }
 }
 
-async fn handle_parallel_tasks(
+fn handle_parallel_tasks(
     effect: AppEffect,
-    ctx: EffectContext<AppEvent, ResourceStorage>,
-) -> EffectResult<AppEvent> {
+    _ctx: &EffectContext<AppEvent, ResourceStorage>,
+) -> EffectPlan<AppEvent, ResourceStorage> {
     if let AppEffect::ParallelTasks { task_ids } = effect {
         println!("Starting {} parallel tasks", task_ids.len());
 
-        for task_id in task_ids {
-            let task_id_clone = task_id.clone();
-            let ctx_clone = ctx.clone();
-            let task = async move {
-                // Simulate parallel work
-                #[cfg(feature = "tokio")]
-                tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+        let plans: Vec<EffectPlan<AppEvent, ResourceStorage>> = task_ids
+            .into_iter()
+            .map(|task_id| {
+                EffectPlan::future_on::<TokioIo, _, _>(move |ctx| {
+                    let task_id = task_id.clone();
+                    async move {
+                        // Simulate parallel work
+                        #[cfg(feature = "tokio")]
+                        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
 
-                let result = format!("Parallel result for {}", task_id_clone);
-                let _ = ctx_clone.send_event(AppEvent::TaskCompleted {
-                    task_id: task_id_clone,
-                    result,
-                });
-            };
+                        let result = format!("Parallel result for {}", task_id);
+                        let () = ctx.send_event(AppEvent::TaskCompleted { task_id, result });
+                        EffectOutput::None
+                    }
+                    .boxed()
+                })
+            })
+            .collect();
 
-            // Spawn the task using the new executor API
-            ctx.spawn(task).unwrap();
-        }
+        EffectPlan::all(plans)
+    } else {
+        EffectPlan::events(vec![])
     }
-    EffectResult::None
 }
 
-async fn handle_delayed_task(effect: AppEffect, sender: EventSender<AppEvent>) {
+fn handle_delayed_task(effect: AppEffect) -> EffectPlan<AppEvent, ResourceStorage> {
     if let AppEffect::DelayedTask { task_id, delay_ms } = effect {
-        println!("Starting delayed task {} ({}ms)", task_id, delay_ms);
+        EffectPlan::future_on::<TokioIo, _, _>(move |ctx| {
+            let task_id = task_id.clone();
+            async move {
+                println!("Starting delayed task {} ({}ms)", task_id, delay_ms);
 
-        #[cfg(feature = "tokio")]
-        tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+                #[cfg(feature = "tokio")]
+                tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
 
-        let _ = sender.send(AppEvent::TaskCompleted {
-            task_id,
-            result: "Delayed task completed".to_string(),
-        });
+                let () = ctx.send_event(AppEvent::TaskCompleted {
+                    task_id,
+                    result: "Delayed task completed".to_string(),
+                });
+                EffectOutput::None
+            }
+            .boxed()
+        })
+    } else {
+        EffectPlan::events(vec![])
     }
 }
 
@@ -357,36 +405,19 @@ async fn handle_delayed_task(effect: AppEffect, sender: EventSender<AppEvent>) {
 // Main Effect Dispatcher
 // ============================================================================
 
-async fn handle_effects(
+fn handle_effects(
     effect: AppEffect,
-    ctx: EffectContext<
-        AppEvent,
-        Storage<CacheManager, Storage<DatabasePool, Storage<HttpClient, EmptyStorage>>>,
-    >,
-) -> EffectResult<AppEvent> {
-    let sender = EventSender(ctx.event_sender().unwrap());
+    ctx: &EffectContext<AppEvent, ResourceStorage>,
+) -> EffectPlan<AppEvent, ResourceStorage> {
+    let (http_client, db_pool, cache) = ctx.resources();
 
     match &effect {
-        AppEffect::HttpRequest { .. } => {
-            let http_client: &HttpClient = ctx.resource();
-            handle_http_request(effect, http_client, sender).await;
-        }
-        AppEffect::DatabaseQuery { .. } => {
-            let db_pool: &DatabasePool = ctx.resource();
-            handle_database_query(effect, db_pool, sender).await;
-        }
-        AppEffect::CacheOperation { .. } => {
-            let cache: &CacheManager = ctx.resource();
-            handle_cache_operation(effect, cache, sender);
-        }
-        AppEffect::ParallelTasks { .. } => {
-            handle_parallel_tasks(effect, ctx).await;
-        }
-        AppEffect::DelayedTask { .. } => {
-            handle_delayed_task(effect, sender).await;
-        }
+        AppEffect::HttpRequest { .. } => handle_http_request(effect, http_client),
+        AppEffect::DatabaseQuery { .. } => handle_database_query(effect, db_pool),
+        AppEffect::CacheOperation { .. } => handle_cache_operation(effect, cache),
+        AppEffect::ParallelTasks { .. } => handle_parallel_tasks(effect, ctx),
+        AppEffect::DelayedTask { .. } => handle_delayed_task(effect),
     }
-    EffectResult::None
 }
 
 // ============================================================================
@@ -400,11 +431,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Demonstrating resource management and async task coordination\n");
 
     // Build system with resources and default executors
+    let resources = (
+        HttpClient::new("https://api.example.com".to_string()),
+        DatabasePool::new(3),
+        CacheManager::new(),
+    );
+
     let (core, shell) = Syzygy::builder()
         .model(AppModel::default())
-        .resource(HttpClient::new("https://api.example.com".to_string()))
-        .resource(DatabasePool::new(3))
-        .resource(CacheManager::new())
+        .resource(resources)
         .event_handler(update_app)
         .effect_handler(handle_effects)
         .with_default_executors()
@@ -417,14 +452,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("1. Starting HTTP request task");
     runner.core().send_event(AppEvent::StartTask {
         task_id: "http_task_1".to_string(),
-    })?;
+    });
     runner.tick(syzygy::spawn::spawner()).await?;
 
     // Test 2: Database query
     println!("2. Starting database query task");
     runner.core().send_event(AppEvent::StartTask {
         task_id: "db_task_1".to_string(),
-    })?;
+    });
     runner.tick(syzygy::spawn::spawner()).await?;
 
     // Test 3: Batch parallel processing
@@ -435,7 +470,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             "item2".to_string(),
             "item3".to_string(),
         ],
-    })?;
+    });
     runner.tick(syzygy::spawn::spawner()).await?;
 
     // Test 4: Cache operations
@@ -443,19 +478,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     runner.core().send_event(AppEvent::SaveData {
         key: "user_123".to_string(),
         value: "user_data".to_string(),
-    })?;
+    });
     runner.tick(syzygy::spawn::spawner()).await?;
 
     runner.core().send_event(AppEvent::LoadCachedData {
         key: "user_123".to_string(),
-    })?;
+    });
     runner.tick(syzygy::spawn::spawner()).await?;
 
     // Test 5: Delayed task
     println!("5. Starting delayed task");
     runner.core().send_event(AppEvent::StartTask {
         task_id: "delayed_task_1".to_string(),
-    })?;
+    });
     runner.tick(syzygy::spawn::spawner()).await?;
 
     // Wait for all async operations to complete

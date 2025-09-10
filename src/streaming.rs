@@ -10,9 +10,9 @@
 //! with handlers that send events directly via `EffectContext::send_event`.
 
 use crate::effect_context::EffectContext;
+use futures::StreamExt;
 use futures::future::BoxFuture;
 use futures::stream::BoxStream;
-use futures::StreamExt;
 
 /// Unified effect output: a single event, a stream of events, or none
 pub enum EffectOutput<E> {

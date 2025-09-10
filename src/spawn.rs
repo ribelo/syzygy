@@ -25,7 +25,7 @@
 //! # });
 //! ```
 //!
-//! ## Generic AsyncFn Support
+//! ## Generic `AsyncFn` Support
 //!
 //! All spawn functions accept any `impl AsyncFnOnce() -> ()`:
 //!
@@ -45,9 +45,9 @@
 //! # });
 //! ```
 //!
-//! ## Legacy BoxFuture Support (Deprecated)
+//! ## Legacy `BoxFuture` Support (Deprecated)
 //!
-//! For backward compatibility only - prefer AsyncFn for performance:
+//! For backward compatibility only - prefer `AsyncFn` for performance:
 //!
 //! ```rust
 //! use syzygy::spawn::auto_spawn_fn;
@@ -77,7 +77,7 @@ pub trait Spawn: Clone + Send + Sync + 'static {
 
 /// Legacy spawn function signature for backward compatibility
 ///
-/// Use this with auto_spawn_boxed() for the old BoxFuture-based API.
+/// Use this with `auto_spawn_boxed()` for the old BoxFuture-based API.
 pub type BoxedSpawnFn = dyn Fn(Pin<Box<dyn Future<Output = ()> + Send + 'static>>) + Send + Sync;
 
 /// Spawn a future using tokio (zero-cost)
@@ -427,14 +427,14 @@ mod tests {
     #[test]
     fn test_smol_spawn_compiles() {
         // Just test that the function can be referenced
-        let _fn_ref = spawn_smol::<std::future::Ready<()>>;
+        let _ = spawn_smol::<std::future::Ready<()>>;
     }
 
     #[cfg(feature = "async-std")]
     #[test]
     fn test_async_std_spawn_compiles() {
         // Just test that the function can be referenced
-        let _fn_ref = spawn_async_std::<std::future::Ready<()>>;
+        let _ = spawn_async_std::<std::future::Ready<()>>;
     }
 
     /// Test Spawn trait implementations

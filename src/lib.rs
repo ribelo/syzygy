@@ -29,7 +29,7 @@
 //! // 3. Write your update function (the heart of TEA)
 //! fn update_counter(
 //!     event: CounterEvent,
-//!     ctx: &mut EventContext<CounterEvent, CounterEffect, Storage<CounterModel, EmptyStorage>>,
+//!     ctx: &mut EventContext<CounterEvent, CounterEffect, CounterModel>,
 //! ) -> Command<CounterEvent, CounterEffect> {
 //!     let model: &mut CounterModel = ctx.model_mut();
 //!
@@ -93,8 +93,8 @@
 //! # #[derive(Debug, Default)] struct ConfigModel { theme: String }
 //! # #[derive(Debug, Clone)] enum Event { Test }
 //! # #[derive(Debug, Clone)] enum Effect { Test }
-//! # fn update(e: Event, ctx: &mut EventContext<Event, Effect, Storage<ConfigModel, Storage<UserModel, EmptyStorage>>>) -> Command<Event, Effect> { Command::none() }
-//! # async fn effects(e: Effect, _ctx: syzygy::async_context::EffectContext<Event, EmptyStorage>) -> EffectOutput<Event> { EffectOutput::None }
+//! # fn update(e: Event, ctx: &mut EventContext<Event, Effect, (ConfigModel, UserModel)>) -> Command<Event, Effect> { Command::none() }
+//! # async fn effects(e: Effect, _ctx: EffectContext<Event, ()>) -> EffectOutput<Event> { EffectOutput::None }
 //! let (core, shell) = Syzygy::builder()
 //!     .model(UserModel::default())     // Add multiple models
 //!     .model(ConfigModel::default())   // Type-safe composition
@@ -238,7 +238,7 @@
 //!
 //! fn update(
 //!     event: AppEvent,
-//!     ctx: &mut EventContext<AppEvent, Effect, Storage<Model, EmptyStorage>>,
+//!     ctx: &mut EventContext<AppEvent, Effect, Model>,
 //! ) -> Command<AppEvent, Effect> {
 //!     match event {
 //!         AppEvent::ProcessData { data } => {
@@ -293,8 +293,8 @@
 //! # #[derive(Debug, Default)] struct UserModel { name: String }
 //! # #[derive(Debug, Default)] struct ConfigModel { theme: String }
 //! # #[derive(Debug, Default)] struct SessionModel { active: bool }
-//! # type MyStorage = Storage<SessionModel, Storage<ConfigModel, Storage<UserModel, EmptyStorage>>>;
-//! # let storage: MyStorage = EmptyStorage.with_model(UserModel::default()).with_model(ConfigModel::default()).with_model(SessionModel::default());
+//! # type MyModel = (SessionModel, ConfigModel, UserModel);
+//! # let model: MyModel = (SessionModel::default(), ConfigModel::default(), UserModel::default());
 //! // Access individual models by type
 //! let config: &ConfigModel = storage.get();
 //! let session: &SessionModel = storage.get();
@@ -308,8 +308,8 @@
 //! # #[derive(Clone)] struct HttpClient { base_url: String }
 //! # #[derive(Debug, Clone)] enum Event { Test }
 //! # #[derive(Debug, Clone)] enum Effect { Test }
-//! # fn update(e: Event, ctx: &mut EventContext<Event, Effect, Storage<MyModel, EmptyStorage>>) -> Command<Event, Effect> { Command::none() }
-//! # async fn effects(e: Effect, _ctx: syzygy::async_context::EffectContext<Event, syzygy::storage::Storage<HttpClient, syzygy::storage::Storage<Database, EmptyStorage>>>) -> EffectOutput<Event> { EffectOutput::None }
+//! # fn update(e: Event, ctx: &mut EventContext<Event, Effect, MyModel>) -> Command<Event, Effect> { Command::none() }
+//! # async fn effects(e: Effect, _ctx: EffectContext<Event, (HttpClient, Database)>) -> EffectOutput<Event> { EffectOutput::None }
 //! let (core, shell) = Syzygy::builder()
 //!     .model(MyModel::default())
 //!     .resource(Database { url: "postgres://...".to_string() })
@@ -326,7 +326,7 @@
 //! # #[derive(Debug, Clone)] enum MyEffect { DoWork }
 //! async fn handle_effect(
 //!     effect: MyEffect,
-//!     _ctx: EffectContext<Event, EmptyStorage>,
+//!     _ctx: EffectContext<Event, ()>,
 //! ) -> EffectOutput<Event> {
 //!     match effect {
 //!         MyEffect::DoWork => {
@@ -342,7 +342,7 @@
 //!
 //! - **Memory Safety**: All spawned tasks automatically cancelled on context drop
 //! - **Type Safety**: Compile-time verification of model and resource access
-//! - **Concurrency Safety**: Interior mutability handled safely with UnsafeCell
+//! - **Concurrency Safety**: Interior mutability handled safely with `UnsafeCell`
 //! - **Resource Safety**: No resource leaks or orphaned tasks
 //!
 //! ## Testing
@@ -354,7 +354,7 @@
 //! # #[derive(Debug, Default, PartialEq)] struct CounterModel { count: i32 }
 //! # #[derive(Debug, Clone)] enum CounterEvent { Increment }
 //! # #[derive(Debug, Clone)] enum CounterEffect { Log }
-//! # fn update(event: CounterEvent, ctx: &mut EventContext<CounterEvent, CounterEffect, Storage<CounterModel, EmptyStorage>>) -> Command<CounterEvent, CounterEffect> {
+//! # fn update(event: CounterEvent, ctx: &mut EventContext<CounterEvent, CounterEffect, CounterModel>) -> Command<CounterEvent, CounterEffect> {
 //! #     let model: &mut CounterModel = ctx.model_mut();
 //! #     match event {
 //! #         CounterEvent::Increment => { model.count += 1; Command::effect(CounterEffect::Log) }
@@ -366,12 +366,12 @@
 //!
 //!     #[test]
 //!     fn test_counter_increment() {
-//!         let mut storage = EmptyStorage.with_model(CounterModel::default());
-//!         let mut ctx = EventContext::new(&mut storage);
+//!         let mut model = CounterModel::default();
+//!         let mut ctx = EventContext::new(&mut model);
 //!
 //!         let command = update(CounterEvent::Increment, &mut ctx);
 //!
-//!         let model: &CounterModel = storage.get();
+//!         let model: &CounterModel = &model;
 //!         assert_eq!(model.count, 1);
 //!
 //!         // Verify command contains expected effect
@@ -416,7 +416,6 @@ pub mod spawn;
 
 // Executor system for specialized effect handling
 pub mod executor;
-pub mod storage;
 
 // Optional streaming helpers to unify single vs stream outputs
 pub mod streaming;
@@ -448,7 +447,7 @@ pub mod prelude {
     /// enum Effect { Log }
     ///
     /// type MyModel = ();
-    /// type MyCore = Core<Event, Effect, Storage<MyModel, EmptyStorage>>;
+    /// type MyCore = Core<Event, Effect, MyModel>;
     /// type MyShell = Shell<Event, Effect>;
     ///
     /// fn build() -> (MyCore, MyShell) {
@@ -468,19 +467,13 @@ pub mod prelude {
     // Spawn adapters for runtime neutrality
     pub use crate::spawn::{AsyncStdSpawn, SmolSpawn, Spawn, TokioSpawn, spawner};
 
-
-
-    // Storage system
-    pub use crate::storage::{EmptyStorage, Storage, StorageBuilder};
-
-    // Executor system (basic executors only - executor storage removed)
+    // Executor system
     #[cfg(feature = "rayon")]
     pub use crate::executor::RayonExecutor;
 
-
-    pub use crate::executor::spec::drive_spec;
     #[cfg(feature = "tokio")]
     pub use crate::executor::TokioExecutor;
+    pub use crate::executor::spec::drive_spec;
     pub use crate::executor::{EffectPlan, ExecutorRegistry, SingleThreadExecutor};
 
     // Builder

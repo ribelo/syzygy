@@ -75,8 +75,8 @@ mod tests {
 
     #[test]
     fn test_dispatch_with_handlers() {
-        let mut storage = EmptyStorage.with_model(TestModel::default());
-        let context = EventContext::<TestEvent, TestEffect, _>::new(&mut storage);
+        let mut model = TestModel::default();
+        let context = EventContext::<TestEvent, TestEffect, _>::new(&mut model);
 
         let handler_map = crate::event_handler_map::HandlerMapBuilder::new()
             .on(handle_user_created)

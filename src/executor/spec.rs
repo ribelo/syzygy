@@ -8,7 +8,7 @@ use crate::streaming::EffectOutput;
 use super::ExecutorError;
 use std::any::TypeId;
 
-/// Object-safe factory to start a task using an EffectContext.
+/// Object-safe factory to start a task using an `EffectContext`.
 ///
 /// This allows storing `FnOnce(EffectContext<E,R>) -> Fut` as a trait object
 /// by wrapping it in a struct holding `Option<F>`.
@@ -53,8 +53,6 @@ where
         Self::Future { exec, task }
     }
 
-
-
     /// Create a Sync task spec from a closure that returns immediately.
     fn sync<F>(exec: TypeId, f: F) -> Self
     where
@@ -72,8 +70,6 @@ where
     {
         Self::future(TypeId::of::<T>(), f)
     }
-
-
 
     /// Sync on a marker type key
     pub fn sync_on<T: 'static, F>(f: F) -> Self
@@ -93,7 +89,7 @@ where
     }
 }
 
-/// Drive an EffectSpec by spawning appropriate tasks on executors and
+/// Drive an `EffectSpec` by spawning appropriate tasks on executors and
 /// forwarding produced events to Core via the supplied `EffectContext`.
 pub fn drive_spec<E, R>(spec: EffectPlan<E, R>, ctx: EffectContext<E, R>) -> BoxFuture<'static, ()>
 where
@@ -105,14 +101,20 @@ where
 
         match spec {
             EffectPlan::Events(events) => {
-                for e in events { ctx.send_event(e); }
+                for e in events {
+                    ctx.send_event(e);
+                }
             }
             EffectPlan::Future { exec, task } => {
                 if let Some(exec_ref) = ctx.async_executor_by_typeid(exec) {
                     let fut = (task)(ctx.clone());
                     match exec_ref.spawn_future(fut).await {
                         Ok(output) => consume_effect_output(output, &ctx).await,
-                        Err(ExecutorError::WorkerGone | ExecutorError::Panic { msg: _ } | ExecutorError::Cancelled) => { /* ignore or log */ }
+                        Err(
+                            ExecutorError::WorkerGone
+                            | ExecutorError::Panic { msg: _ }
+                            | ExecutorError::Cancelled,
+                        ) => { /* ignore or log */ }
                     }
                 }
             }
@@ -130,7 +132,10 @@ where
                 }
             }
             EffectPlan::All(branches) => {
-                let futs: Vec<_> = branches.into_iter().map(|b| drive_spec(b, ctx.clone())).collect();
+                let futs: Vec<_> = branches
+                    .into_iter()
+                    .map(|b| drive_spec(b, ctx.clone()))
+                    .collect();
                 let _ = join_all(futs).await;
             }
             EffectPlan::Sync { exec, task } => {
@@ -139,7 +144,11 @@ where
                     let job = Box::new(move || (task)(ctx_for_job));
                     match exec_ref.spawn_sync(job).await {
                         Ok(output) => consume_effect_output(output, &ctx).await,
-                        Err(ExecutorError::WorkerGone | ExecutorError::Panic { msg: _ } | ExecutorError::Cancelled) => { /* ignore or log */ }
+                        Err(
+                            ExecutorError::WorkerGone
+                            | ExecutorError::Panic { msg: _ }
+                            | ExecutorError::Cancelled,
+                        ) => { /* ignore or log */ }
                     }
                 }
             }

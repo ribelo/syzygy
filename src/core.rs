@@ -42,7 +42,7 @@ use tracing::{Level, debug, span};
 
 use crate::{command::Command, event_context::EventContext};
 
-/// Update function type that takes an event and a mutable EventContext
+/// Update function type that takes an event and a mutable `EventContext`
 pub type EventHandler<E, X, M> = fn(event: E, ctx: &mut EventContext<E, X, M>) -> Command<E, X>;
 
 /// Core handles synchronous event processing and owns the model.

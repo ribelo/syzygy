@@ -5,8 +5,11 @@
 
 use std::collections::HashMap;
 use std::time::Duration;
+use syzygy::executor::{EffectPlan, TokioIo};
 use syzygy::prelude::*;
-use syzygy::streaming::EffectResult;
+use syzygy::streaming::EffectOutput;
+
+use futures::FutureExt;
 
 /// Events - including database results
 #[derive(Debug, Clone)]
@@ -70,7 +73,7 @@ struct AppModel {
 
 fn database_update(
     event: AppEvent,
-    ctx: &mut EventContext<AppEvent, AppEffect, Storage<AppModel, EmptyStorage>>,
+    ctx: &mut EventContext<AppEvent, AppEffect, AppModel>,
 ) -> Command<AppEvent, AppEffect> {
     let model: &mut AppModel = ctx.model_mut();
     match event {
@@ -142,90 +145,115 @@ fn database_update(
     }
 }
 
-async fn handle_effects(effect: AppEffect, ctx: EffectContext<AppEvent>) -> EffectResult<AppEvent> {
+fn handle_effects(
+    effect: AppEffect,
+    ctx: &EffectContext<AppEvent, AppResources>,
+) -> EffectPlan<AppEvent, AppResources> {
     match effect {
         AppEffect::GetUser { user_id, table } => {
-            let resources: &AppResources =
-                ctx.resource().expect("AppResources should be available");
-            println!(
-                "🔍 Getting user {user_id} from table {table} (db: {})",
-                resources.database_url
-            );
+            let resources: &AppResources = ctx.resources();
+            let resources = resources.clone();
+            EffectPlan::future_on::<TokioIo, _, _>(move |ctx| {
+                let table = table.clone();
+                async move {
+                    println!(
+                        "🔍 Getting user {user_id} from table {table} (db: {})",
+                        resources.database_url
+                    );
 
-            // Simulate database query
-            #[cfg(feature = "tokio")]
-            tokio::time::sleep(Duration::from_millis(100)).await;
-            #[cfg(not(feature = "tokio"))]
-            async_std::task::sleep(Duration::from_millis(100)).await;
+                    // Simulate database query
+                    #[cfg(feature = "tokio")]
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                    #[cfg(not(feature = "tokio"))]
+                    async_std::task::sleep(Duration::from_millis(100)).await;
 
-            // Simulate database lookup
-            match simulate_database_get(&table, user_id) {
-                Ok(Some(user)) => {
-                    // Success - send user loaded event
-                    let _ = ctx.send_event(AppEvent::UserLoaded { user_id, user });
-                    println!("✅ User {user_id} found");
+                    // Simulate database lookup
+                    match simulate_database_get(&table, user_id) {
+                        Ok(Some(user)) => {
+                            // Success - send user loaded event
+                            let () = ctx.send_event(AppEvent::UserLoaded { user_id, user });
+                            println!("✅ User {user_id} found");
+                        }
+                        Ok(None) => {
+                            // User not found
+                            let () = ctx.send_event(AppEvent::UserNotFound { user_id });
+                            println!("❌ User {user_id} not found");
+                        }
+                        Err(db_error) => {
+                            // Database error
+                            let () = ctx.send_event(AppEvent::DatabaseError {
+                                operation: format!("get_user_{user_id}"),
+                                error: db_error,
+                            });
+                            println!("💥 Database error getting user {user_id}");
+                        }
+                    }
+                    EffectOutput::None
                 }
-                Ok(None) => {
-                    // User not found
-                    let _ = ctx.send_event(AppEvent::UserNotFound { user_id });
-                    println!("❌ User {user_id} not found");
-                }
-                Err(db_error) => {
-                    // Database error
-                    let _ = ctx.send_event(AppEvent::DatabaseError {
-                        operation: format!("get_user_{user_id}"),
-                        error: db_error,
-                    });
-                    println!("💥 Database error getting user {user_id}");
-                }
-            }
+                .boxed()
+            })
         }
 
         AppEffect::SaveUser { user, table } => {
-            println!("💾 Saving user {} to table {}", user.id, table);
+            EffectPlan::future_on::<TokioIo, _, _>(move |ctx| {
+                let user = user.clone();
+                let table = table.clone();
+                async move {
+                    println!("💾 Saving user {} to table {}", user.id, table);
 
-            #[cfg(feature = "tokio")]
-            tokio::time::sleep(Duration::from_millis(150)).await;
-            #[cfg(not(feature = "tokio"))]
-            async_std::task::sleep(Duration::from_millis(150)).await;
+                    #[cfg(feature = "tokio")]
+                    tokio::time::sleep(Duration::from_millis(150)).await;
+                    #[cfg(not(feature = "tokio"))]
+                    async_std::task::sleep(Duration::from_millis(150)).await;
 
-            // Simulate database save
-            match simulate_database_save(&table, &user) {
-                Ok(()) => {
-                    let _ = ctx.send_event(AppEvent::UserSaved { user_id: user.id });
-                    println!("✅ User {} saved", user.id);
+                    // Simulate database save
+                    match simulate_database_save(&table, &user) {
+                        Ok(()) => {
+                            let () = ctx.send_event(AppEvent::UserSaved { user_id: user.id });
+                            println!("✅ User {} saved", user.id);
+                        }
+                        Err(db_error) => {
+                            let () = ctx.send_event(AppEvent::DatabaseError {
+                                operation: format!("save_user_{}", user.id),
+                                error: db_error,
+                            });
+                            println!("💥 Database error saving user {}", user.id);
+                        }
+                    }
+                    EffectOutput::None
                 }
-                Err(db_error) => {
-                    let _ = ctx.send_event(AppEvent::DatabaseError {
-                        operation: format!("save_user_{}", user.id),
-                        error: db_error,
-                    });
-                    println!("💥 Database error saving user {}", user.id);
-                }
-            }
+                .boxed()
+            })
         }
 
         AppEffect::ConnectDatabase { connection_string } => {
-            println!("🔌 Connecting to database: {connection_string}");
+            EffectPlan::future_on::<TokioIo, _, _>(move |ctx| {
+                let connection_string = connection_string.clone();
+                async move {
+                    println!("🔌 Connecting to database: {connection_string}");
 
-            #[cfg(feature = "tokio")]
-            tokio::time::sleep(Duration::from_millis(200)).await;
-            #[cfg(not(feature = "tokio"))]
-            async_std::task::sleep(Duration::from_millis(200)).await;
+                    #[cfg(feature = "tokio")]
+                    tokio::time::sleep(Duration::from_millis(200)).await;
+                    #[cfg(not(feature = "tokio"))]
+                    async_std::task::sleep(Duration::from_millis(200)).await;
 
-            // In real app, you'd establish connection here
-            println!("✅ Database connected");
-            let _ = ctx.send_event(AppEvent::DatabaseConnected);
+                    // In real app, you'd establish connection here
+                    println!("✅ Database connected");
+                    let () = ctx.send_event(AppEvent::DatabaseConnected);
+                    EffectOutput::None
+                }
+                .boxed()
+            })
         }
 
         AppEffect::Log { message } => {
             println!("📝 {message}");
+            EffectPlan::events(vec![])
         }
     }
-    EffectResult::None
 }
 
-/// Simulated database operations - in real app these would be SQLx, Diesel, etc.
+/// Simulated database operations - in real app these would be `SQLx`, Diesel, etc.
 fn simulate_database_get(_table: &str, user_id: u32) -> Result<Option<User>, String> {
     // Simulate some users existing
     match user_id {
@@ -304,30 +332,24 @@ async fn run_demo() -> Result<(), Box<dyn std::error::Error>> {
     println!("🚀 Step 1: Connecting to database...");
     runner.core().send_event(AppEvent::ConnectDatabase {
         connection_string: "postgresql://localhost/demo".to_string(),
-    })?;
+    });
     runner.tick(syzygy::spawn::spawner()).await?;
 
     // Load a user
     println!("🚀 Step 2: Loading user data...");
-    runner
-        .core()
-        .send_event(AppEvent::LoadUser { user_id: 1 })?; // Will find Alice
+    runner.core().send_event(AppEvent::LoadUser { user_id: 1 }); // Will find Alice
     runner.tick(syzygy::spawn::spawner()).await?;
     runner.tick(syzygy::spawn::spawner()).await?;
 
     // Try to load a user that exists
     println!("\n🔍 Loading existing user...");
-    runner
-        .core()
-        .send_event(AppEvent::LoadUser { user_id: 2 })?; // Will find Bob
+    runner.core().send_event(AppEvent::LoadUser { user_id: 2 }); // Will find Bob
     runner.tick(syzygy::spawn::spawner()).await?;
     runner.tick(syzygy::spawn::spawner()).await?;
 
     // Try to load a user that doesn't exist
     println!("\n🔍 Loading non-existent user...");
-    runner
-        .core()
-        .send_event(AppEvent::LoadUser { user_id: 42 })?; // Won't find
+    runner.core().send_event(AppEvent::LoadUser { user_id: 42 }); // Won't find
     runner.tick(syzygy::spawn::spawner()).await?;
     runner.tick(syzygy::spawn::spawner()).await?;
 
@@ -335,7 +357,7 @@ async fn run_demo() -> Result<(), Box<dyn std::error::Error>> {
     println!("\n🔍 Triggering database error...");
     runner
         .core()
-        .send_event(AppEvent::LoadUser { user_id: 999 })?; // Will error
+        .send_event(AppEvent::LoadUser { user_id: 999 }); // Will error
     runner.tick(syzygy::spawn::spawner()).await?;
     runner.tick(syzygy::spawn::spawner()).await?;
 
@@ -348,7 +370,7 @@ async fn run_demo() -> Result<(), Box<dyn std::error::Error>> {
     };
     runner
         .core()
-        .send_event(AppEvent::SaveUser { user: new_user })?;
+        .send_event(AppEvent::SaveUser { user: new_user });
     runner.tick(syzygy::spawn::spawner()).await?;
     runner.tick(syzygy::spawn::spawner()).await?;
 
@@ -361,7 +383,7 @@ async fn run_demo() -> Result<(), Box<dyn std::error::Error>> {
     };
     runner
         .core()
-        .send_event(AppEvent::SaveUser { user: bad_user })?;
+        .send_event(AppEvent::SaveUser { user: bad_user });
     runner.tick(syzygy::spawn::spawner()).await?;
     runner.tick(syzygy::spawn::spawner()).await?;
 

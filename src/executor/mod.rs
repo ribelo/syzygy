@@ -9,13 +9,13 @@
 //! The executor system provides four distinct execution contexts:
 //!
 //! ### Async Executors (for async work)
-//! - **TokioIo**: IO-bound async work (network, files) with `enable_all()` runtime
-//! - **TokioCpu**: CPU-bound async work with only `enable_time()` runtime  
-//! - **TokioExecutor**: Base executor for custom async configurations
+//! - **`TokioIo`**: IO-bound async work (network, files) with `enable_all()` runtime
+//! - **`TokioCpu`**: CPU-bound async work with only `enable_time()` runtime  
+//! - **`TokioExecutor`**: Base executor for custom async configurations
 //!
 //! ### Sync Executors (for blocking work)
-//! - **RayonSyncExecutor**: Parallel CPU work using Rayon's work-stealing
-//! - **SingleThreadExecutor**: Sequential sync work with strict FIFO ordering
+//! - **`RayonSyncExecutor`**: Parallel CPU work using Rayon's work-stealing
+//! - **`SingleThreadExecutor`**: Sequential sync work with strict FIFO ordering
 //!
 //! ## Key Design Principles
 //!
@@ -47,7 +47,7 @@
 //! ```
 //!
 //! ### Newtype Pattern for Multiple Executors
-//! 
+//!
 //! Use newtype wrappers to register multiple Tokio executors with different configurations:
 //!
 //! ```rust
@@ -55,7 +55,7 @@
 //!
 //! // IO-focused executor (enable_all)
 //! let io_executor = TokioIo::multi_thread(4);
-//! 
+//!
 //! // CPU-focused executor (enable_time only)  
 //! let cpu_executor = TokioCpu::multi_thread(8);
 //!
@@ -65,8 +65,8 @@
 //!
 //! ## Important Notes
 //!
-//! ### SingleThreadExecutor is Sync-Only
-//! **SingleThreadExecutor no longer handles async work.** It's designed exclusively
+//! ### `SingleThreadExecutor` is Sync-Only
+//! **`SingleThreadExecutor` no longer handles async work.** It's designed exclusively
 //! for synchronous, FIFO-ordered execution. For single-threaded async needs:
 //!
 //! ```rust
@@ -79,7 +79,7 @@
 //! ```
 //!
 //! ### Runtime Registration Pattern
-//! 
+//!
 //! The IO runtime registration ensures IO operations run on the appropriate runtime:
 //!
 //! ```rust
@@ -121,18 +121,17 @@ pub mod spec;
 pub mod tokio_executor;
 
 // IO runtime registration - inspired by InfluxDB's design
-use std::sync::RwLock;
 use std::future::Future;
+use std::sync::RwLock;
 
 #[cfg(feature = "tokio")]
 static IO_RUNTIME: RwLock<Option<tokio::runtime::Handle>> = RwLock::new(None);
 
 #[cfg(feature = "tokio")]
 thread_local! {
-    static THREAD_IO_RUNTIME: std::cell::RefCell<Option<tokio::runtime::Handle>> = 
+    static THREAD_IO_RUNTIME: std::cell::RefCell<Option<tokio::runtime::Handle>> =
         const { std::cell::RefCell::new(None) };
 }
-
 
 use futures_util::future::BoxFuture;
 use thiserror::Error;
@@ -142,7 +141,7 @@ pub use rayon_sync_executor::RayonSyncExecutor as RayonExecutor;
 pub use single_thread_executor::SingleThreadExecutor;
 
 #[cfg(feature = "tokio")]
-pub use tokio_executor::{TokioExecutor, TokioIo, TokioCpu};
+pub use tokio_executor::{TokioCpu, TokioExecutor, TokioIo};
 
 use crate::prelude::EffectOutput;
 pub use registry::ExecutorRegistry;
@@ -166,7 +165,7 @@ pub fn register_io_runtime(handle: Option<tokio::runtime::Handle>) {
     // Set both global and thread-local
     {
         let mut guard = IO_RUNTIME.write().expect("IO runtime lock poisoned");
-        *guard = handle.clone();
+        guard.clone_from(&handle);
     }
     THREAD_IO_RUNTIME.with(|tls| {
         *tls.borrow_mut() = handle;
@@ -198,7 +197,7 @@ where
     let handle = THREAD_IO_RUNTIME.with(|tls| tls.borrow().clone())
         .or_else(|| IO_RUNTIME.read().ok().and_then(|g| g.clone()))
         .expect("No IO runtime registered. Call `register_current_runtime_for_io()` or `register_io_runtime()` first!");
-    
+
     handle.spawn(future)
 }
 
@@ -219,8 +218,6 @@ pub fn register_io_runtime(_handle: ()) {
 pub fn clear_io_runtime() {
     register_io_runtime(None);
 }
-
-
 
 /// Error type for executor job management
 #[derive(Debug, Error)]

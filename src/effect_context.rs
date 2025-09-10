@@ -1,4 +1,4 @@
-//! # EffectContext - Container for executors and resources
+//! # `EffectContext` - Container for executors and resources
 //!
 //! This module provides the `EffectContext`, a container that gives effect handlers
 //! access to executors and resources. Executors handle task spawning and runtime
@@ -22,7 +22,7 @@
 //! ```
 //!
 //! This provides clean separation of concerns:
-//! - EffectContext holds executors and resources
+//! - `EffectContext` holds executors and resources
 //! - Executors handle spawning and provide runtime services
 //! - Resources provide shared data access
 //! - Event sending bridges back to the Core
@@ -32,10 +32,10 @@ use std::sync::Arc;
 use crossbeam_channel::Sender;
 // use rustc_hash::FxHashMap; // legacy
 
-use crate::executor::{AsyncExecutor, SyncExecutor, ExecutorRegistry};
+use crate::executor::{AsyncExecutor, ExecutorRegistry, SyncExecutor};
 use std::any::TypeId;
 
-/// EffectContext provides access to executors and resources within effect handlers
+/// `EffectContext` provides access to executors and resources within effect handlers
 ///
 /// This context is a simple container that holds executors and resources,
 /// allowing effect handlers to access them in a type-safe manner. Key features:
@@ -59,9 +59,9 @@ where
     E: Send + 'static,
     R: Clone + Send + Sync + 'static,
 {
-    /// Create a new EffectContext
+    /// Create a new `EffectContext`
     #[must_use]
-    /// Legacy constructor: event_tx first to match older call sites in Shell
+    /// Legacy constructor: `event_tx` first to match older call sites in Shell
     pub fn new(event_tx: Sender<E>, resources: R, executors: Arc<ExecutorRegistry<E>>) -> Self {
         Self {
             resources,
@@ -95,7 +95,10 @@ where
             .expect("event channel is closed; Core should own the receiver while running");
     }
 
-    pub(crate) fn async_executor_by_typeid(&self, key: TypeId) -> Option<Arc<dyn AsyncExecutor<E>>> {
+    pub(crate) fn async_executor_by_typeid(
+        &self,
+        key: TypeId,
+    ) -> Option<Arc<dyn AsyncExecutor<E>>> {
         self.executors.async_exec_by_key(key)
     }
 

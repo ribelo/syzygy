@@ -11,7 +11,7 @@
 // Specialized for IO-bound async work with `enable_all()` runtime features.
 // Perfect for network operations, file I/O, and other async IO tasks.
 //
-// ## TokioCpu (Newtype Wrapper)  
+// ## TokioCpu (Newtype Wrapper)
 // Specialized for CPU-bound async work with only `enable_time()` runtime.
 // Ideal for computation-heavy async tasks that don't need IO capabilities.
 //
@@ -33,7 +33,7 @@
 //
 // // IO-focused executor for network operations
 // let io_executor = TokioIo::multi_thread(4);
-// 
+//
 // // CPU-focused executor for async computations
 // let cpu_executor = TokioCpu::multi_thread(8);
 //
@@ -46,10 +46,12 @@
 // - **TokioIo**: Uses `enable_all()` - full tokio feature set for IO operations
 // - **TokioCpu**: Uses `enable_time()` only - minimal runtime for CPU work
 // - **Thread models**: Both support `current_thread` and `multi_thread` configurations
-
 use crate::executor::{AsyncExecutor, ExecutorError, ExecutorLifecycle, register_io_runtime};
 
-use futures::{TryFutureExt, future::{abortable, AbortHandle, Aborted}};
+use futures::{
+    TryFutureExt,
+    future::{AbortHandle, Aborted, abortable},
+};
 use futures_util::future::{BoxFuture, FutureExt};
 use std::sync::{Arc, RwLock};
 use tokio::{
@@ -101,7 +103,7 @@ impl std::fmt::Debug for TokioExecutor {
 }
 
 impl TokioExecutor {
-    /// Build a new TokioExecutor from a pre-configured runtime builder and context parts.
+    /// Build a new `TokioExecutor` from a pre-configured runtime builder and context parts.
     pub fn new_with(name: &str, mut runtime_builder: runtime::Builder) -> Self {
         let name = name.to_owned();
 
@@ -189,50 +191,48 @@ impl TokioExecutor {
 }
 // Future wrapper that aborts the spawned task on drop to provide cancel-on-drop semantics
 struct AbortOnDrop<E> {
-   handle: tokio::task::JoinHandle<Result<crate::streaming::EffectOutput<E>, Aborted>>,
-   abort: AbortHandle,
+    handle: tokio::task::JoinHandle<Result<crate::streaming::EffectOutput<E>, Aborted>>,
+    abort: AbortHandle,
 }
 
 impl<E> Drop for AbortOnDrop<E> {
-   fn drop(&mut self) {
-       self.abort.abort();
-   }
+    fn drop(&mut self) {
+        self.abort.abort();
+    }
 }
 
 impl<E> std::future::Future for AbortOnDrop<E>
 where
-   E: Send + 'static,
+    E: Send + 'static,
 {
-   type Output = Result<crate::streaming::EffectOutput<E>, ExecutorError>;
+    type Output = Result<crate::streaming::EffectOutput<E>, ExecutorError>;
 
-   fn poll(
-       self: std::pin::Pin<&mut Self>,
-       cx: &mut std::task::Context<'_>,
-   ) -> std::task::Poll<Self::Output> {
-       let this = self.get_mut();
-       match std::pin::Pin::new(&mut this.handle).poll(cx) {
-           std::task::Poll::Ready(join_res) => {
-               std::task::Poll::Ready(match join_res {
-                   Ok(Ok(output)) => Ok(output),
-                   Ok(Err(_aborted)) => Err(ExecutorError::Cancelled),
-                   Err(join_err) => match join_err.try_into_panic() {
-                       Ok(p) => {
-                           let msg = if let Some(s) = p.downcast_ref::<String>() {
-                               s.clone()
-                           } else if let Some(s) = p.downcast_ref::<&str>() {
-                               (*s).to_string()
-                           } else {
-                               "unknown internal error".to_string()
-                           };
-                           Err(ExecutorError::Panic { msg })
-                       }
-                       Err(_) => Err(ExecutorError::WorkerGone),
-                   },
-               })
-           }
-           std::task::Poll::Pending => std::task::Poll::Pending,
-       }
-   }
+    fn poll(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Self::Output> {
+        let this = self.get_mut();
+        match std::pin::Pin::new(&mut this.handle).poll(cx) {
+            std::task::Poll::Ready(join_res) => std::task::Poll::Ready(match join_res {
+                Ok(Ok(output)) => Ok(output),
+                Ok(Err(_aborted)) => Err(ExecutorError::Cancelled),
+                Err(join_err) => match join_err.try_into_panic() {
+                    Ok(p) => {
+                        let msg = if let Some(s) = p.downcast_ref::<String>() {
+                            s.clone()
+                        } else if let Some(s) = p.downcast_ref::<&str>() {
+                            (*s).to_string()
+                        } else {
+                            "unknown internal error".to_string()
+                        };
+                        Err(ExecutorError::Panic { msg })
+                    }
+                    Err(_) => Err(ExecutorError::WorkerGone),
+                },
+            }),
+            std::task::Poll::Pending => std::task::Poll::Pending,
+        }
+    }
 }
 
 impl<E> AsyncExecutor<E> for TokioExecutor
@@ -254,7 +254,11 @@ where
 
         let (ab_fut, abort_handle) = abortable(fut);
         let join_handle = handle.spawn(ab_fut);
-        AbortOnDrop { handle: join_handle, abort: abort_handle }.boxed()
+        AbortOnDrop {
+            handle: join_handle,
+            abort: abort_handle,
+        }
+        .boxed()
     }
 }
 
@@ -288,7 +292,7 @@ impl crate::executor::ExecutorLifecycle for TokioExecutor {
 ///
 /// Uses `enable_all()` which includes:
 /// - `net` - TCP/UDP networking capabilities
-/// - `process` - Process management  
+/// - `process` - Process management
 /// - `signal` - Signal handling
 /// - `rt` - Runtime utilities
 /// - `time` - Timer functionality
@@ -311,7 +315,7 @@ impl crate::executor::ExecutorLifecycle for TokioExecutor {
 /// # When to Use
 ///
 /// - HTTP/HTTPS requests and web APIs
-/// - Database connections and queries  
+/// - Database connections and queries
 /// - File system operations
 /// - Network protocols (TCP, UDP, WebSocket)
 /// - Any async work requiring full tokio feature set
@@ -321,19 +325,23 @@ pub struct TokioIo(pub TokioExecutor);
 
 impl TokioIo {
     /// Create a current-thread IO executor
+    #[must_use]
     pub fn current_thread() -> Self {
         Self(TokioExecutor::current_thread_io("tokio-io"))
     }
 
     /// Create a multi-thread IO executor with specified worker threads
+    #[must_use]
     pub fn multi_thread(worker_threads: usize) -> Self {
         Self(TokioExecutor::multi_thread_io("tokio-io", worker_threads))
     }
 
     /// Create with default worker count (available parallelism)
+    #[must_use]
+    #[allow(clippy::should_implement_trait)]
     pub fn default() -> Self {
         let workers = std::thread::available_parallelism()
-            .map(|n| n.get())
+            .map(std::num::NonZero::get)
             .unwrap_or(4);
         Self::multi_thread(workers)
     }
@@ -349,10 +357,10 @@ impl TokioIo {
 /// Uses `enable_time()` only, which provides:
 /// - `rt` - Runtime utilities (minimal)
 /// - `time` - Timer functionality
-/// 
+///
 /// Explicitly excludes IO features (`net`, `process`, `signal`) to reduce:
 /// - Memory footprint
-/// - Thread pool overhead  
+/// - Thread pool overhead
 /// - Runtime complexity
 ///
 /// # Examples
@@ -381,7 +389,7 @@ impl TokioIo {
 /// # Performance Benefits
 ///
 /// - **Lower memory usage**: No IO subsystem overhead
-/// - **Faster startup**: Minimal runtime initialization  
+/// - **Faster startup**: Minimal runtime initialization
 /// - **Reduced contention**: Fewer shared resources
 /// - **Better cache locality**: Leaner runtime structures
 #[cfg_attr(docsrs, doc(cfg(feature = "tokio")))]
@@ -390,19 +398,23 @@ pub struct TokioCpu(pub TokioExecutor);
 
 impl TokioCpu {
     /// Create a current-thread CPU executor
+    #[must_use]
     pub fn current_thread() -> Self {
         Self(TokioExecutor::current_thread_cpu("tokio-cpu"))
     }
 
     /// Create a multi-thread CPU executor with specified worker threads
+    #[must_use]
     pub fn multi_thread(worker_threads: usize) -> Self {
         Self(TokioExecutor::multi_thread_cpu("tokio-cpu", worker_threads))
     }
 
     /// Create with default worker count (available parallelism)
+    #[must_use]
+    #[allow(clippy::should_implement_trait)]
     pub fn default() -> Self {
         let workers = std::thread::available_parallelism()
-            .map(|n| n.get())
+            .map(std::num::NonZero::get)
             .unwrap_or(4);
         Self::multi_thread(workers)
     }
@@ -422,7 +434,7 @@ where
 
 impl ExecutorLifecycle for TokioIo {
     fn shutdown(&self) {
-        self.0.shutdown()
+        self.0.shutdown();
     }
 
     fn join(&self) -> BoxFuture<'static, ()> {
@@ -444,7 +456,7 @@ where
 
 impl ExecutorLifecycle for TokioCpu {
     fn shutdown(&self) {
-        self.0.shutdown()
+        self.0.shutdown();
     }
 
     fn join(&self) -> BoxFuture<'static, ()> {
@@ -467,12 +479,13 @@ impl std::fmt::Debug for TokioCpu {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::executor::ExecutorLifecycle;
     use crate::streaming::EffectOutput;
     use std::time::{Duration, Instant};
-    use crate::executor::ExecutorLifecycle;
     use tokio::task::JoinSet;
 
     #[derive(Debug, Clone)]
+    #[allow(dead_code)]
     enum TestEvent {
         Done,
         Progress(u32),
@@ -491,8 +504,10 @@ mod tests {
         for i in 0..task_count {
             let fut = async move {
                 tokio::time::sleep(Duration::from_millis(1)).await;
+                #[allow(clippy::cast_possible_truncation)]
                 EffectOutput::Future(async move { vec![TestEvent::Progress(i as u32)] }.boxed())
-            }.boxed();
+            }
+            .boxed();
             handles.push(executor.spawn_future(fut));
         }
         let abort_spawn_time = start.elapsed();
@@ -508,6 +523,7 @@ mod tests {
         for i in 0..task_count {
             join_set.spawn(async move {
                 tokio::time::sleep(Duration::from_millis(1)).await;
+                #[allow(clippy::cast_possible_truncation)]
                 TestEvent::Progress(i as u32)
             });
         }
@@ -517,8 +533,8 @@ mod tests {
         join_set.shutdown().await;
 
         // Then: AbortOnDrop should be significantly faster (at least 2x)
-        println!("AbortOnDrop spawn time: {:?}", abort_spawn_time);
-        println!("JoinSet spawn time: {:?}", joinset_spawn_time);
+        println!("AbortOnDrop spawn time: {abort_spawn_time:?}");
+        println!("JoinSet spawn time: {joinset_spawn_time:?}");
 
         // AbortOnDrop should be faster than JoinSet for high-volume spawning
 
@@ -527,11 +543,15 @@ mod tests {
         // Then: High churn should complete within reasonable time
         assert!(
             total_time < Duration::from_secs(5),
-            "High churn test took too long: {:?}",
-            total_time
+            "High churn test took too long: {total_time:?}"
         );
-        println!("High churn test completed in: {:?}", total_time);
-        println!("Average per executor: {:?}", total_time / task_count as u32);
+        println!("High churn test completed in: {total_time:?}");
+        println!("Average per executor: {:?}", {
+            #[allow(clippy::cast_possible_truncation)]
+            {
+                total_time / task_count as u32
+            }
+        });
     }
 
     #[test]
@@ -539,12 +559,12 @@ mod tests {
         // Given: Comparison of allocation patterns
         let rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(async {
-            
+
             // Measure AbortOnDrop wrapper creation overhead
             let start = Instant::now();
-            
+
             let executor = TokioExecutor::current_thread_io("alloc_test");
-            
+
             for _ in 0..100 {
                 let fut = async {
                     EffectOutput::Future(async { vec![TestEvent::Done] }.boxed())
@@ -553,34 +573,32 @@ mod tests {
                 // Dont await - just measure creation overhead
             }
             let abort_creation_time = start.elapsed();
-            
+
             executor.shutdown();
             let _ = tokio::time::timeout(Duration::from_millis(100), executor.join()).await;
-            
+
             // Measure JoinSet creation overhead
             let start = Instant::now();
             let mut join_set = JoinSet::new();
-            
+
             for _ in 0..100 {
                 join_set.spawn(async { TestEvent::Done });
             }
             let joinset_creation_time = start.elapsed();
-            
+
             join_set.shutdown().await;
-            
+
             // Then: AbortOnDrop should have minimal overhead
-            println!("AbortOnDrop creation time: {:?}", abort_creation_time);
-            println!("JoinSet creation time: {:?}", joinset_creation_time);
-            
+            println!("AbortOnDrop creation time: {abort_creation_time:?}");
+            println!("JoinSet creation time: {joinset_creation_time:?}");
+
             // Should be competitive (within reasonable margin)
             // Using 5x threshold instead of 3x to account for system variance in microbenchmarks
             // This test is sensitive to system conditions and may show higher variance when run
             // alongside other tests due to CPU scheduling and memory pressure
             assert!(
                 abort_creation_time < joinset_creation_time * 5,
-                "AbortOnDrop creation overhead ({:?}) too high vs JoinSet ({:?})",
-                abort_creation_time,
-                joinset_creation_time
+                "AbortOnDrop creation overhead ({abort_creation_time:?}) too high vs JoinSet ({joinset_creation_time:?})"
             );
         });
     }

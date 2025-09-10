@@ -4,7 +4,7 @@ use crate::executor::spec::drive_spec;
 use std::future::Future;
 use std::pin::Pin;
 
-/// Sync effect handler producing an EffectPlan plan.
+/// Sync effect handler producing an `EffectPlan` plan.
 pub type EffectHandler<E, X, R> = fn(effect: X, ctx: &EffectContext<E, R>) -> EffectPlan<E, R>;
 
 /// Back-compat boxed trait used by Shell/Builder to erase effect handler type.

@@ -176,7 +176,7 @@ All coordination patterns operate on `Effect`s. The runtime handles whether the 
 The unified API is more expressive and flexible.
 
 ```rust
-fn update_app(event: AppEvent, ctx: &mut EventContext<AppEvent, MyEffect, Storage>) -> Command<AppEvent, MyEffect> {
+fn update_app(event: AppEvent, ctx: &mut EventContext<AppEvent, MyEffect, AppModel>) -> Command<AppEvent, MyEffect> {
     match event {
         // Join: wait for all bootstrap effects to complete.
         // This works regardless of whether they return a single event or a stream.

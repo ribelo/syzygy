@@ -148,7 +148,7 @@ fn bench_command_composition(c: &mut Criterion) {
     c.bench_function("batch_commands", |b| {
         b.iter(|| {
             black_box(Command::<BenchEvent, BenchEffect>::batch(
-                base_commands.clone()
+                base_commands.clone(),
             ))
         });
     });

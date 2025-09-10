@@ -55,8 +55,8 @@ enum AppEffect {
     Log { message: String },
 }
 
-// Event handler function (no trait needed!)  
-fn my_event_handler(event: AppEvent, ctx: &mut EventContext<AppEvent, AppEffect, Storage<AppModel, EmptyStorage>>) -> Command<AppEvent, AppEffect> {
+// Event handler function (no trait needed!)
+fn my_event_handler(event: AppEvent, ctx: &mut EventContext<AppEvent, AppEffect, AppModel>) -> Command<AppEvent, AppEffect> {
     let model: &mut AppModel = ctx.model_mut();
     
     match event {
@@ -88,7 +88,7 @@ fn my_event_handler(event: AppEvent, ctx: &mut EventContext<AppEvent, AppEffect,
 // Effect handler (converts effects to async operations)
 async fn handle_effects(
     effect: AppEffect,
-    ctx: syzygy::async_context::EffectContext<AppEvent, EmptyStorage>,
+    ctx: syzygy::async_context::EffectContext<AppEvent, ()>,
 ) {
     match effect {
         AppEffect::HttpRequest { url } => {
@@ -110,7 +110,7 @@ async fn handle_effects(
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Build the system using Storage-based API
+    // Build the system with simple model and resource types
     let (core, shell) = Syzygy::builder::<AppEvent, AppEffect>()
         .model(AppModel::default())
         .update(my_event_handler)
