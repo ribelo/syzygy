@@ -300,7 +300,8 @@ trait TryFromEvent<E> { fn try_from_event(e: &E) -> Option<Self> where Self: Siz
 trait TryFromEffect<Fx> { fn try_from_effect(fx: &Fx) -> Option<Self> where Self: Sized; }
 ```
 
-Later (ergonomics):
+Later (ergonomics) - [DECISION: Not implemented, project uses direct function handlers instead]:
+
 - Provide `syzygy_macros::sum!` to build the enum from structs and autogenerate `TryFromEvent/TryFromEffect` implementations and `From<T> for Enum`.
 - Optional sugar macro `on!(Event::Variant { pattern } => |args| { ... })` to reduce boilerplate.
 
@@ -367,7 +368,7 @@ Phase 3 — Tests and Examples
     - `examples/handlers_effects.rs` showing effect-side emission of events
 12. Benchmarks (optional in benches/): micro-bench `Get/GetMut` and router overhead
 
-Phase 4 — Ergonomics and Macros (optional)
+Phase 4 — Ergonomics and Macros (optional) [NOT IMPLEMENTED - Using simpler direct approach]
 13. Add `syzygy_macros` crate (optional) with:
     - `sum!` macro to define enums from structs and derive `TryFromEvent/TryFromEffect`
     - `on!` macro for pattern-friendly handler registration
