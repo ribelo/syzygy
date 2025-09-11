@@ -126,7 +126,7 @@ async fn test_explicit_tokio_runtime() {
     runner
         .run_until(
             |core, _shell| core.model().completed,
-            syzygy::scheduler::TokioScheduler::new(),
+            syzygy::scheduler::TokioScheduler::new().expect("tokio runtime required"),
         )
         .await
         .unwrap();

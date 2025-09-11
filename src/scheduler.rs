@@ -219,8 +219,7 @@ where
 #[must_use]
 pub fn scheduler() -> impl Scheduler {
     #[cfg(feature = "tokio")]
-    return TokioScheduler::new()
-        .expect("No tokio runtime is running. Use #[tokio::main] or create a runtime first.");
+    return TokioScheduler::new().expect("No tokio runtime available");
 
     #[cfg(all(feature = "smol", not(feature = "tokio")))]
     return SmolScheduler;
