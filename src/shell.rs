@@ -50,8 +50,8 @@ impl Default for ShellConfig {
 /// The Shell orchestrates async effect execution independently of Core
 pub struct Shell<E, X, R = ()>
 where
-    E: Clone + Send + 'static,
-    X: Clone + Send + 'static,
+    E: Send + 'static,
+    X: Send + 'static,
     R: Clone + Send + Sync + 'static,
 {
     /// Channel for receiving command outputs (effects)
@@ -81,8 +81,8 @@ where
 
 impl<E, X, R> Shell<E, X, R>
 where
-    E: Clone + Send + 'static,
-    X: Clone + Send + 'static,
+    E: Send + 'static,
+    X: Send + 'static,
     R: Clone + Send + Sync + 'static,
 {
     /// Get an immutable reference to resources

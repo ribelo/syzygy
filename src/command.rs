@@ -64,23 +64,7 @@ impl<Event, Effect> Default for Command<Event, Effect> {
     }
 }
 
-impl<Event, Effect> Clone for Command<Event, Effect>
-where
-    Event: Clone,
-    Effect: Clone,
-{
-    fn clone(&self) -> Self {
-        let mut outputs = SmallVec::new();
-        for o in &self.outputs {
-            match o {
-                CommandStep::Event(e) => outputs.push(CommandStep::Event(e.clone())),
-                CommandStep::Effect(fx) => outputs.push(CommandStep::Effect(fx.clone())),
-                CommandStep::Batch(v) => outputs.push(CommandStep::Batch(v.clone())),
-            }
-        }
-        Self { outputs }
-    }
-}
+
 
 impl<Event, Effect> PartialEq for Command<Event, Effect>
 where

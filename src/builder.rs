@@ -17,8 +17,8 @@ pub struct SyzygyBuilder<E, X, M, R> {
 
 impl<E, X> Default for SyzygyBuilder<E, X, (), ()>
 where
-    E: Clone + Send + 'static,
-    X: Clone + Send + 'static,
+    E: Send + 'static,
+    X: Send + 'static,
 {
     fn default() -> Self {
         Self::new()
@@ -27,8 +27,8 @@ where
 
 impl<E, X> SyzygyBuilder<E, X, (), ()>
 where
-    E: Clone + Send + 'static,
-    X: Clone + Send + 'static,
+    E: Send + 'static,
+    X: Send + 'static,
 {
     /// Create a new builder with empty model and resources
     #[must_use]
@@ -44,8 +44,8 @@ where
 
 impl<Event, Effect, Model, Resource> SyzygyBuilder<Event, Effect, Model, Resource>
 where
-    Event: Clone + Send + 'static,
-    Effect: Clone + Send + 'static,
+    Event: Send + 'static,
+    Effect: Send + 'static,
     Model: 'static,
     Resource: Clone + Send + Sync + 'static,
 {
@@ -101,8 +101,8 @@ pub struct ConfiguredBuilder<Event, Effect, Model, Resource> {
 
 impl<Event, Effect, Model, Resource> ConfiguredBuilder<Event, Effect, Model, Resource>
 where
-    Event: Clone + Send + 'static,
-    Effect: Clone + Send + 'static,
+    Event: Send + 'static,
+    Effect: Send + 'static,
     Resource: Clone + Send + Sync + 'static,
 {
     /// Set the effect handler that processes effects
@@ -232,8 +232,8 @@ where
 
         fn default_effect_handler<E, X, R>(_: X, _: &EffectContext<E, R>) -> Task<E, R>
         where
-            E: Clone + Send + 'static,
-            X: Clone + Send + 'static,
+            E: Send + 'static,
+            X: Send + 'static,
             R: Clone + Send + Sync + 'static,
         {
             Task::events(Vec::new())
@@ -269,8 +269,8 @@ impl Syzygy {
     #[must_use]
     pub fn builder<Event, Effect>() -> SyzygyBuilder<Event, Effect, (), ()>
     where
-        Event: Clone + Send + 'static,
-        Effect: Clone + Send + 'static,
+        Event: Send + 'static,
+        Effect: Send + 'static,
     {
         SyzygyBuilder::new()
     }

@@ -52,8 +52,8 @@ pub type EventHandler<E, X, M> = fn(event: E, ctx: &mut EventContext<E, X, M>) -
 /// updates the model, and returns Commands describing effects to execute.
 pub struct Core<E, X, M>
 where
-    E: Clone + Send + 'static,
-    X: Clone + Send + 'static,
+    E: Send + 'static,
+    X: Send + 'static,
 {
     /// The update function that processes events
     event_handler: EventHandler<E, X, M>,
@@ -76,8 +76,8 @@ where
 
 impl<E, X, M> Core<E, X, M>
 where
-    E: Clone + Send + 'static,
-    X: Clone + Send + 'static,
+    E: Send + 'static,
+    X: Send + 'static,
 {
     /// Create a new Core with update function and storage
     pub fn new(event_handler: EventHandler<E, X, M>, models: M) -> (Self, Sender<E>) {
@@ -123,7 +123,6 @@ where
         #[cfg(feature = "tracing")]
         let _span = span!(Level::DEBUG, "process_events").entered();
 
-        self.command_buffer.clear();
         let mut processed_any = false;
 
         // Process events from external channel first
@@ -144,7 +143,7 @@ where
             debug!(events_processed = self.command_buffer.len());
         }
 
-        (processed_any, self.command_buffer.clone())
+        (processed_any, std::mem::take(&mut self.command_buffer))
     }
 
     /// Send an event to be processed in the next tick.

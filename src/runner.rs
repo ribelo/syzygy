@@ -65,8 +65,8 @@ impl Default for RunnerConfig {
 /// Runner handles the proper sequencing automatically.
 pub struct Runner<Event, Effect, Storage, Resources = ()>
 where
-    Event: Clone + Send + 'static,
-    Effect: Clone + Send + 'static,
+    Event: Send + 'static,
+    Effect: Send + 'static,
     Resources: Clone + Send + Sync + 'static,
 {
     core: Core<Event, Effect, Storage>,
@@ -76,8 +76,8 @@ where
 
 impl<Event, Effect, Storage, Resources> Runner<Event, Effect, Storage, Resources>
 where
-    Event: Clone + Send + 'static,
-    Effect: Clone + Send + 'static,
+    Event: Send + 'static,
+    Effect: Send + 'static,
     Resources: Clone + Send + Sync + 'static,
 {
     /// Create a new Runner with Core and Shell
