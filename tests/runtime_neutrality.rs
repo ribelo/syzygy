@@ -13,7 +13,7 @@
 
 use std::time::Duration;
 use syzygy::prelude::*;
-use syzygy::spawn::spawner;
+use syzygy::scheduler::scheduler;
 
 use futures::FutureExt;
 use syzygy::executor::TokioIo;
@@ -98,7 +98,7 @@ async fn test_runtime_auto_detection() {
 
     // Run until completed - using auto-detection spawner
     runner
-        .run_until(|core, _shell| core.model().completed, spawner())
+        .run_until(|core, _shell| core.model().completed, scheduler())
         .await
         .unwrap();
 
@@ -126,7 +126,7 @@ async fn test_explicit_tokio_runtime() {
     runner
         .run_until(
             |core, _shell| core.model().completed,
-            syzygy::spawn::TokioSpawn,
+            syzygy::scheduler::TokioScheduler,
         )
         .await
         .unwrap();

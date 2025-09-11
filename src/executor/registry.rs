@@ -2,6 +2,8 @@ use rustc_hash::FxHashMap;
 use std::any::TypeId;
 use std::sync::Arc;
 
+use futures;
+
 use super::{AsyncExecutor, SyncExecutor};
 
 /// Registry of executors keyed by `TypeId` markers with separate async and sync capabilities.
@@ -75,6 +77,28 @@ where
     #[must_use]
     pub(crate) fn sync_exec_by_key(&self, key: TypeId) -> Option<Arc<dyn SyncExecutor<E>>> {
         self.sync_map.get(&key).cloned()
+    }
+
+    /// Shutdown all executors in the registry
+    pub fn shutdown_all(&self) {
+        for executor in self.async_map.values() {
+            executor.shutdown();
+        }
+        for executor in self.sync_map.values() {
+            executor.shutdown();
+        }
+    }
+
+    /// Wait for all executors to complete shutdown
+    pub async fn join_all(&self) {
+        let mut futures = Vec::new();
+        for executor in self.async_map.values() {
+            futures.push(executor.join());
+        }
+        for executor in self.sync_map.values() {
+            futures.push(executor.join());
+        }
+        futures::future::join_all(futures).await;
     }
 }
 

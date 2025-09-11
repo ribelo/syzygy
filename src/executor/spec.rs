@@ -199,6 +199,12 @@ where
                         }
                          Err(ExecutorError::WorkerGone | ExecutorError::Panic { .. } | ExecutorError::Cancelled) => { /* ignore or log */ }
                     }
+                } else {
+                    #[cfg(debug_assertions)]
+                    panic!("Missing executor for type {exec:?}");
+
+                    #[cfg(not(debug_assertions))]
+                    tracing::warn!("Missing executor for type {:?}, effect will be dropped", exec);
                 }
             }
 
@@ -224,6 +230,12 @@ where
                         }
                          Err(ExecutorError::WorkerGone | ExecutorError::Panic { .. } | ExecutorError::Cancelled) => { /* ignore or log */ }
                     }
+                } else {
+                    #[cfg(debug_assertions)]
+                    panic!("Missing executor for type {exec:?}");
+
+                    #[cfg(not(debug_assertions))]
+                    tracing::warn!("Missing executor for type {:?}, effect will be dropped", exec);
                 }
             }
             Task::Stream { exec, factory } => {
@@ -241,6 +253,12 @@ where
                      match exec_ref.spawn_future(fut).await {
                          Ok(_) | Err(ExecutorError::WorkerGone | ExecutorError::Panic { .. } | ExecutorError::Cancelled) => { /* ignore or log */ }
                      }
+                } else {
+                    #[cfg(debug_assertions)]
+                    panic!("Missing executor for type {exec:?}");
+
+                    #[cfg(not(debug_assertions))]
+                    tracing::warn!("Missing executor for type {:?}, effect will be dropped", exec);
                 }
             }
         }

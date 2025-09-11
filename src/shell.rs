@@ -155,9 +155,9 @@ where
 
     /// Process effects and manage async tasks
     #[allow(clippy::unused_async)]
-    pub async fn tick<S>(&mut self, spawner: S) -> Result<bool, ShellError>
+    pub async fn tick<S>(&mut self, scheduler: S) -> Result<bool, ShellError>
     where
-        S: crate::spawn::Spawn,
+        S: crate::scheduler::Scheduler,
     {
         #[cfg(feature = "tracing")]
         let _span = span!(Level::DEBUG, "shell_tick").entered();
@@ -176,7 +176,7 @@ where
                           Arc::clone(&self.executors),
                       );
                       let spec = (self.effect_handler)(fx, &ctx);
-                      spawner.spawn(drive_spec(spec, ctx, self.event_tx.clone()));
+                      scheduler.schedule(drive_spec(spec, ctx, self.event_tx.clone()));
                  }
                 CommandStep::Batch(effects) => {
                      did_work = true;
@@ -187,7 +187,7 @@ where
                       );
                       let handler = self.effect_handler;
                       let event_tx = self.event_tx.clone();
-                     spawner.spawn(async move {
+                     scheduler.schedule(async move {
                          for fx in effects {
                              let spec = handler(fx, &ctx);
                              drive_spec(spec, ctx.clone(), event_tx.clone()).await;

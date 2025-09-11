@@ -15,7 +15,7 @@ use std::time::Duration;
 use syzygy::event_context::EventContext;
 use syzygy::executor::TokioIo;
 use syzygy::prelude::*;
-use syzygy::spawn::spawner;
+use syzygy::scheduler::scheduler;
 
 use syzygy::executor::Outcome;
 
@@ -134,7 +134,7 @@ async fn test_timeout_event_pattern() {
     runner
         .run_until(
             |core, _shell| !core.model().is_loading,
-            spawner(), // Auto-detect runtime for maximum compatibility
+            scheduler(), // Auto-detect runtime for maximum compatibility
         )
         .await
         .unwrap();

@@ -74,7 +74,7 @@
 //!
 //! // Send events and run
 //! runner.core().send_event(CounterEvent::Increment)?;
-//! runner.tick(syzygy::spawn::spawner()).await?;
+//! runner.tick(syzygy::scheduler::scheduler()).await?;
 //! # Ok(())
 //! # }
 //! ```
@@ -407,8 +407,8 @@ pub mod error;
 // Timer abstractions for runtime neutrality
 pub mod timer;
 
-// Spawn adapters for different async runtimes
-pub mod spawn;
+// Scheduler adapters for different async runtimes
+pub mod scheduler;
 
 // Storage system with UnsafeCell-based chains
 // Storage module removed - using direct FxHashMap for resources
@@ -462,8 +462,8 @@ pub mod prelude {
     // Timer abstractions for runtime neutrality
     pub use crate::timer::{Time, TimeoutError, time};
 
-    // Spawn adapters for runtime neutrality
-    pub use crate::spawn::{AsyncStdSpawn, SmolSpawn, Spawn, TokioSpawn, spawner};
+    // Scheduler adapters for runtime neutrality
+    pub use crate::scheduler::{AsyncStdScheduler, SmolScheduler, Scheduler, TokioScheduler, scheduler};
 
 // Executor system
 #[cfg(feature = "rayon")]

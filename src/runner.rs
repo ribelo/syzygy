@@ -28,7 +28,7 @@
 //! let mut runner = Runner::new(core, shell);
 //!
 //! // Run the application indefinitely
-//! runner.run(syzygy::spawn::spawner()).await?;
+//! runner.run(syzygy::scheduler::scheduler()).await?;
 //! # Ok(())
 //! # }
 //! ```
@@ -37,7 +37,7 @@ use std::time::Duration;
 use crate::core::Core;
 use crate::error::{CoreError, ShellError};
 use crate::shell::Shell;
-use crate::spawn::Spawn;
+use crate::scheduler::Scheduler;
 use crate::timer::{Time, time};
 
 /// Configuration for the Runner
@@ -120,12 +120,12 @@ where
     /// Run the event loop continuously
     ///
     /// This will run until the shell is shut down or an error occurs.
-    pub async fn run<S>(&mut self, spawner: S) -> Result<(), RunnerError>
+    pub async fn run<S>(&mut self, scheduler: S) -> Result<(), RunnerError>
     where
-        S: Spawn,
+        S: Scheduler,
     {
         loop {
-            let did_work = self.tick(spawner.clone()).await?;
+            let did_work = self.tick(scheduler.clone()).await?;
 
             if !did_work {
                 self.config.runtime.sleep(self.config.idle_sleep).await;
@@ -143,13 +143,13 @@ where
     /// Run until a condition is met
     ///
     /// Useful for testing or conditional execution.
-    pub async fn run_until<F, S>(&mut self, mut condition: F, spawner: S) -> Result<(), RunnerError>
+    pub async fn run_until<F, S>(&mut self, mut condition: F, scheduler: S) -> Result<(), RunnerError>
     where
         F: FnMut(&Core<Event, Effect, Storage>, &Shell<Event, Effect, Resources>) -> bool,
-        S: Spawn,
+        S: Scheduler,
     {
         loop {
-            let did_work = self.tick(spawner.clone()).await?;
+            let did_work = self.tick(scheduler.clone()).await?;
 
             // Check condition
             if condition(&self.core, &self.shell) {
@@ -188,14 +188,14 @@ where
     /// runner.core().send_event(Event::Test)?;
     ///
     /// // Process the event
-    /// let did_work = runner.tick(syzygy::spawn::spawner()).await?;
+    /// let did_work = runner.tick(syzygy::scheduler::scheduler()).await?;
     /// assert!(did_work);
     /// # Ok(())
     /// # }
     /// ```
-    pub async fn tick<S>(&mut self, spawner: S) -> Result<bool, RunnerError>
+    pub async fn tick<S>(&mut self, scheduler: S) -> Result<bool, RunnerError>
     where
-        S: Spawn,
+        S: Scheduler,
     {
         let mut did_work = false;
 
@@ -212,7 +212,7 @@ where
         }
 
         // 4. Process effects in Shell (now async for sequential effect processing)
-        let shell_work = self.shell.tick(spawner).await.map_err(RunnerError::Shell)?;
+        let shell_work = self.shell.tick(scheduler).await.map_err(RunnerError::Shell)?;
         if shell_work {
             did_work = true;
         }
@@ -253,6 +253,16 @@ where
     /// Shutdown the runner gracefully
     pub fn shutdown(&mut self) {
         self.shell.shutdown();
+    }
+
+    /// Run with default scheduler
+    pub async fn run_default(&mut self) -> Result<(), RunnerError> {
+        self.run(crate::scheduler::scheduler()).await
+    }
+
+    /// Tick with default scheduler
+    pub async fn tick_default(&mut self) -> Result<bool, RunnerError> {
+        self.tick(crate::scheduler::scheduler()).await
     }
 }
 
@@ -325,7 +335,7 @@ mod tests {
         event_sender.send(TestEvent::Ping).unwrap();
 
         // Process one tick
-        let did_work = runner.tick(crate::spawn::TokioSpawn).await.unwrap();
+        let did_work = runner.tick(crate::scheduler::TokioScheduler).await.unwrap();
 
         assert!(did_work);
         // Skipped model access check in refactor
@@ -358,7 +368,7 @@ mod tests {
 
         // Run until count reaches 10
         runner
-            .run_until(|_core, _shell| true, crate::spawn::TokioSpawn)
+            .run_until(|_core, _shell| true, crate::scheduler::TokioScheduler)
             .await
             .unwrap();
 
