@@ -262,7 +262,10 @@ where
     /// assert!(did_work);
     /// ```
     pub fn step(&mut self) -> Result<bool, RunnerError> {
-        self.step_with(crate::scheduler::scheduler())
+        match crate::scheduler::scheduler_strict() {
+            Ok(sched) => self.step_with(sched),
+            Err(e) => Err(RunnerError::Shell(ShellError::CommandExecutionFailed(format!("No runtime available: {e}")))),
+        }
     }
 
     /// Execute a single synchronous step of the event loop with custom scheduler
@@ -298,7 +301,10 @@ where
 
     /// Run with default scheduler
     pub async fn run_default(&mut self) -> Result<(), RunnerError> {
-        self.run(crate::scheduler::scheduler()).await
+        match crate::scheduler::scheduler_strict() {
+            Ok(sched) => self.run(sched).await,
+            Err(e) => Err(RunnerError::Shell(ShellError::CommandExecutionFailed(format!("No runtime available: {e}")))),
+        }
     }
 
     /// Tick with default scheduler (deprecated, use step() instead)

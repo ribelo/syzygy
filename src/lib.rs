@@ -410,6 +410,9 @@ pub mod timer;
 // Scheduler adapters for different async runtimes
 pub mod scheduler;
 
+// Runtime-neutral spawn functions
+pub mod spawn;
+
 // Storage system with UnsafeCell-based chains
 // Storage module removed - using direct FxHashMap for resources
 

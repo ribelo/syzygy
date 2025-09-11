@@ -241,14 +241,20 @@ where
     ///
     /// Returns the count of effects processed
     pub fn drain(&mut self) -> Result<usize, ShellError> {
-        self.drain_with(crate::scheduler::scheduler())
+        match crate::scheduler::scheduler_strict() {
+            Ok(sched) => self.drain_with(sched),
+            Err(e) => Err(ShellError::CommandExecutionFailed(format!("No runtime available: {e}"))),
+        }
     }
 
     /// Process at most one effect using the default scheduler
     ///
     /// Returns true if an effect was processed, false if the queue was empty
     pub fn poll_one(&mut self) -> Result<bool, ShellError> {
-        self.poll_one_with(crate::scheduler::scheduler())
+        match crate::scheduler::scheduler_strict() {
+            Ok(sched) => self.poll_one_with(sched),
+            Err(e) => Err(ShellError::CommandExecutionFailed(format!("No runtime available: {e}"))),
+        }
     }
 
     /// Get the number of pending effects in the queue

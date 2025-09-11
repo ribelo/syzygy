@@ -119,6 +119,8 @@ pub mod single_thread_executor;
 pub mod spec;
 
 pub mod tokio_executor;
+#[cfg(feature = "tokio")]
+pub mod tokio_current;
 
 // IO runtime registration - inspired by InfluxDB's design
 use std::future::Future;
@@ -142,6 +144,8 @@ pub use single_thread_executor::SingleThreadExecutor;
 
 #[cfg(feature = "tokio")]
 pub use tokio_executor::{TokioCpu, TokioExecutor, TokioIo};
+#[cfg(feature = "tokio")]
+pub use tokio_current::TokioCurrent;
 
 pub use spec::Outcome;
 pub use registry::ExecutorRegistry;

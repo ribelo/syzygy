@@ -62,7 +62,6 @@
 
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::{Arc, OnceLock};
 
 /// Modern Scheduler trait using AFIT for zero-cost abstractions
 ///
@@ -81,38 +80,7 @@ pub trait Scheduler: Clone + Send + Sync + 'static {
 /// Use this with `auto_schedule_boxed()` for the old BoxFuture-based API.
 pub type BoxedScheduleFn = dyn Fn(Pin<Box<dyn Future<Output = ()> + Send + 'static>>) + Send + Sync;
 
-/// Global fallback runtime (lazy initialized)
-#[cfg(feature = "tokio")]
-static FALLBACK_RUNTIME: OnceLock<Arc<FallbackRuntime>> = OnceLock::new();
 
-#[cfg(feature = "tokio")]
-struct FallbackRuntime {
-    handle: tokio::runtime::Handle,
-}
-
-#[cfg(feature = "tokio")]
-impl FallbackRuntime {
-    fn create() -> Arc<Self> {
-        // Create a single-threaded runtime for scheduling
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .thread_name("syzygy-scheduler")
-            .build()
-            .expect("Failed to create fallback runtime");
-
-        let handle = runtime.handle().clone();
-
-        // Spawn the runtime on a background thread to keep it alive
-        std::thread::spawn(move || {
-            runtime.block_on(async {
-                // Keep runtime alive until process exit
-                std::future::pending::<()>().await;
-            });
-        });
-
-        Arc::new(Self { handle })
-    }
-}
 
 /// Schedule a future using tokio (zero-cost)
 ///
@@ -120,6 +88,10 @@ impl FallbackRuntime {
 /// ecosystem and most users expect it to work out of the box.
 ///
 /// Accepts any future that outputs `()` - no boxing required!
+///
+/// # Panics
+///
+/// Panics if no tokio runtime is running. Use `TokioScheduler::new()` for error handling.
 ///
 /// # Examples
 ///
@@ -146,7 +118,9 @@ pub fn schedule_tokio<F>(future: F)
 where
     F: Future<Output = ()> + Send + 'static,
 {
-    TokioScheduler::new().schedule(future);
+    TokioScheduler::new()
+        .expect("No tokio runtime is running. Use #[tokio::main] or create a runtime first.")
+        .schedule(future);
 }
 
 /// Schedule a future using smol (zero-cost)
@@ -228,6 +202,11 @@ where
 /// This returns an opaque type implementing Scheduler for the auto-detected runtime.
 /// Uses priority order: tokio > smol > async-std when multiple features are enabled.
 ///
+/// # Panics
+///
+/// Panics if no tokio runtime is running (when tokio feature is enabled).
+/// Use `scheduler_strict()` for error handling.
+///
 /// # Example
 ///
 /// ```rust
@@ -240,7 +219,8 @@ where
 #[must_use]
 pub fn scheduler() -> impl Scheduler {
     #[cfg(feature = "tokio")]
-    return TokioScheduler::new();
+    return TokioScheduler::new()
+        .expect("No tokio runtime is running. Use #[tokio::main] or create a runtime first.");
 
     #[cfg(all(feature = "smol", not(feature = "tokio")))]
     return SmolScheduler;
@@ -255,14 +235,43 @@ pub fn scheduler() -> impl Scheduler {
     );
 }
 
-#[cfg(feature = "tokio")]
+/// Auto-detect and return a Scheduler implementation with error handling
+///
+/// This returns an opaque type implementing Scheduler for the auto-detected runtime.
+/// Uses priority order: tokio > smol > async-std when multiple features are enabled.
+///
+/// # Example
+///
+/// ```rust
+/// use syzygy::scheduler::scheduler_strict;
+///
+/// // Zero-cost scheduler for Runner with error handling
+/// match scheduler_strict() {
+///     Ok(scheduler) => {
+///         // Use with runner: runner.run_until(condition, scheduler).await?;
+///     }
+///     Err(e) => println!("No runtime available: {}", e),
+/// }
+/// ```
+#[must_use]
 pub fn scheduler_strict() -> Result<impl Scheduler, &'static str> {
-    tokio::runtime::Handle::try_current()
-        .map(|handle| TokioScheduler {
-            inner: Arc::new(TokioSchedulerInner::Handle(handle)),
-        })
-        .map_err(|_| "No tokio runtime is running. Use #[tokio::main] or create a runtime first.")
+    #[cfg(feature = "tokio")]
+    return TokioScheduler::new();
+
+    #[cfg(all(feature = "smol", not(feature = "tokio")))]
+    return Ok(SmolScheduler);
+
+    #[cfg(all(feature = "async-std", not(feature = "tokio"), not(feature = "smol")))]
+    return Ok(AsyncStdScheduler);
+
+    // Compile-time error if no runtime is available
+    #[cfg(not(any(feature = "tokio", feature = "smol", feature = "async-std")))]
+    compile_error!(
+        "syzygy requires at least one async runtime feature: enable 'tokio', 'smol', or 'async-std'"
+    );
 }
+
+
 
 /// Auto-detect and return schedule function for use with Runner (legacy compatibility)
 ///
@@ -303,55 +312,24 @@ pub fn auto_schedule_fn()
 // Concrete implementations of the Scheduler trait for each runtime.
 // These provide zero-cost abstractions for scheduling futures.
 
-/// Tokio runtime scheduler with handle-or-own pattern
+/// Tokio runtime scheduler (strict - uses current runtime only)
 #[derive(Clone)]
 pub struct TokioScheduler {
-    inner: Arc<TokioSchedulerInner>,
-}
-
-#[cfg(feature = "tokio")]
-enum TokioSchedulerInner {
-    Handle(tokio::runtime::Handle),
-    Fallback(Arc<FallbackRuntime>),
-}
-
-#[cfg(feature = "tokio")]
-impl Default for TokioScheduler {
-    fn default() -> Self {
-        Self::new()
-    }
+    handle: tokio::runtime::Handle,
 }
 
 impl TokioScheduler {
-    pub fn new() -> Self {
-        if let Ok(handle) = tokio::runtime::Handle::try_current() {
-            Self {
-                inner: Arc::new(TokioSchedulerInner::Handle(handle)),
-            }
-        } else {
-            let fallback = Arc::clone(FALLBACK_RUNTIME.get_or_init(FallbackRuntime::create));
-
-            #[cfg(feature = "tracing")]
-            tracing::debug!("Created fallback tokio runtime for scheduler");
-
-            Self {
-                inner: Arc::new(TokioSchedulerInner::Fallback(fallback)),
-            }
-        }
+    pub fn new() -> Result<Self, &'static str> {
+        tokio::runtime::Handle::try_current()
+            .map_err(|_| "No tokio runtime is running. Use #[tokio::main] or create a runtime first.")
+            .map(|handle| Self { handle })
     }
 }
 
 #[cfg(feature = "tokio")]
 impl Scheduler for TokioScheduler {
     fn schedule(&self, future: impl Future<Output = ()> + Send + 'static) {
-        match &*self.inner {
-            TokioSchedulerInner::Handle(handle) => {
-                handle.spawn(future);
-            }
-            TokioSchedulerInner::Fallback(fallback) => {
-                fallback.handle.spawn(future);
-            }
-        }
+        self.handle.spawn(future);
     }
 }
 
@@ -391,7 +369,9 @@ impl Scheduler for AsyncStdScheduler {
 /// zero-cost abstractions with async closures.
 #[cfg(feature = "tokio")]
 pub fn schedule_tokio_boxed(future: Pin<Box<dyn Future<Output = ()> + Send + 'static>>) {
-    TokioScheduler::new().schedule(future);
+    TokioScheduler::new()
+        .expect("No tokio runtime is running. Use #[tokio::main] or create a runtime first.")
+        .schedule(future);
 }
 
 /// Legacy schedule function for smol using boxed futures (DEPRECATED)
@@ -531,7 +511,8 @@ mod tests {
         let executed_clone = Arc::clone(&executed);
 
         // Test TokioScheduler
-        let tokio_scheduler = TokioScheduler::new();
+        let tokio_scheduler = TokioScheduler::new()
+            .expect("No tokio runtime is running. Use #[tokio::main] or create a runtime first.");
         tokio_scheduler.schedule(async move {
             *executed_clone.lock().unwrap() = true;
         });
