@@ -361,19 +361,6 @@ where
         (core, shell)
     }
 
-    /// Build the system with manual wiring
-    pub fn build_manual(self) -> (Core<Event, Effect, Model>, Shell<Event, Effect, Resource>) {
-        let (core, event_tx) = Core::new(self.event_handler, self.model);
-        let shell = Self::build_shell(
-            self.resources,
-            self.exec_registry.map(Arc::new),
-            self.exec_configurator,
-            self.effect_handler,
-            event_tx,
-        );
-        (core, shell)
-    }
-
     /// Internal helper to build shell
     fn build_shell(
         resources: Resource,
