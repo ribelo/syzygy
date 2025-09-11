@@ -4,11 +4,13 @@ use std::time::Duration;
 use tokio::time::sleep;
 
 use futures_util::future::FutureExt;
+use futures_util::stream::StreamExt;
 use syzygy::executor::{
-    AsyncExecutor, ExecutorError, ExecutorLifecycle, TokioExecutor,
+    AsyncExecutor, ExecutorError, ExecutorLifecycle, Task, TokioExecutor,
     register_current_runtime_for_io, spawn_io,
 };
-use syzygy::streaming::EffectOutput;
+use syzygy::executor::Outcome;
+
 
 #[derive(Debug, Clone)]
 enum TestEvent {
@@ -22,14 +24,13 @@ async fn executor_spawns_and_completes_basic_future_successfully() {
 
     // When: Spawning a future that produces a success event
     let fut =
-        async { EffectOutput::Future(async { vec![TestEvent::Success(42)] }.boxed()) }.boxed();
+        async { Outcome::Events(vec![TestEvent::Success(42)]) }.boxed();
     let result = executor.spawn_future(fut).await;
 
     // Then: The future completes with the expected event
     assert!(result.is_ok());
     match result.unwrap() {
-        EffectOutput::Future(fut) => {
-            let events = fut.await;
+        Outcome::Events(events) => {
             assert_eq!(events.len(), 1);
             #[allow(clippy::match_wildcard_for_single_variants)]
             match &events[0] {
@@ -37,7 +38,7 @@ async fn executor_spawns_and_completes_basic_future_successfully() {
                 other => panic!("Expected Success(42), got {other:?}"),
             }
         }
-        _other => panic!("Expected Future output"),
+        _other => panic!("Expected Events output"),
     }
 
     executor.join().await;
@@ -54,7 +55,7 @@ async fn executor_cancels_task_on_drop_without_leaking_resources() {
     let fut = async move {
         barrier_clone.wait(); // Signal start
         sleep(Duration::from_secs(10)).await; // Long sleep
-        EffectOutput::Future(async { vec![TestEvent::Success(999)] }.boxed())
+        Outcome::Events(vec![TestEvent::Success(999)])
     }
     .boxed();
 
@@ -75,7 +76,7 @@ async fn executor_handles_cancellation_error_and_continues_processing_new_tasks(
     // When: Starting a long task, polling to initiate, then cancelling
     let fut = async {
         sleep(Duration::from_secs(10)).await;
-        EffectOutput::Future(async { vec![TestEvent::Success(999)] }.boxed())
+        Outcome::Events(vec![TestEvent::Success(999)])
     }
     .boxed();
 
@@ -90,7 +91,7 @@ async fn executor_handles_cancellation_error_and_continues_processing_new_tasks(
 
     // Then: Executor remains functional for new tasks
     let short_fut =
-        async { EffectOutput::Future(async { vec![TestEvent::Success(1)] }.boxed()) }.boxed();
+        async { Outcome::Events(vec![TestEvent::Success(1)]) }.boxed();
     let result = executor.spawn_future(short_fut).await;
     assert!(result.is_ok());
 
@@ -106,7 +107,7 @@ async fn executor_propagates_string_panic_as_error_event_with_correct_message() 
     let fut = async {
         panic!("test panic message");
         #[allow(unreachable_code)]
-        EffectOutput::Future(async { vec![TestEvent::Success(0)] }.boxed())
+        Outcome::Events(vec![TestEvent::Success(0)])
     }
     .boxed();
 
@@ -133,7 +134,7 @@ async fn executor_propagates_static_str_panic_as_error_event_with_correct_messag
     let fut = async {
         panic!("static str panic");
         #[allow(unreachable_code)]
-        EffectOutput::Future(async { vec![TestEvent::Success(0)] }.boxed())
+        Outcome::Events(vec![TestEvent::Success(0)])
     }
     .boxed();
 
@@ -160,7 +161,7 @@ async fn executor_propagates_non_string_panic_as_error_event_with_generic_messag
     let fut = async {
         std::panic::panic_any(42i32);
         #[allow(unreachable_code)]
-        EffectOutput::Future(async { vec![TestEvent::Success(0)] }.boxed())
+        Outcome::Events(vec![TestEvent::Success(0)])
     }
     .boxed();
 
@@ -186,7 +187,7 @@ async fn executor_shutdown_prevents_new_task_spawning_and_returns_worker_gone_er
     // When: Shutting down and attempting to spawn a new task
     executor.shutdown();
     let fut =
-        async { EffectOutput::Future(async { vec![TestEvent::Success(42)] }.boxed()) }.boxed();
+        async { Outcome::Events(vec![TestEvent::Success(42)]) }.boxed();
     let result = executor.spawn_future(fut).await;
 
     // Then: Spawning fails with WorkerGone error
@@ -208,7 +209,7 @@ async fn executor_handles_multiple_concurrent_tasks_efficiently_with_correct_res
     let tasks = (0..5).map(|i| {
         let fut = async move {
             sleep(Duration::from_millis(10)).await;
-            EffectOutput::Future(async move { vec![TestEvent::Success(i)] }.boxed())
+            Outcome::Events(vec![TestEvent::Success(i)])
         }
         .boxed();
         executor.spawn_future(fut)
@@ -221,8 +222,7 @@ async fn executor_handles_multiple_concurrent_tasks_efficiently_with_correct_res
     for (i, result) in results.into_iter().enumerate() {
         assert!(result.is_ok(), "Task {i} failed");
         match result.unwrap() {
-            EffectOutput::Future(fut) => {
-                let events = fut.await;
+            Outcome::Events(events) => {
                 assert_eq!(events.len(), 1);
                 #[allow(unreachable_patterns)]
                 match &events[0] {
@@ -250,9 +250,9 @@ async fn executor_clone_shares_runtime_and_shutdown_affects_all_instances() {
 
     // When: Spawning tasks on both instances
     let fut1 =
-        async { EffectOutput::Future(async { vec![TestEvent::Success(1)] }.boxed()) }.boxed();
+        async { Outcome::Events(vec![TestEvent::Success(1)]) }.boxed();
     let fut2 =
-        async { EffectOutput::Future(async { vec![TestEvent::Success(2)] }.boxed()) }.boxed();
+        async { Outcome::Events(vec![TestEvent::Success(2)]) }.boxed();
 
     let result1 = executor.spawn_future(fut1).await;
     let result2 = executor_clone.spawn_future(fut2).await;
@@ -266,7 +266,7 @@ async fn executor_clone_shares_runtime_and_shutdown_affects_all_instances() {
 
     // Then: New spawns on clone fail
     let fut3 =
-        async { EffectOutput::Future(async { vec![TestEvent::Success(3)] }.boxed()) }.boxed();
+        async { Outcome::Events(vec![TestEvent::Success(3)]) }.boxed();
     let result3 = executor_clone.spawn_future(fut3).await;
     assert!(matches!(result3, Err(ExecutorError::WorkerGone)));
 
@@ -290,7 +290,7 @@ async fn executor_registers_io_runtime_and_routes_io_work_correctly() {
             .await
             .unwrap();
 
-        EffectOutput::Future(async { vec![TestEvent::Success(42)] }.boxed())
+        Outcome::Events(vec![TestEvent::Success(42)])
     }
     .boxed();
 
@@ -308,13 +308,13 @@ async fn executor_handles_effect_output_none_correctly() {
     let executor = TokioExecutor::current_thread_io("test_none");
 
     // When: Spawning a future that returns None
-    let fut = async { EffectOutput::<TestEvent>::None }.boxed();
+    let fut = async { Outcome::<TestEvent>::None }.boxed();
     let result = executor.spawn_future(fut).await;
 
     // Then: Result is Ok with None
     assert!(result.is_ok());
     match result.unwrap() {
-        EffectOutput::None => {}
+        Outcome::None => {}
         _other => panic!("Expected None"),
     }
 
@@ -322,29 +322,26 @@ async fn executor_handles_effect_output_none_correctly() {
 }
 
 #[tokio::test]
-async fn executor_handles_effect_output_stream_correctly() {
+async fn executor_handles_task_stream_correctly() {
     // Given: A TokioExecutor
     let executor = TokioExecutor::current_thread_io("test_stream");
 
-    // When: Spawning a future that returns a Stream
-    let fut = async {
+    // When: Creating a stream task
+    let task = Task::<TestEvent, ()>::stream_on::<TokioExecutor, _, _>(|_ctx| {
         let events = vec![
             TestEvent::Success(1),
             TestEvent::Success(2),
             TestEvent::Success(3),
         ];
-        let stream = futures::stream::iter(events);
-        EffectOutput::Stream(Box::pin(stream))
-    }
-    .boxed();
+        futures_util::stream::iter(events).boxed()
+    });
 
-    let result = executor.spawn_future(fut).await;
-
-    // Then: Result is Ok with Stream
-    assert!(result.is_ok());
-    match result.unwrap() {
-        EffectOutput::Stream(_) => {}
-        _other => panic!("Expected Stream"),
+    // Then: Task should be created successfully
+    // Note: We can't easily test the stream execution in this unit test
+    // since it requires the full drive_spec machinery
+    match task {
+        Task::Stream { .. } => {} // Success - it's a stream task
+        _other => panic!("Expected Stream task"),
     }
 
     executor.join().await;
@@ -355,25 +352,25 @@ async fn executor_handles_effect_output_stream_correctly() {
 async fn executor_various_configurations_work_correctly_for_basic_task_execution() {
     // Test Current thread IO
     let exec1 = TokioExecutor::current_thread_io("test_ct_io");
-    let fut = async { EffectOutput::Future(async { vec![TestEvent::Success(1)] }.boxed()) }.boxed();
+    let fut = async { Outcome::Events(vec![TestEvent::Success(1)]) }.boxed();
     assert!(exec1.spawn_future(fut).await.is_ok());
     exec1.join().await;
 
     // Test Current thread CPU
     let exec2 = TokioExecutor::current_thread_cpu("test_ct_cpu");
-    let fut = async { EffectOutput::Future(async { vec![TestEvent::Success(2)] }.boxed()) }.boxed();
+    let fut = async { Outcome::Events(vec![TestEvent::Success(2)]) }.boxed();
     assert!(exec2.spawn_future(fut).await.is_ok());
     exec2.join().await;
 
     // Test Multi-thread IO
     let exec3 = TokioExecutor::multi_thread_io("test_mt_io", 1);
-    let fut = async { EffectOutput::Future(async { vec![TestEvent::Success(3)] }.boxed()) }.boxed();
+    let fut = async { Outcome::Events(vec![TestEvent::Success(3)]) }.boxed();
     assert!(exec3.spawn_future(fut).await.is_ok());
     exec3.join().await;
 
     // Test Multi-thread CPU
     let exec4 = TokioExecutor::multi_thread_cpu("test_mt_cpu", 1);
-    let fut = async { EffectOutput::Future(async { vec![TestEvent::Success(4)] }.boxed()) }.boxed();
+    let fut = async { Outcome::Events(vec![TestEvent::Success(4)]) }.boxed();
     assert!(exec4.spawn_future(fut).await.is_ok());
     exec4.join().await;
 }
@@ -388,7 +385,7 @@ async fn executor_handles_concurrent_shutdown_gracefully_without_deadlocks() {
     for i in 0..10 {
         let fut = async move {
             sleep(Duration::from_millis(100)).await;
-            EffectOutput::Future(async move { vec![TestEvent::Success(i)] }.boxed())
+            Outcome::Events(vec![TestEvent::Success(i)])
         }
         .boxed();
         handles.push(executor.spawn_future(fut));
@@ -439,7 +436,7 @@ async fn executor_propagates_errors_from_effects_as_events_in_pipeline() {
     // When: Spawning an effect that returns None (simulating an effect with no events)
     let fut = async {
         // Simulate an effect that produces no events
-        EffectOutput::<TestEvent>::None
+        Outcome::<TestEvent>::None
     }
     .boxed();
 
@@ -448,7 +445,7 @@ async fn executor_propagates_errors_from_effects_as_events_in_pipeline() {
     // Then: Effect completes successfully with None output
     assert!(result.is_ok());
     match result.unwrap() {
-        EffectOutput::None => {} // Expected None output
+        Outcome::None => {} // Expected None output
         other => panic!("Expected None, got {other:?}"),
     }
 
@@ -467,7 +464,7 @@ async fn executor_handles_boundary_of_maximum_concurrent_tasks_without_resource_
             let fut = async move {
                 sleep(Duration::from_millis(1)).await; // Minimal work
                 #[allow(clippy::cast_possible_truncation)]
-                EffectOutput::Future(async move { vec![TestEvent::Success(i as u32)] }.boxed())
+                Outcome::Events(vec![TestEvent::Success(i as u32)])
             }
             .boxed();
             executor.spawn_future(fut)

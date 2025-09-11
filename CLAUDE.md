@@ -236,16 +236,16 @@ pub trait ExecutorLifecycle: Send + Sync + 'static {
 pub trait AsyncExecutor<E>: ExecutorLifecycle {
     fn spawn_future(
         &self,
-        fut: BoxFuture<'static, EffectOutput<E>>,
-    ) -> BoxFuture<'static, Result<EffectOutput<E>, ExecutorError>>;
+        fut: BoxFuture<'static, Outcome<E>>,
+    ) -> BoxFuture<'static, Result<Outcome<E>, ExecutorError>>;
 }
 
 /// Executor specialized for blocking/synchronous work  
 pub trait SyncExecutor<E>: ExecutorLifecycle {
     fn spawn_sync(
         &self,
-        job: Box<dyn FnOnce() -> EffectOutput<E> + Send>,
-    ) -> BoxFuture<'static, Result<EffectOutput<E>, ExecutorError>>;
+        job: Box<dyn FnOnce() -> Outcome<E> + Send>,
+    ) -> BoxFuture<'static, Result<Outcome<E>, ExecutorError>>;
 }
 ```
 

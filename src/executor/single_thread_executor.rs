@@ -8,8 +8,7 @@ use futures_util::future::{BoxFuture, FutureExt, Shared};
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
-use crate::executor::{ExecutorError, ExecutorLifecycle, SyncExecutor};
-use crate::streaming::EffectOutput;
+use crate::executor::{ExecutorError, ExecutorLifecycle, SyncExecutor, Outcome};
 
 /// `SingleThreadExecutor` — FIFO, single-worker executor for sync work only
 ///
@@ -95,8 +94,8 @@ where
     /// and depends on the job's implementation.
     fn spawn_sync(
         &self,
-        job: Box<dyn FnOnce() -> EffectOutput<E> + Send>,
-    ) -> BoxFuture<'static, Result<EffectOutput<E>, ExecutorError>> {
+        job: Box<dyn FnOnce() -> Outcome<E> + Send>,
+    ) -> BoxFuture<'static, Result<Outcome<E>, ExecutorError>> {
         // Wrap job to type erase its output
         let wrapped_job: Box<dyn FnOnce() -> Box<dyn Any + Send> + Send> =
             Box::new(move || -> Box<dyn Any + Send> { Box::new(job()) });
@@ -228,7 +227,7 @@ impl<E> std::future::Future for JoinFuture<E>
 where
     E: Send + 'static,
 {
-    type Output = Result<EffectOutput<E>, ExecutorError>;
+    type Output = Result<Outcome<E>, ExecutorError>;
 
     fn poll(
         self: std::pin::Pin<&mut Self>,
@@ -247,8 +246,8 @@ where
                     this.rx = None;
                     let out = match res {
                         Ok(Ok(boxed)) => {
-                            // Downcast to the expected EffectOutput<E>
-                            match boxed.downcast::<EffectOutput<E>>() {
+                            // Downcast to the expected Outcome<E>
+                            match boxed.downcast::<Outcome<E>>() {
                                 Ok(typed) => Ok(*typed),
                                 Err(_boxed) => Err(ExecutorError::WorkerGone),
                             }

@@ -1,6 +1,6 @@
 use crate::core::{Core, EventHandler};
 use crate::effect_context::EffectContext;
-use crate::executor::EffectPlan;
+use crate::executor::Task;
 
 use crate::executor::{AsyncExecutor, ExecutorRegistry, SyncExecutor};
 use crate::prelude::EffectHandler;
@@ -372,13 +372,13 @@ where
         use crate::shell::ShellConfig;
         use crossbeam_channel::unbounded;
 
-        fn default_effect_handler<E, X, R>(_: X, _: &EffectContext<E, R>) -> EffectPlan<E, R>
+        fn default_effect_handler<E, X, R>(_: X, _: &EffectContext<E, R>) -> Task<E, R>
         where
             E: Clone + Send + 'static,
             X: Clone + Send + 'static,
             R: Clone + Send + Sync + 'static,
         {
-            EffectPlan::events(Vec::new())
+            Task::events(Vec::new())
         }
 
         let config = ShellConfig::default();
@@ -461,7 +461,7 @@ mod tests {
         let (mut core, _shell) = Syzygy::builder::<TestEvent, TestEffect>()
             .model(TestModel { count: 0 })
             .event_handler(test_update)
-            .effect_handler(|_e: TestEffect, _ctx| crate::executor::EffectPlan::events(Vec::new()))
+            .effect_handler(|_e: TestEffect, _ctx| crate::executor::Task::events(Vec::new()))
             .build();
 
         let _command = core.handle_event(TestEvent::Increment);
@@ -475,7 +475,7 @@ mod tests {
         let (_core, shell) = Syzygy::builder::<TestEvent, TestEffect>()
             .model(TestModel { count: 0 })
             .event_handler(test_update)
-            .effect_handler(|_e: TestEffect, _ctx| crate::executor::EffectPlan::events(Vec::new()))
+            .effect_handler(|_e: TestEffect, _ctx| crate::executor::Task::events(Vec::new()))
             .build();
 
         // Type should remain simple with resources-only generic
@@ -491,7 +491,7 @@ mod tests {
         let (mut core, _shell) = Syzygy::builder::<TestEvent, TestEffect>()
             .model(TestModel { count: 0 })
             .event_handler(test_update)
-            .effect_handler(|_e: TestEffect, _ctx| crate::executor::EffectPlan::events(Vec::new()))
+            .effect_handler(|_e: TestEffect, _ctx| crate::executor::Task::events(Vec::new()))
             .build();
 
         // This should just work without any type annotations needed
@@ -541,7 +541,7 @@ mod tests {
                 },
             ))
             .event_handler(multi_update)
-            .effect_handler(|_e: TestEffect, _ctx| crate::executor::EffectPlan::events(Vec::new()))
+            .effect_handler(|_e: TestEffect, _ctx| crate::executor::Task::events(Vec::new()))
             .build();
 
         core.handle_event(TestEvent::Increment);

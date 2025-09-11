@@ -53,11 +53,11 @@
 //! async fn handle_effects(
 //!     effect: CounterEffect,
 //!     _ctx: EffectContext<CounterEvent, EmptyStorage>
-//! ) -> EffectOutput<CounterEvent> {
+//! ) -> Outcome<CounterEvent> {
 //!     match effect {
 //!         CounterEffect::LogMessage(message) => {
 //!             println!("LOG: {}", message);
-//!             EffectOutput::None
+//!             Outcome::None
 //!         }
 //!     }
 //! }
@@ -94,7 +94,7 @@
 //! # #[derive(Debug, Clone)] enum Event { Test }
 //! # #[derive(Debug, Clone)] enum Effect { Test }
 //! # fn update(e: Event, ctx: &mut EventContext<Event, Effect, (ConfigModel, UserModel)>) -> Command<Event, Effect> { Command::none() }
-//! # async fn effects(e: Effect, _ctx: EffectContext<Event, ()>) -> EffectOutput<Event> { EffectOutput::None }
+//! # async fn effects(e: Effect, _ctx: EffectContext<Event, ()>) -> Outcome<Event> { Outcome::None }
 //! let (core, shell) = Syzygy::builder()
 //!     .model(UserModel::default())     // Add multiple models
 //!     .model(ConfigModel::default())   // Type-safe composition
@@ -309,7 +309,7 @@
 //! # #[derive(Debug, Clone)] enum Event { Test }
 //! # #[derive(Debug, Clone)] enum Effect { Test }
 //! # fn update(e: Event, ctx: &mut EventContext<Event, Effect, MyModel>) -> Command<Event, Effect> { Command::none() }
-//! # async fn effects(e: Effect, _ctx: EffectContext<Event, (HttpClient, Database)>) -> EffectOutput<Event> { EffectOutput::None }
+//! # async fn effects(e: Effect, _ctx: EffectContext<Event, (HttpClient, Database)>) -> Outcome<Event> { Outcome::None }
 //! let (core, shell) = Syzygy::builder()
 //!     .model(MyModel::default())
 //!     .resource(Database { url: "postgres://...".to_string() })
@@ -327,12 +327,12 @@
 //! async fn handle_effect(
 //!     effect: MyEffect,
 //!     _ctx: EffectContext<Event, ()>,
-//! ) -> EffectOutput<Event> {
+//! ) -> Outcome<Event> {
 //!     match effect {
 //!         MyEffect::DoWork => {
 //!             // Do async work and return result as event
 //!             tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
-//!             EffectOutput::Single(Event::TaskComplete)
+//!             Outcome::Event(Event::TaskComplete)
 //!         }
 //!     }
 //! }
@@ -417,8 +417,7 @@ pub mod spawn;
 // Executor system for specialized effect handling
 pub mod executor;
 
-// Optional streaming helpers to unify single vs stream outputs
-pub mod streaming;
+
 
 pub mod prelude {
     // Contexts for update and effect functions
@@ -454,7 +453,7 @@ pub mod prelude {
     ///     Syzygy::builder()
     ///         .model(())  // Some model
     ///         .event_handler(|_event, _ctx| Command::none())
-    ///         .effect_handler(|_effect, _ctx| async { EffectOutput::None })
+    ///         .effect_handler(|_effect, _ctx| async { Outcome::None })
     ///         .build()
     /// }
     /// ```
@@ -467,14 +466,14 @@ pub mod prelude {
     // Spawn adapters for runtime neutrality
     pub use crate::spawn::{AsyncStdSpawn, SmolSpawn, Spawn, TokioSpawn, spawner};
 
-    // Executor system
-    #[cfg(feature = "rayon")]
-    pub use crate::executor::RayonExecutor;
+// Executor system
+#[cfg(feature = "rayon")]
+pub use crate::executor::RayonExecutor;
 
-    #[cfg(feature = "tokio")]
-    pub use crate::executor::TokioExecutor;
-    pub use crate::executor::spec::drive_spec;
-    pub use crate::executor::{EffectPlan, ExecutorRegistry, SingleThreadExecutor};
+#[cfg(feature = "tokio")]
+pub use crate::executor::TokioExecutor;
+pub use crate::executor::spec::{drive_spec, Outcome};
+pub use crate::executor::{Task, ExecutorRegistry, SingleThreadExecutor};
 
     // Builder
     pub use crate::builder::{Syzygy, SyzygyBuilder};
@@ -482,6 +481,6 @@ pub mod prelude {
     // Errors
     pub use crate::error::{CommandError, CoreError, EffectError, ShellError};
 
-    // Streaming helpers
-    pub use crate::streaming::{EffectOutput, consume_effect_output};
+// Effect output types
+
 }

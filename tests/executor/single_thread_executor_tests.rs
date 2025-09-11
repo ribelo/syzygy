@@ -4,9 +4,8 @@ use std::sync::{
 };
 use std::time::Duration;
 
-use futures_util::future::FutureExt;
-use syzygy::executor::{ExecutorError, ExecutorLifecycle, SingleThreadExecutor, SyncExecutor};
-use syzygy::streaming::EffectOutput;
+
+use syzygy::executor::{ExecutorError, ExecutorLifecycle, SingleThreadExecutor, SyncExecutor, Outcome};
 
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
@@ -27,7 +26,7 @@ async fn single_thread_executor_executes_strict_fifo_under_deep_queue() {
         let order = Arc::clone(&completion);
         let h = exec.spawn_sync(Box::new(move || {
             order.lock().unwrap().push(i);
-            EffectOutput::Future(async move { vec![TestEvent::A(i)] }.boxed())
+            Outcome::Events(vec![TestEvent::A(i)])
         }));
         handles.push(h);
     }
@@ -54,7 +53,7 @@ async fn single_thread_executor_maps_panic_to_error_and_continues() {
 
     // Job that panics with a string
     let err = exec
-        .spawn_sync(Box::new(|| -> EffectOutput<TestEvent> {
+        .spawn_sync(Box::new(|| -> Outcome<TestEvent> {
             panic!("just exploding");
         }))
         .await
@@ -68,7 +67,7 @@ async fn single_thread_executor_maps_panic_to_error_and_continues() {
     // Subsequent job still executes successfully (isolation)
     let ok = exec
         .spawn_sync(Box::new(|| {
-            EffectOutput::Future(async { vec![TestEvent::B("ok")] }.boxed())
+            Outcome::Events(vec![TestEvent::B("ok")])
         }))
         .await;
     assert!(ok.is_ok(), "executor should continue after a panic");
@@ -91,7 +90,7 @@ async fn single_thread_executor_long_running_job_does_not_starve_followers() {
         while start.elapsed() < Duration::from_millis(50) {
             std::hint::spin_loop();
         }
-        EffectOutput::<TestEvent>::None
+        Outcome::<TestEvent>::None
     }));
 
     // Short job queued behind should still complete soon after the long one
@@ -99,7 +98,7 @@ async fn single_thread_executor_long_running_job_does_not_starve_followers() {
     let short_done_cl = Arc::clone(&short_done);
     let short = exec.spawn_sync(Box::new(move || {
         short_done_cl.store(true, Ordering::SeqCst);
-        EffectOutput::<TestEvent>::None
+        Outcome::<TestEvent>::None
     }));
 
     // Ensure the long job actually started
@@ -136,7 +135,7 @@ async fn single_thread_executor_shutdown_and_join_semantics() {
     let mut handles = Vec::new();
     for _ in 0..10 {
         handles.push(exec.spawn_sync(Box::new(|| {
-            EffectOutput::Future(async { Vec::<TestEvent>::new() }.boxed())
+            Outcome::Events(Vec::<TestEvent>::new())
         })));
     }
 
@@ -151,7 +150,7 @@ async fn single_thread_executor_shutdown_and_join_semantics() {
 
     // New spawns after join should be rejected
     let res = exec
-        .spawn_sync(Box::new(|| EffectOutput::<TestEvent>::None))
+        .spawn_sync(Box::new(|| Outcome::<TestEvent>::None))
         .await;
     assert!(
         matches!(res, Err(ExecutorError::WorkerGone)),

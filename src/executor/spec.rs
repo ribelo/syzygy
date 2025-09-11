@@ -1,24 +1,65 @@
-use futures_util::future::{BoxFuture, FutureExt, join_all, select_all};
+use futures_util::future::{BoxFuture, FutureExt};
+use futures_util::stream::{BoxStream, StreamExt};
 
 use std::future::Future;
 
-use crate::prelude::EffectContext;
-use crate::streaming::EffectOutput;
+use crate::effect_context::EffectContext;
 
 use super::ExecutorError;
 use std::any::TypeId;
+
+/// Unified effect output: a single event, multiple events, or none
+#[derive(Debug, PartialEq)]
+pub enum Outcome<E> {
+    None,
+    Event(E),
+    Events(Vec<E>),
+}
+
+
+
+// Primary implementation - single events are the most common case
+impl<E> From<E> for Outcome<E> {
+    fn from(event: E) -> Self {
+        Outcome::Event(event)
+    }
+}
+
+// Vec<E> - for multiple events
+impl<E> From<Vec<E>> for Outcome<E> {
+    fn from(events: Vec<E>) -> Self {
+        if events.is_empty() {
+            Outcome::None
+        } else {
+            Outcome::Events(events)
+        }
+    }
+}
+
+// Option<E> - for conditional events
+impl<E> From<Option<E>> for Outcome<E> {
+    fn from(opt: Option<E>) -> Self {
+        match opt {
+            Some(event) => Outcome::Event(event),
+            None => Outcome::None,
+        }
+    }
+}
+
+// REMOVE the From<()> implementation - it conflicts with From<E> when E = ()
+// Users should use Task::none() or vec![] for empty outcomes
 
 /// Object-safe factory to start a task using an `EffectContext`.
 ///
 /// This allows storing `FnOnce(EffectContext<E,R>) -> Fut` as a trait object
 /// by wrapping it in a struct holding `Option<F>`.
 type FutFactory<E, R> =
-    Box<dyn FnOnce(EffectContext<E, R>) -> BoxFuture<'static, EffectOutput<E>> + Send>;
+    Box<dyn FnOnce(EffectContext<E, R>) -> BoxFuture<'static, Outcome<E>> + Send>;
 
-type SyncFactory<E, R> = Box<dyn FnOnce(EffectContext<E, R>) -> EffectOutput<E> + Send>;
+type SyncFactory<E, R> = Box<dyn FnOnce(EffectContext<E, R>) -> Outcome<E> + Send>;
 
 /// Declarative effect plan produced by sync handlers.
-pub enum EffectPlan<E, R> {
+pub enum Task<E, R> {
     Events(Vec<E>),
     Future {
         exec: TypeId,
@@ -30,11 +71,14 @@ pub enum EffectPlan<E, R> {
         exec: TypeId,
         task: SyncFactory<E, R>,
     },
-    Race(Vec<EffectPlan<E, R>>),
-    All(Vec<EffectPlan<E, R>>),
+    /// Stream events from an async executor
+    Stream {
+        exec: TypeId,
+        factory: Box<dyn FnOnce(EffectContext<E, R>) -> BoxStream<'static, E> + Send>,
+    },
 }
 
-impl<E, R> EffectPlan<E, R>
+impl<E, R> Task<E, R>
 where
     E: Send + 'static,
     R: Clone + Send + Sync + 'static,
@@ -44,115 +88,268 @@ where
         Self::Events(events)
     }
 
-    fn future<F, Fut>(exec: TypeId, f: F) -> Self
+    #[must_use]
+    pub fn none() -> Self {
+        Self::Events(vec![])
+    }
+
+    #[must_use]
+    pub fn event(event: E) -> Self {
+        Self::Events(vec![event])
+    }
+
+    fn future<F, Fut, O>(exec: TypeId, f: F) -> Self
     where
         F: FnOnce(EffectContext<E, R>) -> Fut + Send + 'static,
-        Fut: Future<Output = EffectOutput<E>> + Send + 'static,
+        Fut: Future<Output = O> + Send + 'static,
+        O: Into<Outcome<E>>,
     {
-        let task: FutFactory<E, R> = Box::new(move |ctx| async move { f(ctx).await }.boxed());
+        let task: FutFactory<E, R> = Box::new(move |ctx| {
+            async move {
+                f(ctx).await.into()
+            }.boxed()
+        });
         Self::Future { exec, task }
     }
 
     /// Create a Sync task spec from a closure that returns immediately.
-    fn sync<F>(exec: TypeId, f: F) -> Self
+    fn sync<F, O>(exec: TypeId, f: F) -> Self
     where
-        F: FnOnce(EffectContext<E, R>) -> EffectOutput<E> + Send + 'static,
+        F: FnOnce(EffectContext<E, R>) -> O + Send + 'static,
+        O: Into<Outcome<E>>,
     {
-        let task: SyncFactory<E, R> = Box::new(f);
+        let task: SyncFactory<E, R> = Box::new(move |ctx| f(ctx).into());
         Self::Sync { exec, task }
     }
 
     /// Future on a marker type key
-    pub fn future_on<T: 'static, F, Fut>(f: F) -> Self
+    pub fn future_on<T: 'static, F, Fut, O>(f: F) -> Self
     where
         F: FnOnce(EffectContext<E, R>) -> Fut + Send + 'static,
-        Fut: Future<Output = EffectOutput<E>> + Send + 'static,
+        Fut: Future<Output = O> + Send + 'static,
+        O: Into<Outcome<E>>,
     {
         Self::future(TypeId::of::<T>(), f)
     }
 
     /// Sync on a marker type key
-    pub fn sync_on<T: 'static, F>(f: F) -> Self
+    pub fn sync_on<T: 'static, F, O>(f: F) -> Self
     where
-        F: FnOnce(EffectContext<E, R>) -> EffectOutput<E> + Send + 'static,
+        F: FnOnce(EffectContext<E, R>) -> O + Send + 'static,
+        O: Into<Outcome<E>>,
     {
         Self::sync(TypeId::of::<T>(), f)
     }
 
-    #[must_use]
-    pub fn race(branches: Vec<EffectPlan<E, R>>) -> Self {
-        Self::Race(branches)
+    /// Create a streaming task on a specific executor
+    pub fn stream_on<T: 'static, F, S>(f: F) -> Self
+    where
+        F: FnOnce(EffectContext<E, R>) -> S + Send + 'static,
+        S: futures::Stream<Item = E> + Send + 'static,
+    {
+        let exec = TypeId::of::<T>();
+        Task::Stream {
+            exec,
+            factory: Box::new(move |ctx| f(ctx).boxed()),
+        }
     }
-    #[must_use]
-    pub fn all(branches: Vec<EffectPlan<E, R>>) -> Self {
-        Self::All(branches)
-    }
+
+
 }
 
 /// Drive an `EffectSpec` by spawning appropriate tasks on executors and
 /// forwarding produced events to Core via the supplied `EffectContext`.
-pub fn drive_spec<E, R>(spec: EffectPlan<E, R>, ctx: EffectContext<E, R>) -> BoxFuture<'static, ()>
+pub fn drive_spec<E, R>(spec: Task<E, R>, ctx: EffectContext<E, R>) -> BoxFuture<'static, ()>
 where
     E: Send + 'static,
     R: Clone + Send + Sync + 'static,
 {
     async move {
-        use crate::streaming::consume_effect_output;
-
         match spec {
-            EffectPlan::Events(events) => {
+            Task::Events(events) => {
                 for e in events {
                     ctx.send_event(e);
                 }
             }
-            EffectPlan::Future { exec, task } => {
+            Task::Future { exec, task } => {
                 if let Some(exec_ref) = ctx.async_executor_by_typeid(exec) {
                     let fut = (task)(ctx.clone());
                     match exec_ref.spawn_future(fut).await {
-                        Ok(output) => consume_effect_output(output, &ctx).await,
-                        Err(
-                            ExecutorError::WorkerGone
-                            | ExecutorError::Panic { msg: _ }
-                            | ExecutorError::Cancelled,
-                        ) => { /* ignore or log */ }
+                        Ok(output) => {
+                            // Inline consume logic
+                            match output {
+                                Outcome::None => {}
+                                Outcome::Event(event) => ctx.send_event(event),
+                                Outcome::Events(events) => {
+                                    for event in events {
+                                        ctx.send_event(event);
+                                    }
+                                }
+                            }
+                        }
+                         Err(ExecutorError::WorkerGone | ExecutorError::Panic { .. } | ExecutorError::Cancelled) => { /* ignore or log */ }
                     }
                 }
             }
 
-            EffectPlan::Race(branches) => {
-                // Spawn all branches and select the first to complete
-                let pending: Vec<_> = branches
-                    .into_iter()
-                    .map(|b| drive_spec(b, ctx.clone()))
-                    .collect();
 
-                if !pending.is_empty() {
-                    let (_winner, _idx, _rest) = select_all(pending).await;
-                    // Dropping _rest cancels losers
-                }
-            }
-            EffectPlan::All(branches) => {
-                let futs: Vec<_> = branches
-                    .into_iter()
-                    .map(|b| drive_spec(b, ctx.clone()))
-                    .collect();
-                let _ = join_all(futs).await;
-            }
-            EffectPlan::Sync { exec, task } => {
+            Task::Sync { exec, task } => {
                 if let Some(exec_ref) = ctx.sync_executor_by_typeid(exec) {
                     let ctx_for_job = ctx.clone();
                     let job = Box::new(move || (task)(ctx_for_job));
                     match exec_ref.spawn_sync(job).await {
-                        Ok(output) => consume_effect_output(output, &ctx).await,
-                        Err(
-                            ExecutorError::WorkerGone
-                            | ExecutorError::Panic { msg: _ }
-                            | ExecutorError::Cancelled,
-                        ) => { /* ignore or log */ }
+                        Ok(output) => {
+                            // Inline consume logic
+                            match output {
+                                Outcome::None => {}
+                                Outcome::Event(event) => ctx.send_event(event),
+                                Outcome::Events(events) => {
+                                    for event in events {
+                                        ctx.send_event(event);
+                                    }
+                                }
+                            }
+                        }
+                         Err(ExecutorError::WorkerGone | ExecutorError::Panic { .. } | ExecutorError::Cancelled) => { /* ignore or log */ }
                     }
+                }
+            }
+            Task::Stream { exec, factory } => {
+                if let Some(exec_ref) = ctx.async_executor_by_typeid(exec) {
+                    let stream = (factory)(ctx.clone());
+                    let ctx_clone = ctx.clone();
+                    let fut = async move {
+                        use futures::pin_mut;
+                        pin_mut!(stream);
+                        while let Some(event) = stream.next().await {
+                            ctx_clone.send_event(event);
+                        }
+                        Outcome::None
+                    }.boxed();
+
+                     match exec_ref.spawn_future(fut).await {
+                         Ok(_) | Err(ExecutorError::WorkerGone | ExecutorError::Panic { .. } | ExecutorError::Cancelled) => { /* ignore or log */ }
+                     }
                 }
             }
         }
     }
     .boxed()
+}
+
+#[cfg(test)]
+mod outcome_tests {
+    use super::*;
+
+    #[derive(Debug, Clone, PartialEq)]
+    enum TestEvent {
+        A,
+        B(i32),
+        C { value: String },
+    }
+
+    #[test]
+    fn test_from_single_event() {
+        let outcome: Outcome<TestEvent> = TestEvent::A.into();
+        match outcome {
+            Outcome::Event(TestEvent::A) => {},
+            _ => panic!("Expected Event(A), got {outcome:?}"),
+        }
+
+        let outcome: Outcome<TestEvent> = TestEvent::B(42).into();
+        match outcome {
+            Outcome::Event(TestEvent::B(42)) => {},
+            _ => panic!("Expected Event(B(42)), got {outcome:?}"),
+        }
+    }
+
+    #[test]
+    fn test_from_vec_events() {
+        // Empty vec becomes None
+        let outcome: Outcome<TestEvent> = vec![].into();
+        match outcome {
+            Outcome::None => {},
+            _ => panic!("Expected None, got {outcome:?}"),
+        }
+
+        // Single element vec becomes Events (not Event)
+        let outcome: Outcome<TestEvent> = vec![TestEvent::A].into();
+        match outcome {
+            Outcome::Events(events) => {
+                assert_eq!(events.len(), 1);
+                assert_eq!(events[0], TestEvent::A);
+            },
+            _ => panic!("Expected Events, got {outcome:?}"),
+        }
+
+        // Multiple elements
+        let outcome: Outcome<TestEvent> = vec![TestEvent::A, TestEvent::B(1), TestEvent::B(2)].into();
+        match outcome {
+            Outcome::Events(events) => {
+                assert_eq!(events.len(), 3);
+                assert_eq!(events[0], TestEvent::A);
+                assert_eq!(events[1], TestEvent::B(1));
+                assert_eq!(events[2], TestEvent::B(2));
+            },
+            _ => panic!("Expected Events, got {outcome:?}"),
+        }
+    }
+
+    #[test]
+    fn test_from_option() {
+        // None becomes Outcome::None
+        let outcome: Outcome<TestEvent> = None.into();
+        match outcome {
+            Outcome::None => {},
+            _ => panic!("Expected None, got {outcome:?}"),
+        }
+
+        // Some becomes Event
+        let outcome: Outcome<TestEvent> = Some(TestEvent::C { value: "test".to_string() }).into();
+        match outcome {
+            Outcome::Event(TestEvent::C { value }) => {
+                assert_eq!(value, "test");
+            },
+            _ => panic!("Expected Event(C), got {outcome:?}"),
+        }
+    }
+
+    #[test]
+    fn test_outcome_with_unit_type() {
+        // This test verifies that we can still work with () as the event type
+        // even though we removed From<()>
+        let outcome: Outcome<()> = ().into(); // This now uses From<E> where E = ()
+        match outcome {
+            Outcome::Event(()) => {}, // () is treated as an event
+            _ => panic!("Expected Event(()), got {outcome:?}"),
+        }
+
+        // For None, use vec![] or Task::none()
+        let outcome: Outcome<()> = vec![].into();
+        match outcome {
+            Outcome::None => {},
+            _ => panic!("Expected None, got {outcome:?}"),
+        }
+    }
+
+    #[test]
+    fn test_ergonomic_task_creation() {
+        // Test that our From impls work well with Task methods
+
+        // Direct event return - test the conversion directly
+        let outcome: Outcome<TestEvent> = TestEvent::A.into();
+        assert!(matches!(outcome, Outcome::Event(TestEvent::A)));
+
+        // Vec return - test the conversion directly
+        let outcome: Outcome<TestEvent> = vec![TestEvent::A, TestEvent::B(1)].into();
+        assert!(matches!(outcome, Outcome::Events(_)));
+
+        // Option return - test the conversion directly
+        let outcome: Outcome<TestEvent> = Some(TestEvent::A).into();
+        assert!(matches!(outcome, Outcome::Event(TestEvent::A)));
+
+        // Empty vec for None - test the conversion directly
+        let outcome: Outcome<TestEvent> = Vec::<TestEvent>::new().into();
+        assert!(matches!(outcome, Outcome::None));
+    }
 }

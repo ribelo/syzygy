@@ -4,7 +4,7 @@ mod tokio_newtype_tests {
     use std::any::TypeId;
     use std::time::Duration;
     use syzygy::executor::{AsyncExecutor, ExecutorLifecycle, ExecutorRegistry, TokioCpu, TokioIo};
-    use syzygy::streaming::EffectOutput;
+    use syzygy::executor::Outcome;
 
     #[derive(Debug, Clone)]
     #[allow(dead_code)]
@@ -56,7 +56,7 @@ mod tokio_newtype_tests {
         // When: Spawning a future
         let fut = async {
             tokio::time::sleep(std::time::Duration::from_millis(1)).await;
-            EffectOutput::Future(async { vec![TestEvent::Done] }.boxed())
+            Outcome::Events(vec![TestEvent::Done])
         }
         .boxed();
 
@@ -65,12 +65,11 @@ mod tokio_newtype_tests {
         // Then: Future executes successfully
         assert!(result.is_ok(), "TokioIo should execute futures");
         match result.unwrap() {
-            EffectOutput::Future(events_future) => {
-                let events = events_future.await;
+            Outcome::Events(events) => {
                 assert_eq!(events.len(), 1);
                 matches!(events[0], TestEvent::Done);
             }
-            _ => panic!("Expected Future output"),
+            _ => panic!("Expected Events output"),
         }
     }
 
@@ -87,7 +86,7 @@ mod tokio_newtype_tests {
                 sum = sum.wrapping_add(i);
             }
             #[allow(clippy::cast_possible_truncation)]
-            EffectOutput::Future(async move { vec![TestEvent::Progress(sum as u32)] }.boxed())
+            Outcome::Events(vec![TestEvent::Progress(sum as u32)])
         }
         .boxed();
 
@@ -96,12 +95,11 @@ mod tokio_newtype_tests {
         // Then: Future executes successfully
         assert!(result.is_ok(), "TokioCpu should execute futures");
         match result.unwrap() {
-            EffectOutput::Future(events_future) => {
-                let events = events_future.await;
+            Outcome::Events(events) => {
                 assert_eq!(events.len(), 1);
                 matches!(events[0], TestEvent::Progress(_));
             }
-            _ => panic!("Expected Future output"),
+            _ => panic!("Expected Events output"),
         }
     }
 
@@ -114,7 +112,7 @@ mod tokio_newtype_tests {
         // When: Spawning work
         let fut = async {
             tokio::time::sleep(Duration::from_millis(1)).await;
-            EffectOutput::<TestEvent>::None
+            Outcome::<TestEvent>::None
         }
         .boxed();
 
@@ -123,11 +121,10 @@ mod tokio_newtype_tests {
         // Then: Works correctly
         assert!(result.is_ok());
         match result.unwrap() {
-            EffectOutput::<TestEvent>::None => {
+            Outcome::<TestEvent>::None => {
                 // Multi-thread executors may return None for empty work
             }
-            EffectOutput::Future(events_future) => {
-                let events = events_future.await;
+            Outcome::Events(events) => {
                 assert_eq!(events.len(), 0);
             }
             #[allow(clippy::match_wildcard_for_single_variants)]
@@ -142,18 +139,17 @@ mod tokio_newtype_tests {
         let executor = TokioCpu::multi_thread(2);
 
         // When: Spawning work
-        let fut = async { EffectOutput::<TestEvent>::None }.boxed();
+        let fut = async { Outcome::<TestEvent>::None }.boxed();
 
         let result = executor.spawn_future(fut).await;
 
         // Then: Works correctly
         assert!(result.is_ok());
         match result.unwrap() {
-            EffectOutput::<TestEvent>::None => {
+            Outcome::<TestEvent>::None => {
                 // Multi-thread executors may return None for empty work
             }
-            EffectOutput::Future(events_future) => {
-                let events = events_future.await;
+            Outcome::Events(events) => {
                 assert_eq!(events.len(), 0);
             }
             #[allow(clippy::match_wildcard_for_single_variants)]

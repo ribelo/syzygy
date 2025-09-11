@@ -17,7 +17,7 @@ use syzygy::spawn::spawner;
 
 use futures::FutureExt;
 use syzygy::executor::TokioIo;
-use syzygy::streaming::EffectOutput;
+use syzygy::executor::Outcome;
 
 #[derive(Debug, Clone)]
 enum TestEvent {
@@ -61,10 +61,10 @@ fn test_update(
 fn test_effect_handler(
     effect: TestEffect,
     _ctx: &EffectContext<TestEvent, ()>,
-) -> syzygy::executor::EffectPlan<TestEvent, ()> {
+) -> syzygy::executor::Task<TestEvent, ()> {
     match effect {
         TestEffect::Delay(duration) => {
-            syzygy::executor::EffectPlan::future_on::<TokioIo, _, _>(move |_ctx| async move {
+            syzygy::executor::Task::future_on::<TokioIo, _, _, _>(move |_ctx| async move {
                 #[cfg(feature = "tokio")]
                 tokio::time::sleep(duration).await;
 
@@ -74,7 +74,7 @@ fn test_effect_handler(
                 #[cfg(all(feature = "async-std", not(feature = "tokio"), not(feature = "smol")))]
                 async_std::task::sleep(duration).await;
 
-                EffectOutput::Future(async move { vec![TestEvent::Work] }.boxed())
+                Outcome::Events(vec![TestEvent::Work])
             })
         }
     }

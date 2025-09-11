@@ -13,7 +13,7 @@ mod runtime_registration_tests {
         AsyncExecutor, ExecutorLifecycle, SingleThreadExecutor, SyncExecutor, TokioExecutor,
         register_current_runtime_for_io, register_io_runtime, spawn_io,
     };
-    use syzygy::streaming::EffectOutput;
+    use syzygy::executor::Outcome;
     use tokio::runtime::Runtime;
 
     // Helper function to clear IO runtime state for test isolation
@@ -62,20 +62,15 @@ mod runtime_registration_tests {
 
                     let (io_thread_id, io_runtime_id) = io_handle.await.unwrap();
 
-                    EffectOutput::Future(
-                        async move {
-                            vec![
-                                TestEvent::CpuWork {
-                                    thread_id: cpu_thread_id,
-                                },
-                                TestEvent::IoWork {
-                                    thread_id: io_thread_id,
-                                    runtime_id: io_runtime_id,
-                                },
-                            ]
-                        }
-                        .boxed(),
-                    )
+                    Outcome::Events(vec![
+                        TestEvent::CpuWork {
+                            thread_id: cpu_thread_id,
+                        },
+                        TestEvent::IoWork {
+                            thread_id: io_thread_id,
+                            runtime_id: io_runtime_id,
+                        },
+                    ])
                 }
                 .boxed(),
             )
@@ -84,8 +79,7 @@ mod runtime_registration_tests {
         // Then: IO work runs on main runtime, CPU work on dedicated executor
         assert!(result.is_ok());
         match result.unwrap() {
-            EffectOutput::Future(fut) => {
-                let events = fut.await;
+            Outcome::Events(events) => {
                 assert_eq!(events.len(), 2);
 
                 match (&events[0], &events[1]) {
@@ -324,20 +318,15 @@ mod runtime_registration_tests {
                 .await
                 .unwrap();
 
-                EffectOutput::Future(
-                    async move {
-                        vec![
-                            TestEvent::CpuWork {
-                                thread_id: cpu_thread,
-                            },
-                            TestEvent::IoWork {
-                                thread_id: io_info.0,
-                                runtime_id: io_info.1,
-                            },
-                        ]
-                    }
-                    .boxed(),
-                )
+                Outcome::Events(vec![
+                    TestEvent::CpuWork {
+                        thread_id: cpu_thread,
+                    },
+                    TestEvent::IoWork {
+                        thread_id: io_info.0,
+                        runtime_id: io_info.1,
+                    },
+                ])
             }
             .boxed(),
         );
@@ -348,14 +337,9 @@ mod runtime_registration_tests {
             // Single thread executor doing sync work
             let _computation = (0..1000).sum::<u32>();
 
-            EffectOutput::Future(
-                async move {
-                    vec![TestEvent::CpuWork {
-                        thread_id: sync_thread,
-                    }]
-                }
-                .boxed(),
-            )
+            Outcome::Events(vec![TestEvent::CpuWork {
+                thread_id: sync_thread,
+            }])
         }));
 
         let (tokio_res, single_res) = tokio::join!(tokio_result, single_thread_result);
@@ -364,8 +348,7 @@ mod runtime_registration_tests {
         assert!(tokio_res.is_ok() && single_res.is_ok());
 
         match tokio_res.unwrap() {
-            EffectOutput::Future(fut) => {
-                let events = fut.await;
+            Outcome::Events(events) => {
                 if let TestEvent::IoWork { runtime_id, .. } = &events[1] {
                     assert_eq!(
                         *runtime_id, io_runtime_id,
@@ -373,7 +356,7 @@ mod runtime_registration_tests {
                     );
                 }
             }
-            other => panic!("Expected Future output from Tokio executor, got {other:?}"),
+            other => panic!("Expected Events output from Tokio executor, got {other:?}"),
         }
 
         tokio_cpu_executor.join().await;

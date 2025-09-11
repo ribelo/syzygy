@@ -9,9 +9,9 @@
 //! - Core/Shell orchestration with Runner
 
 use futures::FutureExt;
-use syzygy::executor::{EffectPlan, TokioIo};
+use syzygy::executor::{Task, TokioIo};
 use syzygy::prelude::*;
-use syzygy::streaming::EffectOutput;
+use syzygy::executor::Outcome;
 
 // ============================================================================
 // Step 1: Define your application state (Model)
@@ -186,12 +186,12 @@ fn handle_sound_effect(effect: CounterEffect, config: &AppConfig) {
     }
 }
 
-/// Handle save effects - now returns `EffectPlan`
-fn handle_save_effect(effect: CounterEffect) -> EffectPlan<CounterEvent, AppConfig> {
+/// Handle save effects - now returns `Task`
+fn handle_save_effect(effect: CounterEffect) -> Task<CounterEvent, AppConfig> {
     if let CounterEffect::SaveCount(count) = effect {
         println!("SAVE: Counter value {count} saved to storage");
         // Could send a completion event if needed
-        EffectPlan::future_on::<TokioIo, _, _>(move |ctx| {
+        Task::future_on::<TokioIo, _, _, _>(move |ctx| {
             async move {
                 // Simulate async save operation
                 #[cfg(feature = "tokio")]
@@ -199,20 +199,20 @@ fn handle_save_effect(effect: CounterEffect) -> EffectPlan<CounterEvent, AppConf
 
                 // Send completion event
                 let () = ctx.send_event(CounterEvent::SetMessage("Saved!".to_string()));
-                EffectOutput::None
+                Outcome::None
             }
             .boxed()
         })
     } else {
-        EffectPlan::events(vec![])
+        Task::events(vec![])
     }
 }
 
-/// Handle limit checking in effects - now returns `EffectPlan`
+/// Handle limit checking in effects - now returns `Task`
 fn handle_limit_check_effect(
     effect: CounterEffect,
     config: &AppConfig,
-) -> EffectPlan<CounterEvent, AppConfig> {
+) -> Task<CounterEvent, AppConfig> {
     if let CounterEffect::LogMessage(message) = effect {
         if message.contains("Checking limit") {
             // Extract count from message or use context
@@ -226,29 +226,29 @@ fn handle_limit_check_effect(
                         config.max_count
                     );
                     // Send warning event
-                    return EffectPlan::future_on::<TokioIo, _, _>(move |ctx| {
+                    return Task::future_on::<TokioIo, _, _, _>(move |ctx| {
                         async move {
                             let () = ctx
                                 .send_event(CounterEvent::SetMessage("Limit reached!".to_string()));
-                            EffectOutput::None
+                            Outcome::None
                         }
                         .boxed()
                     });
                 }
                 println!("LOG: {message} - OK (limit: {})", config.max_count);
-                return EffectPlan::events(vec![]);
+                return Task::events(vec![]);
             }
         }
         println!("LOG: {message}");
     }
-    EffectPlan::events(vec![])
+    Task::events(vec![])
 }
 
-/// Main effect dispatcher using `EffectPlan`
+/// Main effect dispatcher using `Task`
 fn handle_effects(
     effect: CounterEffect,
     ctx: &EffectContext<CounterEvent, AppConfig>,
-) -> EffectPlan<CounterEvent, AppConfig> {
+) -> Task<CounterEvent, AppConfig> {
     // Use magic handlers with automatic parameter extraction
     match &effect {
         CounterEffect::LogMessage(msg) if msg.contains("Checking limit") => {
@@ -257,18 +257,18 @@ fn handle_effects(
             handle_limit_check_effect(effect, config)
         }
         CounterEffect::LogMessage(_) => {
-            // Simple effect-only magic handler - convert to EffectPlan
+            // Simple effect-only magic handler - convert to Task
             handle_log_effect(effect);
-            EffectPlan::events(vec![])
+            Task::events(vec![])
         }
         CounterEffect::PlaySound => {
             // Magic handler with resource extraction
             let config: &AppConfig = ctx.resources();
             handle_sound_effect(effect, config);
-            EffectPlan::events(vec![])
+            Task::events(vec![])
         }
         CounterEffect::SaveCount(_) => {
-            // Magic handler that returns EffectPlan
+            // Magic handler that returns Task
             handle_save_effect(effect)
         }
     }

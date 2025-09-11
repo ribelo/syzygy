@@ -15,9 +15,9 @@
 #![allow(dead_code)]
 
 use std::collections::HashMap;
-use syzygy::executor::{EffectPlan, TokioIo};
+use syzygy::executor::{Task, TokioIo};
 use syzygy::prelude::*;
-use syzygy::streaming::EffectOutput;
+use syzygy::executor::Outcome;
 
 use futures::FutureExt;
 
@@ -787,10 +787,10 @@ fn update_app(
 fn handle_authentication_effect(
     effect: AppEffect,
     db_service: DatabaseService,
-) -> EffectPlan<AppEvent, ResourceStorage> {
+) -> Task<AppEvent, ResourceStorage> {
     match effect {
         AppEffect::AuthenticateUser { username, password } => {
-            EffectPlan::future_on::<TokioIo, _, _>(move |ctx| {
+            Task::future_on::<TokioIo, _, _, _>(move |ctx: EffectContext<AppEvent, ResourceStorage>| {
                 let db_service = db_service.clone();
                 let username = username.clone();
                 let password = password.clone();
@@ -815,13 +815,13 @@ fn handle_authentication_effect(
                             let () = ctx.send_event(AppEvent::UserLoginFailed { error });
                         }
                     }
-                    EffectOutput::None
+                    Outcome::None
                 }
                 .boxed()
             })
         }
         AppEffect::GenerateSessionToken { user_id } => {
-            EffectPlan::future_on::<TokioIo, _, _>(move |_ctx| {
+            Task::future_on::<TokioIo, _, _, _>(move |_ctx| {
                 let session_token = format!(
                     "session_{}_{}",
                     user_id,
@@ -833,34 +833,34 @@ fn handle_authentication_effect(
                 async move {
                     // In a real app, you'd store this token
                     println!("Generated session token: {session_token}");
-                    EffectOutput::None
+                    Outcome::None
                 }
                 .boxed()
             })
         }
         AppEffect::InvalidateSession { session_token } => {
-            EffectPlan::future_on::<TokioIo, _, _>(move |_| {
+            Task::future_on::<TokioIo, _, _, _>(move |_| {
                 let session_token = session_token.clone();
                 async move {
                     println!("Invalidated session: {session_token}");
-                    EffectOutput::None
+                    Outcome::None
                 }
                 .boxed()
             })
         }
-        _ => EffectPlan::events(vec![]),
+        _ => Task::events(vec![]),
     }
 }
 
 fn handle_persistence_effect(
     effect: AppEffect,
     db_service: DatabaseService,
-) -> EffectPlan<AppEvent, ResourceStorage> {
+) -> Task<AppEvent, ResourceStorage> {
     match effect {
         AppEffect::SaveUserPreferences {
             user_id,
             preferences,
-        } => EffectPlan::future_on::<TokioIo, _, _>(move |ctx| {
+        } => Task::future_on::<TokioIo, _, _, _>(move |ctx| {
             let db_service = db_service.clone();
             let preferences = preferences.clone();
             async move {
@@ -878,12 +878,12 @@ fn handle_persistence_effect(
                         });
                     }
                 }
-                EffectOutput::None
+                Outcome::None
             }
             .boxed()
         }),
         AppEffect::SyncDataChanges { changes } => {
-            EffectPlan::future_on::<TokioIo, _, _>(move |ctx| {
+            Task::future_on::<TokioIo, _, _, _>(move |ctx: EffectContext<AppEvent, ResourceStorage>| {
                 let db_service = db_service.clone();
                 let changes = changes.clone();
                 async move {
@@ -895,25 +895,25 @@ fn handle_persistence_effect(
                             let () = ctx.send_event(AppEvent::DataSyncFailed { error });
                         }
                     }
-                    EffectOutput::None
+                    Outcome::None
                 }
                 .boxed()
             })
         }
-        _ => EffectPlan::events(vec![]),
+        _ => Task::events(vec![]),
     }
 }
 
 fn handle_notification_effect(
     effect: AppEffect,
     notification_service: NotificationService,
-) -> EffectPlan<AppEvent, ResourceStorage> {
+) -> Task<AppEvent, ResourceStorage> {
     if let AppEffect::SendNotification {
         user_id,
         notification,
     } = effect
     {
-        EffectPlan::future_on::<TokioIo, _, _>(move |_ctx| {
+        Task::future_on::<TokioIo, _, _, _>(move |_ctx| {
             let notification_service = notification_service.clone();
             let notification = notification.clone();
             async move {
@@ -942,22 +942,22 @@ fn handle_notification_effect(
                     Err(e) => println!("Failed to send notification: {e}"),
                 }
 
-                EffectOutput::None
+                Outcome::None
             }
             .boxed()
         })
     } else {
-        EffectPlan::events(vec![])
+        Task::events(vec![])
     }
 }
 
-fn handle_background_operation(effect: AppEffect) -> EffectPlan<AppEvent, ResourceStorage> {
+fn handle_background_operation(effect: AppEffect) -> Task<AppEvent, ResourceStorage> {
     if let AppEffect::StartBackgroundOperation {
         operation_id,
         task_type,
     } = effect
     {
-        EffectPlan::future_on::<TokioIo, _, _>(move |ctx| {
+        Task::future_on::<TokioIo, _, _, _>(move |ctx: EffectContext<AppEvent, ResourceStorage>| {
             let operation_id = operation_id.clone();
             let task_type = task_type.clone();
             async move {
@@ -978,16 +978,16 @@ fn handle_background_operation(effect: AppEffect) -> EffectPlan<AppEvent, Resour
 
                 // Complete the operation
                 let () = ctx.send_event(AppEvent::OperationCompleted { operation_id });
-                EffectOutput::None
+                Outcome::None
             }
             .boxed()
         })
     } else {
-        EffectPlan::events(vec![])
+        Task::events(vec![])
     }
 }
 
-fn handle_logging_effect(effect: AppEffect) -> EffectPlan<AppEvent, ResourceStorage> {
+fn handle_logging_effect(effect: AppEffect) -> Task<AppEvent, ResourceStorage> {
     match effect {
         AppEffect::LogEvent {
             level,
@@ -1000,13 +1000,13 @@ fn handle_logging_effect(effect: AppEffect) -> EffectPlan<AppEvent, ResourceStor
                 .as_secs();
 
             println!("[{timestamp}] [{level}] {message} ({context})");
-            EffectPlan::events(vec![])
+            Task::events(vec![])
         }
         AppEffect::RecordMetric { metric_name, value } => {
             println!("METRIC: {metric_name} = {value}");
-            EffectPlan::events(vec![])
+            Task::events(vec![])
         }
-        _ => EffectPlan::events(vec![]),
+        _ => Task::events(vec![]),
     }
 }
 
@@ -1014,7 +1014,7 @@ fn handle_logging_effect(effect: AppEffect) -> EffectPlan<AppEvent, ResourceStor
 fn handle_effects(
     effect: AppEffect,
     ctx: &EffectContext<AppEvent, ResourceStorage>,
-) -> EffectPlan<AppEvent, ResourceStorage> {
+) -> Task<AppEvent, ResourceStorage> {
     match &effect {
         AppEffect::AuthenticateUser { .. }
         | AppEffect::GenerateSessionToken { .. }

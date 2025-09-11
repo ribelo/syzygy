@@ -5,9 +5,9 @@
 
 use std::collections::HashMap;
 use std::time::Duration;
-use syzygy::executor::{EffectPlan, TokioIo};
+use syzygy::executor::{Task, TokioIo};
 use syzygy::prelude::*;
-use syzygy::streaming::EffectOutput;
+use syzygy::executor::Outcome;
 
 use futures::FutureExt;
 
@@ -148,12 +148,12 @@ fn database_update(
 fn handle_effects(
     effect: AppEffect,
     ctx: &EffectContext<AppEvent, AppResources>,
-) -> EffectPlan<AppEvent, AppResources> {
+) -> Task<AppEvent, AppResources> {
     match effect {
         AppEffect::GetUser { user_id, table } => {
             let resources: &AppResources = ctx.resources();
             let resources = resources.clone();
-            EffectPlan::future_on::<TokioIo, _, _>(move |ctx| {
+            Task::future_on::<TokioIo, _, _, _>(move |ctx: EffectContext<AppEvent, AppResources>| {
                 let table = table.clone();
                 async move {
                     println!(
@@ -188,14 +188,14 @@ fn handle_effects(
                             println!("💥 Database error getting user {user_id}");
                         }
                     }
-                    EffectOutput::None
+                    Outcome::None
                 }
                 .boxed()
             })
         }
 
         AppEffect::SaveUser { user, table } => {
-            EffectPlan::future_on::<TokioIo, _, _>(move |ctx| {
+            Task::future_on::<TokioIo, _, _, _>(move |ctx: EffectContext<AppEvent, AppResources>| {
                 let user = user.clone();
                 let table = table.clone();
                 async move {
@@ -220,14 +220,14 @@ fn handle_effects(
                             println!("💥 Database error saving user {}", user.id);
                         }
                     }
-                    EffectOutput::None
+                    Outcome::None
                 }
                 .boxed()
             })
         }
 
         AppEffect::ConnectDatabase { connection_string } => {
-            EffectPlan::future_on::<TokioIo, _, _>(move |ctx| {
+            Task::future_on::<TokioIo, _, _, _>(move |ctx: EffectContext<AppEvent, AppResources>| {
                 let connection_string = connection_string.clone();
                 async move {
                     println!("🔌 Connecting to database: {connection_string}");
@@ -240,7 +240,7 @@ fn handle_effects(
                     // In real app, you'd establish connection here
                     println!("✅ Database connected");
                     let () = ctx.send_event(AppEvent::DatabaseConnected);
-                    EffectOutput::None
+                    Outcome::None
                 }
                 .boxed()
             })
@@ -248,7 +248,7 @@ fn handle_effects(
 
         AppEffect::Log { message } => {
             println!("📝 {message}");
-            EffectPlan::events(vec![])
+            Task::events(vec![])
         }
     }
 }

@@ -3,8 +3,7 @@
 //! Runs synchronous effect tasks on a dedicated Rayon thread pool. Tasks are
 //! closures that return `EffectResult<E>` and are executed on Rayon workers.
 
-use crate::executor::{ExecutorError, SyncExecutor};
-use crate::streaming::EffectOutput;
+use crate::executor::{ExecutorError, SyncExecutor, Outcome};
 
 use futures::channel::oneshot;
 use futures_util::future::{BoxFuture, FutureExt, ready};
@@ -62,9 +61,9 @@ where
 {
     fn spawn_sync(
         &self,
-        job: Box<dyn FnOnce() -> EffectOutput<E> + Send>,
-    ) -> BoxFuture<'static, Result<EffectOutput<E>, ExecutorError>> {
-        let (tx, rx) = oneshot::channel::<EffectOutput<E>>();
+        job: Box<dyn FnOnce() -> Outcome<E> + Send>,
+    ) -> BoxFuture<'static, Result<Outcome<E>, ExecutorError>> {
+        let (tx, rx) = oneshot::channel::<Outcome<E>>();
         self.pool.spawn(move || {
             let out = job();
             let _ = tx.send(out);
@@ -89,7 +88,7 @@ where
 mod tests {
     use super::*;
     use crate::executor::ExecutorLifecycle;
-    use crate::streaming::EffectOutput;
+    use crate::executor::Outcome;
     use std::thread;
     use std::time::{Duration, Instant};
 
@@ -137,22 +136,21 @@ mod tests {
                 for i in 0..1000 {
                     sum = sum.wrapping_add(i);
                 }
-                EffectOutput::Future(async move { vec![TestEvent::CpuWork(sum)] }.boxed())
+                Outcome::Events(vec![TestEvent::CpuWork(sum)])
             }))
             .await;
 
         // Then: Work completes successfully with expected result
         assert!(result.is_ok());
         match result.unwrap() {
-            EffectOutput::Future(fut) => {
-                let events = fut.await;
+            Outcome::Events(events) => {
                 assert_eq!(events.len(), 1);
                 match &events[0] {
                     TestEvent::CpuWork(sum) => assert_eq!(*sum, 499_500), // Sum of 0..1000
                     other => panic!("Expected CpuWork event, got {other:?}"),
                 }
             }
-            other => panic!("Expected Future output, got {other:?}"),
+            other => panic!("Expected Events output, got {other:?}"),
         }
     }
 
@@ -170,23 +168,17 @@ mod tests {
                 let is_rayon_thread = thread_name.starts_with("syzygy-rayon-");
                 let value = if is_rayon_thread { 42 } else { 0 };
 
-                EffectOutput::Future(
-                    async move {
-                        vec![TestEvent::ThreadInfo {
-                            thread_id: thread_name,
-                            value,
-                        }]
-                    }
-                    .boxed(),
-                )
+            Outcome::Events(vec![TestEvent::ThreadInfo {
+                thread_id: thread_name,
+                value,
+            }])
             }))
             .await;
 
         // Then: Work runs on Rayon thread pool
         assert!(result.is_ok());
         match result.unwrap() {
-            EffectOutput::Future(fut) => {
-                let events = fut.await;
+            Outcome::Events(events) => {
                 assert_eq!(events.len(), 1);
                 match &events[0] {
                     TestEvent::ThreadInfo { thread_id, value } => {
@@ -199,7 +191,7 @@ mod tests {
                     other => panic!("Expected ThreadInfo event, got {other:?}"),
                 }
             }
-            other => panic!("Expected Future output, got {other:?}"),
+            other => panic!("Expected Events output, got {other:?}"),
         }
     }
 
@@ -222,7 +214,7 @@ mod tests {
                 }
                 thread::sleep(Duration::from_millis(10)); // Simulate work time
                 #[allow(clippy::cast_possible_truncation)]
-                EffectOutput::Future(async move { vec![TestEvent::CpuWork(result as u32)] }.boxed())
+                Outcome::Events(vec![TestEvent::CpuWork(result as u32)])
             }));
             handles.push(handle);
         }
@@ -254,7 +246,7 @@ mod tests {
             .spawn_sync(Box::new(|| {
                 panic!("Intentional panic for testing");
                 #[allow(unreachable_code)]
-                EffectOutput::Future(async { vec![TestEvent::CpuWork(0)] }.boxed())
+                Outcome::Events(vec![TestEvent::CpuWork(0)])
             }))
             .await;
 
@@ -280,9 +272,7 @@ mod tests {
                     // Small amount of work per task
                     let value = iteration * 2;
                     #[allow(clippy::cast_possible_truncation)]
-                    EffectOutput::Future(
-                        async move { vec![TestEvent::CpuWork(value as u32)] }.boxed(),
-                    )
+                    Outcome::Events(vec![TestEvent::CpuWork(value as u32)])
                 }))
                 .await;
 
@@ -329,7 +319,7 @@ mod tests {
             }
 
             let checksum: u32 = large_vec.iter().map(|&x| u32::from(x)).sum();
-            EffectOutput::Future(async move { vec![TestEvent::CpuWork(checksum)] }.boxed())
+            Outcome::Events(vec![TestEvent::CpuWork(checksum)])
         }));
 
         // Simultaneously run async work to ensure Tokio isn't blocked
@@ -386,7 +376,7 @@ mod tests {
         // Then: Should still work (Rayon should use at least 1 thread)
         let result = executor
             .spawn_sync(Box::new(|| {
-                EffectOutput::Future(async { vec![TestEvent::CpuWork(123)] }.boxed())
+                Outcome::Events(vec![TestEvent::CpuWork(123)])
             }))
             .await;
 

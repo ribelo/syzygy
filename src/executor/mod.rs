@@ -143,9 +143,9 @@ pub use single_thread_executor::SingleThreadExecutor;
 #[cfg(feature = "tokio")]
 pub use tokio_executor::{TokioCpu, TokioExecutor, TokioIo};
 
-use crate::prelude::EffectOutput;
+pub use spec::Outcome;
 pub use registry::ExecutorRegistry;
-pub use spec::EffectPlan;
+pub use spec::Task;
 
 /// Register the current tokio runtime handle for IO operations
 ///
@@ -250,8 +250,8 @@ pub trait AsyncExecutor<E>: ExecutorLifecycle {
     /// Spawn a pre-built future and get a cancel-on-drop join future
     fn spawn_future(
         &self,
-        fut: BoxFuture<'static, EffectOutput<E>>,
-    ) -> BoxFuture<'static, Result<EffectOutput<E>, ExecutorError>>;
+        fut: BoxFuture<'static, Outcome<E>>,
+    ) -> BoxFuture<'static, Result<Outcome<E>, ExecutorError>>;
 }
 
 /// Executor specialized for blocking/synchronous work
@@ -262,6 +262,6 @@ pub trait SyncExecutor<E>: ExecutorLifecycle {
     /// Spawn a synchronous job and get a join future
     fn spawn_sync(
         &self,
-        job: Box<dyn FnOnce() -> EffectOutput<E> + Send>,
-    ) -> BoxFuture<'static, Result<EffectOutput<E>, ExecutorError>>;
+        job: Box<dyn FnOnce() -> Outcome<E> + Send>,
+    ) -> BoxFuture<'static, Result<Outcome<E>, ExecutorError>>;
 }

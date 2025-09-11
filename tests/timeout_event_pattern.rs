@@ -17,7 +17,7 @@ use syzygy::executor::TokioIo;
 use syzygy::prelude::*;
 use syzygy::spawn::spawner;
 
-use syzygy::streaming::EffectOutput;
+use syzygy::executor::Outcome;
 
 #[derive(Debug, Default)]
 struct TimeoutModel {
@@ -87,10 +87,10 @@ fn timeout_update(
 fn timeout_aware_effect_handler(
     effect: TimeoutEffect,
     _ctx: &EffectContext<TimeoutEvent, ()>,
-) -> syzygy::executor::EffectPlan<TimeoutEvent, ()> {
+) -> syzygy::executor::Task<TimeoutEvent, ()> {
     match effect {
         TimeoutEffect::SlowOperation { delay_ms } => {
-            syzygy::executor::EffectPlan::future_on::<TokioIo, _, _>(move |ctx| async move {
+            syzygy::executor::Task::future_on::<TokioIo, _, _, _>(move |ctx| async move {
                 let operation_future = async move {
                     tokio::time::sleep(Duration::from_millis(delay_ms)).await;
                     format!("Operation completed after {delay_ms}ms")
@@ -108,7 +108,7 @@ fn timeout_aware_effect_handler(
                         });
                     }
                 }
-                EffectOutput::None
+                Outcome::None
             })
         }
     }

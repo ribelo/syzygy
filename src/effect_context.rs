@@ -12,12 +12,12 @@
 //! # use syzygy::prelude::*;
 //! # #[derive(Debug, Clone)] enum TestEvent { Done }
 //! # #[derive(Debug, Clone)] enum TestEffect { PerformAsyncWork }
-//! async fn handle_effects(effect: TestEffect, ctx: EffectContext<TestEvent, EmptyStorage>) -> syzygy::streaming::EffectOutput<TestEvent> {
+//! async fn handle_effects(effect: TestEffect, ctx: EffectContext<TestEvent, EmptyStorage>) -> syzygy::executor::Outcome<TestEvent> {
 //!     if let TestEffect::PerformAsyncWork = effect {
 //!         // Use direct async handling or return event output
-//!         return syzygy::streaming::EffectOutput::Single(TestEvent::Done);
+//!         return syzygy::executor::Outcome::Event(TestEvent::Done);
 //!     }
-//!     syzygy::streaming::EffectOutput::None
+//!     syzygy::executor::Outcome::None
 //! }
 //! ```
 //!
@@ -112,6 +112,43 @@ where
 
     pub fn sync_executor<T: 'static>(&self) -> Option<Arc<dyn SyncExecutor<E>>> {
         self.executors.sync_exec::<T>()
+    }
+
+    /// Spawn async work on specified executor
+    pub fn spawn<Exec, F, Fut, O>(&self, f: F) -> crate::executor::spec::Task<E, R>
+    where
+        Exec: crate::executor::AsyncExecutor<E> + 'static,
+        F: FnOnce(EffectContext<E, R>) -> Fut + Send + 'static,
+        Fut: std::future::Future<Output = O> + Send + 'static,
+        O: Into<crate::executor::Outcome<E>>,
+        E: Send + 'static,
+        R: Clone + Send + Sync + 'static,
+    {
+        crate::executor::spec::Task::future_on::<Exec, _, _, _>(f)
+    }
+
+    /// Spawn sync work on specified executor
+    pub fn spawn_sync<Exec, F, O>(&self, f: F) -> crate::executor::spec::Task<E, R>
+    where
+        Exec: crate::executor::SyncExecutor<E> + 'static,
+        F: FnOnce(EffectContext<E, R>) -> O + Send + 'static,
+        O: Into<crate::executor::Outcome<E>>,
+        E: Send + 'static,
+        R: Clone + Send + Sync + 'static,
+    {
+        crate::executor::spec::Task::sync_on::<Exec, _, _>(f)
+    }
+
+    /// Spawn a stream on specified executor
+    pub fn spawn_stream<Exec, F, S>(&self, f: F) -> crate::executor::spec::Task<E, R>
+    where
+        Exec: crate::executor::AsyncExecutor<E> + 'static,
+        F: FnOnce(EffectContext<E, R>) -> S + Send + 'static,
+        S: futures::Stream<Item = E> + Send + 'static,
+        E: Send + 'static,
+        R: Clone + Send + Sync + 'static,
+    {
+        crate::executor::spec::Task::stream_on::<Exec, _, _>(f)
     }
 }
 
