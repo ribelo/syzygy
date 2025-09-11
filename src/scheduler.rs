@@ -311,11 +311,13 @@ pub fn auto_schedule_fn()
 // These provide zero-cost abstractions for scheduling futures.
 
 /// Tokio runtime scheduler (strict - uses current runtime only)
+#[cfg(feature = "tokio")]
 #[derive(Clone)]
 pub struct TokioScheduler {
     handle: tokio::runtime::Handle,
 }
 
+#[cfg(feature = "tokio")]
 impl TokioScheduler {
     pub fn new() -> Result<Self, &'static str> {
         tokio::runtime::Handle::try_current()

@@ -118,6 +118,7 @@ pub mod registry;
 pub mod single_thread_executor;
 pub mod spec;
 
+#[cfg(feature = "tokio")]
 pub mod tokio_executor;
 #[cfg(feature = "tokio")]
 pub mod tokio_current;
@@ -143,7 +144,9 @@ pub use rayon_sync_executor::RayonSyncExecutor as RayonExecutor;
 pub use single_thread_executor::SingleThreadExecutor;
 
 #[cfg(feature = "tokio")]
+#[cfg(feature = "tokio")]
 pub use tokio_executor::{TokioCpu, TokioExecutor, TokioIo};
+#[cfg(feature = "tokio")]
 #[cfg(feature = "tokio")]
 pub use tokio_current::TokioCurrent;
 

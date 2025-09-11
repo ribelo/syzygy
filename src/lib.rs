@@ -466,7 +466,14 @@ pub mod prelude {
     pub use crate::timer::{Time, TimeoutError, time};
 
     // Scheduler adapters for runtime neutrality
-    pub use crate::scheduler::{AsyncStdScheduler, SmolScheduler, Scheduler, TokioScheduler, scheduler};
+    // Scheduler trait is always available
+    pub use crate::scheduler::{Scheduler, scheduler};
+    #[cfg(feature = "tokio")]
+    pub use crate::scheduler::TokioScheduler;
+    #[cfg(feature = "smol")]
+    pub use crate::scheduler::SmolScheduler;
+    #[cfg(feature = "async-std")]
+    pub use crate::scheduler::AsyncStdScheduler;
 
 // Executor system
 #[cfg(feature = "rayon")]
