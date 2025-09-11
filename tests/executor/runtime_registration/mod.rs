@@ -431,18 +431,4 @@ mod runtime_registration_tests {
     }
 }
 
-#[cfg(not(feature = "tokio"))]
-mod non_tokio_tests {
-    use syzygy::executor::{register_current_runtime_for_io, register_io_runtime};
 
-    #[test]
-    fn non_tokio_registration_functions_are_no_ops() {
-        // Given: Non-tokio build
-        // When: Calling registration functions
-        register_current_runtime_for_io(); // Should be no-op
-        register_io_runtime(()); // Should be no-op
-
-        // Then: Functions complete without error (they're no-ops)
-        // Test passes if no panic occurs
-    }
-}

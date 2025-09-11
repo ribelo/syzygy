@@ -166,18 +166,7 @@ async fn test_io_spawn_cancellation() {
     assert!(result.unwrap_err().is_cancelled());
 }
 
-// Test non-tokio feature behavior
-#[cfg(not(feature = "tokio"))]
-#[test]
-fn test_non_tokio_register_functions_noop() {
-    // These should be no-ops and not panic
-    use syzygy::executor::{register_current_runtime_for_io, register_io_runtime};
 
-    register_current_runtime_for_io();
-    register_io_runtime(());
-
-    // No spawn_io function available in non-tokio builds
-}
 
 #[tokio::test]
 async fn test_concurrent_io_registrations() {

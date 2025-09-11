@@ -205,17 +205,7 @@ where
     handle.spawn(future)
 }
 
-/// Non-tokio version - no-op for other runtimes
-#[cfg(not(feature = "tokio"))]
-pub fn register_current_runtime_for_io() {
-    // No-op for non-tokio builds
-}
 
-/// Non-tokio version - no-op for other runtimes
-#[cfg(not(feature = "tokio"))]
-pub fn register_io_runtime(_handle: ()) {
-    // No-op for non-tokio builds
-}
 
 /// Clear all IO runtime registrations (useful for tests)
 #[cfg(all(feature = "tokio", test))]
