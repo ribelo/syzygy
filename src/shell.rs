@@ -50,7 +50,7 @@ impl Default for ShellConfig {
 /// The Shell orchestrates async effect execution independently of Core
 pub struct Shell<E, X, R = ()>
 where
-    E: Clone + Send + Sync + 'static,
+    E: Clone + Send + 'static,
     X: Clone + Send + 'static,
     R: Clone + Send + Sync + 'static,
 {
@@ -81,7 +81,7 @@ where
 
 impl<E, X, R> Shell<E, X, R>
 where
-    E: Clone + Send + Sync + 'static,
+    E: Clone + Send + 'static,
     X: Clone + Send + 'static,
     R: Clone + Send + Sync + 'static,
 {

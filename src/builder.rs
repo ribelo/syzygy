@@ -7,30 +7,28 @@ use crate::prelude::EffectHandler;
 use crate::shell::Shell;
 use std::sync::Arc;
 
-
-
 /// Base builder phase: configure models, resources, executors
-pub struct SyzygyBuilder<Event, Effect, Model = (), Resource = ()> {
-    model: Model,
-    resources: Resource,
-    exec_registry: Option<ExecutorRegistry<Event>>,
-    _marker: std::marker::PhantomData<(Event, Effect)>,
+pub struct SyzygyBuilder<E, X, M, R> {
+    model: M,
+    resources: R,
+    exec_registry: Option<ExecutorRegistry<E>>,
+    _marker: std::marker::PhantomData<X>,
 }
 
-impl<Event, Effect> Default for SyzygyBuilder<Event, Effect, (), ()>
+impl<E, X> Default for SyzygyBuilder<E, X, (), ()>
 where
-    Event: Clone + Send + Sync + 'static,
-    Effect: Clone + Send + 'static,
+    E: Clone + Send + 'static,
+    X: Clone + Send + 'static,
 {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<Event, Effect> SyzygyBuilder<Event, Effect, (), ()>
+impl<E, X> SyzygyBuilder<E, X, (), ()>
 where
-    Event: Clone + Send + Sync + 'static,
-    Effect: Clone + Send + 'static,
+    E: Clone + Send + 'static,
+    X: Clone + Send + 'static,
 {
     /// Create a new builder with empty model and resources
     #[must_use]
@@ -46,7 +44,7 @@ where
 
 impl<Event, Effect, Model, Resource> SyzygyBuilder<Event, Effect, Model, Resource>
 where
-    Event: Clone + Send + Sync + 'static,
+    Event: Clone + Send + 'static,
     Effect: Clone + Send + 'static,
     Model: 'static,
     Resource: Clone + Send + Sync + 'static,
@@ -103,7 +101,7 @@ pub struct ConfiguredBuilder<Event, Effect, Model, Resource> {
 
 impl<Event, Effect, Model, Resource> ConfiguredBuilder<Event, Effect, Model, Resource>
 where
-    Event: Clone + Send + Sync + 'static,
+    Event: Clone + Send + 'static,
     Effect: Clone + Send + 'static,
     Resource: Clone + Send + Sync + 'static,
 {
@@ -131,8 +129,6 @@ where
         }
     }
 
-
-
     /// Configure a default IO + sync executor set.
     /// - Async IO: `TokioIo` multi-thread runtime (if tokio feature is enabled) for network/file operations
     /// - Sync CPU: `RayonExecutor` pool (if rayon feature is enabled), else `SingleThreadExecutor` for CPU-bound work
@@ -142,7 +138,6 @@ where
     /// - `with_sync_executor()` for sync CPU work
     #[must_use]
     pub fn with_default_executors(self) -> Self {
-
         let mut registry = self.exec_registry.unwrap_or_default();
 
         // Helper to compute threads
@@ -178,14 +173,6 @@ where
             exec_registry: Some(registry),
         }
     }
-
-
-
-
-
-
-
-
 
     /// Add a single async executor to the registry by concrete type
     #[must_use]
@@ -256,8 +243,8 @@ where
         let (effect_tx, effect_rx) = unbounded();
 
         // Resolve or build registry now that we have event_tx and resources
-        let registry_arc: Arc<ExecutorRegistry<Event>> = exec_registry
-            .unwrap_or_else(|| Arc::new(ExecutorRegistry::new()));
+        let registry_arc: Arc<ExecutorRegistry<Event>> =
+            exec_registry.unwrap_or_else(|| Arc::new(ExecutorRegistry::new()));
 
         Shell {
             effect_rx,
@@ -282,7 +269,7 @@ impl Syzygy {
     #[must_use]
     pub fn builder<Event, Effect>() -> SyzygyBuilder<Event, Effect, (), ()>
     where
-        Event: Clone + Send + Sync + 'static,
+        Event: Clone + Send + 'static,
         Effect: Clone + Send + 'static,
     {
         SyzygyBuilder::new()
