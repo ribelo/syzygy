@@ -1,8 +1,6 @@
 use smallvec::SmallVec;
 
-pub mod router;
 
-pub use router::route_command;
 
 /// One atomic operation in the Core→Shell pipeline.
 ///

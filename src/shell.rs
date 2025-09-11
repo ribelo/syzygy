@@ -8,7 +8,7 @@ use crossbeam_channel::{Receiver, Sender};
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::command::router::route_command;
+
 use crate::command::{Command, CommandStep};
 use crate::effect_context::EffectContext;
 use crate::error::ShellError;
@@ -104,12 +104,51 @@ where
         let effect_sender = &self.effect_tx;
         let event_sender = &self.event_tx;
 
-        if let Err(e) = route_command(command, event_sender, effect_sender) {
-            #[cfg(feature = "tracing")]
-            warn!("Command execution failed: {:?}", e);
-            eprintln!("Command execution failed: {e:?}");
-            return Err(ShellError::CommandExecutionFailed(e.to_string()));
+        #[cfg(feature = "tracing")]
+        debug!("Starting synchronous command routing");
+
+        let mut _event_count = 0;
+        let mut _effect_count = 0;
+
+        // Simple synchronous iteration over command outputs
+        for output in command {
+            match output {
+                CommandStep::Event(event) => {
+                    _event_count += 1;
+                    #[cfg(feature = "tracing")]
+                    debug!("Routing event to Core");
+
+                    event_sender
+                        .send(event)
+                        .map_err(|_| ShellError::CommandExecutionFailed("Event channel closed".to_string()))?;
+                }
+                CommandStep::Effect(effect) => {
+                    _effect_count += 1;
+                    #[cfg(feature = "tracing")]
+                    debug!("Routing single effect to Shell");
+
+                    effect_sender
+                        .send(CommandStep::Effect(effect))
+                        .map_err(|_| ShellError::CommandExecutionFailed("Effect channel closed".to_string()))?;
+                }
+                CommandStep::Batch(effects) => {
+                    _effect_count += effects.len();
+                    #[cfg(feature = "tracing")]
+                    debug!(count = effects.len(), "Routing batch effects to Shell");
+
+                    // Send the entire batch pattern to Shell for proper coordination
+                    effect_sender
+                        .send(CommandStep::Batch(effects))
+                        .map_err(|_| ShellError::CommandExecutionFailed("Effect channel closed".to_string()))?;
+                } // No other variants
+            }
         }
+
+        #[cfg(feature = "tracing")]
+        debug!(
+            _event_count,
+            _effect_count, "Synchronous command execution completed"
+        );
 
         Ok(())
     }
