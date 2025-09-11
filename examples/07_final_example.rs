@@ -92,6 +92,12 @@ struct DataState {
     last_sync: Option<u64>,
     pending_changes: Vec<DataChange>,
 }
+// Configuration constants for better readability and maintainability
+const CACHE_DEFAULT_TTL_SECONDS: u64 = 3600;  // 1 hour
+const CACHE_MAX_SIZE: usize = 1000;
+const RATE_LIMIT_MAX_REQUESTS: u32 = 100;  // per minute
+const RATE_LIMIT_WINDOW_SECONDS: u64 = 60;
+
 
 #[derive(Debug, Clone)]
 struct CachedItem {
@@ -1065,8 +1071,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 webhook_url: Some("https://api.example.com/notify".to_string()),
             },
             CacheService {
-                default_ttl: 3600, // 1 hour
-                max_size: 1000,
+                default_ttl: CACHE_DEFAULT_TTL_SECONDS,
+                max_size: CACHE_MAX_SIZE,
             },
         ))
         .event_handler(event_handler)
