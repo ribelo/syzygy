@@ -15,3 +15,4 @@ pub enum CommandError {
     #[error("Command execution timed out")]
     Timeout,
 }
+

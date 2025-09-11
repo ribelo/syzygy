@@ -199,6 +199,20 @@ where
     }
 }
 
+impl<E, X, M> std::fmt::Debug for Core<E, X, M> 
+where
+    E: Send + 'static,
+    X: Send + 'static,
+    M: std::fmt::Debug,
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Core")
+            .field("model", &self.model)
+            .field("pending_events", &!self.event_queue.is_empty())
+            .field("command_buffer_size", &self.command_buffer.len())
+            .finish()
+    }
+}
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -26,3 +26,4 @@ impl<T> From<crossbeam_channel::TrySendError<T>> for CoreError {
         }
     }
 }
+

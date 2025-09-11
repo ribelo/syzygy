@@ -21,7 +21,7 @@ pub type EffectHandler<E, X, R> = fn(X, &EffectContext<E, R>) -> crate::executor
 // use futures_util::future::*;
 
 #[cfg(feature = "tracing")]
-use tracing::{Level, debug, span, warn};
+use tracing::{Level, debug, span};
 
 /// Configuration for Shell effect execution
 pub struct ShellConfig {
@@ -289,6 +289,20 @@ where
     }
 }
 
+impl<E, X, R> std::fmt::Debug for Shell<E, X, R>
+where
+    E: Send + 'static,
+    X: Send + 'static,
+    R: Clone + Send + Sync + 'static,
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Shell")
+            .field("resources", &"<resources>")
+            .field("pending_effects", &"<pending>")
+            .field("closed", &self.closed)
+            .finish()
+    }
+}
 #[cfg(all(test, feature = "legacy_tests"))]
 mod tests {
 

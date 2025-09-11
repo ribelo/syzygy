@@ -427,7 +427,7 @@ pub mod prelude {
     pub use crate::event_context::EventContext;
 
     // Command system
-    pub use crate::command::{Command, CommandStep};
+    pub use crate::command::{Command, CommandStep, IntoCommand};
 
     // Core/Shell architecture
     pub use crate::core::{Core, EventHandler};

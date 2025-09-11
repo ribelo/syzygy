@@ -328,6 +328,74 @@ impl<Event, Effect> From<()> for Command<Event, Effect> {
     }
 }
 
+/// Extension trait for ergonomic command creation.
+///
+/// Provides the `.cmd()` method that converts any value into a Command.
+/// The context determines whether it becomes an event or effect command.
+///
+/// # Examples
+///
+/// ```rust
+/// use syzygy::prelude::*;
+///
+/// #[derive(Clone)]
+/// enum Event { Click, DataReceived(String) }
+///
+/// #[derive(Clone)]
+/// enum Effect { HttpGet(String), Log(String) }
+///
+/// // In event handlers - context makes it clear what type we want
+/// fn handle_click(event: Event, ctx: &mut EventContext<Event, Effect, Model>) -> Command<Event, Effect> {
+///     match event {
+///         Event::Click => {
+///             // Convert event to command
+///             Event::DataReceived("clicked".to_string()).cmd()
+///         }
+///         Event::DataReceived(data) => {
+///             // Convert effect to command
+///             Effect::Log(format!("Received: {}", data)).cmd()
+///         }
+///     }
+/// }
+/// ```
+///
+/// Note: Due to Rust's coherence rules, blanket implementations conflict when
+/// Event and Effect types could be the same. Instead, implement this trait
+/// for your specific event and effect types:
+///
+/// ```rust
+/// impl IntoCommand<Event, Effect> for Event {
+///     fn cmd(self) -> Command<Event, Effect> {
+///         Command::event(self)
+///     }
+/// }
+///
+/// impl IntoCommand<Event, Effect> for Effect {
+///     fn cmd(self) -> Command<Event, Effect> {
+///         Command::effect(self)
+///     }
+/// }
+/// ```
+pub trait IntoCommand<Event, Effect> {
+    /// Convert this value into a Command.
+    ///
+    /// The type context determines whether this becomes an event or effect command.
+    /// Use in event handlers where the return type makes the intent clear.
+    fn cmd(self) -> Command<Event, Effect>;
+}
+
+// Note: Additional From implementations would be nice for ergonomics, but they
+// conflict with Rust's coherence rules when Event and Effect types are the same.
+// The existing API already provides good ergonomics:
+//
+// - `Command::event(value)` - accepts any `impl Into<Event>`
+// - `Command::effect(value)` - accepts any `impl Into<Effect>`
+// - `Command::events(vec![...])` - for multiple events
+// - `Command::effects(vec![...])` - for multiple effects
+// - `Command::batch(vec![...])` - for combining commands
+//
+// These cover the most common ergonomic needs without conflicts.
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -437,5 +505,62 @@ mod tests {
             CommandStep::Batch(vec![TestEffect::Load, TestEffect::Save])
         );
         assert_eq!(steps[1], CommandStep::Event(TestEvent::End));
+    }
+
+    #[test]
+    fn test_existing_ergonomic_api() {
+        // Test that the existing API provides good ergonomics
+        // These work because event() and effect() accept impl Into<Event> and impl Into<Effect>
+
+        // Direct construction
+        let cmd1: Command<TestEvent, TestEffect> = Command::event(TestEvent::Start);
+        let cmd2: Command<TestEvent, TestEffect> = Command::effect(TestEffect::Load);
+
+        // Collection construction
+        let cmd3: Command<TestEvent, TestEffect> = Command::events(vec![TestEvent::Start, TestEvent::Middle]);
+        let cmd4: Command<TestEvent, TestEffect> = Command::effects(vec![TestEffect::Load, TestEffect::Save]);
+
+        // From unit type (already implemented)
+        let cmd5: Command<TestEvent, TestEffect> = ().into();
+
+        assert_eq!(cmd1.len(), 1);
+        assert_eq!(cmd2.len(), 1);
+        assert_eq!(cmd3.len(), 2);
+        assert_eq!(cmd4.len(), 2);
+        assert_eq!(cmd5.len(), 0);
+    }
+
+    #[test]
+    fn test_into_command_trait() {
+        // Test that users can implement IntoCommand for their types
+        // This demonstrates the ergonomic extension trait pattern
+
+        // Implement the trait for our test types
+        impl IntoCommand<TestEvent, TestEffect> for TestEvent {
+            fn cmd(self) -> Command<TestEvent, TestEffect> {
+                Command::event(self)
+            }
+        }
+
+        impl IntoCommand<TestEvent, TestEffect> for TestEffect {
+            fn cmd(self) -> Command<TestEvent, TestEffect> {
+                Command::effect(self)
+            }
+        }
+
+        // Now we can use .cmd() method ergonomically
+        let event_cmd: Command<TestEvent, TestEffect> = TestEvent::Start.cmd();
+        let effect_cmd: Command<TestEvent, TestEffect> = TestEffect::Load.cmd();
+
+        // Verify the commands work as expected
+        assert_eq!(event_cmd.len(), 1);
+        assert_eq!(effect_cmd.len(), 1);
+
+        // Check the actual command steps
+        let event_steps: Vec<_> = event_cmd.into_iter().collect();
+        let effect_steps: Vec<_> = effect_cmd.into_iter().collect();
+
+        assert_eq!(event_steps[0], CommandStep::Event(TestEvent::Start));
+        assert_eq!(effect_steps[0], CommandStep::Effect(TestEffect::Load));
     }
 }

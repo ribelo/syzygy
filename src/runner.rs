@@ -233,6 +233,17 @@ where
     }
 
     /// Shutdown the runner gracefully
+    /// Create runner with custom idle sleep duration
+    pub fn with_idle_sleep(mut self, duration: Duration) -> Self {
+        self.config.idle_sleep = duration;
+        self
+    }
+
+    /// Create runner with custom runtime
+    pub fn with_runtime(mut self, runtime: Time) -> Self {
+        self.config.runtime = runtime;
+        self
+    }
     pub fn shutdown(&mut self) {
         self.shell.shutdown();
     }
@@ -327,6 +338,19 @@ pub enum RunnerError {
     Timeout,
 }
 
+
+impl<Event, Effect, Storage, Resources> std::fmt::Debug for Runner<Event, Effect, Storage, Resources>
+where
+    Event: Send + 'static,
+    Effect: Send + 'static,
+    Resources: Clone + Send + Sync + 'static,
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Runner")
+            .field("config", &self.config)
+            .finish()
+    }
+}
 #[cfg(all(test, feature = "legacy_tests"))]
 mod tests {
     use super::*;

@@ -144,9 +144,7 @@ pub use rayon_sync_executor::RayonSyncExecutor as RayonExecutor;
 pub use single_thread_executor::SingleThreadExecutor;
 
 #[cfg(feature = "tokio")]
-#[cfg(feature = "tokio")]
 pub use tokio_executor::{TokioCpu, TokioExecutor, TokioIo};
-#[cfg(feature = "tokio")]
 #[cfg(feature = "tokio")]
 pub use tokio_current::TokioCurrent;
 

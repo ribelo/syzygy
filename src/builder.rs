@@ -17,7 +17,7 @@ pub struct SyzygyBuilder<E, X, M, R> {
 
 impl<E, X> Default for SyzygyBuilder<E, X, (), ()>
 where
-    E: Send + 'static,
+    E: Send + Sync + 'static,
     X: Send + 'static,
 {
     fn default() -> Self {
@@ -27,7 +27,7 @@ where
 
 impl<E, X> SyzygyBuilder<E, X, (), ()>
 where
-    E: Send + 'static,
+    E: Send + Sync + 'static,
     X: Send + 'static,
 {
     /// Create a new builder with empty model and resources
@@ -44,7 +44,7 @@ where
 
 impl<Event, Effect, Model, Resource> SyzygyBuilder<Event, Effect, Model, Resource>
 where
-    Event: Send + 'static,
+    Event: Send + Sync + 'static,
     Effect: Send + 'static,
     Model: 'static,
     Resource: Clone + Send + Sync + 'static,
@@ -101,7 +101,7 @@ pub struct ConfiguredBuilder<Event, Effect, Model, Resource> {
 
 impl<Event, Effect, Model, Resource> ConfiguredBuilder<Event, Effect, Model, Resource>
 where
-    Event: Send + 'static,
+    Event: Send + Sync + 'static,
     Effect: Send + 'static,
     Resource: Clone + Send + Sync + 'static,
 {
@@ -269,7 +269,7 @@ impl Syzygy {
     #[must_use]
     pub fn builder<Event, Effect>() -> SyzygyBuilder<Event, Effect, (), ()>
     where
-        Event: Send + 'static,
+        Event: Send + Sync + 'static,
         Effect: Send + 'static,
     {
         SyzygyBuilder::new()
