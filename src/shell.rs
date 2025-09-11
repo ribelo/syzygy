@@ -8,7 +8,6 @@ use crossbeam_channel::{Receiver, Sender};
 use std::sync::Arc;
 use std::time::Duration;
 
-
 use crate::command::{Command, CommandStep};
 use crate::effect_context::EffectContext;
 use crate::error::ShellError;
@@ -95,9 +94,9 @@ where
 
     /// Process a Command synchronously and enqueue its outputs
     ///
-    /// This method is public to allow direct command enqueuing when needed,
-    /// but typically commands are enqueued through the Runner.
-    pub fn enqueue_command(&mut self, command: Command<E, X>) -> Result<(), ShellError> {
+    /// This method is crate-only to enforce TEA boundaries.
+    /// Commands should be enqueued through the Runner, not directly.
+    pub(crate) fn enqueue_command(&mut self, command: Command<E, X>) -> Result<(), ShellError> {
         #[cfg(feature = "tracing")]
         debug!("Executing command");
 
@@ -118,9 +117,9 @@ where
                     #[cfg(feature = "tracing")]
                     debug!("Routing event to Core");
 
-                    event_sender
-                        .send(event)
-                        .map_err(|_| ShellError::CommandExecutionFailed("Event channel closed".to_string()))?;
+                    event_sender.send(event).map_err(|_| {
+                        ShellError::CommandExecutionFailed("Event channel closed".to_string())
+                    })?;
                 }
                 CommandStep::Effect(effect) => {
                     _effect_count += 1;
@@ -129,7 +128,9 @@ where
 
                     effect_sender
                         .send(CommandStep::Effect(effect))
-                        .map_err(|_| ShellError::CommandExecutionFailed("Effect channel closed".to_string()))?;
+                        .map_err(|_| {
+                            ShellError::CommandExecutionFailed("Effect channel closed".to_string())
+                        })?;
                 }
                 CommandStep::Batch(effects) => {
                     _effect_count += effects.len();
@@ -139,7 +140,9 @@ where
                     // Send the entire batch pattern to Shell for proper coordination
                     effect_sender
                         .send(CommandStep::Batch(effects))
-                        .map_err(|_| ShellError::CommandExecutionFailed("Effect channel closed".to_string()))?;
+                        .map_err(|_| {
+                            ShellError::CommandExecutionFailed("Effect channel closed".to_string())
+                        })?;
                 } // No other variants
             }
         }
@@ -153,15 +156,7 @@ where
         Ok(())
     }
 
-    /// Enqueue a single effect directly to the Shell
-    ///
-    /// This method allows direct enqueuing of effects without going through a Command.
-    /// Returns an error if the effect channel is closed.
-    pub fn handle_effect(&mut self, effect: X) -> Result<(), ShellError> {
-        self.effect_tx.send(CommandStep::Effect(effect))
-            .map_err(|_| ShellError::CommandExecutionFailed("Effect channel closed".to_string()))?;
-        Ok(())
-    }
+
 
     /// Process all pending effects synchronously and return count of effects processed
     pub fn drain_with<S>(&mut self, scheduler: S) -> Result<usize, ShellError>
@@ -175,29 +170,25 @@ where
 
         while let Ok(step) = self.effect_rx.try_recv() {
             match step {
-                  CommandStep::Effect(fx) => {
-                      effect_count += 1;
-                       let ctx = EffectContext::new(
-                           self.resources.clone(),
-                           Arc::clone(&self.executors),
-                       );
-                       let spec = (self.effect_handler)(fx, &ctx);
-                       scheduler.schedule(drive_spec(spec, ctx, self.event_tx.clone()));
-                  }
+                CommandStep::Effect(fx) => {
+                    effect_count += 1;
+                    let ctx =
+                        EffectContext::new(self.resources.clone(), Arc::clone(&self.executors));
+                    let spec = (self.effect_handler)(fx, &ctx);
+                    scheduler.schedule(drive_spec(spec, ctx, self.event_tx.clone()));
+                }
                 CommandStep::Batch(effects) => {
-                      effect_count += effects.len();
-                       let ctx = EffectContext::new(
-                           self.resources.clone(),
-                           Arc::clone(&self.executors),
-                       );
-                       let handler = self.effect_handler;
-                       let event_tx = self.event_tx.clone();
-                      scheduler.schedule(async move {
-                          for fx in effects {
-                              let spec = handler(fx, &ctx);
-                              drive_spec(spec, ctx.clone(), event_tx.clone()).await;
-                          }
-                      });
+                    effect_count += effects.len();
+                    let ctx =
+                        EffectContext::new(self.resources.clone(), Arc::clone(&self.executors));
+                    let handler = self.effect_handler;
+                    let event_tx = self.event_tx.clone();
+                    scheduler.schedule(async move {
+                        for fx in effects {
+                            let spec = handler(fx, &ctx);
+                            drive_spec(spec, ctx.clone(), event_tx.clone()).await;
+                        }
+                    });
                 }
                 CommandStep::Event(_) => unreachable!(),
             }
@@ -221,18 +212,14 @@ where
         if let Ok(step) = self.effect_rx.try_recv() {
             match step {
                 CommandStep::Effect(fx) => {
-                    let ctx = EffectContext::new(
-                        self.resources.clone(),
-                        Arc::clone(&self.executors),
-                    );
+                    let ctx =
+                        EffectContext::new(self.resources.clone(), Arc::clone(&self.executors));
                     let spec = (self.effect_handler)(fx, &ctx);
                     scheduler.schedule(drive_spec(spec, ctx, self.event_tx.clone()));
                 }
                 CommandStep::Batch(effects) => {
-                    let ctx = EffectContext::new(
-                        self.resources.clone(),
-                        Arc::clone(&self.executors),
-                    );
+                    let ctx =
+                        EffectContext::new(self.resources.clone(), Arc::clone(&self.executors));
                     let handler = self.effect_handler;
                     let event_tx = self.event_tx.clone();
                     scheduler.schedule(async move {

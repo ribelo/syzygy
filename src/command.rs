@@ -8,6 +8,7 @@ use smallvec::SmallVec;
 /// Events go back to Core for immediate processing. Effects get queued for
 /// async execution. Batch effects run sequentially - no parallelism, no race
 /// conditions, no surprises at 3 AM when your app shits itself in production.
+#[derive(Clone)]
 pub enum CommandStep<Event, Effect> {
     Event(Event),
     Effect(Effect),
@@ -58,7 +59,15 @@ pub struct Command<Event, Effect> {
     outputs: SmallVec<[CommandStep<Event, Effect>; 4]>,
 }
 
-impl<Event, Effect> Default for Command<Event, Effect> {
+impl<Event: Clone, Effect: Clone> Clone for Command<Event, Effect> {
+    fn clone(&self) -> Self {
+        Self {
+            outputs: self.outputs.clone(),
+        }
+    }
+}
+
+impl<Event: Clone, Effect: Clone> Default for Command<Event, Effect> {
     fn default() -> Self {
         Self::none()
     }
@@ -66,7 +75,7 @@ impl<Event, Effect> Default for Command<Event, Effect> {
 
 
 
-impl<Event, Effect> PartialEq for Command<Event, Effect>
+impl<Event: Clone, Effect: Clone> PartialEq for Command<Event, Effect>
 where
     Event: PartialEq,
     Effect: PartialEq,
@@ -82,6 +91,14 @@ impl<Event, Effect> Command<Event, Effect> {
     /// Use this when your event handler needs to update the model but doesn't
     /// need to trigger any side effects. It's the functional equivalent of
     /// telling the Shell "don't call us, we'll call you."
+    ///
+    /// # Example
+    /// ```
+    /// fn handle_increment(event: Event, model: &mut Model) -> Command<Event, Effect> {
+    ///     model.counter += 1;
+    ///     Command::none() // Model updated, no side effects needed
+    /// }
+    /// ```
     ///
     /// # Example
     /// ```
@@ -287,7 +304,7 @@ impl<'a, Event, Effect> IntoIterator for &'a Command<Event, Effect> {
     }
 }
 
-impl<Event, Effect> Command<Event, Effect> {
+impl<Event: Clone, Effect: Clone> Command<Event, Effect> {
     /// Returns an iterator over the command steps.
     ///
     /// Iterates in the order steps were added. Batch effects appear
