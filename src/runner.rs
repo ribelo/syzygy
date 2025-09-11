@@ -422,4 +422,127 @@ mod tests {
 
         // Skipped model access check in refactor
     }
+
+    #[cfg(feature = "tokio")]
+    #[tokio::test]
+    async fn test_step_returns_true_when_work_was_done() {
+        let (core, shell) = Syzygy::builder::<TestEvent, TestEffect>()
+            .model(TestModel { count: 0 })
+            .event_handler(test_update)
+            .effect_handler(|_e: TestEffect, _ctx| crate::executor::Task::events(Vec::new()))
+            .build();
+
+        let event_sender = core.event_sender();
+        let mut runner = Runner::new(core, shell);
+
+        // Send an event to create work
+        event_sender.send(TestEvent::Ping).unwrap();
+
+        // Step should return true (work was done)
+        let did_work = runner.step().expect("Step should succeed");
+        assert!(did_work, "Step should return true when work was done");
+    }
+
+    #[cfg(feature = "tokio")]
+    #[tokio::test]
+    async fn test_step_returns_false_when_no_work_to_do() {
+        let (core, shell) = Syzygy::builder::<TestEvent, TestEffect>()
+            .model(TestModel { count: 0 })
+            .event_handler(test_update)
+            .effect_handler(|_e: TestEffect, _ctx| crate::executor::Task::events(Vec::new()))
+            .build();
+
+        let mut runner = Runner::new(core, shell);
+
+        // No events sent, so no work to do
+        let did_work = runner.step().expect("Step should succeed");
+        assert!(!did_work, "Step should return false when no work to do");
+    }
+
+    #[cfg(feature = "tokio")]
+    #[tokio::test]
+    async fn test_step_with_custom_scheduler() {
+        let (core, shell) = Syzygy::builder::<TestEvent, TestEffect>()
+            .model(TestModel { count: 0 })
+            .event_handler(test_update)
+            .effect_handler(|_e: TestEffect, _ctx| crate::executor::Task::events(Vec::new()))
+            .build();
+
+        let event_sender = core.event_sender();
+        let mut runner = Runner::new(core, shell);
+
+        // Send an event
+        event_sender.send(TestEvent::Ping).unwrap();
+
+        // Use custom scheduler
+        let scheduler = crate::scheduler::TokioScheduler::new().expect("Should have tokio runtime");
+        let did_work = runner.step_with(scheduler).expect("Step should succeed");
+        assert!(did_work, "Step with custom scheduler should return true when work was done");
+    }
+
+    #[cfg(feature = "tokio")]
+    #[tokio::test]
+    async fn test_step_processes_exactly_one_event() {
+        let (core, shell) = Syzygy::builder::<TestEvent, TestEffect>()
+            .model(TestModel { count: 0 })
+            .event_handler(test_update)
+            .effect_handler(|_e: TestEffect, _ctx| crate::executor::Task::events(Vec::new()))
+            .build();
+
+        let event_sender = core.event_sender();
+        let mut runner = Runner::new(core, shell);
+
+        // Send multiple events
+        event_sender.send(TestEvent::Ping).unwrap();
+        event_sender.send(TestEvent::Ping).unwrap();
+        event_sender.send(TestEvent::Ping).unwrap();
+
+        // First step should process one event and return true
+        let did_work1 = runner.step().expect("First step should succeed");
+        assert!(did_work1, "First step should return true");
+
+        // Second step should process the next event and return true
+        let did_work2 = runner.step().expect("Second step should succeed");
+        assert!(did_work2, "Second step should return true");
+
+        // Third step should process the last event and return true
+        let did_work3 = runner.step().expect("Third step should succeed");
+        assert!(did_work3, "Third step should return true");
+
+        // Fourth step should have no more work and return false
+        let did_work4 = runner.step().expect("Fourth step should succeed");
+        assert!(!did_work4, "Fourth step should return false (no more work)");
+    }
+
+    #[cfg(feature = "tokio")]
+    #[tokio::test]
+    async fn test_step_handles_multiple_events_and_effects_in_sequence() {
+        let (core, shell) = Syzygy::builder::<TestEvent, TestEffect>()
+            .model(TestModel { count: 0 })
+            .event_handler(test_update)
+            .effect_handler(|_e: TestEffect, _ctx| crate::executor::Task::events(Vec::new()))
+            .build();
+
+        let event_sender = core.event_sender();
+        let mut runner = Runner::new(core, shell);
+
+        // Send Ping event (will generate Pong event and Log effect)
+        event_sender.send(TestEvent::Ping).unwrap();
+
+        // First step: process Ping -> generate Pong event and Log effect
+        let did_work1 = runner.step().expect("First step should succeed");
+        assert!(did_work1, "First step should process Ping event");
+
+        // Second step: process Pong event -> generate Log effect
+        let did_work2 = runner.step().expect("Second step should succeed");
+        assert!(did_work2, "Second step should process Pong event");
+
+        // Third step: process Log effect
+        let did_work3 = runner.step().expect("Third step should succeed");
+        assert!(did_work3, "Third step should process Log effect");
+
+        // Fourth step: no more work
+        let did_work4 = runner.step().expect("Fourth step should succeed");
+        assert!(!did_work4, "Fourth step should have no more work");
+    }
 }
