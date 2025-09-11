@@ -29,9 +29,6 @@
 
 use std::sync::Arc;
 
-use crossbeam_channel::Sender;
-// use rustc_hash::FxHashMap; // legacy
-
 use crate::executor::{AsyncExecutor, ExecutorRegistry, SyncExecutor};
 use std::any::TypeId;
 
@@ -41,17 +38,15 @@ use std::any::TypeId;
 /// allowing effect handlers to access them in a type-safe manner. Key features:
 /// - Type-safe resource access via `resource()` method
 /// - Type-safe executor access via `executor()` method
-/// - Event sending capability to communicate back to Core
 /// - Pure container - no spawning or runtime functionality
 ///
 /// Executors handle all spawning and runtime operations.
+/// Event sending is handled internally by the framework.
 pub struct EffectContext<E, R> {
     /// Resources available to effect handlers (stored directly, user controls Arc/Mutex)
     resources: R,
     /// Executors available to effect handlers
     executors: Arc<ExecutorRegistry<E>>,
-    /// Channel for sending events
-    event_tx: Sender<E>,
 }
 
 impl<E, R> EffectContext<E, R>
@@ -59,27 +54,21 @@ where
     E: Send + 'static,
     R: Clone + Send + Sync + 'static,
 {
-    /// Create a new `EffectContext`
+    /// Create a new `EffectContext` (without event sending capability)
     #[must_use]
-    /// Legacy constructor: `event_tx` first to match older call sites in Shell
-    pub fn new(event_tx: Sender<E>, resources: R, executors: Arc<ExecutorRegistry<E>>) -> Self {
+    pub fn new(resources: R, executors: Arc<ExecutorRegistry<E>>) -> Self {
         Self {
             resources,
             executors,
-            event_tx,
         }
     }
 
-    /// Preferred constructor: resources first for consistency with other builders
-    pub fn with_parts(
-        resources: R,
-        event_tx: Sender<E>,
-        executors: Arc<ExecutorRegistry<E>>,
-    ) -> Self {
+    /// Create a new `EffectContext` with explicit parts (without event sending)
+    #[must_use]
+    pub fn with_parts(resources: R, executors: Arc<ExecutorRegistry<E>>) -> Self {
         Self {
             resources,
             executors,
-            event_tx,
         }
     }
 
@@ -88,12 +77,12 @@ where
         &self.resources
     }
 
-    /// Send an event back to Core. Panics if the event channel is closed.
-    pub fn send_event(&self, ev: E) {
-        self.event_tx
-            .send(ev)
-            .expect("event channel is closed; Core should own the receiver while running");
+    /// Get the executors registry (for internal use)
+    pub(crate) fn executors(&self) -> &Arc<ExecutorRegistry<E>> {
+        &self.executors
     }
+
+
 
     pub(crate) fn async_executor_by_typeid(
         &self,
@@ -161,7 +150,6 @@ where
         Self {
             resources: self.resources.clone(),
             executors: Arc::clone(&self.executors),
-            event_tx: self.event_tx.clone(),
         }
     }
 }

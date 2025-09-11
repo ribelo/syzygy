@@ -128,32 +128,31 @@ where
 
         while let Ok(step) = self.effect_rx.try_recv() {
             match step {
-                CommandStep::Effect(fx) => {
-                    did_work = true;
-                    effect_count += 1;
-                    let ctx = EffectContext::new(
-                        self.event_tx.clone(),
-                        self.resources.clone(),
-                        Arc::clone(&self.executors),
-                    );
-                    let spec = (self.effect_handler)(fx, &ctx);
-                    spawner.spawn(drive_spec(spec, ctx));
-                }
+                 CommandStep::Effect(fx) => {
+                     did_work = true;
+                     effect_count += 1;
+                      let ctx = EffectContext::new(
+                          self.resources.clone(),
+                          Arc::clone(&self.executors),
+                      );
+                      let spec = (self.effect_handler)(fx, &ctx);
+                      spawner.spawn(drive_spec(spec, ctx, self.event_tx.clone()));
+                 }
                 CommandStep::Batch(effects) => {
-                    did_work = true;
-                    effect_count += effects.len();
-                    let ctx = EffectContext::new(
-                        self.event_tx.clone(),
-                        self.resources.clone(),
-                        Arc::clone(&self.executors),
-                    );
-                    let handler = self.effect_handler;
-                    spawner.spawn(async move {
-                        for fx in effects {
-                            let spec = handler(fx, &ctx);
-                            drive_spec(spec, ctx.clone()).await;
-                        }
-                    });
+                     did_work = true;
+                     effect_count += effects.len();
+                      let ctx = EffectContext::new(
+                          self.resources.clone(),
+                          Arc::clone(&self.executors),
+                      );
+                      let handler = self.effect_handler;
+                      let event_tx = self.event_tx.clone();
+                     spawner.spawn(async move {
+                         for fx in effects {
+                             let spec = handler(fx, &ctx);
+                             drive_spec(spec, ctx.clone(), event_tx.clone()).await;
+                         }
+                     });
                 }
                 CommandStep::Event(_) => unreachable!(),
             }

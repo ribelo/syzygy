@@ -153,7 +153,7 @@ fn handle_effects(
         AppEffect::GetUser { user_id, table } => {
             let resources: &AppResources = ctx.resources();
             let resources = resources.clone();
-            Task::future_on::<TokioIo, _, _, _>(move |ctx: EffectContext<AppEvent, AppResources>| {
+            Task::future_on::<TokioIo, _, _, _>(move |_ctx: EffectContext<AppEvent, AppResources>| {
                 let table = table.clone();
                 async move {
                     println!(
@@ -170,32 +170,31 @@ fn handle_effects(
                     // Simulate database lookup
                     match simulate_database_get(&table, user_id) {
                         Ok(Some(user)) => {
-                            // Success - send user loaded event
-                            let () = ctx.send_event(AppEvent::UserLoaded { user_id, user });
+                            // Success - return user loaded event
                             println!("✅ User {user_id} found");
+                            AppEvent::UserLoaded { user_id, user }
                         }
                         Ok(None) => {
                             // User not found
-                            let () = ctx.send_event(AppEvent::UserNotFound { user_id });
                             println!("❌ User {user_id} not found");
+                            AppEvent::UserNotFound { user_id }
                         }
                         Err(db_error) => {
                             // Database error
-                            let () = ctx.send_event(AppEvent::DatabaseError {
+                            println!("💥 Database error getting user {user_id}");
+                            AppEvent::DatabaseError {
                                 operation: format!("get_user_{user_id}"),
                                 error: db_error,
-                            });
-                            println!("💥 Database error getting user {user_id}");
+                            }
                         }
                     }
-                    Outcome::None
                 }
                 .boxed()
             })
         }
 
         AppEffect::SaveUser { user, table } => {
-            Task::future_on::<TokioIo, _, _, _>(move |ctx: EffectContext<AppEvent, AppResources>| {
+            Task::future_on::<TokioIo, _, _, _>(move |_ctx: EffectContext<AppEvent, AppResources>| {
                 let user = user.clone();
                 let table = table.clone();
                 async move {
@@ -209,25 +208,24 @@ fn handle_effects(
                     // Simulate database save
                     match simulate_database_save(&table, &user) {
                         Ok(()) => {
-                            let () = ctx.send_event(AppEvent::UserSaved { user_id: user.id });
                             println!("✅ User {} saved", user.id);
+                            AppEvent::UserSaved { user_id: user.id }
                         }
                         Err(db_error) => {
-                            let () = ctx.send_event(AppEvent::DatabaseError {
+                            println!("💥 Database error saving user {}", user.id);
+                            AppEvent::DatabaseError {
                                 operation: format!("save_user_{}", user.id),
                                 error: db_error,
-                            });
-                            println!("💥 Database error saving user {}", user.id);
+                            }
                         }
                     }
-                    Outcome::None
                 }
                 .boxed()
             })
         }
 
         AppEffect::ConnectDatabase { connection_string } => {
-            Task::future_on::<TokioIo, _, _, _>(move |ctx: EffectContext<AppEvent, AppResources>| {
+            Task::future_on::<TokioIo, _, _, _>(move |_ctx: EffectContext<AppEvent, AppResources>| {
                 let connection_string = connection_string.clone();
                 async move {
                     println!("🔌 Connecting to database: {connection_string}");
@@ -239,8 +237,7 @@ fn handle_effects(
 
                     // In real app, you'd establish connection here
                     println!("✅ Database connected");
-                    let () = ctx.send_event(AppEvent::DatabaseConnected);
-                    Outcome::None
+                    AppEvent::DatabaseConnected
                 }
                 .boxed()
             })

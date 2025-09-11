@@ -81,32 +81,30 @@ fn handle_event(
 
             // NEW API: Parallel coordination with Task::all
             let config_plan =
-                Task::future_on::<TokioIo, _, _, _>(|ctx: EffectContext<AppEvent, ()>| {
+                Task::future_on::<TokioIo, _, _, _>(|_ctx: EffectContext<AppEvent, ()>| {
                     async move {
                         println!("Loading application config...");
                         #[cfg(feature = "tokio")]
                         tokio::time::sleep(Duration::from_millis(800)).await;
                         let config = "app_config_v1.2.3".to_string();
-                        ctx.send_event(AppEvent::ConfigLoaded(config));
-                        Outcome::None
+                        AppEvent::ConfigLoaded(config)
                     }
                     .boxed()
                 });
 
-            let user_data_plan = Task::future_on::<TokioIo, _, _, _>(|ctx: EffectContext<AppEvent, ()>| {
+            let user_data_plan = Task::future_on::<TokioIo, _, _, _>(|_ctx: EffectContext<AppEvent, ()>| {
                 async move {
                     println!("Loading user data...");
                     #[cfg(feature = "tokio")]
                     tokio::time::sleep(Duration::from_millis(1200)).await;
                     let user_data = "user_12345_profile".to_string();
-                    let () = ctx.send_event(AppEvent::UserDataLoaded(user_data));
-                    Outcome::None
+                    AppEvent::UserDataLoaded(user_data)
                 }
                 .boxed()
             });
 
             // Use a single task that runs both operations in parallel with futures::join!
-            let _bootstrap_plan = Task::future_on::<TokioIo, _, _, _>(move |ctx: EffectContext<AppEvent, ()>| {
+            let _bootstrap_plan = Task::future_on::<TokioIo, _, _, _>(move |_ctx: EffectContext<AppEvent, ()>| {
                 async move {
                     // Run both config and user data loading in parallel
                     let (config_result, user_data_result) = futures::join!(
@@ -115,20 +113,19 @@ fn handle_event(
                             #[cfg(feature = "tokio")]
                             tokio::time::sleep(Duration::from_millis(800)).await;
                             let config = "app_config_v1.2.3".to_string();
-                            ctx.send_event(AppEvent::ConfigLoaded(config));
+                            AppEvent::ConfigLoaded(config)
                         },
                         async {
                             println!("Loading user data...");
                             #[cfg(feature = "tokio")]
                             tokio::time::sleep(Duration::from_millis(1200)).await;
                             let user_data = "user_12345_profile".to_string();
-                            ctx.send_event(AppEvent::UserDataLoaded(user_data));
+                            AppEvent::UserDataLoaded(user_data)
                         }
                     );
 
-                    // Send completion event after both are done
-                    ctx.send_event(AppEvent::BootstrapComplete);
-                    Outcome::None
+                    // Return multiple events as a Vec
+                    vec![config_result, user_data_result, AppEvent::BootstrapComplete]
                 }
                 .boxed()
             });
@@ -228,32 +225,30 @@ fn handle_effects(
     _ctx: &EffectContext<AppEvent, ()>,
 ) -> Task<AppEvent, ()> {
     match effect {
-        AppEffect::LoadConfig => Task::future_on::<TokioIo, _, _, _>(move |ctx: EffectContext<AppEvent, ()>| {
+        AppEffect::LoadConfig => Task::future_on::<TokioIo, _, _, _>(move |_ctx: EffectContext<AppEvent, ()>| {
             async move {
                 println!("Loading application config...");
                 #[cfg(feature = "tokio")]
                 tokio::time::sleep(Duration::from_millis(800)).await;
                 let config = "app_config_v1.2.3".to_string();
-                let () = ctx.send_event(AppEvent::ConfigLoaded(config));
-                Outcome::None
+                AppEvent::ConfigLoaded(config)
             }
             .boxed()
         }),
 
-        AppEffect::LoadUserData => Task::future_on::<TokioIo, _, _, _>(move |ctx: EffectContext<AppEvent, ()>| {
+        AppEffect::LoadUserData => Task::future_on::<TokioIo, _, _, _>(move |_ctx: EffectContext<AppEvent, ()>| {
             async move {
                 println!("Loading user data...");
                 #[cfg(feature = "tokio")]
                 tokio::time::sleep(Duration::from_millis(1200)).await;
                 let user_data = "user_12345_profile".to_string();
-                let () = ctx.send_event(AppEvent::UserDataLoaded(user_data));
-                Outcome::None
+                AppEvent::UserDataLoaded(user_data)
             }
             .boxed()
         }),
 
         AppEffect::TryMirror { url } => {
-            Task::future_on::<TokioIo, _, _, _>(move |ctx: EffectContext<AppEvent, ()>| {
+            Task::future_on::<TokioIo, _, _, _>(move |_ctx: EffectContext<AppEvent, ()>| {
                 let url = url.clone();
                 async move {
                     println!("Trying mirror: {}", url);
@@ -268,34 +263,31 @@ fn handle_effects(
                     #[cfg(feature = "tokio")]
                     tokio::time::sleep(delay).await;
 
-                    let () = ctx.send_event(AppEvent::MirrorSelected(url));
-                    Outcome::None
+                    AppEvent::MirrorSelected(url)
                 }
                 .boxed()
             })
         }
 
         AppEffect::ProcessWorkflowStep { step, item } => {
-            Task::future_on::<TokioIo, _, _, _>(move |ctx: EffectContext<AppEvent, ()>| {
+            Task::future_on::<TokioIo, _, _, _>(move |_ctx: EffectContext<AppEvent, ()>| {
                 let item = item.clone();
                 async move {
                     println!("Processing workflow step {}: {}", step, item);
                     #[cfg(feature = "tokio")]
                     tokio::time::sleep(Duration::from_millis(400)).await;
-                    let () = ctx.send_event(AppEvent::WorkflowStepComplete(step));
-                    Outcome::None
+                    AppEvent::WorkflowStepComplete(step)
                 }
                 .boxed()
             })
         }
 
-        AppEffect::Cleanup => Task::future_on::<TokioIo, _, _, _>(move |ctx: EffectContext<AppEvent, ()>| {
+        AppEffect::Cleanup => Task::future_on::<TokioIo, _, _, _>(move |_ctx: EffectContext<AppEvent, ()>| {
             async move {
                 println!("Performing cleanup...");
                 #[cfg(feature = "tokio")]
                 tokio::time::sleep(Duration::from_millis(200)).await;
-                let () = ctx.send_event(AppEvent::LogMessage("Cleanup completed".to_string()));
-                Outcome::None
+                AppEvent::LogMessage("Cleanup completed".to_string())
             }
             .boxed()
         }),
