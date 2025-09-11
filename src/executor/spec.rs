@@ -203,7 +203,7 @@ where
                     #[cfg(debug_assertions)]
                     panic!("Missing executor for type {exec:?}");
 
-                    #[cfg(not(debug_assertions))]
+                    #[cfg(all(not(debug_assertions), feature = "tracing"))]
                     tracing::warn!("Missing executor for type {:?}, effect will be dropped", exec);
                 }
             }
@@ -234,7 +234,7 @@ where
                     #[cfg(debug_assertions)]
                     panic!("Missing executor for type {exec:?}");
 
-                    #[cfg(not(debug_assertions))]
+                    #[cfg(all(not(debug_assertions), feature = "tracing"))]
                     tracing::warn!("Missing executor for type {:?}, effect will be dropped", exec);
                 }
             }
@@ -257,7 +257,7 @@ where
                     #[cfg(debug_assertions)]
                     panic!("Missing executor for type {exec:?}");
 
-                    #[cfg(not(debug_assertions))]
+                    #[cfg(all(not(debug_assertions), feature = "tracing"))]
                     tracing::warn!("Missing executor for type {:?}, effect will be dropped", exec);
                 }
             }

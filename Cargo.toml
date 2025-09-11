@@ -130,9 +130,6 @@ missing_panics_doc = "allow"
 
 multiple_bound_locations = "allow"
 
-[[bench]]
-name = "performance_analysis"
-harness = false
 
 [[bench]]
 name = "command_performance"
@@ -149,9 +146,6 @@ required-features = ["examples"]
 name = "04_async_effects"
 required-features = ["examples"]
 
-[[example]]
-name = "05_real_world_app"
-required-features = ["examples"]
 
 [[example]]
 name = "06_effects_coordination"
