@@ -7,7 +7,6 @@ use std::collections::HashMap;
 use std::time::Duration;
 use syzygy::executor::{Task, TokioIo};
 use syzygy::prelude::*;
-use syzygy::executor::Outcome;
 
 use futures::FutureExt;
 

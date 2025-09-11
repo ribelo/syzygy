@@ -11,7 +11,6 @@
 use futures::FutureExt;
 use syzygy::executor::{Task, TokioIo};
 use syzygy::prelude::*;
-use syzygy::executor::Outcome;
 
 // ============================================================================
 // Step 1: Define your application state (Model)

@@ -962,12 +962,10 @@ fn handle_background_operation(effect: AppEffect) -> Task<AppEvent, ResourceStor
                 println!("Background operation {operation_id} started ({task_type})");
 
                 // Simulate work with progress updates
-                for i in 1..=5 {
+                for _ in 1..=5 {
                     #[cfg(feature = "tokio")]
                     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
-                    #[allow(clippy::cast_precision_loss)]
-                    let progress = (i as f32) / 5.0;
                     // For multiple events, we need to use a different approach
                     // For now, we'll just complete the operation
                 }

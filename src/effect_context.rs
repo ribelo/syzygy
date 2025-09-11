@@ -84,6 +84,7 @@ where
 
 
 
+    #[allow(dead_code)]
     pub(crate) fn async_executor_by_typeid(
         &self,
         key: TypeId,
@@ -91,6 +92,7 @@ where
         self.executors.async_exec_by_key(key)
     }
 
+    #[allow(dead_code)]
     pub(crate) fn sync_executor_by_typeid(&self, key: TypeId) -> Option<Arc<dyn SyncExecutor<E>>> {
         self.executors.sync_exec_by_key(key)
     }

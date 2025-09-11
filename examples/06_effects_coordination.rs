@@ -14,7 +14,6 @@ use futures::FutureExt;
 use std::time::Duration;
 use syzygy::executor::{Task, TokioIo};
 use syzygy::prelude::*;
-use syzygy::executor::Outcome;
 
 // ============================================================================
 // Application State & Events
@@ -80,7 +79,7 @@ fn handle_event(
                 .push("Starting application bootstrap...".to_string());
 
             // NEW API: Parallel coordination with Task::all
-            let config_plan =
+            let _config_plan =
                 Task::future_on::<TokioIo, _, _, _>(|_ctx: EffectContext<AppEvent, ()>| {
                     async move {
                         println!("Loading application config...");
@@ -92,7 +91,7 @@ fn handle_event(
                     .boxed()
                 });
 
-            let user_data_plan = Task::future_on::<TokioIo, _, _, _>(|_ctx: EffectContext<AppEvent, ()>| {
+            let _user_data_plan = Task::future_on::<TokioIo, _, _, _>(|_ctx: EffectContext<AppEvent, ()>| {
                 async move {
                     println!("Loading user data...");
                     #[cfg(feature = "tokio")]

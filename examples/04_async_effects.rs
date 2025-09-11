@@ -15,7 +15,6 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 use syzygy::executor::{Task, TokioIo};
 use syzygy::prelude::*;
-use syzygy::executor::Outcome;
 
 // ============================================================================
 // Application State
