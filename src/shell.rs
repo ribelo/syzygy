@@ -8,7 +8,7 @@ use crossbeam_channel::{Receiver, Sender};
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::command::executor::route_command;
+use crate::command::router::route_command;
 use crate::command::{Command, CommandStep};
 use crate::effect_context::EffectContext;
 use crate::error::ShellError;
@@ -17,7 +17,8 @@ use crate::executor::spec::drive_spec;
 
 use crate::timer::{Time, time};
 
-use crate::effect_handler::EffectHandler;
+/// Sync effect handler producing an `Task` plan.
+pub type EffectHandler<E, X, R> = fn(X, &EffectContext<E, R>) -> crate::executor::Task<E, R>;
 // use futures_util::future::*;
 
 #[cfg(feature = "tracing")]

@@ -9,7 +9,7 @@ use tracing::debug;
 ///
 /// This is now a simple synchronous function that iterates over command outputs
 /// and routes them to the correct channels. Events go to Core, Effects go to Shell.
-pub(crate) fn route_command<Event, Effect>(
+pub fn route_command<Event, Effect>(
     command: Command<Event, Effect>,
     event_sender: &Sender<Event>,
     effect_sender: &Sender<CommandStep<Event, Effect>>,

@@ -2,65 +2,13 @@ use futures_util::future::{BoxFuture, FutureExt};
 use futures_util::stream::{BoxStream, StreamExt};
 
 use std::future::Future;
-use std::sync::Arc;
 
 use crate::effect_context::EffectContext;
-use crossbeam_channel::Sender;
 
 use super::ExecutorError;
 use std::any::TypeId;
 
-/// Internal context for drive_spec that includes event sending capability
-///
-/// This struct is used internally by drive_spec to handle event sending for
-/// Task::Stream and other operations that need to send events back to the Core.
-/// It wraps the EffectContext and adds event sending functionality.
-struct DriveContext<E, R> {
-    resources: R,
-    executors: std::sync::Arc<super::ExecutorRegistry<E>>,
-    event_tx: Sender<E>,
-}
 
-impl<E, R> DriveContext<E, R>
-where
-    E: Send + 'static,
-    R: Clone + Send + Sync + 'static,
-{
-    fn new(
-        resources: R,
-        executors: std::sync::Arc<super::ExecutorRegistry<E>>,
-        event_tx: Sender<E>,
-    ) -> Self {
-        Self {
-            resources,
-            executors,
-            event_tx,
-        }
-    }
-
-    /// Send an event back to the Core
-    fn send_event(&self, event: E) {
-        let _ = self.event_tx.send(event);
-    }
-
-    /// Create an EffectContext for passing to user code (without event sending)
-    fn effect_context(&self) -> EffectContext<E, R>
-    where
-        R: Clone,
-    {
-        EffectContext::with_parts(self.resources.clone(), std::sync::Arc::clone(&self.executors))
-    }
-
-    /// Get async executor by TypeId
-    fn async_executor_by_typeid(&self, key: TypeId) -> Option<std::sync::Arc<dyn super::AsyncExecutor<E>>> {
-        self.executors.async_exec_by_key(key)
-    }
-
-    /// Get sync executor by TypeId
-    fn sync_executor_by_typeid(&self, key: TypeId) -> Option<std::sync::Arc<dyn super::SyncExecutor<E>>> {
-        self.executors.sync_exec_by_key(key)
-    }
-}
 
 /// Unified effect output: a single event, multiple events, or none
 #[derive(Debug, PartialEq)]
@@ -215,7 +163,7 @@ where
 
 /// Drive an `EffectSpec` by spawning appropriate tasks on executors and
 /// forwarding produced events to Core via the supplied `EffectContext`.
-pub fn drive_spec<E, R>(
+pub(crate) fn drive_spec<E, R>(
     spec: Task<E, R>,
     ctx: EffectContext<E, R>,
     event_tx: crossbeam_channel::Sender<E>
@@ -225,31 +173,26 @@ where
     R: Clone + Send + Sync + 'static,
 {
     async move {
-        // Create DriveContext for internal event sending
-        let drive_ctx = DriveContext::new(
-            ctx.resources().clone(),
-            Arc::clone(ctx.executors()),
-            event_tx,
-        );
-
         match spec {
             Task::Events(events) => {
                 for e in events {
-                    drive_ctx.send_event(e);
+                    let _ = event_tx.send(e);
                 }
             }
             Task::Future { exec, task } => {
-                if let Some(exec_ref) = drive_ctx.async_executor_by_typeid(exec) {
-                    let fut = (task)(drive_ctx.effect_context());
+                if let Some(exec_ref) = ctx.executors().async_exec_by_key(exec) {
+                    let fut = (task)(ctx.clone());
                     match exec_ref.spawn_future(fut).await {
                         Ok(output) => {
                             // Inline consume logic
                             match output {
                                 Outcome::None => {}
-                                Outcome::Event(event) => drive_ctx.send_event(event),
+                                Outcome::Event(event) => {
+                                    let _ = event_tx.send(event);
+                                }
                                 Outcome::Events(events) => {
                                     for event in events {
-                                        drive_ctx.send_event(event);
+                                        let _ = event_tx.send(event);
                                     }
                                 }
                             }
@@ -261,18 +204,20 @@ where
 
 
             Task::Sync { exec, task } => {
-                if let Some(exec_ref) = drive_ctx.sync_executor_by_typeid(exec) {
-                    let ctx_for_job = drive_ctx.effect_context();
+                if let Some(exec_ref) = ctx.executors().sync_exec_by_key(exec) {
+                    let ctx_for_job = ctx.clone();
                     let job = Box::new(move || (task)(ctx_for_job));
                     match exec_ref.spawn_sync(job).await {
                         Ok(output) => {
                             // Inline consume logic
                             match output {
                                 Outcome::None => {}
-                                Outcome::Event(event) => drive_ctx.send_event(event),
+                                Outcome::Event(event) => {
+                                    let _ = event_tx.send(event);
+                                }
                                 Outcome::Events(events) => {
                                     for event in events {
-                                        drive_ctx.send_event(event);
+                                        let _ = event_tx.send(event);
                                     }
                                 }
                             }
@@ -282,13 +227,13 @@ where
                 }
             }
             Task::Stream { exec, factory } => {
-                if let Some(exec_ref) = drive_ctx.async_executor_by_typeid(exec) {
-                    let stream = (factory)(drive_ctx.effect_context());
+                if let Some(exec_ref) = ctx.executors().async_exec_by_key(exec) {
+                    let stream = (factory)(ctx.clone());
                     let fut = async move {
                         use futures::pin_mut;
                         pin_mut!(stream);
                         while let Some(event) = stream.next().await {
-                            drive_ctx.send_event(event);
+                            let _ = event_tx.send(event);
                         }
                         Outcome::None
                     }.boxed();

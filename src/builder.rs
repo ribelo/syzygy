@@ -7,9 +7,7 @@ use crate::prelude::EffectHandler;
 use crate::shell::Shell;
 use std::sync::Arc;
 
-/// Type alias for executor configurator function
-type ExecutorConfigurator<Event, Resource> =
-    fn(&Resource, &crossbeam_channel::Sender<Event>) -> Arc<ExecutorRegistry<Event>>;
+
 
 /// Base builder phase: configure models, resources, executors
 pub struct SyzygyBuilder<Event, Effect, Model = (), Resource = ()> {
@@ -90,7 +88,6 @@ where
             model: self.model,
             resources: self.resources,
             exec_registry: self.exec_registry,
-            exec_configurator: None,
         }
     }
 }
@@ -102,7 +99,6 @@ pub struct ConfiguredBuilder<Event, Effect, Model, Resource> {
     model: Model,
     resources: Resource,
     exec_registry: Option<ExecutorRegistry<Event>>,
-    exec_configurator: Option<ExecutorConfigurator<Event, Resource>>,
 }
 
 impl<Event, Effect, Model, Resource> ConfiguredBuilder<Event, Effect, Model, Resource>
@@ -120,7 +116,6 @@ where
             model: self.model,
             resources: self.resources,
             exec_registry: self.exec_registry,
-            exec_configurator: self.exec_configurator,
         }
     }
 
@@ -133,142 +128,46 @@ where
             model: self.model,
             resources: self.resources,
             exec_registry: Some(registry),
-            exec_configurator: self.exec_configurator,
         }
     }
 
-    /// Provide a configurator that can build the registry when `event_tx` is available.
-    #[must_use]
-    pub fn configure_executors(self, f: ExecutorConfigurator<Event, Resource>) -> Self {
-        ConfiguredBuilder {
-            event_handler: self.event_handler,
-            effect_handler: self.effect_handler,
-            model: self.model,
-            resources: self.resources,
-            exec_registry: self.exec_registry,
-            exec_configurator: Some(f),
-        }
-    }
+
 
     /// Configure a default IO + sync executor set.
     /// - Async IO: `TokioIo` multi-thread runtime (if tokio feature is enabled) for network/file operations
     /// - Sync CPU: `RayonExecutor` pool (if rayon feature is enabled), else `SingleThreadExecutor` for CPU-bound work
     ///
     /// For more control, use:
-    /// - `with_io_executor()` for IO-focused async work
-    /// - `with_cpu_async_executor()` for CPU-focused async work
-    /// - `with_default_sync_executor()` for sync CPU work
-    /// - `with_dual_async_executors()` for both IO and CPU async executors
+    /// - `with_async_executor()` for async work
+    /// - `with_sync_executor()` for sync CPU work
     #[must_use]
     pub fn with_default_executors(self) -> Self {
-        fn make_default_registry<E, R>(
-            _resources: &R,
-            _event_tx: &crossbeam_channel::Sender<E>,
-        ) -> Arc<ExecutorRegistry<E>>
-        where
-            E: Clone + Send + Sync + 'static,
-            R: Clone + Send + Sync + 'static,
-        {
-            use crate::executor::ExecutorRegistry;
-            let mut registry = ExecutorRegistry::<E>::new();
 
-            // Helper to compute threads
-            let threads = std::thread::available_parallelism()
-                .map(std::num::NonZero::get)
-                .unwrap_or(1)
-                .max(1);
-
-            // IO executor
-            #[cfg(feature = "tokio")]
-            {
-                let io_exec = crate::executor::TokioIo::multi_thread(threads);
-                registry.insert_async(io_exec);
-            }
-
-            // CPU executor
-            #[cfg(feature = "rayon")]
-            {
-                let cpu_exec = crate::executor::RayonExecutor::new(None);
-                registry.insert_sync(cpu_exec);
-            }
-            #[cfg(not(feature = "rayon"))]
-            {
-                let cpu_exec = crate::executor::SingleThreadExecutor::new();
-                registry.insert_sync(cpu_exec);
-            }
-
-            Arc::new(registry)
-        }
-
-        self.configure_executors(make_default_registry::<Event, Resource>)
-    }
-
-    /// Configure an IO-focused async executor using `TokioIo`
-    #[must_use]
-    pub fn with_io_executor(self, threads: Option<usize>) -> Self {
-        #[cfg(feature = "tokio")]
-        {
-            let mut registry = self.exec_registry.unwrap_or_default();
-            let threads = threads.unwrap_or_else(|| {
-                std::thread::available_parallelism()
-                    .map(std::num::NonZero::get)
-                    .unwrap_or(4)
-            });
-            let io_exec = crate::executor::TokioIo::multi_thread(threads);
-            registry.insert_async(io_exec);
-            ConfiguredBuilder {
-                event_handler: self.event_handler,
-                effect_handler: self.effect_handler,
-                model: self.model,
-                resources: self.resources,
-                exec_registry: Some(registry),
-                exec_configurator: self.exec_configurator,
-            }
-        }
-        #[cfg(not(feature = "tokio"))]
-        self
-    }
-
-    /// Configure a CPU-focused async executor using `TokioCpu`
-    #[must_use]
-    pub fn with_cpu_async_executor(self, threads: Option<usize>) -> Self {
-        #[cfg(feature = "tokio")]
-        {
-            let mut registry = self.exec_registry.unwrap_or_default();
-            let threads = threads.unwrap_or_else(|| {
-                std::thread::available_parallelism()
-                    .map(std::num::NonZero::get)
-                    .unwrap_or(4)
-            });
-            let cpu_exec = crate::executor::TokioCpu::multi_thread(threads);
-            registry.insert_async(cpu_exec);
-            ConfiguredBuilder {
-                event_handler: self.event_handler,
-                effect_handler: self.effect_handler,
-                model: self.model,
-                resources: self.resources,
-                exec_registry: Some(registry),
-                exec_configurator: self.exec_configurator,
-            }
-        }
-        #[cfg(not(feature = "tokio"))]
-        self
-    }
-
-    /// Configure a default sync executor (Rayon or `SingleThread`)
-    #[must_use]
-    pub fn with_default_sync_executor(self) -> Self {
         let mut registry = self.exec_registry.unwrap_or_default();
 
+        // Helper to compute threads
+        let threads = std::thread::available_parallelism()
+            .map(std::num::NonZero::get)
+            .unwrap_or(1)
+            .max(1);
+
+        // IO executor
+        #[cfg(feature = "tokio")]
+        {
+            let io_exec = crate::executor::TokioIo::multi_thread(threads);
+            registry.insert_async(io_exec);
+        }
+
+        // CPU executor
         #[cfg(feature = "rayon")]
         {
-            let sync_exec = crate::executor::RayonExecutor::new(None);
-            registry.insert_sync(sync_exec);
+            let cpu_exec = crate::executor::RayonExecutor::new(None);
+            registry.insert_sync(cpu_exec);
         }
         #[cfg(not(feature = "rayon"))]
         {
-            let sync_exec = crate::executor::SingleThreadExecutor::new();
-            registry.insert_sync(sync_exec);
+            let cpu_exec = crate::executor::SingleThreadExecutor::new();
+            registry.insert_sync(cpu_exec);
         }
 
         ConfiguredBuilder {
@@ -277,40 +176,16 @@ where
             model: self.model,
             resources: self.resources,
             exec_registry: Some(registry),
-            exec_configurator: self.exec_configurator,
         }
     }
 
-    /// Configure with both IO and CPU async executors
-    #[must_use]
-    pub fn with_dual_async_executors(self) -> Self {
-        #[cfg(feature = "tokio")]
-        {
-            let mut registry = self.exec_registry.unwrap_or_default();
-            let threads = std::thread::available_parallelism()
-                .map(std::num::NonZero::get)
-                .unwrap_or(4);
 
-            // IO executor for network/file operations
-            let io_exec = crate::executor::TokioIo::multi_thread(threads);
-            registry.insert_async(io_exec);
 
-            // CPU executor for compute-heavy async work
-            let cpu_exec = crate::executor::TokioCpu::multi_thread(threads);
-            registry.insert_async(cpu_exec);
 
-            ConfiguredBuilder {
-                event_handler: self.event_handler,
-                effect_handler: self.effect_handler,
-                model: self.model,
-                resources: self.resources,
-                exec_registry: Some(registry),
-                exec_configurator: self.exec_configurator,
-            }
-        }
-        #[cfg(not(feature = "tokio"))]
-        self
-    }
+
+
+
+
 
     /// Add a single async executor to the registry by concrete type
     #[must_use]
@@ -326,7 +201,6 @@ where
             model: self.model,
             resources: self.resources,
             exec_registry: Some(reg),
-            exec_configurator: self.exec_configurator,
         }
     }
 
@@ -344,7 +218,6 @@ where
             model: self.model,
             resources: self.resources,
             exec_registry: Some(reg),
-            exec_configurator: self.exec_configurator,
         }
     }
 
@@ -354,7 +227,6 @@ where
         let shell = Self::build_shell(
             self.resources,
             self.exec_registry.map(Arc::new),
-            self.exec_configurator,
             self.effect_handler,
             event_tx,
         );
@@ -365,7 +237,6 @@ where
     fn build_shell(
         resources: Resource,
         exec_registry: Option<Arc<ExecutorRegistry<Event>>>,
-        exec_configurator: Option<ExecutorConfigurator<Event, Resource>>,
         effect_handler: Option<EffectHandler<Event, Effect, Resource>>,
         event_tx: crossbeam_channel::Sender<Event>,
     ) -> Shell<Event, Effect, Resource> {
@@ -385,13 +256,8 @@ where
         let (effect_tx, effect_rx) = unbounded();
 
         // Resolve or build registry now that we have event_tx and resources
-        let registry_arc: Arc<ExecutorRegistry<Event>> = if let Some(reg) = exec_registry {
-            reg
-        } else if let Some(cfg) = exec_configurator {
-            cfg(&resources, &event_tx)
-        } else {
-            Arc::new(ExecutorRegistry::new())
-        };
+        let registry_arc: Arc<ExecutorRegistry<Event>> = exec_registry
+            .unwrap_or_else(|| Arc::new(ExecutorRegistry::new()));
 
         Shell {
             effect_rx,

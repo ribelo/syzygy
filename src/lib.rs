@@ -396,8 +396,7 @@ pub mod shell;
 // Builder pattern
 pub mod builder;
 
-// Effect handlers with AFIT
-pub mod effect_handler;
+
 
 // EventContext for synchronous update functions
 pub mod event_context;
@@ -458,7 +457,7 @@ pub mod prelude {
     /// }
     /// ```
     // Effect handlers with AFIT
-    pub use crate::effect_handler::EffectHandler;
+    pub use crate::shell::EffectHandler;
 
     // Timer abstractions for runtime neutrality
     pub use crate::timer::{Time, TimeoutError, time};
@@ -472,7 +471,7 @@ pub use crate::executor::RayonExecutor;
 
 #[cfg(feature = "tokio")]
 pub use crate::executor::TokioExecutor;
-pub use crate::executor::spec::{drive_spec, Outcome};
+ pub use crate::executor::spec::Outcome;
 pub use crate::executor::{Task, ExecutorRegistry, SingleThreadExecutor};
 
     // Builder

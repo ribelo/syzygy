@@ -45,10 +45,6 @@ use crate::timer::{Time, time};
 pub struct RunnerConfig {
     /// How often to yield control when no work is being done
     pub idle_sleep: Duration,
-    /// Maximum time to run before yielding (for `run_until` scenarios)
-    pub max_run_duration: Option<Duration>,
-    /// Whether to print debug info about work being done
-    pub debug_logging: bool,
     /// Runtime implementation for sleeping - provides runtime neutrality
     pub runtime: Time,
 }
@@ -57,8 +53,6 @@ impl Default for RunnerConfig {
     fn default() -> Self {
         Self {
             idle_sleep: Duration::from_millis(16), // ~60 FPS
-            max_run_duration: None,
-            debug_logging: false,
             runtime: time(),
         }
     }
@@ -154,25 +148,15 @@ where
         F: FnMut(&Core<Event, Effect, Storage>, &Shell<Event, Effect, Resources>) -> bool,
         S: Spawn,
     {
-        let start_time = std::time::Instant::now();
-
         loop {
             let did_work = self.tick(spawner.clone()).await?;
 
             // Check condition
             if condition(&self.core, &self.shell) {
-                if self.config.debug_logging {
-                    println!("Runner: Condition met, stopping");
-                }
                 break;
             }
 
-            // Check timeout
-            if let Some(max_duration) = self.config.max_run_duration
-                && start_time.elapsed() > max_duration
-            {
-                return Err(RunnerError::Timeout);
-            }
+
 
             if !did_work {
                 self.config.runtime.sleep(self.config.idle_sleep).await;
@@ -220,9 +204,6 @@ where
 
         if processed {
             did_work = true;
-            if self.config.debug_logging {
-                println!("Runner: Processing {} commands", commands.len());
-            }
 
             // Dispatch commands to Shell (may route events back to Core)
             for command in commands {
@@ -234,9 +215,6 @@ where
         let shell_work = self.shell.tick(spawner).await.map_err(RunnerError::Shell)?;
         if shell_work {
             did_work = true;
-            if self.config.debug_logging {
-                println!("Runner: Shell processed effects");
-            }
         }
 
         Ok(did_work)
@@ -369,8 +347,6 @@ mod tests {
             shell,
             RunnerConfig {
                 idle_sleep: Duration::from_millis(1),
-                max_run_duration: Some(Duration::from_secs(1)),
-                debug_logging: false,
                 runtime: crate::timer::time(),
             },
         );
