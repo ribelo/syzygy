@@ -95,9 +95,9 @@ where
 
     /// Process a Command synchronously and enqueue its outputs
     ///
-    /// FCIS note: This is crate-visible to prevent external code from
-    /// dispatching effects directly. Only Core (via Runner) should call this.
-    pub(crate) fn dispatch(&mut self, command: Command<E, X>) -> Result<(), ShellError> {
+    /// This method is public to allow direct command enqueuing when needed,
+    /// but typically commands are enqueued through the Runner.
+    pub fn enqueue_command(&mut self, command: Command<E, X>) -> Result<(), ShellError> {
         #[cfg(feature = "tracing")]
         debug!("Executing command");
 
@@ -153,57 +153,124 @@ where
         Ok(())
     }
 
-    /// Process effects and manage async tasks
-    #[allow(clippy::unused_async)]
-    pub async fn tick<S>(&mut self, scheduler: S) -> Result<bool, ShellError>
+    /// Enqueue a single effect directly to the Shell
+    ///
+    /// This method allows direct enqueuing of effects without going through a Command.
+    /// Returns an error if the effect channel is closed.
+    pub fn handle_effect(&mut self, effect: X) -> Result<(), ShellError> {
+        self.effect_tx.send(CommandStep::Effect(effect))
+            .map_err(|_| ShellError::CommandExecutionFailed("Effect channel closed".to_string()))?;
+        Ok(())
+    }
+
+    /// Process all pending effects synchronously and return count of effects processed
+    pub fn drain_with<S>(&mut self, scheduler: S) -> Result<usize, ShellError>
     where
         S: crate::scheduler::Scheduler,
     {
         #[cfg(feature = "tracing")]
-        let _span = span!(Level::DEBUG, "shell_tick").entered();
+        let _span = span!(Level::DEBUG, "shell_drain").entered();
 
-        let mut did_work = false;
-        #[allow(unused_variables)]
         let mut effect_count = 0usize;
 
         while let Ok(step) = self.effect_rx.try_recv() {
             match step {
-                 CommandStep::Effect(fx) => {
-                     did_work = true;
-                     effect_count += 1;
-                      let ctx = EffectContext::new(
-                          self.resources.clone(),
-                          Arc::clone(&self.executors),
-                      );
-                      let spec = (self.effect_handler)(fx, &ctx);
-                      scheduler.schedule(drive_spec(spec, ctx, self.event_tx.clone()));
-                 }
+                  CommandStep::Effect(fx) => {
+                      effect_count += 1;
+                       let ctx = EffectContext::new(
+                           self.resources.clone(),
+                           Arc::clone(&self.executors),
+                       );
+                       let spec = (self.effect_handler)(fx, &ctx);
+                       scheduler.schedule(drive_spec(spec, ctx, self.event_tx.clone()));
+                  }
                 CommandStep::Batch(effects) => {
-                     did_work = true;
-                     effect_count += effects.len();
-                      let ctx = EffectContext::new(
-                          self.resources.clone(),
-                          Arc::clone(&self.executors),
-                      );
-                      let handler = self.effect_handler;
-                      let event_tx = self.event_tx.clone();
-                     scheduler.schedule(async move {
-                         for fx in effects {
-                             let spec = handler(fx, &ctx);
-                             drive_spec(spec, ctx.clone(), event_tx.clone()).await;
-                         }
-                     });
+                      effect_count += effects.len();
+                       let ctx = EffectContext::new(
+                           self.resources.clone(),
+                           Arc::clone(&self.executors),
+                       );
+                       let handler = self.effect_handler;
+                       let event_tx = self.event_tx.clone();
+                      scheduler.schedule(async move {
+                          for fx in effects {
+                              let spec = handler(fx, &ctx);
+                              drive_spec(spec, ctx.clone(), event_tx.clone()).await;
+                          }
+                      });
                 }
                 CommandStep::Event(_) => unreachable!(),
             }
         }
 
         #[cfg(feature = "tracing")]
-        if did_work {
-            debug!(effects = effect_count, "Shell tick completed");
+        if effect_count > 0 {
+            debug!(effects = effect_count, "Shell drain completed");
         }
 
-        Ok(did_work)
+        Ok(effect_count)
+    }
+
+    /// Process at most one effect from the queue synchronously
+    ///
+    /// Returns true if an effect was processed, false if the queue was empty
+    pub fn poll_one_with<S>(&mut self, scheduler: S) -> Result<bool, ShellError>
+    where
+        S: crate::scheduler::Scheduler,
+    {
+        if let Ok(step) = self.effect_rx.try_recv() {
+            match step {
+                CommandStep::Effect(fx) => {
+                    let ctx = EffectContext::new(
+                        self.resources.clone(),
+                        Arc::clone(&self.executors),
+                    );
+                    let spec = (self.effect_handler)(fx, &ctx);
+                    scheduler.schedule(drive_spec(spec, ctx, self.event_tx.clone()));
+                }
+                CommandStep::Batch(effects) => {
+                    let ctx = EffectContext::new(
+                        self.resources.clone(),
+                        Arc::clone(&self.executors),
+                    );
+                    let handler = self.effect_handler;
+                    let event_tx = self.event_tx.clone();
+                    scheduler.schedule(async move {
+                        for fx in effects {
+                            let spec = handler(fx, &ctx);
+                            drive_spec(spec, ctx.clone(), event_tx.clone()).await;
+                        }
+                    });
+                }
+                CommandStep::Event(_) => unreachable!(),
+            }
+            Ok(true)
+        } else {
+            Ok(false)
+        }
+    }
+
+    /// Process all pending effects using the default scheduler
+    ///
+    /// Returns the count of effects processed
+    pub fn drain(&mut self) -> Result<usize, ShellError> {
+        self.drain_with(crate::scheduler::scheduler())
+    }
+
+    /// Process at most one effect using the default scheduler
+    ///
+    /// Returns true if an effect was processed, false if the queue was empty
+    pub fn poll_one(&mut self) -> Result<bool, ShellError> {
+        self.poll_one_with(crate::scheduler::scheduler())
+    }
+
+    /// Get the number of pending effects in the queue
+    ///
+    /// This can be used to check if there are effects waiting to be processed
+    /// without actually processing them.
+    #[must_use]
+    pub fn pending_effects(&self) -> usize {
+        self.effect_rx.len()
     }
 
     /// Check if the shell is closed

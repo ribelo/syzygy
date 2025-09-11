@@ -125,7 +125,7 @@ where
         S: Scheduler,
     {
         loop {
-            let did_work = self.tick(scheduler.clone()).await?;
+            let did_work = self.step_with(scheduler.clone())?;
 
             if !did_work {
                 self.config.runtime.sleep(self.config.idle_sleep).await;
@@ -149,14 +149,12 @@ where
         S: Scheduler,
     {
         loop {
-            let did_work = self.tick(scheduler.clone()).await?;
+            let did_work = self.step_with(scheduler.clone())?;
 
             // Check condition
             if condition(&self.core, &self.shell) {
                 break;
             }
-
-
 
             if !did_work {
                 self.config.runtime.sleep(self.config.idle_sleep).await;
@@ -170,14 +168,16 @@ where
     ///
     /// Returns true if work was done, false if idle.
     ///
+    /// # Deprecated
+    /// This method is deprecated. Use `step()` or `step_with()` instead for synchronous operation.
+    /// The async version will be removed in a future version.
+    ///
     /// # Example
     /// ```rust
     /// # use syzygy::prelude::*;
     /// # #[derive(Debug, Default)] struct Model;
     /// # #[derive(Debug, Clone)] enum Event { Test }
     /// # #[derive(Debug, Clone)] enum Effect { Test }
-    /// # #[tokio::main]
-    /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
     /// let (core, shell) = Syzygy::builder::<Event, Effect>()
     ///     .model(Model::default())
     ///     .event_handler(|_event: Event, _ctx| Command::none())
@@ -187,37 +187,19 @@ where
     /// let mut runner = Runner::new(core, shell);
     /// runner.core().send_event(Event::Test)?;
     ///
-    /// // Process the event
+    /// // Process the event synchronously
     /// let did_work = runner.tick(syzygy::scheduler::scheduler()).await?;
     /// assert!(did_work);
     /// # Ok(())
     /// # }
     /// ```
-    pub async fn tick<S>(&mut self, scheduler: S) -> Result<bool, RunnerError>
+    #[deprecated(since = "0.1.0", note = "Use `step()` or `step_with()` for synchronous operation")]
+    pub fn tick<S>(&mut self, scheduler: S) -> Result<bool, RunnerError>
     where
         S: Scheduler,
     {
-        let mut did_work = false;
-
-        // Process all events
-        let (processed, commands) = self.core.process_events();
-
-        if processed {
-            did_work = true;
-
-            // Dispatch commands to Shell (may route events back to Core)
-            for command in commands {
-                self.shell.dispatch(command).map_err(RunnerError::Shell)?;
-            }
-        }
-
-        // 4. Process effects in Shell (now async for sequential effect processing)
-        let shell_work = self.shell.tick(scheduler).await.map_err(RunnerError::Shell)?;
-        if shell_work {
-            did_work = true;
-        }
-
-        Ok(did_work)
+        // Delegate to the synchronous step_with method
+        self.step_with(scheduler)
     }
 
     /// Get a reference to the Core
@@ -255,14 +237,74 @@ where
         self.shell.shutdown();
     }
 
+    /// Execute a single synchronous step of the event loop
+    ///
+    /// This processes events from Core and effects from Shell synchronously.
+    /// Returns true if work was done, false if idle.
+    ///
+    /// # Example
+    /// ```rust
+    /// # use syzygy::prelude::*;
+    /// # #[derive(Debug, Default)] struct Model;
+    /// # #[derive(Debug, Clone)] enum Event { Test }
+    /// # #[derive(Debug, Clone)] enum Effect { Test }
+    /// let (core, shell) = Syzygy::builder::<Event, Effect>()
+    ///     .model(Model::default())
+    ///     .event_handler(|_event: Event, _ctx| Command::none())
+    ///     .effect_handler(|_effect: Effect, _ctx| async move { Outcome::None })
+    ///     .build();
+    ///
+    /// let mut runner = Runner::new(core, shell);
+    /// runner.core().send_event(Event::Test)?;
+    ///
+    /// // Process the event synchronously
+    /// let did_work = runner.step()?;
+    /// assert!(did_work);
+    /// ```
+    pub fn step(&mut self) -> Result<bool, RunnerError> {
+        self.step_with(crate::scheduler::scheduler())
+    }
+
+    /// Execute a single synchronous step of the event loop with custom scheduler
+    ///
+    /// This processes events from Core and effects from Shell synchronously.
+    /// Returns true if work was done, false if idle.
+    pub fn step_with<S>(&mut self, scheduler: S) -> Result<bool, RunnerError>
+    where
+        S: Scheduler,
+    {
+        let mut did_work = false;
+
+        // Process all events from Core
+        let (core_work, commands) = self.core.process_events();
+
+        if core_work {
+            did_work = true;
+
+            // Dispatch commands to Shell (may route events back to Core)
+            for command in commands {
+                self.shell.enqueue_command(command).map_err(RunnerError::Shell)?;
+            }
+        }
+
+        // Process effects in Shell synchronously
+        let shell_work = self.shell.drain_with(scheduler).map_err(RunnerError::Shell)?;
+        if shell_work > 0 {
+            did_work = true;
+        }
+
+        Ok(did_work)
+    }
+
     /// Run with default scheduler
     pub async fn run_default(&mut self) -> Result<(), RunnerError> {
         self.run(crate::scheduler::scheduler()).await
     }
 
-    /// Tick with default scheduler
-    pub async fn tick_default(&mut self) -> Result<bool, RunnerError> {
-        self.tick(crate::scheduler::scheduler()).await
+    /// Tick with default scheduler (deprecated, use step() instead)
+    #[deprecated(since = "0.1.0", note = "Use `step()` for synchronous operation")]
+    pub fn tick_default(&mut self) -> Result<bool, RunnerError> {
+        self.step()
     }
 }
 
