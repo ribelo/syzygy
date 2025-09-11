@@ -326,7 +326,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Wait for bootstrap to complete
     for _ in 0..20 {
-        let did_work = runner.tick(syzygy::spawn::spawner()).await?;
+        let did_work = runner.step()?;
         if !did_work {
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
@@ -355,7 +355,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Wait for mirror selection
     for _ in 0..30 {
-        let did_work = runner.tick(syzygy::spawn::spawner()).await?;
+        let did_work = runner.step()?;
         if !did_work {
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
@@ -388,7 +388,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Wait for workflow completion
     for _ in 0..30 {
-        let did_work = runner.tick(syzygy::spawn::spawner()).await?;
+        let did_work = runner.step()?;
         if !did_work {
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
@@ -411,7 +411,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     runner.core().send_event(AppEvent::Shutdown);
 
     // Quick cleanup tick but don't wait
-    runner.tick(syzygy::spawn::spawner()).await?;
+    runner.step()?;
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     // Print final state

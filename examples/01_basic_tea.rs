@@ -302,7 +302,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     for i in 1..=6 {
         println!("Step {i}: Incrementing counter");
         runner.core().send_event(CounterEvent::Increment);
-        runner.tick(syzygy::spawn::spawner()).await?;
+        runner.step()?;
 
         let counter: &CounterModel = runner.core().model();
         println!("  Count: {}, Message: {}\n", counter.count, counter.message);
@@ -311,7 +311,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Test decrement with magic handler
     println!("Testing decrement magic handler:");
     runner.core().send_event(CounterEvent::Decrement);
-    runner.tick(syzygy::spawn::spawner()).await?;
+    runner.step()?;
 
     let counter: &CounterModel = runner.core().model();
     println!("  State: {counter:?}\n");
@@ -319,7 +319,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Test reset with config access
     println!("Testing reset magic handler (with sound):");
     runner.core().send_event(CounterEvent::Reset);
-    runner.tick(syzygy::spawn::spawner()).await?;
+    runner.step()?;
 
     let counter: &CounterModel = runner.core().model();
     println!("  State: {counter:?}\n");
@@ -329,7 +329,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     runner.core().send_event(CounterEvent::SetMessage(
         "Magic handlers working!".to_string(),
     ));
-    runner.tick(syzygy::spawn::spawner()).await?;
+    runner.step()?;
 
     let counter: &CounterModel = runner.core().model();
     println!("  Final state: {counter:?}\n");

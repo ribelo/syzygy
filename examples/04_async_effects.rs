@@ -449,14 +449,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     runner.core().send_event(AppEvent::StartTask {
         task_id: "http_task_1".to_string(),
     });
-    runner.tick(syzygy::spawn::spawner()).await?;
+    runner.step()?;
 
     // Test 2: Database query
     println!("2. Starting database query task");
     runner.core().send_event(AppEvent::StartTask {
         task_id: "db_task_1".to_string(),
     });
-    runner.tick(syzygy::spawn::spawner()).await?;
+    runner.step()?;
 
     // Test 3: Batch parallel processing
     println!("3. Starting batch processing");
@@ -467,7 +467,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             "item3".to_string(),
         ],
     });
-    runner.tick(syzygy::spawn::spawner()).await?;
+    runner.step()?;
 
     // Test 4: Cache operations
     println!("4. Testing cache operations");
@@ -475,24 +475,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         key: "user_123".to_string(),
         value: "user_data".to_string(),
     });
-    runner.tick(syzygy::spawn::spawner()).await?;
+    runner.step()?;
 
     runner.core().send_event(AppEvent::LoadCachedData {
         key: "user_123".to_string(),
     });
-    runner.tick(syzygy::spawn::spawner()).await?;
+    runner.step()?;
 
     // Test 5: Delayed task
     println!("5. Starting delayed task");
     runner.core().send_event(AppEvent::StartTask {
         task_id: "delayed_task_1".to_string(),
     });
-    runner.tick(syzygy::spawn::spawner()).await?;
+    runner.step()?;
 
     // Wait for all async operations to complete
     println!("\nWaiting for all tasks to complete...");
     for _ in 0..10 {
-        runner.tick(syzygy::spawn::spawner()).await?;
+        runner.step()?;
         #[cfg(feature = "tokio")]
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 

@@ -1083,12 +1083,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         username: "admin".to_string(),
         password: "secret".to_string(),
     });
-    runner.tick(syzygy::spawn::spawner()).await?;
+    runner.step()?;
 
     // Wait a bit for async operations
     #[cfg(feature = "tokio")]
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-    runner.tick(syzygy::spawn::spawner()).await?;
+    runner.step()?;
 
     // Show current state
     let (user_state, app_state, _) = runner.core().model();
@@ -1108,11 +1108,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             notifications_enabled: true,
         },
     });
-    runner.tick(syzygy::spawn::spawner()).await?;
+    runner.step()?;
 
     #[cfg(feature = "tokio")]
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-    runner.tick(syzygy::spawn::spawner()).await?;
+    runner.step()?;
     println!();
 
     // Scenario 3: Data operations
@@ -1127,11 +1127,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             },
         });
     }
-    runner.tick(syzygy::spawn::spawner()).await?;
+    runner.step()?;
 
     // Wait for sync operation to complete
     for _ in 0..10 {
-        runner.tick(syzygy::spawn::spawner()).await?;
+        runner.step()?;
         #[cfg(feature = "tokio")]
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
@@ -1145,17 +1145,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Scenario 4: Error handling
     println!("4. Error handling (invalid login)");
     runner.core().send_event(AppEvent::UserLogout);
-    runner.tick(syzygy::spawn::spawner()).await?;
+    runner.step()?;
 
     runner.core().send_event(AppEvent::UserLoginAttempt {
         username: "invalid".to_string(),
         password: "wrong".to_string(),
     });
-    runner.tick(syzygy::spawn::spawner()).await?;
+    runner.step()?;
 
     #[cfg(feature = "tokio")]
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-    runner.tick(syzygy::spawn::spawner()).await?;
+    runner.step()?;
     println!();
 
     // Final state

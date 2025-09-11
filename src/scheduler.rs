@@ -252,7 +252,6 @@ pub fn scheduler() -> impl Scheduler {
 ///     Err(e) => println!("No runtime available: {}", e),
 /// }
 /// ```
-#[must_use]
 pub fn scheduler_strict() -> Result<impl Scheduler, &'static str> {
     #[cfg(feature = "tokio")]
     return TokioScheduler::new();

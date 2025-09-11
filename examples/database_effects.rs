@@ -285,14 +285,14 @@ fn simulate_database_save(_table: &str, user: &User) -> Result<(), String> {
 #[cfg(feature = "tokio")]
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    run_demo().await
+    run_demo()
 }
 
 #[cfg(feature = "examples")]
 #[cfg(all(not(feature = "tokio"), feature = "async-std"))]
 #[async_std::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    run_demo().await
+    run_demo()
 }
 
 #[cfg(feature = "examples")]
@@ -302,7 +302,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-async fn run_demo() -> Result<(), Box<dyn std::error::Error>> {
+fn run_demo() -> Result<(), Box<dyn std::error::Error>> {
     println!("🗄️  Database Effects Demo");
     println!("========================");
     println!("📚 Key Patterns:");
@@ -329,33 +329,33 @@ async fn run_demo() -> Result<(), Box<dyn std::error::Error>> {
     runner.core().send_event(AppEvent::ConnectDatabase {
         connection_string: "postgresql://localhost/demo".to_string(),
     });
-    runner.tick(syzygy::spawn::spawner()).await?;
+    runner.step()?;
 
     // Load a user
     println!("🚀 Step 2: Loading user data...");
     runner.core().send_event(AppEvent::LoadUser { user_id: 1 }); // Will find Alice
-    runner.tick(syzygy::spawn::spawner()).await?;
-    runner.tick(syzygy::spawn::spawner()).await?;
+    runner.step()?;
+    runner.step()?;
 
     // Try to load a user that exists
     println!("\n🔍 Loading existing user...");
     runner.core().send_event(AppEvent::LoadUser { user_id: 2 }); // Will find Bob
-    runner.tick(syzygy::spawn::spawner()).await?;
-    runner.tick(syzygy::spawn::spawner()).await?;
+    runner.step()?;
+    runner.step()?;
 
     // Try to load a user that doesn't exist
     println!("\n🔍 Loading non-existent user...");
     runner.core().send_event(AppEvent::LoadUser { user_id: 42 }); // Won't find
-    runner.tick(syzygy::spawn::spawner()).await?;
-    runner.tick(syzygy::spawn::spawner()).await?;
+    runner.step()?;
+    runner.step()?;
 
     // Try to load a user that causes database error
     println!("\n🔍 Triggering database error...");
     runner
         .core()
         .send_event(AppEvent::LoadUser { user_id: 999 }); // Will error
-    runner.tick(syzygy::spawn::spawner()).await?;
-    runner.tick(syzygy::spawn::spawner()).await?;
+    runner.step()?;
+    runner.step()?;
 
     // Save a new user
     println!("\n💾 Saving new user...");
@@ -367,8 +367,8 @@ async fn run_demo() -> Result<(), Box<dyn std::error::Error>> {
     runner
         .core()
         .send_event(AppEvent::SaveUser { user: new_user });
-    runner.tick(syzygy::spawn::spawner()).await?;
-    runner.tick(syzygy::spawn::spawner()).await?;
+    runner.step()?;
+    runner.step()?;
 
     // Try to save a user that will cause an error
     println!("\n💾 Triggering save error...");
@@ -380,8 +380,8 @@ async fn run_demo() -> Result<(), Box<dyn std::error::Error>> {
     runner
         .core()
         .send_event(AppEvent::SaveUser { user: bad_user });
-    runner.tick(syzygy::spawn::spawner()).await?;
-    runner.tick(syzygy::spawn::spawner()).await?;
+    runner.step()?;
+    runner.step()?;
 
     // Show final state
     println!("\n📊 Final State:");
