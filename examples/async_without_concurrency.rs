@@ -4,7 +4,7 @@
 //! concurrent execution, matching the principles from Loris Cro's article.
 
 use syzygy::prelude::*;
-use syzygy::executor::{InlineAsync, Task, Outcome};
+use syzygy::executor::{InlineAsync, Task};
 use syzygy::scheduler::BlockingScheduler;
 
 #[derive(Debug, Clone)]
@@ -42,16 +42,26 @@ fn update(event: Event, ctx: &mut EventContext<Event, Effect, Model>) -> Command
     }
 }
 
-fn handle_effects(effect: Effect, _ctx: &EffectContext<Event, ()>) -> Task<Event, ()> {
+fn handle_effects(effect: Effect, ctx: &EffectContext<Event, ()>) -> Task<Event, ()> {
     match effect {
         Effect::SaveFile { name } => {
-            // This returns a best-effort task - it can run inline if no executor
-            Task::best_effort::<InlineAsync<Event>, _>(async move {
+            // Using ctx.spawn_best_effort - provides access to context for resources, events, etc.
+            ctx.spawn_best_effort::<InlineAsync<Event>, _, _>(move |_ctx| async move {
                 println!("📝 Saving {}...", name);
-                // Simulate async work (in real code, this would be actual async I/O)
+                // In real code, you could use ctx here to:
+                // - Access resources: ctx.resources()
+                // - Send events: ctx.send_event()
+                // - Spawn more tasks: ctx.spawn_best_effort()
                 println!("✅ Saved {}", name);
-                Outcome::Events(vec![Event::FilesSaved { count: 1 }])
+                vec![Event::FilesSaved { count: 1 }].into()  // Vec<E> converts to Outcome<E>
             })
+            
+            // Alternative: Direct Task creation (when you don't need context)
+            // Task::best_effort::<InlineAsync<Event>, _>(async move {
+            //     println!("📝 Saving {}...", name);
+            //     println!("✅ Saved {}", name);
+            //     vec![Event::FilesSaved { count: 1 }].into()
+            // })
         }
     }
 }
