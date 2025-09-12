@@ -234,12 +234,14 @@ where
 
     /// Shutdown the runner gracefully
     /// Create runner with custom idle sleep duration
+    #[must_use]
     pub fn with_idle_sleep(mut self, duration: Duration) -> Self {
         self.config.idle_sleep = duration;
         self
     }
 
     /// Create runner with custom runtime
+    #[must_use]
     pub fn with_runtime(mut self, runtime: Time) -> Self {
         self.config.runtime = runtime;
         self
@@ -348,7 +350,7 @@ where
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Runner")
             .field("config", &self.config)
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 #[cfg(all(test, feature = "legacy_tests"))]

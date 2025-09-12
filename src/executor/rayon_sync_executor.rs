@@ -13,7 +13,7 @@ use std::marker::PhantomData;
 /// Rayon-backed executor for synchronous tasks
 pub struct RayonSyncExecutor<E>
 where
-    E: Send + Sync + 'static,
+    E: Send + 'static,
 {
     pool: rayon::ThreadPool,
     _phantom: PhantomData<E>,
@@ -21,7 +21,7 @@ where
 
 impl<E> std::fmt::Debug for RayonSyncExecutor<E>
 where
-    E: Send + Sync + 'static,
+    E: Send + 'static,
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "RayonSyncExecutor")
@@ -30,7 +30,7 @@ where
 
 impl<E> RayonSyncExecutor<E>
 where
-    E: Send + Sync + 'static,
+    E: Send + 'static,
 {
     /// Create a new `RayonSyncExecutor` with `n_threads` threads. If `None`, uses available parallelism.
     #[must_use]
@@ -57,7 +57,7 @@ where
 
 impl<E> SyncExecutor<E> for RayonSyncExecutor<E>
 where
-    E: Send + Sync + 'static,
+    E: Send + 'static,
 {
     fn spawn_sync(
         &self,
@@ -74,7 +74,7 @@ where
 
 impl<E> crate::executor::ExecutorLifecycle for RayonSyncExecutor<E>
 where
-    E: Send + Sync + 'static,
+    E: Send + 'static,
 {
     fn shutdown(&self) {}
     fn join(&self) -> BoxFuture<'static, ()> {

@@ -300,7 +300,7 @@ where
             .field("resources", &"<resources>")
             .field("pending_effects", &"<pending>")
             .field("closed", &self.closed)
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 #[cfg(all(test, feature = "legacy_tests"))]

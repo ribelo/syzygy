@@ -210,7 +210,7 @@ where
             .field("model", &self.model)
             .field("pending_events", &!self.event_queue.is_empty())
             .field("command_buffer_size", &self.command_buffer.len())
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 #[cfg(test)]

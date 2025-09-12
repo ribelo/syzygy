@@ -17,7 +17,7 @@ pub struct SyzygyBuilder<E, X, M, R> {
 
 impl<E, X> Default for SyzygyBuilder<E, X, (), ()>
 where
-    E: Send + Sync + 'static,
+    E: Send + 'static,
     X: Send + 'static,
 {
     fn default() -> Self {
@@ -27,7 +27,7 @@ where
 
 impl<E, X> SyzygyBuilder<E, X, (), ()>
 where
-    E: Send + Sync + 'static,
+    E: Send + 'static,
     X: Send + 'static,
 {
     /// Create a new builder with empty model and resources
@@ -44,7 +44,7 @@ where
 
 impl<Event, Effect, Model, Resource> SyzygyBuilder<Event, Effect, Model, Resource>
 where
-    Event: Send + Sync + 'static,
+    Event: Send + 'static,
     Effect: Send + 'static,
     Model: 'static,
     Resource: Clone + Send + Sync + 'static,
@@ -101,7 +101,7 @@ pub struct ConfiguredBuilder<Event, Effect, Model, Resource> {
 
 impl<Event, Effect, Model, Resource> ConfiguredBuilder<Event, Effect, Model, Resource>
 where
-    Event: Send + Sync + 'static,
+    Event: Send + 'static,
     Effect: Send + 'static,
     Resource: Clone + Send + Sync + 'static,
 {
@@ -178,7 +178,7 @@ where
     #[must_use]
     pub fn with_async_executor<T>(self, exec: T) -> Self
     where
-        T: AsyncExecutor<Event> + Send + Sync + 'static,
+        T: AsyncExecutor<Event> + Send + 'static,
     {
         let mut reg = self.exec_registry.unwrap_or_default();
         reg.insert_async(exec);
@@ -195,7 +195,7 @@ where
     #[must_use]
     pub fn with_sync_executor<T>(self, exec: T) -> Self
     where
-        T: SyncExecutor<Event> + Send + Sync + 'static,
+        T: SyncExecutor<Event> + Send + 'static,
     {
         let mut reg = self.exec_registry.unwrap_or_default();
         reg.insert_sync(exec);
@@ -269,7 +269,7 @@ impl Syzygy {
     #[must_use]
     pub fn builder<Event, Effect>() -> SyzygyBuilder<Event, Effect, (), ()>
     where
-        Event: Send + Sync + 'static,
+        Event: Send + 'static,
         Effect: Send + 'static,
     {
         SyzygyBuilder::new()
