@@ -114,6 +114,7 @@
 // Executor storage module removed - using direct FxHashMap
 #[cfg(feature = "rayon")]
 pub mod rayon_sync_executor;
+pub mod inline_async;
 pub mod registry;
 pub mod single_thread_executor;
 pub mod spec;
@@ -147,6 +148,8 @@ pub use single_thread_executor::SingleThreadExecutor;
 pub use tokio_executor::{TokioCpu, TokioExecutor, TokioIo};
 #[cfg(feature = "tokio")]
 pub use tokio_current::TokioCurrent;
+
+pub use inline_async::InlineAsync;
 
 pub use spec::Outcome;
 pub use registry::ExecutorRegistry;

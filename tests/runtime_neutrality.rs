@@ -64,7 +64,7 @@ fn test_effect_handler(
 ) -> syzygy::executor::Task<TestEvent, ()> {
     match effect {
         TestEffect::Delay(duration) => {
-            syzygy::executor::Task::future_on::<TokioIo, _, _, _>(move |_ctx| async move {
+            syzygy::executor::Task::best_effort::<TokioIo, _>(async move {
                 #[cfg(feature = "tokio")]
                 tokio::time::sleep(duration).await;
 

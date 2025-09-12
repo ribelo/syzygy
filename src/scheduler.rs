@@ -73,6 +73,11 @@ pub trait Scheduler: Clone + Send + Sync + 'static {
     /// This method accepts any future that outputs `()` without requiring boxing.
     /// The implementation handles the actual scheduling mechanism for the specific runtime.
     fn schedule(&self, future: impl Future<Output = ()> + Send + 'static);
+
+    /// Returns true if this scheduler can execute tasks concurrently
+    fn allows_overlap(&self) -> bool {
+        true // Default to true for backward compatibility
+    }
 }
 
 /// Legacy schedule function signature for backward compatibility
@@ -424,6 +429,34 @@ pub fn auto_schedule_boxed()
     compile_error!(
         "syzygy requires at least one async runtime feature: enable 'tokio', 'smol', or 'async-std'"
     );
+}
+
+// =============================================================================
+// BLOCKING SCHEDULER - INLINE EXECUTION
+// =============================================================================
+
+/// A scheduler that runs futures to completion inline (no concurrency)
+///
+/// This scheduler uses `block_on` to execute futures synchronously,
+/// providing "asynchrony without concurrency" - tasks complete in any order
+/// but without overlapping execution.
+#[derive(Debug, Clone, Copy)]
+pub struct BlockingScheduler;
+
+impl Scheduler for BlockingScheduler {
+    fn schedule(&self, future: impl Future<Output = ()> + Send + 'static) {
+        // Run the future to completion immediately, no spawning
+        futures::executor::block_on(future);
+    }
+
+    fn allows_overlap(&self) -> bool {
+        false // BlockingScheduler runs tasks sequentially
+    }
+}
+
+/// Create a blocking scheduler for single-threaded, non-concurrent execution
+pub fn blocking_scheduler() -> BlockingScheduler {
+    BlockingScheduler
 }
 
 #[cfg(test)]

@@ -475,6 +475,9 @@ pub mod prelude {
     #[cfg(feature = "async-std")]
     pub use crate::scheduler::AsyncStdScheduler;
 
+    // Always available - no feature gate needed
+    pub use crate::scheduler::{BlockingScheduler, blocking_scheduler};
+
 // Executor system
 #[cfg(feature = "rayon")]
 pub use crate::executor::RayonExecutor;
@@ -482,7 +485,7 @@ pub use crate::executor::RayonExecutor;
 #[cfg(feature = "tokio")]
 pub use crate::executor::TokioExecutor;
  pub use crate::executor::spec::Outcome;
-pub use crate::executor::{Task, ExecutorRegistry, SingleThreadExecutor};
+pub use crate::executor::{Task, ExecutorRegistry, SingleThreadExecutor, InlineAsync};
 
     // Builder
     pub use crate::builder::{Syzygy, SyzygyBuilder};

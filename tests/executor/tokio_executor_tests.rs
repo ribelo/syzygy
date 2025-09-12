@@ -321,32 +321,6 @@ async fn executor_handles_effect_output_none_correctly() {
     executor.join().await;
 }
 
-#[tokio::test]
-async fn executor_handles_task_stream_correctly() {
-    // Given: A TokioExecutor
-    let executor = TokioExecutor::current_thread_io("test_stream");
-
-    // When: Creating a stream task
-    let task = Task::<TestEvent, ()>::stream_on::<TokioExecutor, _, _>(|_ctx| {
-        let events = vec![
-            TestEvent::Success(1),
-            TestEvent::Success(2),
-            TestEvent::Success(3),
-        ];
-        futures_util::stream::iter(events).boxed()
-    });
-
-    // Then: Task should be created successfully
-    // Note: We can't easily test the stream execution in this unit test
-    // since it requires the full drive_spec machinery
-    match task {
-        Task::Stream { .. } => {} // Success - it's a stream task
-        _other => panic!("Expected Stream task"),
-    }
-
-    executor.join().await;
-}
-
 // Test executor variants for different configurations
 #[tokio::test]
 async fn executor_various_configurations_work_correctly_for_basic_task_execution() {

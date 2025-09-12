@@ -27,9 +27,11 @@
 //! - Resources provide shared data access
 //! - Event sending bridges back to the Core
 
+use std::future::Future;
 use std::sync::Arc;
 
 use crate::executor::{AsyncExecutor, ExecutorRegistry, SyncExecutor};
+
 use std::any::TypeId;
 
 /// `EffectContext` provides access to executors and resources within effect handlers
@@ -105,41 +107,24 @@ where
         self.executors.sync_exec::<T>()
     }
 
-    /// Spawn async work on specified executor
-    pub fn spawn<Exec, F, Fut, O>(&self, f: F) -> crate::executor::spec::Task<E, R>
+    /// Spawn a task that can run inline if no executor is available
+    pub fn spawn_best_effort<Exec, F, Fut>(&self, f: F) -> crate::executor::spec::Task<E, R>
     where
-        Exec: crate::executor::AsyncExecutor<E> + 'static,
+        Exec: 'static,
         F: FnOnce(EffectContext<E, R>) -> Fut + Send + 'static,
-        Fut: std::future::Future<Output = O> + Send + 'static,
-        O: Into<crate::executor::Outcome<E>>,
-        E: Send + 'static,
-        R: Clone + Send + Sync + 'static,
+        Fut: Future<Output = crate::executor::spec::Outcome<E>> + Send + 'static,
     {
-        crate::executor::spec::Task::future_on::<Exec, _, _, _>(f)
+        crate::executor::spec::Task::best_effort_with::<Exec, _, _>(f)
     }
 
-    /// Spawn sync work on specified executor
-    pub fn spawn_sync<Exec, F, O>(&self, f: F) -> crate::executor::spec::Task<E, R>
+    /// Spawn a task that requires concurrent execution
+    pub fn spawn_concurrent<Exec, F, Fut>(&self, f: F) -> crate::executor::spec::Task<E, R>
     where
-        Exec: crate::executor::SyncExecutor<E> + 'static,
-        F: FnOnce(EffectContext<E, R>) -> O + Send + 'static,
-        O: Into<crate::executor::Outcome<E>>,
-        E: Send + 'static,
-        R: Clone + Send + Sync + 'static,
+        Exec: 'static,
+        F: FnOnce(EffectContext<E, R>) -> Fut + Send + 'static,
+        Fut: Future<Output = crate::executor::spec::Outcome<E>> + Send + 'static,
     {
-        crate::executor::spec::Task::sync_on::<Exec, _, _>(f)
-    }
-
-    /// Spawn a stream on specified executor
-    pub fn spawn_stream<Exec, F, S>(&self, f: F) -> crate::executor::spec::Task<E, R>
-    where
-        Exec: crate::executor::AsyncExecutor<E> + 'static,
-        F: FnOnce(EffectContext<E, R>) -> S + Send + 'static,
-        S: futures::Stream<Item = E> + Send + 'static,
-        E: Send + 'static,
-        R: Clone + Send + Sync + 'static,
-    {
-        crate::executor::spec::Task::stream_on::<Exec, _, _>(f)
+        crate::executor::spec::Task::concurrent_with::<Exec, _, _>(f)
     }
 }
 
