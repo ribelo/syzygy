@@ -30,7 +30,7 @@
 use std::future::Future;
 use std::sync::Arc;
 
-use crate::executor::{AsyncExecutor, ExecutorRegistry, SyncExecutor};
+use crate::executor::{Concurrent, AsyncExecutor, ExecutorRegistry, SyncExecutor};
 
 use std::any::TypeId;
 
@@ -110,7 +110,7 @@ where
     /// Spawn a task that can run inline if no executor is available
     pub fn spawn_best_effort<Exec, F, Fut>(&self, f: F) -> crate::executor::spec::Task<E, R>
     where
-        Exec: 'static,
+        Exec: AsyncExecutor<E> + 'static,
         F: FnOnce(EffectContext<E, R>) -> Fut + Send + 'static,
         Fut: Future<Output = crate::executor::spec::Outcome<E>> + Send + 'static,
     {
@@ -120,7 +120,7 @@ where
     /// Spawn a task that requires concurrent execution
     pub fn spawn_concurrent<Exec, F, Fut>(&self, f: F) -> crate::executor::spec::Task<E, R>
     where
-        Exec: 'static,
+        Exec: AsyncExecutor<E> + Concurrent + 'static,
         F: FnOnce(EffectContext<E, R>) -> Fut + Send + 'static,
         Fut: Future<Output = crate::executor::spec::Outcome<E>> + Send + 'static,
     {

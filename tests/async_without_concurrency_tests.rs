@@ -1,6 +1,6 @@
 //! Basic tests for the simplified Task API
 
-use syzygy::executor::{InlineAsync, Task, Outcome};
+use syzygy::executor::{InlineAsync, Task, Outcome, TokioExecutor};
 use syzygy::scheduler::{BlockingScheduler, Scheduler};
 use syzygy::executor::spec::{Concurrency, Fallback};
 
@@ -31,7 +31,7 @@ fn test_task_creation_methods() {
     }
 
     // Test concurrent creates task with correct defaults
-    let task = Task::<(), ()>::concurrent::<InlineAsync<()>, _>(
+    let task = Task::<(), ()>::concurrent::<TokioExecutor, _>(
         async move { Outcome::None }
     );
 
@@ -61,7 +61,7 @@ fn test_task_creation_methods() {
     }
 
     // Test concurrent_with creates task with correct defaults
-    let task = Task::<(), ()>::concurrent_with::<InlineAsync<()>, _, _>(
+    let task = Task::<(), ()>::concurrent_with::<TokioExecutor, _, _>(
         |_ctx| async move { Outcome::None }
     );
 

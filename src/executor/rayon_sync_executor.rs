@@ -3,7 +3,7 @@
 //! Runs synchronous effect tasks on a dedicated Rayon thread pool. Tasks are
 //! closures that return `EffectResult<E>` and are executed on Rayon workers.
 
-use crate::executor::{ExecutorError, SyncExecutor, Outcome};
+use crate::executor::{ExecutorError, SyncExecutor, Concurrent, Outcome};
 
 use futures::channel::oneshot;
 use futures_util::future::{BoxFuture, FutureExt, ready};
@@ -18,6 +18,8 @@ where
     pool: rayon::ThreadPool,
     _phantom: PhantomData<E>,
 }
+
+impl<E> Concurrent for RayonSyncExecutor<E> {}
 
 impl<E> std::fmt::Debug for RayonSyncExecutor<E>
 where

@@ -8,7 +8,7 @@ use futures_util::future::{BoxFuture, FutureExt, Shared};
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
-use crate::executor::{ExecutorError, ExecutorLifecycle, SyncExecutor, Outcome};
+use crate::executor::{ExecutorError, ExecutorLifecycle, SyncExecutor, Sequential, Outcome};
 
 /// `SingleThreadExecutor` — FIFO, single-worker executor for sync work only
 ///
@@ -23,6 +23,8 @@ use crate::executor::{ExecutorError, ExecutorLifecycle, SyncExecutor, Outcome};
 pub struct SingleThreadExecutor {
     state: Arc<State>,
 }
+
+impl Sequential for SingleThreadExecutor {}
 
 impl fmt::Debug for SingleThreadExecutor {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {

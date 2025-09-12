@@ -263,3 +263,9 @@ pub trait SyncExecutor<E>: ExecutorLifecycle {
         job: Box<dyn FnOnce() -> Outcome<E> + Send>,
     ) -> BoxFuture<'static, Result<Outcome<E>, ExecutorError>>;
 }
+
+/// Marker trait for executors that support concurrent/overlapping execution
+pub trait Concurrent: 'static {}
+
+/// Marker trait for executors that only support sequential execution
+pub trait Sequential: 'static {}

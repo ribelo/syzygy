@@ -1,6 +1,6 @@
 //! TokioCurrent executor - uses current runtime only
 
-use crate::executor::{AsyncExecutor, ExecutorError, ExecutorLifecycle, Outcome};
+use crate::executor::{Concurrent, AsyncExecutor, ExecutorError, ExecutorLifecycle, Outcome};
 use futures_util::future::{AbortHandle, BoxFuture};
 use std::future::Future;
 use std::pin::Pin;
@@ -13,6 +13,8 @@ use tokio::task::JoinHandle;
 pub struct TokioCurrent {
     handle: Handle,
 }
+
+impl Concurrent for TokioCurrent {}
 
 impl TokioCurrent {
     pub fn new() -> Result<Self, &'static str> {

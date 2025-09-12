@@ -46,7 +46,7 @@
 // - **TokioIo**: Uses `enable_all()` - full tokio feature set for IO operations
 // - **TokioCpu**: Uses `enable_time()` only - minimal runtime for CPU work
 // - **Thread models**: Both support `current_thread` and `multi_thread` configurations
-use crate::executor::{AsyncExecutor, ExecutorError, ExecutorLifecycle, register_io_runtime};
+use crate::executor::{Concurrent, AsyncExecutor, ExecutorError, ExecutorLifecycle, register_io_runtime};
 
 use futures::{
     TryFutureExt,
@@ -65,6 +65,8 @@ use tokio::{
 pub struct TokioExecutor {
     state: Arc<RwLock<State>>, // shared across clones
 }
+
+impl Concurrent for TokioExecutor {}
 
 /// Inner state managed by the worker thread lifecycle.
 struct State {
@@ -323,6 +325,8 @@ impl crate::executor::ExecutorLifecycle for TokioExecutor {
 #[derive(Clone)]
 pub struct TokioIo(pub TokioExecutor);
 
+impl Concurrent for TokioIo {}
+
 impl TokioIo {
     /// Create a current-thread IO executor
     #[must_use]
@@ -395,6 +399,8 @@ impl TokioIo {
 #[cfg_attr(docsrs, doc(cfg(feature = "tokio")))]
 #[derive(Clone)]
 pub struct TokioCpu(pub TokioExecutor);
+
+impl Concurrent for TokioCpu {}
 
 impl TokioCpu {
     /// Create a current-thread CPU executor

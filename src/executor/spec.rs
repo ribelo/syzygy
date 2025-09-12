@@ -9,7 +9,7 @@ use crate::scheduler::Scheduler;
 #[cfg(feature = "tracing")]
 use tracing::error;
 
-use super::ExecutorError;
+use super::{Concurrent, AsyncExecutor, ExecutorError};
 use std::any::TypeId;
 
 
@@ -142,7 +142,7 @@ where
     /// Create a best-effort task from an async block
     pub fn best_effort<Exec, Fut>(future: Fut) -> Self
     where
-        Exec: 'static,
+        Exec: AsyncExecutor<E> + 'static,
         Fut: Future<Output = Outcome<E>> + Send + 'static,
     {
         Self::Future {
@@ -156,7 +156,7 @@ where
     /// Create a concurrent task from an async block
     pub fn concurrent<Exec, Fut>(future: Fut) -> Self
     where
-        Exec: 'static,
+        Exec: AsyncExecutor<E> + Concurrent + 'static,
         Fut: Future<Output = Outcome<E>> + Send + 'static,
     {
         Self::Future {
@@ -170,7 +170,7 @@ where
     /// Create a best-effort task with context access
     pub fn best_effort_with<Exec, F, Fut>(f: F) -> Self
     where
-        Exec: 'static,
+        Exec: AsyncExecutor<E> + 'static,
         F: FnOnce(EffectContext<E, R>) -> Fut + Send + 'static,
         Fut: Future<Output = Outcome<E>> + Send + 'static,
     {
@@ -185,7 +185,7 @@ where
     /// Create a concurrent task with context access
     pub fn concurrent_with<Exec, F, Fut>(f: F) -> Self
     where
-        Exec: 'static,
+        Exec: AsyncExecutor<E> + Concurrent + 'static,
         F: FnOnce(EffectContext<E, R>) -> Fut + Send + 'static,
         Fut: Future<Output = Outcome<E>> + Send + 'static,
     {
@@ -533,7 +533,7 @@ mod outcome_tests {
         }
 
         // Test concurrent creates task with correct defaults
-        let task: Task<TestEvent, ()> = Task::concurrent::<crate::executor::InlineAsync<TestEvent>, _>(
+        let task: Task<TestEvent, ()> = Task::concurrent::<crate::executor::TokioExecutor, _>(
             async move { Outcome::Event(TestEvent::A) }
         );
 
@@ -559,7 +559,7 @@ mod outcome_tests {
         }
 
         // Test concurrent_with creates task with correct defaults
-        let task: Task<TestEvent, ()> = Task::concurrent_with::<crate::executor::InlineAsync<TestEvent>, _, _>(
+        let task: Task<TestEvent, ()> = Task::concurrent_with::<crate::executor::TokioExecutor, _, _>(
             |_ctx| async move { Outcome::Event(TestEvent::A) }
         );
 
