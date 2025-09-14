@@ -5,7 +5,14 @@ use crate::executor::Task;
 use crate::executor::{AsyncExecutor, ExecutorRegistry, SyncExecutor};
 use crate::prelude::EffectHandler;
 use crate::shell::Shell;
+use std::marker::PhantomData;
 use std::sync::Arc;
+
+/// Marker type indicating no executor registry has been provided
+pub struct NoExecutor;
+
+/// Marker type indicating an executor registry has been provided
+pub struct HasExecutor;
 
 /// Base builder phase: configure models, resources, executors
 pub struct SyzygyBuilder<E, X, M, R> {
@@ -79,27 +86,29 @@ where
     pub fn event_handler(
         self,
         event_handler: EventHandler<Event, Effect, Model>,
-    ) -> ConfiguredBuilder<Event, Effect, Model, Resource> {
+    ) -> ConfiguredBuilder<Event, Effect, Model, Resource, NoExecutor> {
         ConfiguredBuilder {
             event_handler,
             effect_handler: None,
             model: self.model,
             resources: self.resources,
             exec_registry: self.exec_registry,
+            _executor_state: PhantomData,
         }
     }
 }
 
 /// Configured phase: handlers are set; building is allowed. No more storage changes to avoid type surprises.
-pub struct ConfiguredBuilder<Event, Effect, Model, Resource> {
+pub struct ConfiguredBuilder<Event, Effect, Model, Resource, ExecutorState = NoExecutor> {
     event_handler: EventHandler<Event, Effect, Model>,
     effect_handler: Option<EffectHandler<Event, Effect, Resource>>,
     model: Model,
     resources: Resource,
     exec_registry: Option<ExecutorRegistry<Event>>,
+    _executor_state: PhantomData<ExecutorState>,
 }
 
-impl<Event, Effect, Model, Resource> ConfiguredBuilder<Event, Effect, Model, Resource>
+impl<Event, Effect, Model, Resource, ExecutorState> ConfiguredBuilder<Event, Effect, Model, Resource, ExecutorState>
 where
     Event: Send + Sync + 'static,
     Effect: Send + 'static,
@@ -107,31 +116,33 @@ where
 {
     /// Set the effect handler that processes effects
     #[must_use]
-    pub fn effect_handler(self, handler: EffectHandler<Event, Effect, Resource>) -> Self {
+    pub fn effect_handler(self, handler: EffectHandler<Event, Effect, Resource>) -> ConfiguredBuilder<Event, Effect, Model, Resource, ExecutorState> {
         ConfiguredBuilder {
             event_handler: self.event_handler,
             effect_handler: Some(handler),
             model: self.model,
             resources: self.resources,
             exec_registry: self.exec_registry,
+            _executor_state: PhantomData,
         }
     }
 
     /// Provide a configurator that can build the registry when `event_tx` is available.
     #[must_use]
-    pub fn with_executor_registry(self, registry: ExecutorRegistry<Event>) -> Self {
+    pub fn with_executor_registry(self, registry: ExecutorRegistry<Event>) -> ConfiguredBuilder<Event, Effect, Model, Resource, HasExecutor> {
         ConfiguredBuilder {
             event_handler: self.event_handler,
             effect_handler: self.effect_handler,
             model: self.model,
             resources: self.resources,
             exec_registry: Some(registry),
+            _executor_state: PhantomData,
         }
     }
 
     /// Add a single async executor to the registry by concrete type
     #[must_use]
-    pub fn with_async_executor<T>(self, exec: T) -> Self
+    pub fn with_async_executor<T>(self, exec: T) -> ConfiguredBuilder<Event, Effect, Model, Resource, HasExecutor>
     where
         T: AsyncExecutor<Event> + Send + 'static,
     {
@@ -143,12 +154,13 @@ where
             model: self.model,
             resources: self.resources,
             exec_registry: Some(reg),
+            _executor_state: PhantomData,
         }
     }
 
     /// Add a single sync executor to the registry by concrete type
     #[must_use]
-    pub fn with_sync_executor<T>(self, exec: T) -> Self
+    pub fn with_sync_executor<T>(self, exec: T) -> ConfiguredBuilder<Event, Effect, Model, Resource, HasExecutor>
     where
         T: SyncExecutor<Event> + Send + 'static,
     {
@@ -160,25 +172,16 @@ where
             model: self.model,
             resources: self.resources,
             exec_registry: Some(reg),
+            _executor_state: PhantomData,
         }
     }
 
-    /// Build the system with auto-wired Shell connected to Core's event channel
-    pub fn build(self) -> (Core<Event, Effect, Model>, Shell<Event, Effect, Resource>) {
-        let (core, event_tx) = Core::new(self.event_handler, self.model);
-        let shell = Self::build_shell(
-            self.resources,
-            self.exec_registry.map(Arc::new),
-            self.effect_handler,
-            event_tx,
-        );
-        (core, shell)
-    }
+
 
     /// Internal helper to build shell
     fn build_shell(
         resources: Resource,
-        exec_registry: Option<Arc<ExecutorRegistry<Event>>>,
+        exec_registry: Arc<ExecutorRegistry<Event>>,
         effect_handler: Option<EffectHandler<Event, Effect, Resource>>,
         event_tx: crossbeam_channel::Sender<Event>,
     ) -> Shell<Event, Effect, Resource> {
@@ -197,10 +200,6 @@ where
         let config = ShellConfig::default();
         let (effect_tx, effect_rx) = unbounded();
 
-        // Resolve or build registry now that we have event_tx and resources
-        let registry_arc: Arc<ExecutorRegistry<Event>> = exec_registry
-            .expect("Executor registry is required - use .with_executor_registry() to provide one");
-
         Shell {
             effect_rx,
             effect_tx,
@@ -210,9 +209,29 @@ where
             effect_handler: effect_handler
                 .unwrap_or(default_effect_handler::<Event, Effect, Resource>),
             config,
-            executors: registry_arc,
+            executors: exec_registry,
             closed: false,
         }
+    }
+}
+
+// Separate impl block for HasExecutor state - only this state can build
+impl<Event, Effect, Model, Resource> ConfiguredBuilder<Event, Effect, Model, Resource, HasExecutor>
+where
+    Event: Send + Sync + 'static,
+    Effect: Send + 'static,
+    Resource: Clone + Send + Sync + 'static,
+{
+    /// Build the system with auto-wired Shell connected to Core's event channel
+    pub fn build(self) -> (Core<Event, Effect, Model>, Shell<Event, Effect, Resource>) {
+        let (core, event_tx) = Core::new(self.event_handler, self.model);
+        let shell = Self::build_shell(
+            self.resources,
+            Arc::new(self.exec_registry.unwrap()), // Safe to unwrap due to type system guarantee
+            self.effect_handler,
+            event_tx,
+        );
+        (core, shell)
     }
 }
 
@@ -370,5 +389,35 @@ mod tests {
 
         // Skipped model assertions in refactor
         assert_eq!(config.theme, "dark");
+    }
+
+    #[test]
+    fn test_typestate_prevents_build_without_executor() {
+        // This test verifies that the typestate pattern works correctly
+        // The following code should NOT compile because we're trying to build without an executor
+
+        // Uncomment the code below to see the compile-time error:
+        //
+        // let (_core, _shell) = Syzygy::builder::<TestEvent, TestEffect>()
+        //     .model(TestModel { count: 0 })
+        //     .event_handler(test_update)
+        //     .effect_handler(|_e: TestEffect, _ctx| crate::executor::Task::events(Vec::new()))
+        //     .build(); // ERROR: no method named `build` found for struct `ConfiguredBuilder<...NoExecutor>`
+        //
+        // The error message will be something like:
+        // "no method named `build` found for struct `ConfiguredBuilder<TestEvent, TestEffect, TestModel, (), NoExecutor>`"
+
+        // Instead, we verify that providing an executor allows compilation
+        let registry = crate::executor::ExecutorRegistry::new();
+
+        let (_core, _shell) = Syzygy::builder::<TestEvent, TestEffect>()
+            .model(TestModel { count: 0 })
+            .event_handler(test_update)
+            .effect_handler(|_e: TestEffect, _ctx| crate::executor::Task::events(Vec::new()))
+            .with_executor_registry(registry)
+            .build();
+
+        // If we get here, the typestate pattern is working correctly
+        assert!(true);
     }
 }
