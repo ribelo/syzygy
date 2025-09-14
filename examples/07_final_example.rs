@@ -16,7 +16,7 @@
 
 use std::collections::HashMap;
 use syzygy::executor::Outcome;
-use syzygy::executor::{Task, TokioIo};
+use syzygy::executor::{ExecutorRegistry, Task, TokioIo};
 use syzygy::prelude::*;
 
 use futures::FutureExt;
@@ -1043,7 +1043,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("=== Real-World Application Demo ===");
     println!("Complete application with authentication, notifications, and data sync\n");
 
-    // Build the complete system with default executors
+    // Build the complete system with explicit executors
+    let mut registry = ExecutorRegistry::new();
+    registry.insert_async(TokioIo::default());
+
     let (core, shell) = Syzygy::builder()
         // Application state
         .model((
@@ -1070,7 +1073,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         ))
         .event_handler(event_handler)
         .effect_handler(handle_effects)
-        .with_default_executors()
+        .with_executor_registry(registry)
         .build();
     let mut runner = Runner::new(core, shell);
 

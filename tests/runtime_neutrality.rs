@@ -17,7 +17,7 @@ use syzygy::scheduler::scheduler;
 
 use futures::FutureExt;
 use syzygy::executor::Outcome;
-use syzygy::executor::TokioIo;
+use syzygy::executor::{ExecutorRegistry, TokioIo};
 
 #[derive(Debug, Clone)]
 enum TestEvent {
@@ -83,11 +83,14 @@ fn test_effect_handler(
 #[cfg(feature = "tokio")]
 #[tokio::test]
 async fn test_runtime_auto_detection() {
+    let mut registry = ExecutorRegistry::new();
+    registry.insert_async(TokioIo::default());
+
     let (core, shell) = Syzygy::builder::<TestEvent, TestEffect>()
         .model(TestModel::default())
         .event_handler(test_update)
         .effect_handler(test_effect_handler)
-        .with_default_executors()
+        .with_executor_registry(registry)
         .build();
 
     let mut runner = Runner::new(core, shell);
@@ -110,11 +113,14 @@ async fn test_runtime_auto_detection() {
 #[cfg(feature = "tokio")]
 #[tokio::test]
 async fn test_explicit_tokio_runtime() {
+    let mut registry = ExecutorRegistry::new();
+    registry.insert_async(TokioIo::default());
+
     let (core, shell) = Syzygy::builder::<TestEvent, TestEffect>()
         .model(TestModel::default())
         .event_handler(test_update)
         .effect_handler(test_effect_handler)
-        .with_default_executors()
+        .with_executor_registry(registry)
         .build();
 
     let mut runner = Runner::new(core, shell);

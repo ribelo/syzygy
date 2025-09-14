@@ -13,7 +13,7 @@ use futures::FutureExt;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
-use syzygy::executor::{Task, TokioIo};
+use syzygy::executor::{ExecutorRegistry, Task, TokioIo};
 use syzygy::prelude::*;
 
 // ============================================================================
@@ -438,12 +438,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         CacheManager::new(),
     );
 
+    let mut registry = ExecutorRegistry::new();
+    registry.insert_async(TokioIo::default());
+
     let (core, shell) = Syzygy::builder()
         .model(AppModel::default())
         .resource(resources)
         .event_handler(update_app)
         .effect_handler(handle_effects)
-        .with_default_executors()
+        .with_executor_registry(registry)
         .build();
     let mut runner = Runner::new(core, shell);
 

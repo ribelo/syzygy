@@ -373,6 +373,7 @@ where
 mod tests {
     use super::*;
     use crate::prelude::*;
+    use crate::executor::ExecutorRegistry;
 
     #[derive(Debug, Clone)]
     enum TestEvent {
@@ -414,6 +415,7 @@ mod tests {
         let (core, shell) = Syzygy::builder::<TestEvent, TestEffect>()
             .model(TestModel { count: 0 })
             .event_handler(test_update)
+            .with_executor_registry(ExecutorRegistry::new())
             .effect_handler(|_e: TestEffect, _ctx| crate::executor::Task::events(Vec::new()))
             .build();
 
@@ -437,6 +439,7 @@ mod tests {
         let (core, shell) = Syzygy::builder::<TestEvent, TestEffect>()
             .model(TestModel { count: 0 })
             .event_handler(test_update)
+            .with_executor_registry(ExecutorRegistry::new())
             .effect_handler(|_e: TestEffect, _ctx| crate::executor::Task::events(Vec::new()))
             .build();
 
@@ -471,6 +474,7 @@ mod tests {
         let (core, shell) = Syzygy::builder::<TestEvent, TestEffect>()
             .model(TestModel { count: 0 })
             .event_handler(test_update)
+            .with_executor_registry(ExecutorRegistry::new())
             .effect_handler(|_e: TestEffect, _ctx| crate::executor::Task::events(Vec::new()))
             .build();
 
@@ -491,6 +495,7 @@ mod tests {
         let (core, shell) = Syzygy::builder::<TestEvent, TestEffect>()
             .model(TestModel { count: 0 })
             .event_handler(test_update)
+            .with_executor_registry(ExecutorRegistry::new())
             .effect_handler(|_e: TestEffect, _ctx| crate::executor::Task::events(Vec::new()))
             .build();
 
@@ -507,6 +512,7 @@ mod tests {
         let (core, shell) = Syzygy::builder::<TestEvent, TestEffect>()
             .model(TestModel { count: 0 })
             .event_handler(test_update)
+            .with_executor_registry(ExecutorRegistry::new())
             .effect_handler(|_e: TestEffect, _ctx| crate::executor::Task::events(Vec::new()))
             .build();
 
@@ -531,6 +537,7 @@ mod tests {
         let (core, shell) = Syzygy::builder::<TestEvent, TestEffect>()
             .model(TestModel { count: 0 })
             .event_handler(test_update)
+            .with_executor_registry(ExecutorRegistry::new())
             .effect_handler(|_e: TestEffect, _ctx| crate::executor::Task::events(Vec::new()))
             .build();
 
@@ -561,6 +568,7 @@ mod tests {
         let (core, shell) = Syzygy::builder::<TestEvent, TestEffect>()
             .model(TestModel { count: 0 })
             .event_handler(test_update)
+            .with_executor_registry(ExecutorRegistry::new())
             .effect_handler(|_e: TestEffect, _ctx| crate::executor::Task::events(Vec::new()))
             .build();
 

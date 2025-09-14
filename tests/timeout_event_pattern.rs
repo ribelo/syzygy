@@ -13,7 +13,7 @@
 
 use std::time::Duration;
 use syzygy::event_context::EventContext;
-use syzygy::executor::TokioIo;
+use syzygy::executor::{ExecutorRegistry, TokioIo};
 use syzygy::prelude::*;
 use syzygy::scheduler::scheduler;
 
@@ -113,11 +113,14 @@ fn timeout_aware_effect_handler(
 #[cfg(feature = "tokio")]
 #[tokio::test]
 async fn test_timeout_event_pattern() {
+    let mut registry = ExecutorRegistry::new();
+    registry.insert_async(TokioIo::default());
+
     let (core, shell) = Syzygy::builder::<TimeoutEvent, TimeoutEffect>()
         .model(TimeoutModel::default())
         .event_handler(timeout_update)
         .effect_handler(timeout_aware_effect_handler)
-        .with_default_executors()
+        .with_executor_registry(registry)
         .build();
 
     let event_sender = core.event_sender();

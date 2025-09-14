@@ -580,29 +580,28 @@ Syzygy provides a specialized executor system for optimal performance with diffe
 
 ```rust
 use syzygy::prelude::*;
+use syzygy::executor::{ExecutorRegistry, TokioIo, RayonSyncExecutor};
 
-// Simple default setup (TokioIo + RayonSync)
+// Simple setup with explicit executors
+let mut registry = ExecutorRegistry::new();
+registry.insert_async(TokioIo::default());
+registry.insert_sync(RayonSyncExecutor::default());
+
 let (core, shell) = Syzygy::builder()
     .model(MyModel::default())
     .update(my_event_handler)
-    .with_default_executors()
+    .with_executor_registry(registry)
     .build();
 
 // Custom executor configuration
-let (core, shell) = Syzygy::builder()
-    .model(MyModel::default())
-    .update(my_event_handler)
-    .with_io_executor(Some(8))        // 8 threads for IO
-    .with_cpu_async_executor(Some(4)) // 4 threads for CPU async
-    .with_default_sync_executor()     // Rayon for sync CPU work
-    .build();
+let mut registry = ExecutorRegistry::new();
+registry.insert_async(TokioIo::default());
+registry.insert_sync(RayonSyncExecutor::default());
 
-// Dual async executors for mixed workloads
 let (core, shell) = Syzygy::builder()
     .model(MyModel::default())
     .update(my_event_handler)
-    .with_dual_async_executors()      // Both TokioIo and TokioCpu
-    .with_default_sync_executor()     // Plus sync executor
+    .with_executor_registry(registry)
     .build();
 ```
 

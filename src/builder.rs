@@ -129,51 +129,6 @@ where
         }
     }
 
-    /// Configure a default IO + sync executor set.
-    /// - Async IO: `TokioIo` multi-thread runtime (if tokio feature is enabled) for network/file operations
-    /// - Sync CPU: `RayonExecutor` pool (if rayon feature is enabled), else `SingleThreadExecutor` for CPU-bound work
-    ///
-    /// For more control, use:
-    /// - `with_async_executor()` for async work
-    /// - `with_sync_executor()` for sync CPU work
-    #[must_use]
-    pub fn with_default_executors(self) -> Self {
-        let mut registry = self.exec_registry.unwrap_or_default();
-
-        // Helper to compute threads
-        let threads = std::thread::available_parallelism()
-            .map(std::num::NonZero::get)
-            .unwrap_or(1)
-            .max(1);
-
-        // IO executor
-        #[cfg(feature = "tokio")]
-        {
-            let io_exec = crate::executor::TokioIo::multi_thread(threads);
-            registry.insert_async(io_exec);
-        }
-
-        // CPU executor
-        #[cfg(feature = "rayon")]
-        {
-            let cpu_exec = crate::executor::RayonExecutor::new(None);
-            registry.insert_sync(cpu_exec);
-        }
-        #[cfg(not(feature = "rayon"))]
-        {
-            let cpu_exec = crate::executor::SingleThreadExecutor::new();
-            registry.insert_sync(cpu_exec);
-        }
-
-        ConfiguredBuilder {
-            event_handler: self.event_handler,
-            effect_handler: self.effect_handler,
-            model: self.model,
-            resources: self.resources,
-            exec_registry: Some(registry),
-        }
-    }
-
     /// Add a single async executor to the registry by concrete type
     #[must_use]
     pub fn with_async_executor<T>(self, exec: T) -> Self
@@ -243,14 +198,8 @@ where
         let (effect_tx, effect_rx) = unbounded();
 
         // Resolve or build registry now that we have event_tx and resources
-        let registry_arc: Arc<ExecutorRegistry<Event>> = if let Some(registry) = exec_registry {
-            registry
-        } else {
-            // Auto-register SingleThreadExecutor as default if no registry provided
-            let mut registry = ExecutorRegistry::new();
-            registry.insert_sync(crate::executor::SingleThreadExecutor::new());
-            Arc::new(registry)
-        };
+        let registry_arc: Arc<ExecutorRegistry<Event>> = exec_registry
+            .expect("Executor registry is required - use .with_executor_registry() to provide one");
 
         Shell {
             effect_rx,
@@ -317,10 +266,13 @@ mod tests {
 
     #[test]
     fn test_builder() {
+        let registry = crate::executor::ExecutorRegistry::new();
+
         let (mut core, _shell) = Syzygy::builder::<TestEvent, TestEffect>()
             .model(TestModel { count: 0 })
             .event_handler(test_update)
             .effect_handler(|_e: TestEffect, _ctx| crate::executor::Task::events(Vec::new()))
+            .with_executor_registry(registry)
             .build();
 
         let _command = core.handle_event(TestEvent::Increment);
@@ -331,10 +283,13 @@ mod tests {
     #[test]
     fn test_shell_type_with_models_only() {
         // Test that Shell type remains simple when only models are added (no resources)
+        let registry = crate::executor::ExecutorRegistry::new();
+
         let (_core, shell) = Syzygy::builder::<TestEvent, TestEffect>()
             .model(TestModel { count: 0 })
             .event_handler(test_update)
             .effect_handler(|_e: TestEffect, _ctx| crate::executor::Task::events(Vec::new()))
+            .with_executor_registry(registry)
             .build();
 
         // Type should remain simple with resources-only generic
@@ -347,10 +302,13 @@ mod tests {
     #[test]
     fn test_shell_type_inference_works() {
         // Test that users don't need to specify complex types manually
+        let registry = crate::executor::ExecutorRegistry::new();
+
         let (mut core, _shell) = Syzygy::builder::<TestEvent, TestEffect>()
             .model(TestModel { count: 0 })
             .event_handler(test_update)
             .effect_handler(|_e: TestEffect, _ctx| crate::executor::Task::events(Vec::new()))
+            .with_executor_registry(registry)
             .build();
 
         // This should just work without any type annotations needed
@@ -390,6 +348,8 @@ mod tests {
             }
         }
 
+        let registry = crate::executor::ExecutorRegistry::new();
+
         let (mut core, _shell) = Syzygy::builder::<TestEvent, TestEffect>()
             .model((
                 UserModel {
@@ -401,6 +361,7 @@ mod tests {
             ))
             .event_handler(multi_update)
             .effect_handler(|_e: TestEffect, _ctx| crate::executor::Task::events(Vec::new()))
+            .with_executor_registry(registry)
             .build();
 
         core.handle_event(TestEvent::Increment);

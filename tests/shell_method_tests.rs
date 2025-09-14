@@ -42,6 +42,8 @@ mod tokio_tests {
     use super::*;
 
     fn create_test_runner() -> Runner<TestEvent, TestEffect, TestModel, ()> {
+        let registry = syzygy::executor::ExecutorRegistry::new();
+
         let (core, shell) = Syzygy::builder::<TestEvent, TestEffect>()
             .model(TestModel::default())
             .event_handler(test_update)
@@ -49,6 +51,7 @@ mod tokio_tests {
                 // Return None instead of empty events to properly indicate no new events
                 syzygy::executor::Task::none()
             })
+            .with_executor_registry(registry)
             .build();
 
         Runner::new(core, shell)

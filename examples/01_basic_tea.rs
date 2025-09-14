@@ -8,8 +8,7 @@
 //! - Event processing and command creation
 //! - Core/Shell orchestration with Runner
 
-use futures::FutureExt;
-use syzygy::executor::{Task, TokioIo};
+use syzygy::executor::{ExecutorRegistry, Outcome, Task, TokioIo};
 use syzygy::prelude::*;
 
 // ============================================================================
@@ -168,14 +167,15 @@ fn update_counter(
 // ============================================================================
 
 /// Handle logging effects - simple effect-only magic handler
-fn handle_log_effect(effect: CounterEffect) {
+fn handle_log_effect(effect: CounterEffect) -> Outcome<CounterEvent> {
     if let CounterEffect::LogMessage(message) = effect {
         println!("LOG: {message}");
     }
+    Outcome::None
 }
 
 /// Handle sound effects with config access - resource extraction magic handler
-fn handle_sound_effect(effect: CounterEffect, config: &AppConfig) {
+fn handle_sound_effect(effect: CounterEffect, config: &AppConfig) -> Outcome<CounterEvent> {
     if let CounterEffect::PlaySound = effect {
         if config.enable_sound {
             println!("BEEP! (sound effect)");
@@ -183,34 +183,30 @@ fn handle_sound_effect(effect: CounterEffect, config: &AppConfig) {
             println!("(sound disabled)");
         }
     }
+    Outcome::None
 }
 
-/// Handle save effects - now returns `Task`
-fn handle_save_effect(effect: CounterEffect) -> Task<CounterEvent, AppConfig> {
+/// Handle save effects - idiomatic async effect handler returning Outcome
+async fn handle_save_effect(effect: CounterEffect) -> Outcome<CounterEvent> {
     if let CounterEffect::SaveCount(count) = effect {
         println!("SAVE: Counter value {count} saved to storage");
-        // Could send a completion event if needed
-        Task::async_task_with::<TokioIo, _, _>(move |_ctx| {
-            async move {
-                // Simulate async save operation
-                #[cfg(feature = "tokio")]
-                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
-                // Return completion event
-                Outcome::Event(CounterEvent::SetMessage("Saved!".to_string()))
-            }
-            .boxed()
-        })
+        // Simulate async save operation
+        #[cfg(feature = "tokio")]
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        // Return completion event
+        Outcome::Event(CounterEvent::SetMessage("Saved!".to_string()))
     } else {
-        Task::events(vec![])
+        Outcome::None
     }
 }
 
-/// Handle limit checking in effects - now returns `Task`
+/// Handle limit checking in effects - idiomatic effect handler returning Outcome
 fn handle_limit_check_effect(
     effect: CounterEffect,
     config: &AppConfig,
-) -> Task<CounterEvent, AppConfig> {
+) -> Outcome<CounterEvent> {
     if let CounterEffect::LogMessage(message) = effect {
         if message.contains("Checking limit") {
             // Extract count from message or use context
@@ -224,47 +220,50 @@ fn handle_limit_check_effect(
                         config.max_count
                     );
                     // Return warning event
-                    return Task::async_task_with::<TokioIo, _, _>(move |_ctx| {
-                        async move { Outcome::Event(CounterEvent::SetMessage("Limit reached!".to_string())) }
-                            .boxed()
-                    });
+                    return Outcome::Event(CounterEvent::SetMessage("Limit reached!".to_string()));
                 }
                 println!("LOG: {message} - OK (limit: {})", config.max_count);
-                return Task::events(vec![]);
+                return Outcome::None;
             }
         }
         println!("LOG: {message}");
     }
-    Task::events(vec![])
+    Outcome::None
 }
 
-/// Main effect dispatcher using `Task`
+/// Main effect dispatcher - idiomatic approach with ctx.spawn for async operations
 fn handle_effects(
     effect: CounterEffect,
     ctx: &EffectContext<CounterEvent, AppConfig>,
 ) -> Task<CounterEvent, AppConfig> {
-    // Use magic handlers with automatic parameter extraction
     match &effect {
         CounterEffect::LogMessage(msg) if msg.contains("Checking limit") => {
-            // Use magic handler with both config and sender extraction
             let config: &AppConfig = ctx.resources();
-            handle_limit_check_effect(effect, config)
+            let outcome = handle_limit_check_effect(effect, config);
+            outcome_to_task(outcome)
         }
         CounterEffect::LogMessage(_) => {
-            // Simple effect-only magic handler - convert to Task
-            handle_log_effect(effect);
-            Task::events(vec![])
+            let outcome = handle_log_effect(effect);
+            outcome_to_task(outcome)
         }
         CounterEffect::PlaySound => {
-            // Magic handler with resource extraction
             let config: &AppConfig = ctx.resources();
-            handle_sound_effect(effect, config);
-            Task::events(vec![])
+            let outcome = handle_sound_effect(effect, config);
+            outcome_to_task(outcome)
         }
         CounterEffect::SaveCount(_) => {
-            // Magic handler that returns Task
-            handle_save_effect(effect)
+            // Spawn async handler using ctx.spawn
+            ctx.spawn::<TokioIo, _, _>(|_ctx| handle_save_effect(effect))
         }
+    }
+}
+
+/// Helper to convert Outcome to Task
+fn outcome_to_task(outcome: Outcome<CounterEvent>) -> Task<CounterEvent, AppConfig> {
+    match outcome {
+        Outcome::Event(event) => Task::event(event),
+        Outcome::Events(events) => Task::events(events),
+        Outcome::None => Task::none(),
     }
 }
 
@@ -279,6 +278,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("A simple counter with logging, sound effects, and automatic parameter extraction\n");
 
     // Build the system with model and resources
+    let mut registry = ExecutorRegistry::new();
+    registry.insert_async(TokioIo::default());
+
     let (core, shell) = Syzygy::builder()
         .model(CounterModel::default())
         .resource(AppConfig {
@@ -287,6 +289,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         })
         .event_handler(update_counter)
         .effect_handler(handle_effects)
+        .with_executor_registry(registry)
         .build();
     let mut runner = Runner::new(core, shell);
 
