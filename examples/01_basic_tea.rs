@@ -190,14 +190,14 @@ fn handle_save_effect(effect: CounterEffect) -> Task<CounterEvent, AppConfig> {
     if let CounterEffect::SaveCount(count) = effect {
         println!("SAVE: Counter value {count} saved to storage");
         // Could send a completion event if needed
-        Task::future_on::<TokioIo, _, _, _>(move |_ctx| {
+        Task::async_task_with::<TokioIo, _, _>(move |_ctx| {
             async move {
                 // Simulate async save operation
                 #[cfg(feature = "tokio")]
                 tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
                 // Return completion event
-                CounterEvent::SetMessage("Saved!".to_string())
+                Outcome::Event(CounterEvent::SetMessage("Saved!".to_string()))
             }
             .boxed()
         })
@@ -224,8 +224,8 @@ fn handle_limit_check_effect(
                         config.max_count
                     );
                     // Return warning event
-                    return Task::future_on::<TokioIo, _, _, _>(move |_ctx| {
-                        async move { CounterEvent::SetMessage("Limit reached!".to_string()) }
+                    return Task::async_task_with::<TokioIo, _, _>(move |_ctx| {
+                        async move { Outcome::Event(CounterEvent::SetMessage("Limit reached!".to_string())) }
                             .boxed()
                     });
                 }

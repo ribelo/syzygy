@@ -80,32 +80,32 @@ fn handle_event(
 
             // NEW API: Parallel coordination with Task::all
             let _config_plan =
-                Task::future_on::<TokioIo, _, _, _>(|_ctx: EffectContext<AppEvent, ()>| {
+                Task::async_task_with::<TokioIo, _, _>(|_ctx: EffectContext<AppEvent, ()>| {
                     async move {
                         println!("Loading application config...");
                         #[cfg(feature = "tokio")]
                         tokio::time::sleep(Duration::from_millis(800)).await;
                         let config = "app_config_v1.2.3".to_string();
-                        AppEvent::ConfigLoaded(config)
+                        Outcome::Event(AppEvent::ConfigLoaded(config))
                     }
                     .boxed()
                 });
 
             let _user_data_plan =
-                Task::future_on::<TokioIo, _, _, _>(|_ctx: EffectContext<AppEvent, ()>| {
+                Task::async_task_with::<TokioIo, _, _>(|_ctx: EffectContext<AppEvent, ()>| {
                     async move {
                         println!("Loading user data...");
                         #[cfg(feature = "tokio")]
                         tokio::time::sleep(Duration::from_millis(1200)).await;
                         let user_data = "user_12345_profile".to_string();
-                        AppEvent::UserDataLoaded(user_data)
+                        Outcome::Event(AppEvent::UserDataLoaded(user_data))
                     }
                     .boxed()
                 });
 
             // Use a single task that runs both operations in parallel with futures::join!
             let _bootstrap_plan =
-                Task::future_on::<TokioIo, _, _, _>(move |_ctx: EffectContext<AppEvent, ()>| {
+                Task::async_task_with::<TokioIo, _, _>(move |_ctx: EffectContext<AppEvent, ()>| {
                     async move {
                         // Run both config and user data loading in parallel
                         let (config_result, user_data_result) = futures::join!(
@@ -126,7 +126,7 @@ fn handle_event(
                         );
 
                         // Return multiple events as a Vec
-                        vec![config_result, user_data_result, AppEvent::BootstrapComplete]
+                        Outcome::Events(vec![config_result, user_data_result, AppEvent::BootstrapComplete])
                     }
                     .boxed()
                 });
@@ -224,33 +224,33 @@ fn handle_event(
 fn handle_effects(effect: AppEffect, _ctx: &EffectContext<AppEvent, ()>) -> Task<AppEvent, ()> {
     match effect {
         AppEffect::LoadConfig => {
-            Task::future_on::<TokioIo, _, _, _>(move |_ctx: EffectContext<AppEvent, ()>| {
+            Task::async_task_with::<TokioIo, _, _>(move |_ctx: EffectContext<AppEvent, ()>| {
                 async move {
                     println!("Loading application config...");
                     #[cfg(feature = "tokio")]
                     tokio::time::sleep(Duration::from_millis(800)).await;
                     let config = "app_config_v1.2.3".to_string();
-                    AppEvent::ConfigLoaded(config)
+                    Outcome::Event(AppEvent::ConfigLoaded(config))
                 }
                 .boxed()
             })
         }
 
         AppEffect::LoadUserData => {
-            Task::future_on::<TokioIo, _, _, _>(move |_ctx: EffectContext<AppEvent, ()>| {
+            Task::async_task_with::<TokioIo, _, _>(move |_ctx: EffectContext<AppEvent, ()>| {
                 async move {
                     println!("Loading user data...");
                     #[cfg(feature = "tokio")]
                     tokio::time::sleep(Duration::from_millis(1200)).await;
                     let user_data = "user_12345_profile".to_string();
-                    AppEvent::UserDataLoaded(user_data)
+                    Outcome::Event(AppEvent::UserDataLoaded(user_data))
                 }
                 .boxed()
             })
         }
 
         AppEffect::TryMirror { url } => {
-            Task::future_on::<TokioIo, _, _, _>(move |_ctx: EffectContext<AppEvent, ()>| {
+            Task::async_task_with::<TokioIo, _, _>(move |_ctx: EffectContext<AppEvent, ()>| {
                 let url = url.clone();
                 async move {
                     println!("Trying mirror: {}", url);
@@ -265,32 +265,32 @@ fn handle_effects(effect: AppEffect, _ctx: &EffectContext<AppEvent, ()>) -> Task
                     #[cfg(feature = "tokio")]
                     tokio::time::sleep(delay).await;
 
-                    AppEvent::MirrorSelected(url)
+                    Outcome::Event(AppEvent::MirrorSelected(url))
                 }
                 .boxed()
             })
         }
 
         AppEffect::ProcessWorkflowStep { step, item } => {
-            Task::future_on::<TokioIo, _, _, _>(move |_ctx: EffectContext<AppEvent, ()>| {
+            Task::async_task_with::<TokioIo, _, _>(move |_ctx: EffectContext<AppEvent, ()>| {
                 let item = item.clone();
                 async move {
                     println!("Processing workflow step {}: {}", step, item);
                     #[cfg(feature = "tokio")]
                     tokio::time::sleep(Duration::from_millis(400)).await;
-                    AppEvent::WorkflowStepComplete(step)
+                    Outcome::Event(AppEvent::WorkflowStepComplete(step))
                 }
                 .boxed()
             })
         }
 
         AppEffect::Cleanup => {
-            Task::future_on::<TokioIo, _, _, _>(move |_ctx: EffectContext<AppEvent, ()>| {
+            Task::async_task_with::<TokioIo, _, _>(move |_ctx: EffectContext<AppEvent, ()>| {
                 async move {
                     println!("Performing cleanup...");
                     #[cfg(feature = "tokio")]
                     tokio::time::sleep(Duration::from_millis(200)).await;
-                    AppEvent::LogMessage("Cleanup completed".to_string())
+                    Outcome::Event(AppEvent::LogMessage("Cleanup completed".to_string()))
                 }
                 .boxed()
             })

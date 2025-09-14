@@ -794,7 +794,7 @@ fn handle_authentication_effect(
     db_service: DatabaseService,
 ) -> Task<AppEvent, ResourceStorage> {
     match effect {
-        AppEffect::AuthenticateUser { username, password } => Task::future_on::<TokioIo, _, _, _>(
+        AppEffect::AuthenticateUser { username, password } => Task::async_task_with::<TokioIo, _, _>(
             move |_ctx: EffectContext<AppEvent, ResourceStorage>| {
                 let db_service = db_service.clone();
                 let username = username.clone();
@@ -811,19 +811,19 @@ fn handle_authentication_effect(
                                     .as_secs()
                             );
 
-                            AppEvent::UserLoginSuccess {
+                            Outcome::Event(AppEvent::UserLoginSuccess {
                                 user,
                                 session_token,
-                            }
+                            })
                         }
-                        Err(error) => AppEvent::UserLoginFailed { error },
+                        Err(error) => Outcome::Event(AppEvent::UserLoginFailed { error }),
                     }
                 }
                 .boxed()
             },
         ),
         AppEffect::GenerateSessionToken { user_id } => {
-            Task::future_on::<TokioIo, _, _, _>(move |_ctx| {
+            Task::async_task_with::<TokioIo, _, _>(move |_ctx| {
                 let session_token = format!(
                     "session_{}_{}",
                     user_id,
@@ -841,7 +841,7 @@ fn handle_authentication_effect(
             })
         }
         AppEffect::InvalidateSession { session_token } => {
-            Task::future_on::<TokioIo, _, _, _>(move |_| {
+            Task::async_task_with::<TokioIo, _, _>(move |_| {
                 let session_token = session_token.clone();
                 async move {
                     println!("Invalidated session: {session_token}");
@@ -862,7 +862,7 @@ fn handle_persistence_effect(
         AppEffect::SaveUserPreferences {
             user_id,
             preferences,
-        } => Task::future_on::<TokioIo, _, _, _>(move |_ctx| {
+        } => Task::async_task_with::<TokioIo, _, _>(move |_ctx| {
             let db_service = db_service.clone();
             let preferences = preferences.clone();
             async move {
@@ -882,14 +882,14 @@ fn handle_persistence_effect(
             }
             .boxed()
         }),
-        AppEffect::SyncDataChanges { changes } => Task::future_on::<TokioIo, _, _, _>(
+        AppEffect::SyncDataChanges { changes } => Task::async_task_with::<TokioIo, _, _>(
             move |_ctx: EffectContext<AppEvent, ResourceStorage>| {
                 let db_service = db_service.clone();
                 let changes = changes.clone();
                 async move {
                     match db_service.sync_data(&changes).await {
-                        Ok(synced_ids) => AppEvent::DataSyncCompleted { synced_ids },
-                        Err(error) => AppEvent::DataSyncFailed { error },
+                        Ok(synced_ids) => Outcome::Event(AppEvent::DataSyncCompleted { synced_ids }),
+                        Err(error) => Outcome::Event(AppEvent::DataSyncFailed { error }),
                     }
                 }
                 .boxed()
@@ -908,7 +908,7 @@ fn handle_notification_effect(
         notification,
     } = effect
     {
-        Task::future_on::<TokioIo, _, _, _>(move |_ctx| {
+        Task::async_task_with::<TokioIo, _, _>(move |_ctx| {
             let notification_service = notification_service.clone();
             let notification = notification.clone();
             async move {
@@ -952,7 +952,7 @@ fn handle_background_operation(effect: AppEffect) -> Task<AppEvent, ResourceStor
         task_type,
     } = effect
     {
-        Task::future_on::<TokioIo, _, _, _>(
+        Task::async_task_with::<TokioIo, _, _>(
             move |_ctx: EffectContext<AppEvent, ResourceStorage>| {
                 let operation_id = operation_id.clone();
                 let task_type = task_type.clone();
@@ -969,7 +969,7 @@ fn handle_background_operation(effect: AppEffect) -> Task<AppEvent, ResourceStor
                     }
 
                     // Complete the operation
-                    AppEvent::OperationCompleted { operation_id }
+                    Outcome::Event(AppEvent::OperationCompleted { operation_id })
                 }
                 .boxed()
             },

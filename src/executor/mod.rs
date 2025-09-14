@@ -10,7 +10,7 @@
 //!
 //! ### Async Executors (for async work)
 //! - **`TokioIo`**: IO-bound async work (network, files) with `enable_all()` runtime
-//! - **`TokioCpu`**: CPU-bound async work with only `enable_time()` runtime  
+//! - **`TokioCpu`**: CPU-bound async work with only `enable_time()` runtime
 //! - **`TokioExecutor`**: Base executor for custom async configurations
 //!
 //! ### Sync Executors (for blocking work)
@@ -27,7 +27,7 @@
 //!     // Network operations here
 //! });
 //!
-//! // CPU-bound async work - use TokioCpu  
+//! // CPU-bound async work - use TokioCpu
 //! ctx.spawn(async {
 //!     let result = expensive_async_computation().await;
 //!     // CPU-intensive async work
@@ -56,7 +56,7 @@
 //! // IO-focused executor (enable_all)
 //! let io_executor = TokioIo::multi_thread(4);
 //!
-//! // CPU-focused executor (enable_time only)  
+//! // CPU-focused executor (enable_time only)
 //! let cpu_executor = TokioCpu::multi_thread(8);
 //!
 //! // Custom executor configuration
@@ -141,7 +141,7 @@ use futures_util::future::BoxFuture;
 use thiserror::Error;
 // Executor storage types removed
 #[cfg(feature = "rayon")]
-pub use rayon_sync_executor::RayonSyncExecutor as RayonExecutor;
+pub use rayon_sync_executor::RayonExecutor as RayonExecutor;
 pub use single_thread_executor::SingleThreadExecutor;
 
 #[cfg(feature = "tokio")]

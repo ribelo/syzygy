@@ -152,7 +152,7 @@ fn handle_effects(
         AppEffect::GetUser { user_id, table } => {
             let resources: &AppResources = ctx.resources();
             let resources = resources.clone();
-            Task::future_on::<TokioIo, _, _, _>(
+            Task::async_task_with::<TokioIo, _, _>(
                 move |_ctx: EffectContext<AppEvent, AppResources>| {
                     let table = table.clone();
                     async move {
@@ -172,20 +172,20 @@ fn handle_effects(
                             Ok(Some(user)) => {
                                 // Success - return user loaded event
                                 println!("✅ User {user_id} found");
-                                AppEvent::UserLoaded { user_id, user }
+                                Outcome::Event(AppEvent::UserLoaded { user_id, user })
                             }
                             Ok(None) => {
                                 // User not found
                                 println!("❌ User {user_id} not found");
-                                AppEvent::UserNotFound { user_id }
+                                Outcome::Event(AppEvent::UserNotFound { user_id })
                             }
                             Err(db_error) => {
                                 // Database error
                                 println!("💥 Database error getting user {user_id}");
-                                AppEvent::DatabaseError {
+                                Outcome::Event(AppEvent::DatabaseError {
                                     operation: format!("get_user_{user_id}"),
                                     error: db_error,
-                                }
+                                })
                             }
                         }
                     }
@@ -195,7 +195,7 @@ fn handle_effects(
         }
 
         AppEffect::SaveUser { user, table } => {
-            Task::future_on::<TokioIo, _, _, _>(
+            Task::async_task_with::<TokioIo, _, _>(
                 move |_ctx: EffectContext<AppEvent, AppResources>| {
                     let user = user.clone();
                     let table = table.clone();
@@ -211,14 +211,14 @@ fn handle_effects(
                         match simulate_database_save(&table, &user) {
                             Ok(()) => {
                                 println!("✅ User {} saved", user.id);
-                                AppEvent::UserSaved { user_id: user.id }
+                                Outcome::Event(AppEvent::UserSaved { user_id: user.id })
                             }
                             Err(db_error) => {
                                 println!("💥 Database error saving user {}", user.id);
-                                AppEvent::DatabaseError {
+                                Outcome::Event(AppEvent::DatabaseError {
                                     operation: format!("save_user_{}", user.id),
                                     error: db_error,
-                                }
+                                })
                             }
                         }
                     }
@@ -228,7 +228,7 @@ fn handle_effects(
         }
 
         AppEffect::ConnectDatabase { connection_string } => {
-            Task::future_on::<TokioIo, _, _, _>(
+            Task::async_task_with::<TokioIo, _, _>(
                 move |_ctx: EffectContext<AppEvent, AppResources>| {
                     let connection_string = connection_string.clone();
                     async move {
@@ -241,7 +241,7 @@ fn handle_effects(
 
                         // In real app, you'd establish connection here
                         println!("✅ Database connected");
-                        AppEvent::DatabaseConnected
+                        Outcome::Event(AppEvent::DatabaseConnected)
                     }
                     .boxed()
                 },

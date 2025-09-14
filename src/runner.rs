@@ -425,7 +425,7 @@ mod tests {
         event_sender.send(TestEvent::Ping).unwrap();
 
         // Process one tick
-        let did_work = runner.tick(crate::scheduler::TokioScheduler).await.unwrap();
+        let did_work = runner.step_with(crate::scheduler::scheduler()).unwrap();
 
         assert!(did_work);
         // Skipped model access check in refactor
@@ -458,7 +458,7 @@ mod tests {
 
         // Run until count reaches 10
         runner
-            .run_until(|_core, _shell| true, crate::scheduler::TokioScheduler)
+            .run_until(|_core, _shell| true, crate::scheduler::scheduler())
             .await
             .unwrap();
 
@@ -542,21 +542,17 @@ mod tests {
         event_sender.send(TestEvent::Ping).unwrap();
         event_sender.send(TestEvent::Ping).unwrap();
 
-        // First step should process one event and return true
+        // First step should process ALL 3 events and return true
         let did_work1 = runner.step().expect("First step should succeed");
-        assert!(did_work1, "First step should return true");
+        assert!(did_work1, "First step should return true (processed all 3 events)");
 
-        // Second step should process the next event and return true
+        // Second step should process effects and return true
         let did_work2 = runner.step().expect("Second step should succeed");
-        assert!(did_work2, "Second step should return true");
+        assert!(did_work2, "Second step should return true (processed effects)");
 
-        // Third step should process the last event and return true
+        // Third step should have no more work and return false
         let did_work3 = runner.step().expect("Third step should succeed");
-        assert!(did_work3, "Third step should return true");
-
-        // Fourth step should have no more work and return false
-        let did_work4 = runner.step().expect("Fourth step should succeed");
-        assert!(!did_work4, "Fourth step should return false (no more work)");
+        assert!(!did_work3, "Third step should return false (no more work)");
     }
 
     #[cfg(feature = "tokio")]
@@ -574,20 +570,16 @@ mod tests {
         // Send Ping event (will generate Pong event and Log effect)
         event_sender.send(TestEvent::Ping).unwrap();
 
-        // First step: process Ping -> generate Pong event and Log effect
+        // First step: process Ping (generates Pong) and Pong (generates Log effect)
         let did_work1 = runner.step().expect("First step should succeed");
-        assert!(did_work1, "First step should process Ping event");
+        assert!(did_work1, "First step should process Ping and Pong events");
 
-        // Second step: process Pong event -> generate Log effect
+        // Second step: process Log effects
         let did_work2 = runner.step().expect("Second step should succeed");
-        assert!(did_work2, "Second step should process Pong event");
+        assert!(did_work2, "Second step should process Log effects");
 
-        // Third step: process Log effect
+        // Third step: no more work
         let did_work3 = runner.step().expect("Third step should succeed");
-        assert!(did_work3, "Third step should process Log effect");
-
-        // Fourth step: no more work
-        let did_work4 = runner.step().expect("Fourth step should succeed");
-        assert!(!did_work4, "Fourth step should have no more work");
+        assert!(!did_work3, "Third step should have no more work");
     }
 }

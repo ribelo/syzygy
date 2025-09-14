@@ -257,17 +257,17 @@ fn handle_http_request(
 ) -> Task<AppEvent, ResourceStorage> {
     if let AppEffect::HttpRequest { task_id, path } = effect {
         let http_client = http_client.clone();
-        Task::future_on::<TokioIo, _, _, _>(
+        Task::async_task_with::<TokioIo, _, _>(
             move |_ctx: EffectContext<AppEvent, ResourceStorage>| {
                 let task_id = task_id.clone();
                 let path = path.clone();
                 async move {
                     match http_client.get(&path).await {
-                        Ok(response) => AppEvent::TaskCompleted {
+                        Ok(response) => Outcome::Event(AppEvent::TaskCompleted {
                             task_id,
                             result: response,
-                        },
-                        Err(error) => AppEvent::TaskFailed { task_id, error },
+                        }),
+                        Err(error) => Outcome::Event(AppEvent::TaskFailed { task_id, error }),
                     }
                 }
                 .boxed()
@@ -284,14 +284,14 @@ fn handle_database_query(
 ) -> Task<AppEvent, ResourceStorage> {
     if let AppEffect::DatabaseQuery { task_id, query } = effect {
         let db_pool = db_pool.clone();
-        Task::future_on::<TokioIo, _, _, _>(
+        Task::async_task_with::<TokioIo, _, _>(
             move |_ctx: EffectContext<AppEvent, ResourceStorage>| {
                 let task_id = task_id.clone();
                 let query = query.clone();
                 async move {
                     match db_pool.execute(&query).await {
-                        Ok(result) => AppEvent::TaskCompleted { task_id, result },
-                        Err(error) => AppEvent::TaskFailed { task_id, error },
+                        Ok(result) => Outcome::Event(AppEvent::TaskCompleted { task_id, result }),
+                        Err(error) => Outcome::Event(AppEvent::TaskFailed { task_id, error }),
                     }
                 }
                 .boxed()
@@ -311,15 +311,15 @@ fn handle_cache_operation(
             CacheOp::Get { key } => {
                 if let Some(value) = cache.get(&key) {
                     println!("CACHE HIT: {} -> {}", key, value);
-                    Task::future_on::<TokioIo, _, _, _>(
+                    Task::async_task_with::<TokioIo, _, _>(
                         move |_ctx: EffectContext<AppEvent, ResourceStorage>| {
                             let key = key.clone();
                             let value = value.clone();
                             async move {
-                                AppEvent::TaskCompleted {
+                                Outcome::Event(AppEvent::TaskCompleted {
                                     task_id: format!("cache_get_{}", key),
                                     result: value,
-                                }
+                                })
                             }
                             .boxed()
                         },
@@ -350,7 +350,7 @@ fn handle_parallel_tasks(
         let plans: Vec<Task<AppEvent, ResourceStorage>> = task_ids
             .into_iter()
             .map(|task_id| {
-                Task::future_on::<TokioIo, _, _, _>(
+                Task::async_task_with::<TokioIo, _, _>(
                     move |_ctx: EffectContext<AppEvent, ResourceStorage>| {
                         let task_id = task_id.clone();
                         async move {
@@ -359,7 +359,7 @@ fn handle_parallel_tasks(
                             tokio::time::sleep(std::time::Duration::from_millis(150)).await;
 
                             let result = format!("Parallel result for {}", task_id);
-                            AppEvent::TaskCompleted { task_id, result }
+                            Outcome::Event(AppEvent::TaskCompleted { task_id, result })
                         }
                         .boxed()
                     },
@@ -380,7 +380,7 @@ fn handle_parallel_tasks(
 
 fn handle_delayed_task(effect: AppEffect) -> Task<AppEvent, ResourceStorage> {
     if let AppEffect::DelayedTask { task_id, delay_ms } = effect {
-        Task::future_on::<TokioIo, _, _, _>(
+        Task::async_task_with::<TokioIo, _, _>(
             move |_ctx: EffectContext<AppEvent, ResourceStorage>| {
                 let task_id = task_id.clone();
                 async move {
@@ -389,10 +389,10 @@ fn handle_delayed_task(effect: AppEffect) -> Task<AppEvent, ResourceStorage> {
                     #[cfg(feature = "tokio")]
                     tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
 
-                    AppEvent::TaskCompleted {
+                    Outcome::Event(AppEvent::TaskCompleted {
                         task_id,
                         result: "Delayed task completed".to_string(),
-                    }
+                    })
                 }
                 .boxed()
             },

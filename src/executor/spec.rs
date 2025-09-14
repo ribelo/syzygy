@@ -6,9 +6,6 @@ use std::future::Future;
 use crate::effect_context::EffectContext;
 use crate::scheduler::Scheduler;
 
-#[cfg(feature = "tracing")]
-use tracing::error;
-
 use super::{AsyncExecutor, ExecutorError};
 use std::any::TypeId;
 

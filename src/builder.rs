@@ -101,7 +101,7 @@ pub struct ConfiguredBuilder<Event, Effect, Model, Resource> {
 
 impl<Event, Effect, Model, Resource> ConfiguredBuilder<Event, Effect, Model, Resource>
 where
-    Event: Send + 'static,
+    Event: Send + Sync + 'static,
     Effect: Send + 'static,
     Resource: Clone + Send + Sync + 'static,
 {
