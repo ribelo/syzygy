@@ -4,13 +4,11 @@ use std::time::Duration;
 use tokio::time::sleep;
 
 use futures_util::future::FutureExt;
-use futures_util::stream::StreamExt;
+use syzygy::executor::Outcome;
 use syzygy::executor::{
-    AsyncExecutor, ExecutorError, ExecutorLifecycle, Task, TokioExecutor,
+    AsyncExecutor, ExecutorError, ExecutorLifecycle, TokioExecutor,
     register_current_runtime_for_io, spawn_io,
 };
-use syzygy::executor::Outcome;
-
 
 #[derive(Debug, Clone)]
 enum TestEvent {
@@ -23,8 +21,7 @@ async fn executor_spawns_and_completes_basic_future_successfully() {
     let executor = TokioExecutor::current_thread_io("test_basic");
 
     // When: Spawning a future that produces a success event
-    let fut =
-        async { Outcome::Events(vec![TestEvent::Success(42)]) }.boxed();
+    let fut = async { Outcome::Events(vec![TestEvent::Success(42)]) }.boxed();
     let result = executor.spawn_future(fut).await;
 
     // Then: The future completes with the expected event
@@ -90,8 +87,7 @@ async fn executor_handles_cancellation_error_and_continues_processing_new_tasks(
     drop(join_future); // Cancel
 
     // Then: Executor remains functional for new tasks
-    let short_fut =
-        async { Outcome::Events(vec![TestEvent::Success(1)]) }.boxed();
+    let short_fut = async { Outcome::Events(vec![TestEvent::Success(1)]) }.boxed();
     let result = executor.spawn_future(short_fut).await;
     assert!(result.is_ok());
 
@@ -186,8 +182,7 @@ async fn executor_shutdown_prevents_new_task_spawning_and_returns_worker_gone_er
 
     // When: Shutting down and attempting to spawn a new task
     executor.shutdown();
-    let fut =
-        async { Outcome::Events(vec![TestEvent::Success(42)]) }.boxed();
+    let fut = async { Outcome::Events(vec![TestEvent::Success(42)]) }.boxed();
     let result = executor.spawn_future(fut).await;
 
     // Then: Spawning fails with WorkerGone error
@@ -249,10 +244,8 @@ async fn executor_clone_shares_runtime_and_shutdown_affects_all_instances() {
     let executor_clone = executor.clone();
 
     // When: Spawning tasks on both instances
-    let fut1 =
-        async { Outcome::Events(vec![TestEvent::Success(1)]) }.boxed();
-    let fut2 =
-        async { Outcome::Events(vec![TestEvent::Success(2)]) }.boxed();
+    let fut1 = async { Outcome::Events(vec![TestEvent::Success(1)]) }.boxed();
+    let fut2 = async { Outcome::Events(vec![TestEvent::Success(2)]) }.boxed();
 
     let result1 = executor.spawn_future(fut1).await;
     let result2 = executor_clone.spawn_future(fut2).await;
@@ -265,8 +258,7 @@ async fn executor_clone_shares_runtime_and_shutdown_affects_all_instances() {
     executor.shutdown();
 
     // Then: New spawns on clone fail
-    let fut3 =
-        async { Outcome::Events(vec![TestEvent::Success(3)]) }.boxed();
+    let fut3 = async { Outcome::Events(vec![TestEvent::Success(3)]) }.boxed();
     let result3 = executor_clone.spawn_future(fut3).await;
     assert!(matches!(result3, Err(ExecutorError::WorkerGone)));
 

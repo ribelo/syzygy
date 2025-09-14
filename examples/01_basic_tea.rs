@@ -225,10 +225,8 @@ fn handle_limit_check_effect(
                     );
                     // Return warning event
                     return Task::future_on::<TokioIo, _, _, _>(move |_ctx| {
-                        async move {
-                            CounterEvent::SetMessage("Limit reached!".to_string())
-                        }
-                        .boxed()
+                        async move { CounterEvent::SetMessage("Limit reached!".to_string()) }
+                            .boxed()
                     });
                 }
                 println!("LOG: {message} - OK (limit: {})", config.max_count);

@@ -8,7 +8,7 @@ use futures_util::future::{BoxFuture, FutureExt, Shared};
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
-use crate::executor::{ExecutorError, ExecutorLifecycle, SyncExecutor, Sequential, Outcome};
+use crate::executor::{ExecutorError, ExecutorLifecycle, Outcome, Sequential, SyncExecutor};
 
 /// `SingleThreadExecutor` — FIFO, single-worker executor for sync work only
 ///

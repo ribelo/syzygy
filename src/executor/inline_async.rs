@@ -4,8 +4,8 @@
 //! futures inline rather than spawning them. Perfect for single-threaded
 //! environments or when concurrency is not required.
 
-use super::{AsyncExecutor, Sequential, ExecutorError, ExecutorLifecycle, Outcome};
-use futures::future::{ready, BoxFuture, FutureExt};
+use super::{AsyncExecutor, ExecutorError, ExecutorLifecycle, Outcome, Sequential};
+use futures::future::{BoxFuture, FutureExt, ready};
 use std::marker::PhantomData;
 
 /// An executor that runs futures inline without spawning
@@ -20,6 +20,7 @@ pub struct InlineAsync<E> {
 impl<E: 'static> Sequential for InlineAsync<E> {}
 
 impl<E> InlineAsync<E> {
+    #[must_use]
     pub fn new() -> Self {
         Self {
             _phantom: PhantomData,

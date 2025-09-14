@@ -396,8 +396,6 @@ pub mod shell;
 // Builder pattern
 pub mod builder;
 
-
-
 // EventContext for synchronous update functions
 pub mod event_context;
 
@@ -418,8 +416,6 @@ pub mod spawn;
 
 // Executor system for specialized effect handling
 pub mod executor;
-
-
 
 pub mod prelude {
     // Contexts for update and effect functions
@@ -467,25 +463,25 @@ pub mod prelude {
 
     // Scheduler adapters for runtime neutrality
     // Scheduler trait is always available
-    pub use crate::scheduler::{Scheduler, scheduler};
-    #[cfg(feature = "tokio")]
-    pub use crate::scheduler::TokioScheduler;
-    #[cfg(feature = "smol")]
-    pub use crate::scheduler::SmolScheduler;
     #[cfg(feature = "async-std")]
     pub use crate::scheduler::AsyncStdScheduler;
+    #[cfg(feature = "smol")]
+    pub use crate::scheduler::SmolScheduler;
+    #[cfg(feature = "tokio")]
+    pub use crate::scheduler::TokioScheduler;
+    pub use crate::scheduler::{Scheduler, scheduler};
 
     // Always available - no feature gate needed
     pub use crate::scheduler::{BlockingScheduler, blocking_scheduler};
 
-// Executor system
-#[cfg(feature = "rayon")]
-pub use crate::executor::RayonExecutor;
+    // Executor system
+    #[cfg(feature = "rayon")]
+    pub use crate::executor::RayonExecutor;
 
-#[cfg(feature = "tokio")]
-pub use crate::executor::TokioExecutor;
- pub use crate::executor::spec::Outcome;
-pub use crate::executor::{Task, ExecutorRegistry, SingleThreadExecutor, InlineAsync};
+    #[cfg(feature = "tokio")]
+    pub use crate::executor::TokioExecutor;
+    pub use crate::executor::spec::Outcome;
+    pub use crate::executor::{ExecutorRegistry, InlineAsync, SingleThreadExecutor, Task};
 
     // Builder
     pub use crate::builder::{Syzygy, SyzygyBuilder};
@@ -493,6 +489,5 @@ pub use crate::executor::{Task, ExecutorRegistry, SingleThreadExecutor, InlineAs
     // Errors
     pub use crate::error::{CommandError, CoreError, EffectError, ShellError};
 
-// Effect output types
-
+    // Effect output types
 }

@@ -3,7 +3,7 @@
 //! Runs synchronous effect tasks on a dedicated Rayon thread pool. Tasks are
 //! closures that return `EffectResult<E>` and are executed on Rayon workers.
 
-use crate::executor::{ExecutorError, SyncExecutor, Concurrent, Outcome};
+use crate::executor::{Concurrent, ExecutorError, Outcome, SyncExecutor};
 
 use futures::channel::oneshot;
 use futures_util::future::{BoxFuture, FutureExt, ready};
@@ -170,10 +170,10 @@ mod tests {
                 let is_rayon_thread = thread_name.starts_with("syzygy-rayon-");
                 let value = if is_rayon_thread { 42 } else { 0 };
 
-            Outcome::Events(vec![TestEvent::ThreadInfo {
-                thread_id: thread_name,
-                value,
-            }])
+                Outcome::Events(vec![TestEvent::ThreadInfo {
+                    thread_id: thread_name,
+                    value,
+                }])
             }))
             .await;
 
@@ -377,9 +377,7 @@ mod tests {
 
         // Then: Should still work (Rayon should use at least 1 thread)
         let result = executor
-            .spawn_sync(Box::new(|| {
-                Outcome::Events(vec![TestEvent::CpuWork(123)])
-            }))
+            .spawn_sync(Box::new(|| Outcome::Events(vec![TestEvent::CpuWork(123)])))
             .await;
 
         assert!(result.is_ok(), "Executor with 0 threads should still work");

@@ -1,7 +1,5 @@
 use smallvec::SmallVec;
 
-
-
 /// One atomic operation in the Core→Shell pipeline.
 ///
 /// This is what actually happens when your event handler returns a Command.
@@ -72,8 +70,6 @@ impl<Event: Clone, Effect: Clone> Default for Command<Event, Effect> {
         Self::none()
     }
 }
-
-
 
 impl<Event: Clone, Effect: Clone> PartialEq for Command<Event, Effect>
 where
@@ -414,6 +410,19 @@ mod tests {
         Load,
     }
 
+    // Test implementations for IntoCommand trait
+    impl IntoCommand<TestEvent, TestEffect> for TestEvent {
+        fn cmd(self) -> Command<TestEvent, TestEffect> {
+            Command::event(self)
+        }
+    }
+
+    impl IntoCommand<TestEvent, TestEffect> for TestEffect {
+        fn cmd(self) -> Command<TestEvent, TestEffect> {
+            Command::effect(self)
+        }
+    }
+
     #[test]
     fn test_chaining_events() {
         let cmd: Command<TestEvent, TestEffect> = Command::event(TestEvent::Start)
@@ -517,8 +526,10 @@ mod tests {
         let cmd2: Command<TestEvent, TestEffect> = Command::effect(TestEffect::Load);
 
         // Collection construction
-        let cmd3: Command<TestEvent, TestEffect> = Command::events(vec![TestEvent::Start, TestEvent::Middle]);
-        let cmd4: Command<TestEvent, TestEffect> = Command::effects(vec![TestEffect::Load, TestEffect::Save]);
+        let cmd3: Command<TestEvent, TestEffect> =
+            Command::events(vec![TestEvent::Start, TestEvent::Middle]);
+        let cmd4: Command<TestEvent, TestEffect> =
+            Command::effects(vec![TestEffect::Load, TestEffect::Save]);
 
         // From unit type (already implemented)
         let cmd5: Command<TestEvent, TestEffect> = ().into();
@@ -534,19 +545,6 @@ mod tests {
     fn test_into_command_trait() {
         // Test that users can implement IntoCommand for their types
         // This demonstrates the ergonomic extension trait pattern
-
-        // Implement the trait for our test types
-        impl IntoCommand<TestEvent, TestEffect> for TestEvent {
-            fn cmd(self) -> Command<TestEvent, TestEffect> {
-                Command::event(self)
-            }
-        }
-
-        impl IntoCommand<TestEvent, TestEffect> for TestEffect {
-            fn cmd(self) -> Command<TestEvent, TestEffect> {
-                Command::effect(self)
-            }
-        }
 
         // Now we can use .cmd() method ergonomically
         let event_cmd: Command<TestEvent, TestEffect> = TestEvent::Start.cmd();

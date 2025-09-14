@@ -46,7 +46,9 @@
 // - **TokioIo**: Uses `enable_all()` - full tokio feature set for IO operations
 // - **TokioCpu**: Uses `enable_time()` only - minimal runtime for CPU work
 // - **Thread models**: Both support `current_thread` and `multi_thread` configurations
-use crate::executor::{Concurrent, AsyncExecutor, ExecutorError, ExecutorLifecycle, register_io_runtime};
+use crate::executor::{
+    AsyncExecutor, Concurrent, ExecutorError, ExecutorLifecycle, register_io_runtime,
+};
 
 use futures::{
     TryFutureExt,

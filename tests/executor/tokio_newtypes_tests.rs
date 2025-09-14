@@ -3,8 +3,8 @@ mod tokio_newtype_tests {
     use futures_util::future::FutureExt;
     use std::any::TypeId;
     use std::time::Duration;
-    use syzygy::executor::{AsyncExecutor, ExecutorLifecycle, ExecutorRegistry, TokioCpu, TokioIo};
     use syzygy::executor::Outcome;
+    use syzygy::executor::{AsyncExecutor, ExecutorLifecycle, ExecutorRegistry, TokioCpu, TokioIo};
 
     #[derive(Debug, Clone)]
     #[allow(dead_code)]

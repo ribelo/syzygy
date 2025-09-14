@@ -1,8 +1,8 @@
 //! Example demonstrating Phase 2: BlockingScheduler and InlineAsync
 //! This shows how to run async effects without spawning threads
 
-use syzygy::prelude::*;
 use syzygy::executor::{InlineAsync, Task};
+use syzygy::prelude::*;
 use syzygy::scheduler::BlockingScheduler;
 
 #[derive(Debug, Clone)]
@@ -33,50 +33,44 @@ fn update(event: Event, ctx: &mut EventContext<Event, Effect, Model>) -> Command
         }
         Event::WorkCompleted(msg) => {
             model.work_count += 1;
-            println!("Work completed: {}", msg);
+            println!("Work completed: {msg}");
             if model.work_count == 1 {
                 Command::event(Event::StartSyncWork)
             } else {
                 Command::none()
             }
         }
-        Event::StartSyncWork => {
-            Command::effect(Effect::DoSyncWork)
-        }
+        Event::StartSyncWork => Command::effect(Effect::DoSyncWork),
         Event::SyncWorkCompleted(msg) => {
             model.work_count += 1;
-            println!("Work completed: {}", msg);
+            println!("Work completed: {msg}");
             Command::none()
         }
     }
 }
 
-fn handle_effects(
-    effect: Effect,
-    ctx: &EffectContext<Event, ()>,
-) -> Task<Event, ()> {
+fn handle_effects(effect: Effect, ctx: &EffectContext<Event, ()>) -> Task<Event, ()> {
     match effect {
         Effect::DoAsyncWork => {
-            // Using ctx.spawn_best_effort for async work
-            ctx.spawn_best_effort::<InlineAsync<Event>, _, _>(|_ctx| async move {
+            // Using ctx.spawn for async work
+            ctx.spawn::<InlineAsync<Event>, _, _>(|_ctx| async move {
                 // Simulate async work (would be actual I/O in real code)
                 Event::WorkCompleted("Async work done".to_string()).into()
             })
-            
+
             // Alternative: Direct Task creation
-            // Task::best_effort::<InlineAsync<Event>, _>(async move {
+            // Task::async_task::<InlineAsync<Event>, _>(async move {
             //     Event::WorkCompleted("Async work done".to_string()).into()
             // })
         }
         Effect::DoSyncWork => {
-            // Using ctx.spawn_best_effort for work that needs concurrency
-            // (Though with BlockingScheduler, it still runs sequentially)
-            ctx.spawn_best_effort::<InlineAsync<Event>, _, _>(|_ctx| async move {
+            // Using ctx.spawn for work
+            ctx.spawn::<InlineAsync<Event>, _, _>(|_ctx| async move {
                 Event::SyncWorkCompleted("Blocking work done".to_string()).into()
             })
-            
-            // Alternative: Task::concurrent for required concurrency
-            // Task::concurrent::<InlineAsync<Event>, _>(async move {
+
+            // Alternative: Direct Task creation
+            // Task::async_task::<InlineAsync<Event>, _>(async move {
             //     Event::SyncWorkCompleted("Blocking work done".to_string()).into()
             // })
         }
@@ -98,11 +92,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut runner = Runner::new(core, shell);
 
     // Send initial event
-    let _ = runner.core_mut().send_event(Event::StartWork);
+    runner.core_mut().send_event(Event::StartWork);
 
     // Use BlockingScheduler - runs futures to completion inline
     let scheduler = BlockingScheduler;
-    
+
     // Process all events and effects
     while runner.step_with(scheduler)? {
         // Everything runs sequentially with BlockingScheduler

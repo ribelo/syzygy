@@ -4,8 +4,9 @@ use std::sync::{
 };
 use std::time::Duration;
 
-
-use syzygy::executor::{ExecutorError, ExecutorLifecycle, SingleThreadExecutor, SyncExecutor, Outcome};
+use syzygy::executor::{
+    ExecutorError, ExecutorLifecycle, Outcome, SingleThreadExecutor, SyncExecutor,
+};
 
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
@@ -66,9 +67,7 @@ async fn single_thread_executor_maps_panic_to_error_and_continues() {
 
     // Subsequent job still executes successfully (isolation)
     let ok = exec
-        .spawn_sync(Box::new(|| {
-            Outcome::Events(vec![TestEvent::B("ok")])
-        }))
+        .spawn_sync(Box::new(|| Outcome::Events(vec![TestEvent::B("ok")])))
         .await;
     assert!(ok.is_ok(), "executor should continue after a panic");
 
@@ -134,9 +133,7 @@ async fn single_thread_executor_shutdown_and_join_semantics() {
     // Queue a few quick jobs
     let mut handles = Vec::new();
     for _ in 0..10 {
-        handles.push(exec.spawn_sync(Box::new(|| {
-            Outcome::Events(Vec::<TestEvent>::new())
-        })));
+        handles.push(exec.spawn_sync(Box::new(|| Outcome::Events(Vec::<TestEvent>::new()))));
     }
 
     // Initiate shutdown and await join (should process queued jobs first)

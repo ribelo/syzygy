@@ -93,11 +93,10 @@ struct DataState {
     pending_changes: Vec<DataChange>,
 }
 // Configuration constants for better readability and maintainability
-const CACHE_DEFAULT_TTL_SECONDS: u64 = 3600;  // 1 hour
+const CACHE_DEFAULT_TTL_SECONDS: u64 = 3600; // 1 hour
 const CACHE_MAX_SIZE: usize = 1000;
-const RATE_LIMIT_MAX_REQUESTS: u32 = 100;  // per minute
+const RATE_LIMIT_MAX_REQUESTS: u32 = 100; // per minute
 const RATE_LIMIT_WINDOW_SECONDS: u64 = 60;
-
 
 #[derive(Debug, Clone)]
 struct CachedItem {
@@ -795,8 +794,8 @@ fn handle_authentication_effect(
     db_service: DatabaseService,
 ) -> Task<AppEvent, ResourceStorage> {
     match effect {
-        AppEffect::AuthenticateUser { username, password } => {
-            Task::future_on::<TokioIo, _, _, _>(move |_ctx: EffectContext<AppEvent, ResourceStorage>| {
+        AppEffect::AuthenticateUser { username, password } => Task::future_on::<TokioIo, _, _, _>(
+            move |_ctx: EffectContext<AppEvent, ResourceStorage>| {
                 let db_service = db_service.clone();
                 let username = username.clone();
                 let password = password.clone();
@@ -817,14 +816,12 @@ fn handle_authentication_effect(
                                 session_token,
                             }
                         }
-                        Err(error) => {
-                            AppEvent::UserLoginFailed { error }
-                        }
+                        Err(error) => AppEvent::UserLoginFailed { error },
                     }
                 }
                 .boxed()
-            })
-        }
+            },
+        ),
         AppEffect::GenerateSessionToken { user_id } => {
             Task::future_on::<TokioIo, _, _, _>(move |_ctx| {
                 let session_token = format!(
@@ -877,33 +874,27 @@ fn handle_persistence_effect(
                         println!("User preferences saved successfully");
                         Outcome::None
                     }
-                    Err(error) => {
-                        Outcome::Event(AppEvent::ErrorOccurred {
-                            error: format!("Failed to save preferences: {error}"),
-                            context: "persistence".to_string(),
-                        })
-                    }
+                    Err(error) => Outcome::Event(AppEvent::ErrorOccurred {
+                        error: format!("Failed to save preferences: {error}"),
+                        context: "persistence".to_string(),
+                    }),
                 }
             }
             .boxed()
         }),
-        AppEffect::SyncDataChanges { changes } => {
-            Task::future_on::<TokioIo, _, _, _>(move |_ctx: EffectContext<AppEvent, ResourceStorage>| {
+        AppEffect::SyncDataChanges { changes } => Task::future_on::<TokioIo, _, _, _>(
+            move |_ctx: EffectContext<AppEvent, ResourceStorage>| {
                 let db_service = db_service.clone();
                 let changes = changes.clone();
                 async move {
                     match db_service.sync_data(&changes).await {
-                        Ok(synced_ids) => {
-                            AppEvent::DataSyncCompleted { synced_ids }
-                        }
-                        Err(error) => {
-                            AppEvent::DataSyncFailed { error }
-                        }
+                        Ok(synced_ids) => AppEvent::DataSyncCompleted { synced_ids },
+                        Err(error) => AppEvent::DataSyncFailed { error },
                     }
                 }
                 .boxed()
-            })
-        }
+            },
+        ),
         _ => Task::events(vec![]),
     }
 }
@@ -961,26 +952,28 @@ fn handle_background_operation(effect: AppEffect) -> Task<AppEvent, ResourceStor
         task_type,
     } = effect
     {
-        Task::future_on::<TokioIo, _, _, _>(move |_ctx: EffectContext<AppEvent, ResourceStorage>| {
-            let operation_id = operation_id.clone();
-            let task_type = task_type.clone();
-            async move {
-                println!("Background operation {operation_id} started ({task_type})");
+        Task::future_on::<TokioIo, _, _, _>(
+            move |_ctx: EffectContext<AppEvent, ResourceStorage>| {
+                let operation_id = operation_id.clone();
+                let task_type = task_type.clone();
+                async move {
+                    println!("Background operation {operation_id} started ({task_type})");
 
-                // Simulate work with progress updates
-                for _ in 1..=5 {
-                    #[cfg(feature = "tokio")]
-                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                    // Simulate work with progress updates
+                    for _ in 1..=5 {
+                        #[cfg(feature = "tokio")]
+                        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
-                    // For multiple events, we need to use a different approach
-                    // For now, we'll just complete the operation
+                        // For multiple events, we need to use a different approach
+                        // For now, we'll just complete the operation
+                    }
+
+                    // Complete the operation
+                    AppEvent::OperationCompleted { operation_id }
                 }
-
-                // Complete the operation
-                AppEvent::OperationCompleted { operation_id }
-            }
-            .boxed()
-        })
+                .boxed()
+            },
+        )
     } else {
         Task::events(vec![])
     }

@@ -4,14 +4,15 @@
 //! compile-time footguns when using executors with different concurrency guarantees.
 
 use syzygy::executor::{
-    AsyncExecutor, Concurrent, ExecutorLifecycle, ExecutorRegistry, InlineAsync, Outcome, Sequential, Task,
+    AsyncExecutor, Concurrent, ExecutorLifecycle, ExecutorRegistry, InlineAsync, Outcome,
+    Sequential, Task,
 };
 
 #[cfg(feature = "tokio")]
 use syzygy::executor::{TokioCpu, TokioExecutor, TokioIo};
 
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 /// Test event types for marker trait testing
@@ -29,11 +30,11 @@ enum TestEvent {
 /// Test that Sequential executors implement the Sequential marker trait
 #[test]
 fn test_sequential_marker_trait_implementations() {
-    fn _requires_sequential<E: AsyncExecutor<TestEvent> + Sequential>(_executor: E) {}
-    
+    fn requires_sequential<E: AsyncExecutor<TestEvent> + Sequential>(_executor: E) {}
+
     // ✅ InlineAsync should implement Sequential
-    _requires_sequential(InlineAsync::<TestEvent>::new());
-    
+    requires_sequential(InlineAsync::<TestEvent>::new());
+
     // This test passes if it compiles - the type system enforces the constraint
 }
 
@@ -41,56 +42,49 @@ fn test_sequential_marker_trait_implementations() {
 #[cfg(feature = "tokio")]
 #[test]
 fn test_concurrent_marker_trait_implementations() {
-    fn _requires_concurrent<E: AsyncExecutor<TestEvent> + Concurrent>(_executor: E) {}
-    
+    fn requires_concurrent<E: AsyncExecutor<TestEvent> + Concurrent>(_executor: E) {}
+
     // ✅ All Tokio executors should implement Concurrent
-    _requires_concurrent(TokioExecutor::current_thread_io("test"));
-    _requires_concurrent(TokioIo::current_thread());
-    _requires_concurrent(TokioCpu::current_thread());
-    
+    requires_concurrent(TokioExecutor::current_thread_io("test"));
+    requires_concurrent(TokioIo::current_thread());
+    requires_concurrent(TokioCpu::current_thread());
+
     // This test passes if it compiles - the type system enforces the constraint
 }
 
-/// Test Task::best_effort works with both Sequential and Concurrent executors
+/// Test Task::async_task works with any async executor
 #[test]
-fn test_task_best_effort_accepts_any_async_executor() {
-    // ✅ Sequential executor - should work
-    let _task1 = Task::<TestEvent, ()>::best_effort::<InlineAsync<TestEvent>, _>(async {
+fn test_task_async_task_works_with_any_executor() {
+    // ✅ Any async executor should work
+    let _task1 = Task::<TestEvent, ()>::async_task::<InlineAsync<TestEvent>, _>(async {
         Outcome::Event(TestEvent::Started { id: 1 })
     });
 
     #[cfg(feature = "tokio")]
     {
-        // ✅ Concurrent executor - should also work
-        let _task2 = Task::<TestEvent, ()>::best_effort::<TokioExecutor, _>(async {
+        // ✅ Tokio executors should also work
+        let _task2 = Task::<TestEvent, ()>::async_task::<TokioExecutor, _>(async {
             Outcome::Event(TestEvent::Started { id: 2 })
         });
     }
-    
-    // If this compiles, the trait bounds work correctly
+
+    // If this compiles, the simplified API works correctly
 }
 
-/// Test Task::concurrent only works with Concurrent executors
+/// Test that the simplified API works with various executors
 #[cfg(feature = "tokio")]
 #[test]
-fn test_task_concurrent_requires_concurrent_trait() {
-    // ✅ This should compile - TokioExecutor implements Concurrent
-    let _task1 = Task::<TestEvent, ()>::concurrent::<TokioExecutor, _>(async {
+fn test_simplified_api_works_with_tokio_executors() {
+    // ✅ All executors work with the simplified API
+    let _task1 = Task::<TestEvent, ()>::async_task::<TokioExecutor, _>(async {
         Outcome::Event(TestEvent::Started { id: 1 })
     });
-    
-    // ✅ This should also compile - TokioIo implements Concurrent  
-    let _task2 = Task::<TestEvent, ()>::concurrent::<TokioIo, _>(async {
+
+    let _task2 = Task::<TestEvent, ()>::async_task::<TokioIo, _>(async {
         Outcome::Event(TestEvent::Started { id: 2 })
     });
-    
-    // ❌ The following would NOT compile if uncommented:
-    // let _task3 = Task::<TestEvent, ()>::concurrent::<InlineAsync<TestEvent>, _>(async {
-    //     Outcome::Event(TestEvent::Started { id: 3 })
-    // });
-    // Compile error: "the trait bound `InlineAsync<TestEvent>: Concurrent` is not satisfied"
-    
-    // If this compiles, our marker traits work correctly
+
+    // If this compiles, the simplified API works correctly
 }
 
 // ============================================================================
@@ -101,13 +95,13 @@ fn test_task_concurrent_requires_concurrent_trait() {
 #[tokio::test]
 async fn test_sequential_executor_runtime_behavior() {
     let execution_order = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
-    let order_clone = execution_order.clone();
+    let order_clone = Arc::clone(&execution_order);
 
     let inline_executor = InlineAsync::<TestEvent>::new();
 
     // Create futures that would overlap if run concurrently
     let fut1 = {
-        let order = order_clone.clone();
+        let order = Arc::clone(&order_clone);
         async move {
             order.lock().unwrap().push("task1_start".to_string());
             // Small async operation
@@ -118,7 +112,7 @@ async fn test_sequential_executor_runtime_behavior() {
     };
 
     let fut2 = {
-        let order = order_clone.clone();
+        let order = Arc::clone(&order_clone);
         async move {
             order.lock().unwrap().push("task2_start".to_string());
             tokio::task::yield_now().await;
@@ -157,7 +151,7 @@ async fn test_concurrent_executor_runtime_behavior() {
     // Create futures with different delays for concurrent execution
     let futures: Vec<_> = (0..4)
         .map(|i| {
-            let count = completed_count.clone();
+            let count = Arc::clone(&completed_count);
             Box::pin(async move {
                 // Different delays to test concurrency
                 tokio::time::sleep(Duration::from_millis(10 + (i as u64) * 5)).await;
@@ -168,28 +162,27 @@ async fn test_concurrent_executor_runtime_behavior() {
         .collect();
 
     let start_time = Instant::now();
-    
+
     // Execute all futures through the concurrent executor
-    let results = futures_util::future::join_all(
-        futures.into_iter().map(|fut| executor.spawn_future(fut))
-    ).await;
-    
+    let results =
+        futures_util::future::join_all(futures.into_iter().map(|fut| executor.spawn_future(fut)))
+            .await;
+
     let elapsed = start_time.elapsed();
 
     // All tasks should complete successfully
     for result in results {
         assert!(result.is_ok());
     }
-    
+
     assert_eq!(completed_count.load(Ordering::SeqCst), 4);
-    
+
     // With concurrent execution, this should be much faster than sequential
     // Sequential would take: 10+15+20+25 = 70ms
     // Concurrent should take ~25ms (longest task)
     assert!(
         elapsed < Duration::from_millis(50),
-        "Concurrent execution should be faster. Took: {:?}",
-        elapsed
+        "Concurrent execution should be faster. Took: {elapsed:?}"
     );
 
     executor.shutdown();
@@ -241,7 +234,7 @@ async fn test_marker_traits_with_errors() {
 
     let result = inline_executor.spawn_future(Box::pin(error_future)).await;
     assert!(result.is_ok());
-    
+
     match result.unwrap() {
         Outcome::Event(TestEvent::Error { message }) => {
             assert_eq!(message, "Test error");
@@ -260,11 +253,11 @@ async fn test_marker_traits_with_errors() {
 async fn test_marker_traits_stress_test() {
     let executor = TokioExecutor::multi_thread_io("stress", 4);
     let completed_count = Arc::new(AtomicUsize::new(0));
-    
+
     // Create many concurrent tasks
     let futures: Vec<_> = (0..100)
         .map(|i| {
-            let count = completed_count.clone();
+            let count = Arc::clone(&completed_count);
             Box::pin(async move {
                 // Minimal delay for stress testing
                 tokio::time::sleep(Duration::from_millis(1)).await;
@@ -275,29 +268,28 @@ async fn test_marker_traits_stress_test() {
         .collect();
 
     let start_time = Instant::now();
-    
+
     // Execute all futures concurrently
-    let results = futures_util::future::join_all(
-        futures.into_iter().map(|fut| executor.spawn_future(fut))
-    ).await;
-    
+    let results =
+        futures_util::future::join_all(futures.into_iter().map(|fut| executor.spawn_future(fut)))
+            .await;
+
     let elapsed = start_time.elapsed();
-    
+
     // All should complete successfully
     assert_eq!(results.len(), 100);
     for result in results {
         assert!(result.is_ok());
     }
-    
+
     assert_eq!(completed_count.load(Ordering::SeqCst), 100);
-    
+
     // Should complete reasonably fast
     assert!(
         elapsed < Duration::from_millis(500),
-        "Stress test took too long: {:?}",
-        elapsed
+        "Stress test took too long: {elapsed:?}"
     );
-    
+
     executor.shutdown();
     executor.join().await;
 }
@@ -307,64 +299,53 @@ async fn test_marker_traits_stress_test() {
 // ============================================================================
 
 /// Test that demonstrates all the compile-time safety guarantees
-/// 
+///
 /// This serves as both a test and documentation of what should/shouldn't compile
 #[test]
 fn test_compile_time_safety_guarantees() {
-    // ✅ Sequential executor with best_effort - should compile
+    // ✅ Any executor works with simplified API
     let _sequential = InlineAsync::<TestEvent>::new();
-    let _task1 = Task::<TestEvent, ()>::best_effort::<InlineAsync<TestEvent>, _>(async {
+    let _task1 = Task::<TestEvent, ()>::async_task::<InlineAsync<TestEvent>, _>(async {
         Outcome::Event(TestEvent::Started { id: 1 })
     });
 
     #[cfg(feature = "tokio")]
     {
-        // ✅ Concurrent executor with both methods - should compile
-        let _task2 = Task::<TestEvent, ()>::best_effort::<TokioExecutor, _>(async {
+        // ✅ All Tokio executors work with simplified API
+        let _task2 = Task::<TestEvent, ()>::async_task::<TokioExecutor, _>(async {
             Outcome::Event(TestEvent::Started { id: 2 })
         });
 
-        let _task3 = Task::<TestEvent, ()>::concurrent::<TokioExecutor, _>(async {
+        let _task3 = Task::<TestEvent, ()>::async_task::<TokioIo, _>(async {
             Outcome::Event(TestEvent::Started { id: 3 })
         });
 
-        // ✅ All Tokio newtypes support concurrent - should compile
-        let _task4 = Task::<TestEvent, ()>::concurrent::<TokioIo, _>(async {
+        let _task4 = Task::<TestEvent, ()>::async_task::<TokioCpu, _>(async {
             Outcome::Event(TestEvent::Started { id: 4 })
-        });
-
-        let _task5 = Task::<TestEvent, ()>::concurrent::<TokioCpu, _>(async {
-            Outcome::Event(TestEvent::Started { id: 5 })
         });
     }
 
-    // These are the compile-time failures that our marker traits prevent:
-    
-    // ❌ This would NOT compile:
-    // let _task_fail = Task::<TestEvent, ()>::concurrent::<InlineAsync<TestEvent>, _>(async {
-    //     Outcome::Event(TestEvent::Started { id: 999 })
-    // });
-    // Error: "the trait bound `InlineAsync<TestEvent>: Concurrent` is not satisfied"
+    // Simplified API - no more compile-time restrictions
 }
 
 /// Helper function to verify trait bounds at compile time
 fn _compile_time_trait_verification() {
     // These functions exist only for compile-time verification
     // They should never be called, but must compile to pass the test
-    
-    fn _sequential_only<E: AsyncExecutor<TestEvent> + Sequential>(_: E) {}
-    fn _concurrent_only<E: AsyncExecutor<TestEvent> + Concurrent>(_: E) {}
-    
+
+    fn sequential_only<E: AsyncExecutor<TestEvent> + Sequential>(_: E) {}
+    fn concurrent_only<E: AsyncExecutor<TestEvent> + Concurrent>(_: E) {}
+
     // ✅ These should compile
-    _sequential_only(InlineAsync::<TestEvent>::new());
-    
+    sequential_only(InlineAsync::<TestEvent>::new());
+
     #[cfg(feature = "tokio")]
     {
-        _concurrent_only(TokioExecutor::current_thread_io("test"));
-        _concurrent_only(TokioIo::current_thread());
-        _concurrent_only(TokioCpu::current_thread());
+        concurrent_only(TokioExecutor::current_thread_io("test"));
+        concurrent_only(TokioIo::current_thread());
+        concurrent_only(TokioCpu::current_thread());
     }
-    
+
     // ❌ These would NOT compile:
     // _concurrent_only(InlineAsync::<TestEvent>::new());
     // Error: "the trait bound `InlineAsync<TestEvent>: Concurrent` is not satisfied"

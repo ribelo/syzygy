@@ -31,4 +31,3 @@ pub enum ShellError {
     #[error("Command execution failed: {0}")]
     CommandExecutionFailed(String),
 }
-

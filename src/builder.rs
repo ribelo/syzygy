@@ -243,8 +243,14 @@ where
         let (effect_tx, effect_rx) = unbounded();
 
         // Resolve or build registry now that we have event_tx and resources
-        let registry_arc: Arc<ExecutorRegistry<Event>> =
-            exec_registry.unwrap_or_else(|| Arc::new(ExecutorRegistry::new()));
+        let registry_arc: Arc<ExecutorRegistry<Event>> = if let Some(registry) = exec_registry {
+            registry
+        } else {
+            // Auto-register SingleThreadExecutor as default if no registry provided
+            let mut registry = ExecutorRegistry::new();
+            registry.insert_sync(crate::executor::SingleThreadExecutor::new());
+            Arc::new(registry)
+        };
 
         Shell {
             effect_rx,

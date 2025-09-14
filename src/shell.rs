@@ -12,7 +12,7 @@ use crate::command::{Command, CommandStep};
 use crate::effect_context::EffectContext;
 use crate::error::ShellError;
 use crate::executor::ExecutorRegistry;
-use crate::executor::spec::{Concurrency, drive_spec};
+use crate::executor::spec::drive_spec;
 
 use crate::timer::{Time, time};
 
@@ -33,10 +33,6 @@ pub struct ShellConfig {
     pub on_timeout_callback: Option<Arc<dyn Fn() + Send + Sync>>,
     /// Capacity for effect queue (None => unbounded)
     pub effect_channel_capacity: Option<usize>,
-    /// Default concurrency mode for tasks
-    pub default_concurrency: Concurrency,
-    /// If true, panic on concurrency violations instead of falling back
-    pub strict_concurrency: bool,
 }
 
 impl Default for ShellConfig {
@@ -46,8 +42,6 @@ impl Default for ShellConfig {
             runtime: time(),
             on_timeout_callback: None,
             effect_channel_capacity: None,
-            default_concurrency: Concurrency::BestEffort,
-            strict_concurrency: false,
         }
     }
 }
@@ -162,8 +156,6 @@ where
         Ok(())
     }
 
-
-
     /// Process all pending effects synchronously and return count of effects processed
     pub fn drain_with<S>(&mut self, scheduler: S) -> Result<usize, ShellError>
     where
@@ -177,25 +169,36 @@ where
 
         while let Ok(step) = self.effect_rx.try_recv() {
             match step {
-                 CommandStep::Effect(fx) => {
-                     effect_count += 1;
-                     let ctx =
-                         EffectContext::new(self.resources.clone(), Arc::clone(&self.executors));
-                     let spec = (self.effect_handler)(fx, &ctx);
-                     scheduler.schedule(drive_spec(spec, ctx, self.event_tx.clone(), scheduler.clone()));
+                CommandStep::Effect(fx) => {
+                    effect_count += 1;
+                    let ctx =
+                        EffectContext::new(self.resources.clone(), Arc::clone(&self.executors));
+                    let spec = (self.effect_handler)(fx, &ctx);
+                    scheduler.schedule(drive_spec(
+                        spec,
+                        ctx,
+                        self.event_tx.clone(),
+                        scheduler.clone(),
+                    ));
                 }
-                 CommandStep::Batch(effects) => {
-                     effect_count += effects.len();
-                     let ctx =
-                         EffectContext::new(self.resources.clone(), Arc::clone(&self.executors));
+                CommandStep::Batch(effects) => {
+                    effect_count += effects.len();
+                    let ctx =
+                        EffectContext::new(self.resources.clone(), Arc::clone(&self.executors));
                     let handler = self.effect_handler;
                     let event_tx = self.event_tx.clone();
                     let scheduler_clone = scheduler.clone();
-                     let scheduler_for_async = scheduler_clone.clone();
-                     scheduler.schedule(async move {
+                    let scheduler_for_async = scheduler_clone.clone();
+                    scheduler.schedule(async move {
                         for fx in effects {
                             let spec = handler(fx, &ctx);
-                            drive_spec(spec, ctx.clone(), event_tx.clone(), scheduler_for_async.clone()).await;
+                            drive_spec(
+                                spec,
+                                ctx.clone(),
+                                event_tx.clone(),
+                                scheduler_for_async.clone(),
+                            )
+                            .await;
                         }
                     });
                 }
@@ -224,15 +227,20 @@ where
                     let ctx =
                         EffectContext::new(self.resources.clone(), Arc::clone(&self.executors));
                     let spec = (self.effect_handler)(fx, &ctx);
-                    scheduler.schedule(drive_spec(spec, ctx, self.event_tx.clone(), scheduler.clone()));
+                    scheduler.schedule(drive_spec(
+                        spec,
+                        ctx,
+                        self.event_tx.clone(),
+                        scheduler.clone(),
+                    ));
                 }
                 CommandStep::Batch(effects) => {
                     let ctx =
                         EffectContext::new(self.resources.clone(), Arc::clone(&self.executors));
                     let handler = self.effect_handler;
                     let event_tx = self.event_tx.clone();
-                     let scheduler_clone = scheduler.clone();
-                     scheduler.schedule(async move {
+                    let scheduler_clone = scheduler.clone();
+                    scheduler.schedule(async move {
                         let sched = scheduler_clone;
                         for fx in effects {
                             let spec = handler(fx, &ctx);
@@ -254,7 +262,9 @@ where
     pub fn drain(&mut self) -> Result<usize, ShellError> {
         match crate::scheduler::scheduler_strict() {
             Ok(sched) => self.drain_with(sched),
-            Err(e) => Err(ShellError::CommandExecutionFailed(format!("No runtime available: {e}"))),
+            Err(e) => Err(ShellError::CommandExecutionFailed(format!(
+                "No runtime available: {e}"
+            ))),
         }
     }
 
@@ -264,7 +274,9 @@ where
     pub fn poll_one(&mut self) -> Result<bool, ShellError> {
         match crate::scheduler::scheduler_strict() {
             Ok(sched) => self.poll_one_with(sched),
-            Err(e) => Err(ShellError::CommandExecutionFailed(format!("No runtime available: {e}"))),
+            Err(e) => Err(ShellError::CommandExecutionFailed(format!(
+                "No runtime available: {e}"
+            ))),
         }
     }
 

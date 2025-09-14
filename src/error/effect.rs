@@ -19,4 +19,3 @@ impl From<&str> for EffectError {
         EffectError::Message(s.to_string())
     }
 }
-

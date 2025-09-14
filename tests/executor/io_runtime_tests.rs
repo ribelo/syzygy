@@ -166,8 +166,6 @@ async fn test_io_spawn_cancellation() {
     assert!(result.unwrap_err().is_cancelled());
 }
 
-
-
 #[tokio::test]
 async fn test_concurrent_io_registrations() {
     // Clear any previous runtime state for test isolation

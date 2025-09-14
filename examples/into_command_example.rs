@@ -4,6 +4,7 @@ use syzygy::prelude::*;
 
 // Define your events and effects
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 enum Event {
     UserClicked,
     DataReceived(String),
@@ -11,6 +12,7 @@ enum Event {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 enum Effect {
     FetchData,
     LogMessage(String),
@@ -31,12 +33,14 @@ impl IntoCommand<Event, Effect> for Effect {
 
 // Example model
 #[derive(Debug, Default)]
+#[allow(dead_code)]
 struct Model {
     data: String,
     error: Option<String>,
 }
 
 // Example update function using the ergonomic .cmd() method
+#[allow(dead_code)]
 fn update(event: Event, ctx: &mut EventContext<Event, Effect, Model>) -> Command<Event, Effect> {
     let model = ctx.model_mut();
 
@@ -60,5 +64,7 @@ fn update(event: Event, ctx: &mut EventContext<Event, Effect, Model>) -> Command
 
 fn main() {
     println!("IntoCommand extension trait example compiled successfully!");
-    println!("You can now use .cmd() method on your events and effects for ergonomic command creation.");
+    println!(
+        "You can now use .cmd() method on your events and effects for ergonomic command creation."
+    );
 }

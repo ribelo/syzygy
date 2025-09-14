@@ -16,8 +16,8 @@ use syzygy::prelude::*;
 use syzygy::scheduler::scheduler;
 
 use futures::FutureExt;
-use syzygy::executor::TokioIo;
 use syzygy::executor::Outcome;
+use syzygy::executor::TokioIo;
 
 #[derive(Debug, Clone)]
 enum TestEvent {
@@ -64,7 +64,7 @@ fn test_effect_handler(
 ) -> syzygy::executor::Task<TestEvent, ()> {
     match effect {
         TestEffect::Delay(duration) => {
-            syzygy::executor::Task::best_effort::<TokioIo, _>(async move {
+            syzygy::executor::Task::async_task::<TokioIo, _>(async move {
                 #[cfg(feature = "tokio")]
                 tokio::time::sleep(duration).await;
 

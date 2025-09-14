@@ -199,7 +199,7 @@ where
     }
 }
 
-impl<E, X, M> std::fmt::Debug for Core<E, X, M> 
+impl<E, X, M> std::fmt::Debug for Core<E, X, M>
 where
     E: Send + 'static,
     X: Send + 'static,

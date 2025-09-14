@@ -12,7 +12,7 @@ pub trait Spawn: Clone + Send + Sync + 'static {
 }
 
 /// Auto-detecting spawner (strict - requires existing runtime)
-#[must_use] 
+#[must_use]
 pub fn spawner() -> impl Spawn {
     #[cfg(feature = "tokio")]
     return TokioSpawn::new()
@@ -39,7 +39,9 @@ pub struct TokioSpawn {
 impl TokioSpawn {
     pub fn new() -> Result<Self, &'static str> {
         tokio::runtime::Handle::try_current()
-            .map_err(|_| "No tokio runtime is running. Use #[tokio::main] or create a runtime first.")
+            .map_err(
+                |_| "No tokio runtime is running. Use #[tokio::main] or create a runtime first.",
+            )
             .map(|handle| Self { handle })
     }
 }

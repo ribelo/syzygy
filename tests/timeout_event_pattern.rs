@@ -90,7 +90,7 @@ fn timeout_aware_effect_handler(
 ) -> syzygy::executor::Task<TimeoutEvent, ()> {
     match effect {
         TimeoutEffect::SlowOperation { delay_ms } => {
-            syzygy::executor::Task::best_effort::<TokioIo, _>(async move {
+            syzygy::executor::Task::async_task::<TokioIo, _>(async move {
                 let operation_future = async move {
                     tokio::time::sleep(Duration::from_millis(delay_ms)).await;
                     format!("Operation completed after {delay_ms}ms")
@@ -99,14 +99,10 @@ fn timeout_aware_effect_handler(
                 // Use manual timeout with event emission
                 let timeout_duration = Duration::from_millis(200);
                 match tokio::time::timeout(timeout_duration, operation_future).await {
-                    Ok(data) => {
-                        Outcome::Event(TimeoutEvent::OperationCompleted { data })
-                    }
-                    Err(_timeout) => {
-                        Outcome::Event(TimeoutEvent::OperationTimeout {
-                            duration: timeout_duration,
-                        })
-                    }
+                    Ok(data) => Outcome::Event(TimeoutEvent::OperationCompleted { data }),
+                    Err(_timeout) => Outcome::Event(TimeoutEvent::OperationTimeout {
+                        duration: timeout_duration,
+                    }),
                 }
             })
         }

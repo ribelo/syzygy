@@ -36,8 +36,8 @@ use std::time::Duration;
 
 use crate::core::Core;
 use crate::error::{CoreError, ShellError};
-use crate::shell::Shell;
 use crate::scheduler::Scheduler;
+use crate::shell::Shell;
 use crate::timer::{Time, time};
 
 /// Configuration for the Runner
@@ -143,7 +143,11 @@ where
     /// Run until a condition is met
     ///
     /// Useful for testing or conditional execution.
-    pub async fn run_until<F, S>(&mut self, mut condition: F, scheduler: S) -> Result<(), RunnerError>
+    pub async fn run_until<F, S>(
+        &mut self,
+        mut condition: F,
+        scheduler: S,
+    ) -> Result<(), RunnerError>
     where
         F: FnMut(&Core<Event, Effect, Storage>, &Shell<Event, Effect, Resources>) -> bool,
         S: Scheduler,
@@ -193,7 +197,10 @@ where
     /// # Ok(())
     /// # }
     /// ```
-    #[deprecated(since = "0.1.0", note = "Use `step()` or `step_with()` for synchronous operation")]
+    #[deprecated(
+        since = "0.1.0",
+        note = "Use `step()` or `step_with()` for synchronous operation"
+    )]
     pub fn tick<S>(&mut self, scheduler: S) -> Result<bool, RunnerError>
     where
         S: Scheduler,
@@ -277,7 +284,9 @@ where
     pub fn step(&mut self) -> Result<bool, RunnerError> {
         match crate::scheduler::scheduler_strict() {
             Ok(sched) => self.step_with(sched),
-            Err(e) => Err(RunnerError::Shell(ShellError::CommandExecutionFailed(format!("No runtime available: {e}")))),
+            Err(e) => Err(RunnerError::Shell(ShellError::CommandExecutionFailed(
+                format!("No runtime available: {e}"),
+            ))),
         }
     }
 
@@ -299,12 +308,17 @@ where
 
             // Dispatch commands to Shell (may route events back to Core)
             for command in commands {
-                self.shell.enqueue_command(command).map_err(RunnerError::Shell)?;
+                self.shell
+                    .enqueue_command(command)
+                    .map_err(RunnerError::Shell)?;
             }
         }
 
         // Process effects in Shell synchronously
-        let shell_work = self.shell.drain_with(scheduler).map_err(RunnerError::Shell)?;
+        let shell_work = self
+            .shell
+            .drain_with(scheduler)
+            .map_err(RunnerError::Shell)?;
         if shell_work > 0 {
             did_work = true;
         }
@@ -316,7 +330,9 @@ where
     pub async fn run_default(&mut self) -> Result<(), RunnerError> {
         match crate::scheduler::scheduler_strict() {
             Ok(sched) => self.run(sched).await,
-            Err(e) => Err(RunnerError::Shell(ShellError::CommandExecutionFailed(format!("No runtime available: {e}")))),
+            Err(e) => Err(RunnerError::Shell(ShellError::CommandExecutionFailed(
+                format!("No runtime available: {e}"),
+            ))),
         }
     }
 
@@ -340,8 +356,8 @@ pub enum RunnerError {
     Timeout,
 }
 
-
-impl<Event, Effect, Storage, Resources> std::fmt::Debug for Runner<Event, Effect, Storage, Resources>
+impl<Event, Effect, Storage, Resources> std::fmt::Debug
+    for Runner<Event, Effect, Storage, Resources>
 where
     Event: Send + 'static,
     Effect: Send + 'static,
@@ -503,7 +519,10 @@ mod tests {
         // Use custom scheduler
         let scheduler = crate::scheduler::TokioScheduler::new().expect("Should have tokio runtime");
         let did_work = runner.step_with(scheduler).expect("Step should succeed");
-        assert!(did_work, "Step with custom scheduler should return true when work was done");
+        assert!(
+            did_work,
+            "Step with custom scheduler should return true when work was done"
+        );
     }
 
     #[cfg(feature = "tokio")]

@@ -85,8 +85,6 @@ pub trait Scheduler: Clone + Send + Sync + 'static {
 /// Use this with `auto_schedule_boxed()` for the old BoxFuture-based API.
 pub type BoxedScheduleFn = dyn Fn(Pin<Box<dyn Future<Output = ()> + Send + 'static>>) + Send + Sync;
 
-
-
 /// Schedule a future using tokio (zero-cost)
 ///
 /// This is the primary/recommended schedule function. Tokio dominates the Rust async
@@ -274,8 +272,6 @@ pub fn scheduler_strict() -> Result<impl Scheduler, &'static str> {
     );
 }
 
-
-
 /// Auto-detect and return schedule function for use with Runner (legacy compatibility)
 ///
 /// This returns a function pointer for use with APIs that expect a scheduler function.
@@ -326,7 +322,9 @@ pub struct TokioScheduler {
 impl TokioScheduler {
     pub fn new() -> Result<Self, &'static str> {
         tokio::runtime::Handle::try_current()
-            .map_err(|_| "No tokio runtime is running. Use #[tokio::main] or create a runtime first.")
+            .map_err(
+                |_| "No tokio runtime is running. Use #[tokio::main] or create a runtime first.",
+            )
             .map(|handle| Self { handle })
     }
 }
@@ -455,6 +453,7 @@ impl Scheduler for BlockingScheduler {
 }
 
 /// Create a blocking scheduler for single-threaded, non-concurrent execution
+#[must_use]
 pub fn blocking_scheduler() -> BlockingScheduler {
     BlockingScheduler
 }
@@ -553,7 +552,10 @@ mod tests {
         // Give the scheduled task time to execute
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
 
-        assert!(*executed.lock().unwrap(), "TokioScheduler should execute tasks");
+        assert!(
+            *executed.lock().unwrap(),
+            "TokioScheduler should execute tasks"
+        );
 
         // Test auto_scheduler
         let executed2 = Arc::new(Mutex::new(false));

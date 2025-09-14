@@ -152,94 +152,100 @@ fn handle_effects(
         AppEffect::GetUser { user_id, table } => {
             let resources: &AppResources = ctx.resources();
             let resources = resources.clone();
-            Task::future_on::<TokioIo, _, _, _>(move |_ctx: EffectContext<AppEvent, AppResources>| {
-                let table = table.clone();
-                async move {
-                    println!(
-                        "🔍 Getting user {user_id} from table {table} (db: {})",
-                        resources.database_url
-                    );
+            Task::future_on::<TokioIo, _, _, _>(
+                move |_ctx: EffectContext<AppEvent, AppResources>| {
+                    let table = table.clone();
+                    async move {
+                        println!(
+                            "🔍 Getting user {user_id} from table {table} (db: {})",
+                            resources.database_url
+                        );
 
-                    // Simulate database query
-                    #[cfg(feature = "tokio")]
-                    tokio::time::sleep(Duration::from_millis(100)).await;
-                    #[cfg(not(feature = "tokio"))]
-                    async_std::task::sleep(Duration::from_millis(100)).await;
+                        // Simulate database query
+                        #[cfg(feature = "tokio")]
+                        tokio::time::sleep(Duration::from_millis(100)).await;
+                        #[cfg(not(feature = "tokio"))]
+                        async_std::task::sleep(Duration::from_millis(100)).await;
 
-                    // Simulate database lookup
-                    match simulate_database_get(&table, user_id) {
-                        Ok(Some(user)) => {
-                            // Success - return user loaded event
-                            println!("✅ User {user_id} found");
-                            AppEvent::UserLoaded { user_id, user }
-                        }
-                        Ok(None) => {
-                            // User not found
-                            println!("❌ User {user_id} not found");
-                            AppEvent::UserNotFound { user_id }
-                        }
-                        Err(db_error) => {
-                            // Database error
-                            println!("💥 Database error getting user {user_id}");
-                            AppEvent::DatabaseError {
-                                operation: format!("get_user_{user_id}"),
-                                error: db_error,
+                        // Simulate database lookup
+                        match simulate_database_get(&table, user_id) {
+                            Ok(Some(user)) => {
+                                // Success - return user loaded event
+                                println!("✅ User {user_id} found");
+                                AppEvent::UserLoaded { user_id, user }
+                            }
+                            Ok(None) => {
+                                // User not found
+                                println!("❌ User {user_id} not found");
+                                AppEvent::UserNotFound { user_id }
+                            }
+                            Err(db_error) => {
+                                // Database error
+                                println!("💥 Database error getting user {user_id}");
+                                AppEvent::DatabaseError {
+                                    operation: format!("get_user_{user_id}"),
+                                    error: db_error,
+                                }
                             }
                         }
                     }
-                }
-                .boxed()
-            })
+                    .boxed()
+                },
+            )
         }
 
         AppEffect::SaveUser { user, table } => {
-            Task::future_on::<TokioIo, _, _, _>(move |_ctx: EffectContext<AppEvent, AppResources>| {
-                let user = user.clone();
-                let table = table.clone();
-                async move {
-                    println!("💾 Saving user {} to table {}", user.id, table);
+            Task::future_on::<TokioIo, _, _, _>(
+                move |_ctx: EffectContext<AppEvent, AppResources>| {
+                    let user = user.clone();
+                    let table = table.clone();
+                    async move {
+                        println!("💾 Saving user {} to table {}", user.id, table);
 
-                    #[cfg(feature = "tokio")]
-                    tokio::time::sleep(Duration::from_millis(150)).await;
-                    #[cfg(not(feature = "tokio"))]
-                    async_std::task::sleep(Duration::from_millis(150)).await;
+                        #[cfg(feature = "tokio")]
+                        tokio::time::sleep(Duration::from_millis(150)).await;
+                        #[cfg(not(feature = "tokio"))]
+                        async_std::task::sleep(Duration::from_millis(150)).await;
 
-                    // Simulate database save
-                    match simulate_database_save(&table, &user) {
-                        Ok(()) => {
-                            println!("✅ User {} saved", user.id);
-                            AppEvent::UserSaved { user_id: user.id }
-                        }
-                        Err(db_error) => {
-                            println!("💥 Database error saving user {}", user.id);
-                            AppEvent::DatabaseError {
-                                operation: format!("save_user_{}", user.id),
-                                error: db_error,
+                        // Simulate database save
+                        match simulate_database_save(&table, &user) {
+                            Ok(()) => {
+                                println!("✅ User {} saved", user.id);
+                                AppEvent::UserSaved { user_id: user.id }
+                            }
+                            Err(db_error) => {
+                                println!("💥 Database error saving user {}", user.id);
+                                AppEvent::DatabaseError {
+                                    operation: format!("save_user_{}", user.id),
+                                    error: db_error,
+                                }
                             }
                         }
                     }
-                }
-                .boxed()
-            })
+                    .boxed()
+                },
+            )
         }
 
         AppEffect::ConnectDatabase { connection_string } => {
-            Task::future_on::<TokioIo, _, _, _>(move |_ctx: EffectContext<AppEvent, AppResources>| {
-                let connection_string = connection_string.clone();
-                async move {
-                    println!("🔌 Connecting to database: {connection_string}");
+            Task::future_on::<TokioIo, _, _, _>(
+                move |_ctx: EffectContext<AppEvent, AppResources>| {
+                    let connection_string = connection_string.clone();
+                    async move {
+                        println!("🔌 Connecting to database: {connection_string}");
 
-                    #[cfg(feature = "tokio")]
-                    tokio::time::sleep(Duration::from_millis(200)).await;
-                    #[cfg(not(feature = "tokio"))]
-                    async_std::task::sleep(Duration::from_millis(200)).await;
+                        #[cfg(feature = "tokio")]
+                        tokio::time::sleep(Duration::from_millis(200)).await;
+                        #[cfg(not(feature = "tokio"))]
+                        async_std::task::sleep(Duration::from_millis(200)).await;
 
-                    // In real app, you'd establish connection here
-                    println!("✅ Database connected");
-                    AppEvent::DatabaseConnected
-                }
-                .boxed()
-            })
+                        // In real app, you'd establish connection here
+                        println!("✅ Database connected");
+                        AppEvent::DatabaseConnected
+                    }
+                    .boxed()
+                },
+            )
         }
 
         AppEffect::Log { message } => {

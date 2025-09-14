@@ -1,6 +1,6 @@
 //! TokioCurrent executor - uses current runtime only
 
-use crate::executor::{Concurrent, AsyncExecutor, ExecutorError, ExecutorLifecycle, Outcome};
+use crate::executor::{AsyncExecutor, Concurrent, ExecutorError, ExecutorLifecycle, Outcome};
 use futures_util::future::{AbortHandle, BoxFuture};
 use std::future::Future;
 use std::pin::Pin;
@@ -19,7 +19,9 @@ impl Concurrent for TokioCurrent {}
 impl TokioCurrent {
     pub fn new() -> Result<Self, &'static str> {
         Handle::try_current()
-            .map_err(|_| "No tokio runtime is running. Use #[tokio::main] or create a runtime first.")
+            .map_err(
+                |_| "No tokio runtime is running. Use #[tokio::main] or create a runtime first.",
+            )
             .map(|handle| Self { handle })
     }
 }
@@ -90,11 +92,11 @@ mod tests {
     async fn test_tokio_current_uses_existing_runtime() {
         // Should succeed when runtime exists
         let executor = TokioCurrent::new().expect("Should create executor in tokio::test");
-        
+
         // Test spawning a simple future
         let fut = Box::pin(async { Outcome::Events(vec![42]) });
         let result_fut = executor.spawn_future(fut);
-        
+
         let result = result_fut.await;
         assert!(result.is_ok());
         match result.unwrap() {
@@ -117,13 +119,13 @@ mod tests {
     #[tokio::test]
     async fn test_tokio_current_lifecycle_is_noop() {
         let executor = TokioCurrent::new().expect("Should create executor");
-        
+
         // Shutdown should be no-op (we don't own the runtime)
         executor.shutdown();
-        
+
         // Join should complete immediately
         executor.join().await;
-        
+
         // Should still work after shutdown (runtime is external)
         let fut = Box::pin(async { Outcome::<i32>::None });
         let result = executor.spawn_future(fut).await;

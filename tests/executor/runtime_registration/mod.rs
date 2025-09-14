@@ -9,11 +9,11 @@ mod runtime_registration_tests {
     use std::sync::{Arc, Barrier, Mutex};
     use std::thread;
     use std::time::Duration;
+    use syzygy::executor::Outcome;
     use syzygy::executor::{
         AsyncExecutor, ExecutorLifecycle, SingleThreadExecutor, SyncExecutor, TokioExecutor,
         register_current_runtime_for_io, register_io_runtime, spawn_io,
     };
-    use syzygy::executor::Outcome;
     use tokio::runtime::Runtime;
 
     // Helper function to clear IO runtime state for test isolation
@@ -430,5 +430,3 @@ mod runtime_registration_tests {
         global_runtime.shutdown_background();
     }
 }
-
-

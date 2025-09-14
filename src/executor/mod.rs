@@ -112,17 +112,17 @@
 //! | **SingleThreadExecutor** | Sequential work, FIFO requirements | None | Single dedicated | Strict FIFO |
 
 // Executor storage module removed - using direct FxHashMap
+pub mod inline_async;
 #[cfg(feature = "rayon")]
 pub mod rayon_sync_executor;
-pub mod inline_async;
 pub mod registry;
 pub mod single_thread_executor;
 pub mod spec;
 
 #[cfg(feature = "tokio")]
-pub mod tokio_executor;
-#[cfg(feature = "tokio")]
 pub mod tokio_current;
+#[cfg(feature = "tokio")]
+pub mod tokio_executor;
 
 // IO runtime registration - inspired by InfluxDB's design
 use std::future::Future;
@@ -145,14 +145,14 @@ pub use rayon_sync_executor::RayonSyncExecutor as RayonExecutor;
 pub use single_thread_executor::SingleThreadExecutor;
 
 #[cfg(feature = "tokio")]
-pub use tokio_executor::{TokioCpu, TokioExecutor, TokioIo};
-#[cfg(feature = "tokio")]
 pub use tokio_current::TokioCurrent;
+#[cfg(feature = "tokio")]
+pub use tokio_executor::{TokioCpu, TokioExecutor, TokioIo};
 
 pub use inline_async::InlineAsync;
 
-pub use spec::Outcome;
 pub use registry::ExecutorRegistry;
+pub use spec::Outcome;
 pub use spec::Task;
 
 /// Register the current tokio runtime handle for IO operations
@@ -208,8 +208,6 @@ where
 
     handle.spawn(future)
 }
-
-
 
 /// Clear all IO runtime registrations (useful for tests)
 #[cfg(all(feature = "tokio", test))]

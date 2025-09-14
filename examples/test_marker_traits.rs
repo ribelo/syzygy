@@ -1,32 +1,35 @@
 //! Test that marker traits work correctly
 
+use syzygy::executor::{Outcome, TokioExecutor};
 use syzygy::prelude::*;
-use syzygy::executor::{InlineAsync, TokioExecutor, Outcome};
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 enum Event {
     Test,
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 enum Effect {
     TestEffect,
 }
 
+#[allow(dead_code)]
 fn handle_effects(effect: Effect, ctx: &EffectContext<Event, ()>) -> Task<Event, ()> {
     match effect {
         Effect::TestEffect => {
-            // This SHOULD compile - concurrent with Concurrent executor
+            // Simplified API - just use spawn with any executor
             #[cfg(feature = "tokio")]
-            return ctx.spawn_concurrent::<TokioExecutor, _, _>(|_ctx| async {
-                println!("✓ spawn_concurrent with TokioExecutor (Concurrent) works!");
+            return ctx.spawn::<TokioExecutor, _, _>(|_ctx| async {
+                println!("✓ spawn with TokioExecutor works!");
                 Outcome::Events(vec![Event::Test])
             });
-            
+
             // Fallback for non-tokio
             #[cfg(not(feature = "tokio"))]
-            return ctx.spawn_best_effort::<InlineAsync<Event>, _, _>(|_ctx| async {
-                println!("✓ spawn_best_effort with InlineAsync works!");
+            return ctx.spawn::<InlineAsync<Event>, _, _>(|_ctx| async {
+                println!("✓ spawn with InlineAsync works!");
                 Outcome::Events(vec![Event::Test])
             });
         }
@@ -34,8 +37,7 @@ fn handle_effects(effect: Effect, ctx: &EffectContext<Event, ()>) -> Task<Event,
 }
 
 fn main() {
-    println!("✅ Marker traits working correctly!");
-    println!("- Sequential executors can't be used with spawn_concurrent");
-    println!("- Concurrent executors work with spawn_concurrent");
-    println!("- Both work with spawn_best_effort");
+    println!("✅ Simplified API working correctly!");
+    println!("- All executors work with spawn");
+    println!("- No more concurrency complexity");
 }
