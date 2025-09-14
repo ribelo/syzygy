@@ -12,7 +12,7 @@
 
 use futures::FutureExt;
 use std::time::Duration;
-use syzygy::executor::{ExecutorRegistry, Task, TokioIo};
+use syzygy::executor::{ExecutorRegistry, Task, TokioExecutor};
 use syzygy::prelude::*;
 
 // ============================================================================
@@ -80,7 +80,7 @@ fn handle_event(
 
             // NEW API: Parallel coordination with Task::all
             let _config_plan =
-                Task::async_task_with::<TokioIo, _, _>(|_ctx: EffectContext<AppEvent, ()>| {
+                Task::async_task_with::<TokioExecutor, _, _>(|_ctx: EffectContext<AppEvent, ()>| {
                     async move {
                         println!("Loading application config...");
                         #[cfg(feature = "tokio")]
@@ -92,7 +92,7 @@ fn handle_event(
                 });
 
             let _user_data_plan =
-                Task::async_task_with::<TokioIo, _, _>(|_ctx: EffectContext<AppEvent, ()>| {
+                Task::async_task_with::<TokioExecutor, _, _>(|_ctx: EffectContext<AppEvent, ()>| {
                     async move {
                         println!("Loading user data...");
                         #[cfg(feature = "tokio")]
@@ -105,7 +105,7 @@ fn handle_event(
 
             // Use a single task that runs both operations in parallel with futures::join!
             let _bootstrap_plan =
-                Task::async_task_with::<TokioIo, _, _>(move |_ctx: EffectContext<AppEvent, ()>| {
+                Task::async_task_with::<TokioExecutor, _, _>(move |_ctx: EffectContext<AppEvent, ()>| {
                     async move {
                         // Run both config and user data loading in parallel
                         let (config_result, user_data_result) = futures::join!(
@@ -224,7 +224,7 @@ fn handle_event(
 fn handle_effects(effect: AppEffect, _ctx: &EffectContext<AppEvent, ()>) -> Task<AppEvent, ()> {
     match effect {
         AppEffect::LoadConfig => {
-            Task::async_task_with::<TokioIo, _, _>(move |_ctx: EffectContext<AppEvent, ()>| {
+            Task::async_task_with::<TokioExecutor, _, _>(move |_ctx: EffectContext<AppEvent, ()>| {
                 async move {
                     println!("Loading application config...");
                     #[cfg(feature = "tokio")]
@@ -237,7 +237,7 @@ fn handle_effects(effect: AppEffect, _ctx: &EffectContext<AppEvent, ()>) -> Task
         }
 
         AppEffect::LoadUserData => {
-            Task::async_task_with::<TokioIo, _, _>(move |_ctx: EffectContext<AppEvent, ()>| {
+            Task::async_task_with::<TokioExecutor, _, _>(move |_ctx: EffectContext<AppEvent, ()>| {
                 async move {
                     println!("Loading user data...");
                     #[cfg(feature = "tokio")]
@@ -250,7 +250,7 @@ fn handle_effects(effect: AppEffect, _ctx: &EffectContext<AppEvent, ()>) -> Task
         }
 
         AppEffect::TryMirror { url } => {
-            Task::async_task_with::<TokioIo, _, _>(move |_ctx: EffectContext<AppEvent, ()>| {
+            Task::async_task_with::<TokioExecutor, _, _>(move |_ctx: EffectContext<AppEvent, ()>| {
                 let url = url.clone();
                 async move {
                     println!("Trying mirror: {}", url);
@@ -272,7 +272,7 @@ fn handle_effects(effect: AppEffect, _ctx: &EffectContext<AppEvent, ()>) -> Task
         }
 
         AppEffect::ProcessWorkflowStep { step, item } => {
-            Task::async_task_with::<TokioIo, _, _>(move |_ctx: EffectContext<AppEvent, ()>| {
+            Task::async_task_with::<TokioExecutor, _, _>(move |_ctx: EffectContext<AppEvent, ()>| {
                 let item = item.clone();
                 async move {
                     println!("Processing workflow step {}: {}", step, item);
@@ -285,7 +285,7 @@ fn handle_effects(effect: AppEffect, _ctx: &EffectContext<AppEvent, ()>) -> Task
         }
 
         AppEffect::Cleanup => {
-            Task::async_task_with::<TokioIo, _, _>(move |_ctx: EffectContext<AppEvent, ()>| {
+            Task::async_task_with::<TokioExecutor, _, _>(move |_ctx: EffectContext<AppEvent, ()>| {
                 async move {
                     println!("Performing cleanup...");
                     #[cfg(feature = "tokio")]
@@ -315,7 +315,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Build the application
     let mut registry = ExecutorRegistry::new();
-    registry.insert_async(TokioIo::default());
+    registry.insert_async(TokioExecutor::multi_thread_io("io-executor", 4));
 
     let (core, shell) = Syzygy::builder()
         .model(AppModel::default())

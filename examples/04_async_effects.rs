@@ -13,7 +13,7 @@ use futures::FutureExt;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
-use syzygy::executor::{ExecutorRegistry, Task, TokioIo};
+use syzygy::executor::{ExecutorRegistry, Task, TokioExecutor};
 use syzygy::prelude::*;
 
 // ============================================================================
@@ -257,7 +257,7 @@ fn handle_http_request(
 ) -> Task<AppEvent, ResourceStorage> {
     if let AppEffect::HttpRequest { task_id, path } = effect {
         let http_client = http_client.clone();
-        Task::async_task_with::<TokioIo, _, _>(
+        Task::async_task_with::<TokioExecutor, _, _>(
             move |_ctx: EffectContext<AppEvent, ResourceStorage>| {
                 let task_id = task_id.clone();
                 let path = path.clone();
@@ -284,7 +284,7 @@ fn handle_database_query(
 ) -> Task<AppEvent, ResourceStorage> {
     if let AppEffect::DatabaseQuery { task_id, query } = effect {
         let db_pool = db_pool.clone();
-        Task::async_task_with::<TokioIo, _, _>(
+        Task::async_task_with::<TokioExecutor, _, _>(
             move |_ctx: EffectContext<AppEvent, ResourceStorage>| {
                 let task_id = task_id.clone();
                 let query = query.clone();
@@ -311,8 +311,8 @@ fn handle_cache_operation(
             CacheOp::Get { key } => {
                 if let Some(value) = cache.get(&key) {
                     println!("CACHE HIT: {} -> {}", key, value);
-                    Task::async_task_with::<TokioIo, _, _>(
-                        move |_ctx: EffectContext<AppEvent, ResourceStorage>| {
+        Task::async_task_with::<TokioExecutor, _, _>(
+            move |_ctx: EffectContext<AppEvent, ResourceStorage>| {
                             let key = key.clone();
                             let value = value.clone();
                             async move {
@@ -350,7 +350,7 @@ fn handle_parallel_tasks(
         let plans: Vec<Task<AppEvent, ResourceStorage>> = task_ids
             .into_iter()
             .map(|task_id| {
-                Task::async_task_with::<TokioIo, _, _>(
+                Task::async_task_with::<TokioExecutor, _, _>(
                     move |_ctx: EffectContext<AppEvent, ResourceStorage>| {
                         let task_id = task_id.clone();
                         async move {
@@ -380,7 +380,7 @@ fn handle_parallel_tasks(
 
 fn handle_delayed_task(effect: AppEffect) -> Task<AppEvent, ResourceStorage> {
     if let AppEffect::DelayedTask { task_id, delay_ms } = effect {
-        Task::async_task_with::<TokioIo, _, _>(
+        Task::async_task_with::<TokioExecutor, _, _>(
             move |_ctx: EffectContext<AppEvent, ResourceStorage>| {
                 let task_id = task_id.clone();
                 async move {
@@ -439,7 +439,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     let mut registry = ExecutorRegistry::new();
-    registry.insert_async(TokioIo::default());
+    registry.insert_async(TokioExecutor::multi_thread_io("io-worker", 4));
 
     let (core, shell) = Syzygy::builder()
         .model(AppModel::default())

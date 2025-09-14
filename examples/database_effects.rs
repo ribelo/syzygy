@@ -5,7 +5,7 @@
 
 use std::collections::HashMap;
 use std::time::Duration;
-use syzygy::executor::{ExecutorRegistry, Task, TokioIo};
+use syzygy::executor::{ExecutorRegistry, Task, TokioExecutor};
 use syzygy::prelude::*;
 
 use futures::FutureExt;
@@ -152,7 +152,7 @@ fn handle_effects(
         AppEffect::GetUser { user_id, table } => {
             let resources: &AppResources = ctx.resources();
             let resources = resources.clone();
-            Task::async_task_with::<TokioIo, _, _>(
+            Task::async_task_with::<TokioExecutor, _, _>(
                 move |_ctx: EffectContext<AppEvent, AppResources>| {
                     let table = table.clone();
                     async move {
@@ -195,7 +195,7 @@ fn handle_effects(
         }
 
         AppEffect::SaveUser { user, table } => {
-            Task::async_task_with::<TokioIo, _, _>(
+            Task::async_task_with::<TokioExecutor, _, _>(
                 move |_ctx: EffectContext<AppEvent, AppResources>| {
                     let user = user.clone();
                     let table = table.clone();
@@ -228,7 +228,7 @@ fn handle_effects(
         }
 
         AppEffect::ConnectDatabase { connection_string } => {
-            Task::async_task_with::<TokioIo, _, _>(
+            Task::async_task_with::<TokioExecutor, _, _>(
                 move |_ctx: EffectContext<AppEvent, AppResources>| {
                     let connection_string = connection_string.clone();
                     async move {
@@ -323,7 +323,7 @@ fn run_demo() -> Result<(), Box<dyn std::error::Error>> {
 
     // Build the system with resources
     let mut registry = ExecutorRegistry::new();
-    registry.insert_async(TokioIo::default());
+    registry.insert_async(TokioExecutor::multi_thread_io("io-executor", 4));
 
     let (core, shell) = Syzygy::builder::<AppEvent, AppEffect>()
         .model(AppModel::default())

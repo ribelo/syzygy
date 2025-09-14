@@ -9,7 +9,7 @@ use syzygy::executor::{
 };
 
 #[cfg(feature = "tokio")]
-use syzygy::executor::{TokioCpu, TokioExecutor, TokioIo};
+use syzygy::executor::TokioExecutor;
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -46,8 +46,8 @@ fn test_concurrent_marker_trait_implementations() {
 
     // ✅ All Tokio executors should implement Concurrent
     requires_concurrent(TokioExecutor::current_thread_io("test"));
-    requires_concurrent(TokioIo::current_thread());
-    requires_concurrent(TokioCpu::current_thread());
+    requires_concurrent(TokioExecutor::current_thread_io("io-test"));
+    requires_concurrent(TokioExecutor::current_thread_cpu("cpu-test"));
 
     // This test passes if it compiles - the type system enforces the constraint
 }
@@ -80,7 +80,7 @@ fn test_simplified_api_works_with_tokio_executors() {
         Outcome::Event(TestEvent::Started { id: 1 })
     });
 
-    let _task2 = Task::<TestEvent, ()>::async_task::<TokioIo, _>(async {
+    let _task2 = Task::<TestEvent, ()>::async_task::<TokioExecutor, _>(async {
         Outcome::Event(TestEvent::Started { id: 2 })
     });
 
@@ -316,11 +316,11 @@ fn test_compile_time_safety_guarantees() {
             Outcome::Event(TestEvent::Started { id: 2 })
         });
 
-        let _task3 = Task::<TestEvent, ()>::async_task::<TokioIo, _>(async {
+        let _task3 = Task::<TestEvent, ()>::async_task::<TokioExecutor, _>(async {
             Outcome::Event(TestEvent::Started { id: 3 })
         });
 
-        let _task4 = Task::<TestEvent, ()>::async_task::<TokioCpu, _>(async {
+        let _task4 = Task::<TestEvent, ()>::async_task::<TokioExecutor, _>(async {
             Outcome::Event(TestEvent::Started { id: 4 })
         });
     }
@@ -342,8 +342,8 @@ fn _compile_time_trait_verification() {
     #[cfg(feature = "tokio")]
     {
         concurrent_only(TokioExecutor::current_thread_io("test"));
-        concurrent_only(TokioIo::current_thread());
-        concurrent_only(TokioCpu::current_thread());
+        concurrent_only(TokioExecutor::current_thread_io("io-test"));
+        concurrent_only(TokioExecutor::current_thread_cpu("cpu-test"));
     }
 
     // ❌ These would NOT compile:

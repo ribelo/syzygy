@@ -17,7 +17,7 @@ use syzygy::scheduler::scheduler;
 
 use futures::FutureExt;
 use syzygy::executor::Outcome;
-use syzygy::executor::{ExecutorRegistry, TokioIo};
+use syzygy::executor::{ExecutorRegistry, TokioExecutor};
 
 #[derive(Debug, Clone)]
 enum TestEvent {
@@ -64,7 +64,7 @@ fn test_effect_handler(
 ) -> syzygy::executor::Task<TestEvent, ()> {
     match effect {
         TestEffect::Delay(duration) => {
-            syzygy::executor::Task::async_task::<TokioIo, _>(async move {
+            syzygy::executor::Task::async_task::<TokioExecutor, _>(async move {
                 #[cfg(feature = "tokio")]
                 tokio::time::sleep(duration).await;
 
@@ -84,7 +84,7 @@ fn test_effect_handler(
 #[tokio::test]
 async fn test_runtime_auto_detection() {
     let mut registry = ExecutorRegistry::new();
-    registry.insert_async(TokioIo::default());
+    registry.insert_async(TokioExecutor::multi_thread_io("test", 2));
 
     let (core, shell) = Syzygy::builder::<TestEvent, TestEffect>()
         .model(TestModel::default())
@@ -114,7 +114,7 @@ async fn test_runtime_auto_detection() {
 #[tokio::test]
 async fn test_explicit_tokio_runtime() {
     let mut registry = ExecutorRegistry::new();
-    registry.insert_async(TokioIo::default());
+    registry.insert_async(TokioExecutor::multi_thread_io("test", 2));
 
     let (core, shell) = Syzygy::builder::<TestEvent, TestEffect>()
         .model(TestModel::default())

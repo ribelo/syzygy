@@ -8,7 +8,6 @@ mod io_runtime_tests;
 
 mod single_thread_executor_tests;
 
-#[cfg(feature = "tokio")]
-mod tokio_newtypes_tests;
+
 
 mod runtime_registration;

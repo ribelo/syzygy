@@ -147,7 +147,7 @@ pub use single_thread_executor::SingleThreadExecutor;
 #[cfg(feature = "tokio")]
 pub use tokio_current::TokioCurrent;
 #[cfg(feature = "tokio")]
-pub use tokio_executor::{TokioCpu, TokioExecutor, TokioIo};
+pub use tokio_executor::TokioExecutor;
 
 pub use inline_async::InlineAsync;
 

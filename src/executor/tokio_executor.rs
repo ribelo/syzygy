@@ -1,41 +1,29 @@
 #[cfg(feature = "tokio")]
-// Tokio Executor Architecture — specialized async runtimes for different work types
+// Tokio Executor — dedicated async runtime on separate thread
 //
-// This module provides three executor types built on Tokio:
-//
-// ## TokioExecutor (Base)
-// The foundational executor that creates dedicated Tokio runtimes on separate threads.
-// Use this when you need custom runtime configuration.
-//
-// ## TokioIo (Newtype Wrapper)
-// Specialized for IO-bound async work with `enable_all()` runtime features.
-// Perfect for network operations, file I/O, and other async IO tasks.
-//
-// ## TokioCpu (Newtype Wrapper)
-// Specialized for CPU-bound async work with only `enable_time()` runtime.
-// Ideal for computation-heavy async tasks that don't need IO capabilities.
+// This module provides the `TokioExecutor` type that creates dedicated Tokio
+// runtimes on separate threads. Use this when you need custom runtime configuration
+// or want to isolate async work from the main runtime.
 //
 // ## Design Rationale
 //
-// The newtype pattern (`TokioIo`, `TokioCpu`) enables registering multiple
-// Tokio executors with different configurations while maintaining distinct
-// `TypeId`s for the registry system. This separation allows:
+// `TokioExecutor` enables running async work on dedicated runtimes while maintaining
+// type safety and proper resource management. This separation allows:
 //
-// - **IO isolation**: Network/file operations run on dedicated IO-optimized runtimes
-// - **CPU optimization**: Computation work runs on lean runtimes without IO overhead
+// - **Runtime isolation**: Async work runs on dedicated threads with custom configurations
 // - **Resource separation**: Different thread pools for different workload types
 // - **Performance tuning**: Each executor can be configured for its specific use case
 //
 // ## Usage Examples
 //
 // ```rust
-// use syzygy::executor::{TokioIo, TokioCpu, TokioExecutor};
+// use syzygy::executor::TokioExecutor;
 //
-// // IO-focused executor for network operations
-// let io_executor = TokioIo::multi_thread(4);
+// // IO-focused executor for network operations (enable_all)
+// let io_executor = TokioExecutor::multi_thread_io("io-worker", 4);
 //
-// // CPU-focused executor for async computations
-// let cpu_executor = TokioCpu::multi_thread(8);
+// // CPU-focused executor for async computations (enable_time only)
+// let cpu_executor = TokioExecutor::multi_thread_cpu("cpu-worker", 8);
 //
 // // Custom configuration using base executor
 // let custom = TokioExecutor::current_thread_cpu("custom-worker");
@@ -43,11 +31,11 @@
 //
 // ## Runtime Configuration
 //
-// - **TokioIo**: Uses `enable_all()` - full tokio feature set for IO operations
-// - **TokioCpu**: Uses `enable_time()` only - minimal runtime for CPU work
+// - **IO-focused**: Use `*_io` methods - full tokio feature set (`enable_all()`)
+// - **CPU-focused**: Use `*_cpu` methods - minimal runtime (`enable_time()` only)
 // - **Thread models**: Both support `current_thread` and `multi_thread` configurations
 use crate::executor::{
-    AbortOnDrop, AsyncExecutor, Concurrent, ExecutorError, ExecutorLifecycle, register_io_runtime,
+    AbortOnDrop, AsyncExecutor, Concurrent, ExecutorError, register_io_runtime,
 };
 
 use futures::{
@@ -242,202 +230,13 @@ impl crate::executor::ExecutorLifecycle for TokioExecutor {
     }
 }
 
-/// Newtype wrapper for IO-focused Tokio executor
-///
-/// This executor is optimized for IO-bound work with `enable_all()` runtime features.
-/// Use this for network operations, file I/O, and other async IO tasks.
-///
-/// # Runtime Configuration
-///
-/// Uses `enable_all()` which includes:
-/// - `net` - TCP/UDP networking capabilities
-/// - `process` - Process management
-/// - `signal` - Signal handling
-/// - `rt` - Runtime utilities
-/// - `time` - Timer functionality
-///
-/// # Examples
-///
-/// ```rust
-/// use syzygy::executor::TokioIo;
-///
-/// // Create IO-focused executor with default thread count
-/// let io_executor = TokioIo::default();
-///
-/// // Create with specific thread count
-/// let io_executor = TokioIo::multi_thread(8);
-///
-/// // Create single-threaded for development/debugging
-/// let io_executor = TokioIo::current_thread();
-/// ```
-///
-/// # When to Use
-///
-/// - HTTP/HTTPS requests and web APIs
-/// - Database connections and queries
-/// - File system operations
-/// - Network protocols (TCP, UDP, WebSocket)
-/// - Any async work requiring full tokio feature set
-#[cfg_attr(docsrs, doc(cfg(feature = "tokio")))]
-#[derive(Clone)]
-pub struct TokioIo(pub TokioExecutor);
 
-impl Concurrent for TokioIo {}
 
-impl TokioIo {
-    /// Create a current-thread IO executor
-    #[must_use]
-    pub fn current_thread() -> Self {
-        Self(TokioExecutor::current_thread_io("tokio-io"))
-    }
 
-    /// Create a multi-thread IO executor with specified worker threads
-    #[must_use]
-    pub fn multi_thread(worker_threads: usize) -> Self {
-        Self(TokioExecutor::multi_thread_io("tokio-io", worker_threads))
-    }
 
-    /// Create with default worker count (available parallelism)
-    #[must_use]
-    #[allow(clippy::should_implement_trait)]
-    pub fn default() -> Self {
-        let workers = std::thread::available_parallelism()
-            .map(std::num::NonZero::get)
-            .unwrap_or(4);
-        Self::multi_thread(workers)
-    }
-}
 
-/// Newtype wrapper for CPU-focused Tokio executor
-///
-/// This executor is optimized for CPU-bound async work with only `enable_time()`.
-/// Use this for computation-heavy async tasks that don't need IO capabilities.
-///
-/// # Runtime Configuration
-///
-/// Uses `enable_time()` only, which provides:
-/// - `rt` - Runtime utilities (minimal)
-/// - `time` - Timer functionality
-///
-/// Explicitly excludes IO features (`net`, `process`, `signal`) to reduce:
-/// - Memory footprint
-/// - Thread pool overhead
-/// - Runtime complexity
-///
-/// # Examples
-///
-/// ```rust
-/// use syzygy::executor::TokioCpu;
-///
-/// // Create CPU-focused executor with default thread count
-/// let cpu_executor = TokioCpu::default();
-///
-/// // Create with specific thread count for parallel computation
-/// let cpu_executor = TokioCpu::multi_thread(16);
-///
-/// // Create single-threaded for sequential CPU work
-/// let cpu_executor = TokioCpu::current_thread();
-/// ```
-///
-/// # When to Use
-///
-/// - Async data processing pipelines
-/// - Mathematical computations with async coordination
-/// - Async task orchestration without IO
-/// - Background job processing
-/// - Any async work that doesn't require network/file operations
-///
-/// # Performance Benefits
-///
-/// - **Lower memory usage**: No IO subsystem overhead
-/// - **Faster startup**: Minimal runtime initialization
-/// - **Reduced contention**: Fewer shared resources
-/// - **Better cache locality**: Leaner runtime structures
-#[cfg_attr(docsrs, doc(cfg(feature = "tokio")))]
-#[derive(Clone)]
-pub struct TokioCpu(pub TokioExecutor);
 
-impl Concurrent for TokioCpu {}
 
-impl TokioCpu {
-    /// Create a current-thread CPU executor
-    #[must_use]
-    pub fn current_thread() -> Self {
-        Self(TokioExecutor::current_thread_cpu("tokio-cpu"))
-    }
-
-    /// Create a multi-thread CPU executor with specified worker threads
-    #[must_use]
-    pub fn multi_thread(worker_threads: usize) -> Self {
-        Self(TokioExecutor::multi_thread_cpu("tokio-cpu", worker_threads))
-    }
-
-    /// Create with default worker count (available parallelism)
-    #[must_use]
-    #[allow(clippy::should_implement_trait)]
-    pub fn default() -> Self {
-        let workers = std::thread::available_parallelism()
-            .map(std::num::NonZero::get)
-            .unwrap_or(4);
-        Self::multi_thread(workers)
-    }
-}
-
-impl<E> AsyncExecutor<E> for TokioIo
-where
-    E: Send + 'static,
-{
-    fn spawn_future(
-        &self,
-        fut: BoxFuture<'static, crate::executor::Outcome<E>>,
-    ) -> BoxFuture<'static, Result<crate::executor::Outcome<E>, ExecutorError>> {
-        self.0.spawn_future(fut)
-    }
-}
-
-impl ExecutorLifecycle for TokioIo {
-    fn shutdown(&self) {
-        self.0.shutdown();
-    }
-
-    fn join(&self) -> BoxFuture<'static, ()> {
-        self.0.join()
-    }
-}
-
-impl<E> AsyncExecutor<E> for TokioCpu
-where
-    E: Send + 'static,
-{
-    fn spawn_future(
-        &self,
-        fut: BoxFuture<'static, crate::executor::Outcome<E>>,
-    ) -> BoxFuture<'static, Result<crate::executor::Outcome<E>, ExecutorError>> {
-        self.0.spawn_future(fut)
-    }
-}
-
-impl ExecutorLifecycle for TokioCpu {
-    fn shutdown(&self) {
-        self.0.shutdown();
-    }
-
-    fn join(&self) -> BoxFuture<'static, ()> {
-        self.0.join()
-    }
-}
-
-impl std::fmt::Debug for TokioIo {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "TokioIo")
-    }
-}
-
-impl std::fmt::Debug for TokioCpu {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "TokioCpu")
-    }
-}
 
 #[cfg(test)]
 mod tests {

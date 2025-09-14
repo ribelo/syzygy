@@ -13,7 +13,7 @@
 
 use std::time::Duration;
 use syzygy::event_context::EventContext;
-use syzygy::executor::{ExecutorRegistry, TokioIo};
+use syzygy::executor::{ExecutorRegistry, TokioExecutor};
 use syzygy::prelude::*;
 use syzygy::scheduler::scheduler;
 
@@ -90,7 +90,7 @@ fn timeout_aware_effect_handler(
 ) -> syzygy::executor::Task<TimeoutEvent, ()> {
     match effect {
         TimeoutEffect::SlowOperation { delay_ms } => {
-            syzygy::executor::Task::async_task::<TokioIo, _>(async move {
+            syzygy::executor::Task::async_task::<TokioExecutor, _>(async move {
                 let operation_future = async move {
                     tokio::time::sleep(Duration::from_millis(delay_ms)).await;
                     format!("Operation completed after {delay_ms}ms")
@@ -114,7 +114,7 @@ fn timeout_aware_effect_handler(
 #[tokio::test]
 async fn test_timeout_event_pattern() {
     let mut registry = ExecutorRegistry::new();
-    registry.insert_async(TokioIo::default());
+    registry.insert_async(TokioExecutor::multi_thread_io("test", 2));
 
     let (core, shell) = Syzygy::builder::<TimeoutEvent, TimeoutEffect>()
         .model(TimeoutModel::default())

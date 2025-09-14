@@ -16,7 +16,7 @@
 
 use std::collections::HashMap;
 use syzygy::executor::Outcome;
-use syzygy::executor::{ExecutorRegistry, Task, TokioIo};
+use syzygy::executor::{ExecutorRegistry, Task, TokioExecutor};
 use syzygy::prelude::*;
 
 use futures::FutureExt;
@@ -794,7 +794,7 @@ fn handle_authentication_effect(
     db_service: DatabaseService,
 ) -> Task<AppEvent, ResourceStorage> {
     match effect {
-        AppEffect::AuthenticateUser { username, password } => Task::async_task_with::<TokioIo, _, _>(
+        AppEffect::AuthenticateUser { username, password } => Task::async_task_with::<TokioExecutor, _, _>(
             move |_ctx: EffectContext<AppEvent, ResourceStorage>| {
                 let db_service = db_service.clone();
                 let username = username.clone();
@@ -823,7 +823,7 @@ fn handle_authentication_effect(
             },
         ),
         AppEffect::GenerateSessionToken { user_id } => {
-            Task::async_task_with::<TokioIo, _, _>(move |_ctx| {
+            Task::async_task_with::<TokioExecutor, _, _>(move |_ctx| {
                 let session_token = format!(
                     "session_{}_{}",
                     user_id,
@@ -841,7 +841,7 @@ fn handle_authentication_effect(
             })
         }
         AppEffect::InvalidateSession { session_token } => {
-            Task::async_task_with::<TokioIo, _, _>(move |_| {
+            Task::async_task_with::<TokioExecutor, _, _>(move |_| {
                 let session_token = session_token.clone();
                 async move {
                     println!("Invalidated session: {session_token}");
@@ -862,7 +862,7 @@ fn handle_persistence_effect(
         AppEffect::SaveUserPreferences {
             user_id,
             preferences,
-        } => Task::async_task_with::<TokioIo, _, _>(move |_ctx| {
+        } => Task::async_task_with::<TokioExecutor, _, _>(move |_ctx| {
             let db_service = db_service.clone();
             let preferences = preferences.clone();
             async move {
@@ -882,7 +882,7 @@ fn handle_persistence_effect(
             }
             .boxed()
         }),
-        AppEffect::SyncDataChanges { changes } => Task::async_task_with::<TokioIo, _, _>(
+        AppEffect::SyncDataChanges { changes } => Task::async_task_with::<TokioExecutor, _, _>(
             move |_ctx: EffectContext<AppEvent, ResourceStorage>| {
                 let db_service = db_service.clone();
                 let changes = changes.clone();
@@ -908,7 +908,7 @@ fn handle_notification_effect(
         notification,
     } = effect
     {
-        Task::async_task_with::<TokioIo, _, _>(move |_ctx| {
+        Task::async_task_with::<TokioExecutor, _, _>(move |_ctx| {
             let notification_service = notification_service.clone();
             let notification = notification.clone();
             async move {
@@ -952,7 +952,7 @@ fn handle_background_operation(effect: AppEffect) -> Task<AppEvent, ResourceStor
         task_type,
     } = effect
     {
-        Task::async_task_with::<TokioIo, _, _>(
+        Task::async_task_with::<TokioExecutor, _, _>(
             move |_ctx: EffectContext<AppEvent, ResourceStorage>| {
                 let operation_id = operation_id.clone();
                 let task_type = task_type.clone();
@@ -1045,7 +1045,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Build the complete system with explicit executors
     let mut registry = ExecutorRegistry::new();
-    registry.insert_async(TokioIo::default());
+    registry.insert_async(TokioExecutor::multi_thread_io("io-executor", 4));
 
     let (core, shell) = Syzygy::builder()
         // Application state

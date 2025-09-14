@@ -8,7 +8,7 @@
 //! - Event processing and command creation
 //! - Core/Shell orchestration with Runner
 
-use syzygy::executor::{ExecutorRegistry, Outcome, Task, TokioIo};
+use syzygy::executor::{ExecutorRegistry, Outcome, Task, TokioExecutor};
 use syzygy::prelude::*;
 
 // ============================================================================
@@ -253,7 +253,7 @@ fn handle_effects(
         }
         CounterEffect::SaveCount(_) => {
             // Spawn async handler using ctx.spawn
-            ctx.spawn::<TokioIo, _, _>(|_ctx| handle_save_effect(effect))
+            ctx.spawn::<TokioExecutor, _, _>(|_ctx| handle_save_effect(effect))
         }
     }
 }
@@ -279,7 +279,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Build the system with model and resources
     let mut registry = ExecutorRegistry::new();
-    registry.insert_async(TokioIo::default());
+    registry.insert_async(TokioExecutor::multi_thread_io("io-worker", 4));
 
     let (core, shell) = Syzygy::builder()
         .model(CounterModel::default())
