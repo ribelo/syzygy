@@ -418,6 +418,5 @@ mod tests {
             .build();
 
         // If we get here, the typestate pattern is working correctly
-        assert!(true);
     }
 }
