@@ -12,7 +12,7 @@
 
 use futures::FutureExt;
 use std::time::Duration;
-use syzygy::executor::{Task, TokioIo};
+use syzygy::executor::{ExecutorRegistry, Task, TokioIo};
 use syzygy::prelude::*;
 
 // ============================================================================
@@ -314,10 +314,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("=== Effects Coordination Demo ===\n");
 
     // Build the application
+    let mut registry = ExecutorRegistry::new();
+    registry.insert_async(TokioIo::default());
+
     let (core, shell) = Syzygy::builder()
         .model(AppModel::default())
         .event_handler(handle_event)
         .effect_handler(handle_effects)
+        .with_executor_registry(registry)
         .build();
     let mut runner = Runner::new(core, shell);
 

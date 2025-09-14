@@ -5,7 +5,7 @@
 
 use std::collections::HashMap;
 use std::time::Duration;
-use syzygy::executor::{Task, TokioIo};
+use syzygy::executor::{ExecutorRegistry, Task, TokioIo};
 use syzygy::prelude::*;
 
 use futures::FutureExt;
@@ -322,11 +322,15 @@ fn run_demo() -> Result<(), Box<dyn std::error::Error>> {
     let resources = AppResources::new();
 
     // Build the system with resources
+    let mut registry = ExecutorRegistry::new();
+    registry.insert_async(TokioIo::default());
+
     let (core, shell) = Syzygy::builder::<AppEvent, AppEffect>()
         .model(AppModel::default())
         .resource(resources)
         .event_handler(database_update)
         .effect_handler(handle_effects)
+        .with_executor_registry(registry)
         .build();
     let mut runner = Runner::new(core, shell);
 
