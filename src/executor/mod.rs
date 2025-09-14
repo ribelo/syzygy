@@ -229,6 +229,58 @@ pub enum ExecutorError {
     Panic { msg: String },
 }
 
+/// Future wrapper that aborts the spawned task on drop to provide cancel-on-drop semantics
+///
+/// This shared implementation consolidates the duplicate AbortOnDrop structs from
+/// tokio_executor.rs and tokio_current.rs into a single generic version.
+#[cfg(feature = "tokio")]
+pub(crate) struct AbortOnDrop<T> {
+    handle: tokio::task::JoinHandle<Result<T, futures_util::future::Aborted>>,
+    abort: futures_util::future::AbortHandle,
+}
+
+#[cfg(feature = "tokio")]
+impl<T> Drop for AbortOnDrop<T> {
+    fn drop(&mut self) {
+        self.abort.abort();
+    }
+}
+
+#[cfg(feature = "tokio")]
+impl<T> std::future::Future for AbortOnDrop<T>
+where
+    T: Send + 'static,
+{
+    type Output = Result<T, ExecutorError>;
+
+    fn poll(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Self::Output> {
+        let this = self.get_mut();
+        match std::pin::Pin::new(&mut this.handle).poll(cx) {
+            std::task::Poll::Ready(join_res) => std::task::Poll::Ready(match join_res {
+                Ok(Ok(output)) => Ok(output),
+                Ok(Err(_aborted)) => Err(ExecutorError::Cancelled),
+                Err(join_err) => match join_err.try_into_panic() {
+                    Ok(p) => {
+                        let msg = if let Some(s) = p.downcast_ref::<String>() {
+                            s.clone()
+                        } else if let Some(s) = p.downcast_ref::<&str>() {
+                            (*s).to_string()
+                        } else {
+                            "unknown internal error".to_string()
+                        };
+                        Err(ExecutorError::Panic { msg })
+                    }
+                    Err(_) => Err(ExecutorError::WorkerGone),
+                },
+            }),
+            std::task::Poll::Pending => std::task::Poll::Pending,
+        }
+    }
+}
+
 /// Shared lifecycle management for all executor types
 pub trait ExecutorLifecycle: Send + Sync + 'static {
     /// Signal the executor to begin shutdown; no further tasks will be accepted

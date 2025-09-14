@@ -47,12 +47,12 @@
 // - **TokioCpu**: Uses `enable_time()` only - minimal runtime for CPU work
 // - **Thread models**: Both support `current_thread` and `multi_thread` configurations
 use crate::executor::{
-    AsyncExecutor, Concurrent, ExecutorError, ExecutorLifecycle, register_io_runtime,
+    AbortOnDrop, AsyncExecutor, Concurrent, ExecutorError, ExecutorLifecycle, register_io_runtime,
 };
 
 use futures::{
     TryFutureExt,
-    future::{AbortHandle, Aborted, abortable},
+    future::{abortable},
 };
 use futures_util::future::{BoxFuture, FutureExt};
 use std::sync::{Arc, RwLock};
@@ -193,51 +193,7 @@ impl TokioExecutor {
         Self::new_with(name, b)
     }
 }
-// Future wrapper that aborts the spawned task on drop to provide cancel-on-drop semantics
-struct AbortOnDrop<E> {
-    handle: tokio::task::JoinHandle<Result<crate::executor::Outcome<E>, Aborted>>,
-    abort: AbortHandle,
-}
 
-impl<E> Drop for AbortOnDrop<E> {
-    fn drop(&mut self) {
-        self.abort.abort();
-    }
-}
-
-impl<E> std::future::Future for AbortOnDrop<E>
-where
-    E: Send + 'static,
-{
-    type Output = Result<crate::executor::Outcome<E>, ExecutorError>;
-
-    fn poll(
-        self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Self::Output> {
-        let this = self.get_mut();
-        match std::pin::Pin::new(&mut this.handle).poll(cx) {
-            std::task::Poll::Ready(join_res) => std::task::Poll::Ready(match join_res {
-                Ok(Ok(output)) => Ok(output),
-                Ok(Err(_aborted)) => Err(ExecutorError::Cancelled),
-                Err(join_err) => match join_err.try_into_panic() {
-                    Ok(p) => {
-                        let msg = if let Some(s) = p.downcast_ref::<String>() {
-                            s.clone()
-                        } else if let Some(s) = p.downcast_ref::<&str>() {
-                            (*s).to_string()
-                        } else {
-                            "unknown internal error".to_string()
-                        };
-                        Err(ExecutorError::Panic { msg })
-                    }
-                    Err(_) => Err(ExecutorError::WorkerGone),
-                },
-            }),
-            std::task::Poll::Pending => std::task::Poll::Pending,
-        }
-    }
-}
 
 impl<E> AsyncExecutor<E> for TokioExecutor
 where
