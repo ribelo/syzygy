@@ -70,7 +70,7 @@ type SyncFactory<E, R> = Box<dyn FnOnce(EffectContext<E, R>) -> Outcome<E> + Sen
 type StreamFactory<E, R> = Box<dyn FnOnce(EffectContext<E, R>) -> BoxStream<'static, E> + Send>;
 
 /// Declarative effect plan produced by sync handlers.
-pub enum Task<E, R> {
+pub enum Task<E, R = ()> {
     Events(Vec<E>),
     Future {
         exec: TypeId,
@@ -95,8 +95,11 @@ where
     R: Clone + Send + Sync + 'static,
 {
     #[must_use]
-    pub fn events(events: Vec<E>) -> Self {
-        Self::Events(events)
+    pub fn events<I>(events: I) -> Self
+    where
+        I: IntoIterator<Item = E>,
+    {
+        Self::Events(events.into_iter().collect())
     }
 
     #[must_use]

@@ -170,17 +170,15 @@
 //!
 //! Learn Syzygy progressively with our example series:
 //!
-//! - **[01_basic_tea.rs]** - Core TEA patterns and concepts
-//! - **[02_multi_model.rs]** - Working with multiple models
-//! - **[03_magic_handlers.rs]** - Automatic parameter extraction
-//! - **[04_async_effects.rs]** - Resources and async effects
-//! - **[05_real_world_app.rs]** - Complete production patterns
+//! - **[basic_counter.rs]** – the smallest possible Syzygy app
+//! - **[async_effect.rs]** – scheduling work onto Tokio executors
+//! - **[manual_loop.rs]** – driving `Core`/`Shell` without the runner helper
+//! - **[two_executors.rs]** – mixing IO and CPU executors under Tokio
 //!
-//! [01_basic_tea.rs]: https://github.com/ribelo/syzygy/blob/main/examples/01_basic_tea.rs
-//! [02_multi_model.rs]: https://github.com/ribelo/syzygy/blob/main/examples/02_multi_model.rs
-//! [03_magic_handlers.rs]: https://github.com/ribelo/syzygy/blob/main/examples/03_magic_handlers.rs
-//! [04_async_effects.rs]: https://github.com/ribelo/syzygy/blob/main/examples/04_async_effects.rs
-//! [05_real_world_app.rs]: https://github.com/ribelo/syzygy/blob/main/examples/05_real_world_app.rs
+//! [basic_counter.rs]: https://github.com/ribelo/syzygy/blob/main/examples/basic_counter.rs
+//! [async_effect.rs]: https://github.com/ribelo/syzygy/blob/main/examples/async_effect.rs
+//! [manual_loop.rs]: https://github.com/ribelo/syzygy/blob/main/examples/manual_loop.rs
+//! [two_executors.rs]: https://github.com/ribelo/syzygy/blob/main/examples/two_executors.rs
 //!
 //! ## Performance Benchmarks
 //!
@@ -427,7 +425,7 @@ pub mod prelude {
 
     // Core/Shell architecture
     pub use crate::core::{Core, EventHandler};
-    pub use crate::runner::{Runner, RunnerConfig, RunnerError};
+    pub use crate::runner::{Runner, RunnerConfig};
     pub use crate::shell::{Shell, ShellConfig};
 
     // Type aliases for common use cases

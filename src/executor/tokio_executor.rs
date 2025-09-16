@@ -34,14 +34,9 @@
 // - **IO-focused**: Use `*_io` methods - full tokio feature set (`enable_all()`)
 // - **CPU-focused**: Use `*_cpu` methods - minimal runtime (`enable_time()` only)
 // - **Thread models**: Both support `current_thread` and `multi_thread` configurations
-use crate::executor::{
-    AbortOnDrop, AsyncExecutor, Concurrent, ExecutorError, register_io_runtime,
-};
+use crate::executor::{AbortOnDrop, AsyncExecutor, Concurrent, ExecutorError, register_io_runtime};
 
-use futures::{
-    TryFutureExt,
-    future::{abortable},
-};
+use futures::{TryFutureExt, future::abortable};
 use futures_util::future::{BoxFuture, FutureExt};
 use std::sync::{Arc, RwLock};
 use tokio::{
@@ -229,14 +224,6 @@ impl crate::executor::ExecutorLifecycle for TokioExecutor {
         .boxed()
     }
 }
-
-
-
-
-
-
-
-
 
 #[cfg(test)]
 mod tests {

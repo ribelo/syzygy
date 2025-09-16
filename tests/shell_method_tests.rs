@@ -1,5 +1,5 @@
-//! Tests for Shell synchronous methods: drain_with(), enqueue_command(), etc.
-//! These tests use the Runner API since enqueue_command is an internal method.
+//! Tests for Shell synchronous methods: `drain_with`, `dispatch_command`, etc.
+//! These tests use the Runner API for convenience.
 
 use syzygy::prelude::*;
 use syzygy::scheduler::TokioScheduler;
@@ -44,7 +44,7 @@ mod tokio_tests {
     fn create_test_runner() -> Runner<TestEvent, TestEffect, TestModel, ()> {
         let registry = syzygy::executor::ExecutorRegistry::new();
 
-        let (core, shell) = Syzygy::builder::<TestEvent, TestEffect>()
+        let runner = Syzygy::builder::<TestEvent, TestEffect>()
             .model(TestModel::default())
             .event_handler(test_update)
             .effect_handler(|_effect: TestEffect, _ctx| {
@@ -54,17 +54,14 @@ mod tokio_tests {
             .with_executor_registry(registry)
             .build();
 
-        Runner::new(core, shell)
+        runner
     }
 
     #[tokio::test]
     async fn shell_pending_effects_starts_at_zero() {
         let runner = create_test_runner();
-        assert_eq!(
-            runner.shell().pending_effects(),
-            0,
-            "Should start with empty queue"
-        );
+        let shell = runner.shell();
+        assert_eq!(shell.pending_effects(), 0, "Should start with empty queue");
     }
 
     #[tokio::test]
@@ -82,9 +79,10 @@ mod tokio_tests {
     #[tokio::test]
     async fn shell_config_access_works() {
         let runner = create_test_runner();
+        let shell = runner.shell();
 
         // Should be able to access config
-        let config = runner.shell().config();
+        let config = shell.config();
         // Config should have default values
         assert!(
             config.effect_timeout.is_some(),

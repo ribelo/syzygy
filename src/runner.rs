@@ -126,7 +126,7 @@ where
     /// Run the event loop continuously
     ///
     /// This will run until the shell is shut down or an error occurs.
-    pub fn run(&mut self, scheduler: impl Scheduler + Clone) -> Result<(), ShellError> {
+    pub fn run(&mut self, scheduler: impl Scheduler) -> Result<(), ShellError> {
         loop {
             let did_work = self.step_with(scheduler.clone())?;
 
@@ -148,7 +148,7 @@ where
     pub fn run_until<F>(
         &mut self,
         mut condition: F,
-        scheduler: impl Scheduler + Clone,
+        scheduler: impl Scheduler,
     ) -> Result<(), ShellError>
     where
         F: FnMut(&Core<Event, Effect, Storage>, &Shell<Event, Effect, Resources>) -> bool,
@@ -271,7 +271,7 @@ where
     ///
     /// This processes events from Core and effects from Shell synchronously.
     /// Returns true if work was done, false if idle.
-    pub fn step_with(&mut self, scheduler: impl Scheduler + Clone) -> Result<bool, ShellError> {
+    pub fn step_with(&mut self, scheduler: impl Scheduler) -> Result<bool, ShellError> {
         step_core_shell(&mut self.core, &mut self.shell, scheduler)
     }
 
@@ -290,7 +290,7 @@ where
 pub fn step_core_shell<Event, Effect, Storage, Resources>(
     core: &mut Core<Event, Effect, Storage>,
     shell: &mut Shell<Event, Effect, Resources>,
-    scheduler: impl Scheduler + Clone,
+    scheduler: impl Scheduler,
 ) -> Result<bool, ShellError>
 where
     Event: Send + 'static,

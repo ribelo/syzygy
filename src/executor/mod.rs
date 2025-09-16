@@ -141,7 +141,7 @@ use futures_util::future::BoxFuture;
 use thiserror::Error;
 // Executor storage types removed
 #[cfg(feature = "rayon")]
-pub use rayon_sync_executor::RayonExecutor as RayonExecutor;
+pub use rayon_sync_executor::RayonExecutor;
 pub use single_thread_executor::SingleThreadExecutor;
 
 #[cfg(feature = "tokio")]

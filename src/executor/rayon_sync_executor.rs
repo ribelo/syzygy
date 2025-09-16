@@ -19,10 +19,7 @@ where
     _phantom: PhantomData<E>,
 }
 
-impl<E> Concurrent for RayonExecutor<E>
-where
-    E: Send + Sync + 'static,
-{}
+impl<E> Concurrent for RayonExecutor<E> where E: Send + Sync + 'static {}
 
 impl<E> std::fmt::Debug for RayonExecutor<E>
 where

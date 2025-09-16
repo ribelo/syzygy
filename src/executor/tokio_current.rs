@@ -1,6 +1,8 @@
 //! TokioCurrent executor - uses current runtime only
 
-use crate::executor::{AbortOnDrop, AsyncExecutor, Concurrent, ExecutorError, ExecutorLifecycle, Outcome};
+use crate::executor::{
+    AbortOnDrop, AsyncExecutor, Concurrent, ExecutorError, ExecutorLifecycle, Outcome,
+};
 use futures_util::future::BoxFuture;
 use tokio::runtime::Handle;
 
@@ -49,7 +51,6 @@ impl ExecutorLifecycle for TokioCurrent {
         Box::pin(futures_util::future::ready(()))
     }
 }
-
 
 #[cfg(test)]
 mod tests {

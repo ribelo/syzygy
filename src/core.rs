@@ -212,8 +212,7 @@ where
                 self.event_queue.push_back(event);
                 true
             }
-            Err(RecvTimeoutError::Timeout) => false,
-            Err(RecvTimeoutError::Disconnected) => false,
+            Err(RecvTimeoutError::Timeout | RecvTimeoutError::Disconnected) => false,
         }
     }
 }

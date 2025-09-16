@@ -42,7 +42,7 @@ use std::any::TypeId;
 ///
 /// Executors handle all spawning and runtime operations.
 /// Event sending is handled internally by the framework.
-pub struct EffectContext<E, R> {
+pub struct EffectContext<E, R = ()> {
     /// Resources available to effect handlers (stored directly, user controls Arc/Mutex)
     resources: R,
     /// Executors available to effect handlers

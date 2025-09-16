@@ -136,22 +136,17 @@ harness = false
 
 # Only build examples when the `examples` feature is enabled
 [[example]]
-name = "01_basic_tea"
+name = "basic_counter"
 required-features = ["examples"]
 
 [[example]]
-name = "04_async_effects"
-required-features = ["examples"]
-
-
-[[example]]
-name = "06_effects_coordination"
+name = "async_effect"
 required-features = ["examples"]
 
 [[example]]
-name = "database_effects"
+name = "manual_loop"
 required-features = ["examples"]
 
 [[example]]
-name = "07_final_example"
+name = "two_executors"
 required-features = ["examples"]

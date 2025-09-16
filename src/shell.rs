@@ -169,7 +169,7 @@ where
     fn handle_effect_step(
         &mut self,
         step: CommandStep<E, X>,
-        scheduler: &(impl crate::scheduler::Scheduler + Clone),
+        scheduler: &impl crate::scheduler::Scheduler,
     ) {
         match step {
             CommandStep::Effect(fx) => {
@@ -207,7 +207,7 @@ where
     /// Process all pending effects synchronously and return count of effects processed
     pub fn drain_with(
         &mut self,
-        scheduler: impl crate::scheduler::Scheduler + Clone,
+        scheduler: impl crate::scheduler::Scheduler,
     ) -> Result<usize, ShellError> {
         #[cfg(feature = "tracing")]
         let _span = span!(Level::DEBUG, "shell_drain").entered();
@@ -237,7 +237,7 @@ where
     /// Returns true if an effect was processed, false if the queue was empty
     pub fn poll_one_with(
         &mut self,
-        scheduler: impl crate::scheduler::Scheduler + Clone,
+        scheduler: impl crate::scheduler::Scheduler,
     ) -> Result<bool, ShellError> {
         if let Some(step) = self.next_effect_step() {
             self.handle_effect_step(step, &scheduler);
