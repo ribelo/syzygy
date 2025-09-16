@@ -34,8 +34,9 @@
 //! let model_ref: &CounterModel = core.model();
 //! assert_eq!(model_ref.count, 1);
 //! ```
-use crossbeam_channel::{Receiver, Sender, unbounded};
+use crossbeam_channel::{Receiver, RecvTimeoutError, Sender, unbounded};
 use std::collections::VecDeque;
+use std::time::Duration;
 
 #[cfg(feature = "tracing")]
 use tracing::{Level, debug, span};
@@ -196,6 +197,24 @@ where
     pub fn has_pending_events(&self) -> bool {
         // Early-out optimization: check local queue first since it's cheaper
         !self.event_queue.is_empty() || !self.event_rx.is_empty()
+    }
+
+    /// Block until a new event arrives or the timeout expires.
+    ///
+    /// Returns true if an event was received and queued.
+    pub fn wait_for_event(&mut self, timeout: Duration) -> bool {
+        if timeout.is_zero() {
+            return false;
+        }
+
+        match self.event_rx.recv_timeout(timeout) {
+            Ok(event) => {
+                self.event_queue.push_back(event);
+                true
+            }
+            Err(RecvTimeoutError::Timeout) => false,
+            Err(RecvTimeoutError::Disconnected) => false,
+        }
     }
 }
 

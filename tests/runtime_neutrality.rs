@@ -86,24 +86,27 @@ async fn test_runtime_auto_detection() {
     let mut registry = ExecutorRegistry::new();
     registry.insert_async(TokioExecutor::multi_thread_io("test", 2));
 
-    let (core, shell) = Syzygy::builder::<TestEvent, TestEffect>()
+    let runner = Syzygy::builder::<TestEvent, TestEffect>()
         .model(TestModel::default())
         .event_handler(test_update)
         .effect_handler(test_effect_handler)
         .with_executor_registry(registry)
         .build();
-
-    let mut runner = Runner::new(core, shell);
     let event_sender = runner.core().event_sender();
 
     // Start the test sequence
     event_sender.send(TestEvent::Start).unwrap();
 
     // Run until completed - using auto-detection spawner
-    runner
-        .run_until(|core, _shell| core.model().completed, scheduler())
-        .await
-        .unwrap();
+    let runner = tokio::task::spawn_blocking(move || {
+        let mut runner = runner;
+        runner
+            .run_until(|core, _shell| core.model().completed, scheduler())
+            .unwrap();
+        runner
+    })
+    .await
+    .expect("spawn_blocking failed");
 
     // Verify the sequence completed
     assert_eq!(runner.core().model().step, 2);
@@ -116,26 +119,29 @@ async fn test_explicit_tokio_runtime() {
     let mut registry = ExecutorRegistry::new();
     registry.insert_async(TokioExecutor::multi_thread_io("test", 2));
 
-    let (core, shell) = Syzygy::builder::<TestEvent, TestEffect>()
+    let runner = Syzygy::builder::<TestEvent, TestEffect>()
         .model(TestModel::default())
         .event_handler(test_update)
         .effect_handler(test_effect_handler)
         .with_executor_registry(registry)
         .build();
-
-    let mut runner = Runner::new(core, shell);
     let event_sender = runner.core().event_sender();
 
     event_sender.send(TestEvent::Start).unwrap();
 
     // Run with explicit tokio spawn
-    runner
-        .run_until(
-            |core, _shell| core.model().completed,
-            syzygy::scheduler::TokioScheduler::new().expect("tokio runtime required"),
-        )
-        .await
-        .unwrap();
+    let runner = tokio::task::spawn_blocking(move || {
+        let mut runner = runner;
+        runner
+            .run_until(
+                |core, _shell| core.model().completed,
+                syzygy::scheduler::TokioScheduler::new().expect("tokio runtime required"),
+            )
+            .unwrap();
+        runner
+    })
+    .await
+    .expect("spawn_blocking failed");
 
     assert_eq!(runner.core().model().step, 2);
     assert!(runner.core().model().completed);

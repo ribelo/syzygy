@@ -4,6 +4,7 @@ use crate::executor::Task;
 
 use crate::executor::{AsyncExecutor, ExecutorRegistry, SyncExecutor};
 use crate::prelude::EffectHandler;
+use crate::runner::Runner;
 use crate::shell::Shell;
 use std::marker::PhantomData;
 use std::sync::Arc;
@@ -108,7 +109,8 @@ pub struct ConfiguredBuilder<Event, Effect, Model, Resource, ExecutorState = NoE
     _executor_state: PhantomData<ExecutorState>,
 }
 
-impl<Event, Effect, Model, Resource, ExecutorState> ConfiguredBuilder<Event, Effect, Model, Resource, ExecutorState>
+impl<Event, Effect, Model, Resource, ExecutorState>
+    ConfiguredBuilder<Event, Effect, Model, Resource, ExecutorState>
 where
     Event: Send + Sync + 'static,
     Effect: Send + 'static,
@@ -116,7 +118,10 @@ where
 {
     /// Set the effect handler that processes effects
     #[must_use]
-    pub fn effect_handler(self, handler: EffectHandler<Event, Effect, Resource>) -> ConfiguredBuilder<Event, Effect, Model, Resource, ExecutorState> {
+    pub fn effect_handler(
+        self,
+        handler: EffectHandler<Event, Effect, Resource>,
+    ) -> ConfiguredBuilder<Event, Effect, Model, Resource, ExecutorState> {
         ConfiguredBuilder {
             event_handler: self.event_handler,
             effect_handler: Some(handler),
@@ -129,7 +134,10 @@ where
 
     /// Provide a configurator that can build the registry when `event_tx` is available.
     #[must_use]
-    pub fn with_executor_registry(self, registry: ExecutorRegistry<Event>) -> ConfiguredBuilder<Event, Effect, Model, Resource, HasExecutor> {
+    pub fn with_executor_registry(
+        self,
+        registry: ExecutorRegistry<Event>,
+    ) -> ConfiguredBuilder<Event, Effect, Model, Resource, HasExecutor> {
         ConfiguredBuilder {
             event_handler: self.event_handler,
             effect_handler: self.effect_handler,
@@ -142,7 +150,10 @@ where
 
     /// Add a single async executor to the registry by concrete type
     #[must_use]
-    pub fn with_async_executor<T>(self, exec: T) -> ConfiguredBuilder<Event, Effect, Model, Resource, HasExecutor>
+    pub fn with_async_executor<T>(
+        self,
+        exec: T,
+    ) -> ConfiguredBuilder<Event, Effect, Model, Resource, HasExecutor>
     where
         T: AsyncExecutor<Event> + Send + 'static,
     {
@@ -160,7 +171,10 @@ where
 
     /// Add a single sync executor to the registry by concrete type
     #[must_use]
-    pub fn with_sync_executor<T>(self, exec: T) -> ConfiguredBuilder<Event, Effect, Model, Resource, HasExecutor>
+    pub fn with_sync_executor<T>(
+        self,
+        exec: T,
+    ) -> ConfiguredBuilder<Event, Effect, Model, Resource, HasExecutor>
     where
         T: SyncExecutor<Event> + Send + 'static,
     {
@@ -175,8 +189,6 @@ where
             _executor_state: PhantomData,
         }
     }
-
-
 
     /// Internal helper to build shell
     fn build_shell(
@@ -211,6 +223,7 @@ where
             config,
             executors: exec_registry,
             closed: false,
+            prefetched_effect: None,
         }
     }
 }
@@ -222,8 +235,8 @@ where
     Effect: Send + 'static,
     Resource: Clone + Send + Sync + 'static,
 {
-    /// Build the system with auto-wired Shell connected to Core's event channel
-    pub fn build(self) -> (Core<Event, Effect, Model>, Shell<Event, Effect, Resource>) {
+    /// Build the system and return a `Runner` that owns the Core and Shell.
+    pub fn build(self) -> Runner<Event, Effect, Model, Resource> {
         let (core, event_tx) = Core::new(self.event_handler, self.model);
         let shell = Self::build_shell(
             self.resources,
@@ -231,7 +244,12 @@ where
             self.effect_handler,
             event_tx,
         );
-        (core, shell)
+        Runner::new(core, shell)
+    }
+
+    /// Build the system and return a Runner that owns both Core and Shell.
+    pub fn build_runner(self) -> Runner<Event, Effect, Model, Resource> {
+        self.build()
     }
 }
 
@@ -287,12 +305,14 @@ mod tests {
     fn test_builder() {
         let registry = crate::executor::ExecutorRegistry::new();
 
-        let (mut core, _shell) = Syzygy::builder::<TestEvent, TestEffect>()
+        let runner = Syzygy::builder::<TestEvent, TestEffect>()
             .model(TestModel { count: 0 })
             .event_handler(test_update)
             .effect_handler(|_e: TestEffect, _ctx| crate::executor::Task::events(Vec::new()))
             .with_executor_registry(registry)
             .build();
+
+        let (mut core, _shell) = runner.split();
 
         let _command = core.handle_event(TestEvent::Increment);
         let model: &TestModel = core.model();
@@ -304,12 +324,14 @@ mod tests {
         // Test that Shell type remains simple when only models are added (no resources)
         let registry = crate::executor::ExecutorRegistry::new();
 
-        let (_core, shell) = Syzygy::builder::<TestEvent, TestEffect>()
+        let runner = Syzygy::builder::<TestEvent, TestEffect>()
             .model(TestModel { count: 0 })
             .event_handler(test_update)
             .effect_handler(|_e: TestEffect, _ctx| crate::executor::Task::events(Vec::new()))
             .with_executor_registry(registry)
             .build();
+
+        let (_core, shell) = runner.split();
 
         // Type should remain simple with resources-only generic
         let _: Shell<TestEvent, TestEffect, ()> = shell;
@@ -323,12 +345,14 @@ mod tests {
         // Test that users don't need to specify complex types manually
         let registry = crate::executor::ExecutorRegistry::new();
 
-        let (mut core, _shell) = Syzygy::builder::<TestEvent, TestEffect>()
+        let runner = Syzygy::builder::<TestEvent, TestEffect>()
             .model(TestModel { count: 0 })
             .event_handler(test_update)
             .effect_handler(|_e: TestEffect, _ctx| crate::executor::Task::events(Vec::new()))
             .with_executor_registry(registry)
             .build();
+
+        let (mut core, _shell) = runner.split();
 
         // This should just work without any type annotations needed
         core.handle_event(TestEvent::Increment);
@@ -369,7 +393,7 @@ mod tests {
 
         let registry = crate::executor::ExecutorRegistry::new();
 
-        let (mut core, _shell) = Syzygy::builder::<TestEvent, TestEffect>()
+        let runner = Syzygy::builder::<TestEvent, TestEffect>()
             .model((
                 UserModel {
                     name: "Alice".to_string(),
@@ -382,6 +406,8 @@ mod tests {
             .effect_handler(|_e: TestEffect, _ctx| crate::executor::Task::events(Vec::new()))
             .with_executor_registry(registry)
             .build();
+
+        let (mut core, _shell) = runner.split();
 
         core.handle_event(TestEvent::Increment);
 
@@ -410,12 +436,14 @@ mod tests {
         // Instead, we verify that providing an executor allows compilation
         let registry = crate::executor::ExecutorRegistry::new();
 
-        let (_core, _shell) = Syzygy::builder::<TestEvent, TestEffect>()
+        let runner = Syzygy::builder::<TestEvent, TestEffect>()
             .model(TestModel { count: 0 })
             .event_handler(test_update)
             .effect_handler(|_e: TestEffect, _ctx| crate::executor::Task::events(Vec::new()))
             .with_executor_registry(registry)
             .build();
+
+        let (_core, _shell) = runner.split();
 
         // If we get here, the typestate pattern is working correctly
     }

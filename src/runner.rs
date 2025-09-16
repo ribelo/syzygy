@@ -20,48 +20,53 @@
 //! # #[tokio::main]
 //! # async fn main() -> Result<(), Box<dyn std::error::Error>> {
 //! // In a real application, you would build and run the system like this:
-//! let (core, shell) = Syzygy::builder()
+//! let mut runner = Syzygy::builder()
 //!     .model(Model::default())
 //!     .event_handler(update)
 //!     .effect_handler(handle_effects)
 //!     .build();
-//! let mut runner = Runner::new(core, shell);
 //!
 //! // Run the application indefinitely
-//! runner.run(syzygy::scheduler::scheduler()).await?;
+//! runner.run(syzygy::scheduler::scheduler())?;
 //! # Ok(())
 //! # }
 //! ```
-use std::time::Duration;
+use std::thread;
+use std::time::{Duration, Instant};
 
 use crate::core::Core;
-use crate::error::{CoreError, ShellError};
+use crate::error::ShellError;
 use crate::scheduler::Scheduler;
 use crate::shell::Shell;
-use crate::timer::{Time, time};
 
 /// Configuration for the Runner
 #[derive(Clone, Debug)]
 pub struct RunnerConfig {
     /// How often to yield control when no work is being done
     pub idle_sleep: Duration,
-    /// Runtime implementation for sleeping - provides runtime neutrality
-    pub runtime: Time,
 }
 
 impl Default for RunnerConfig {
     fn default() -> Self {
         Self {
             idle_sleep: Duration::from_millis(16), // ~60 FPS
-            runtime: time(),
         }
+    }
+}
+
+impl RunnerConfig {
+    /// Override the idle sleep interval with any type convertible to `Duration`.
+    #[must_use]
+    pub fn idle_sleep(mut self, duration: impl Into<Duration>) -> Self {
+        self.idle_sleep = duration.into();
+        self
     }
 }
 
 /// Runner automatically orchestrates Core/Shell interaction
 ///
 /// This solves Grug's complaint about manual event loop orchestration.
-/// Instead of users manually calling `poll_events` → process → execute → tick,
+/// Instead of users manually calling `poll_events` → process → execute → step,
 /// Runner handles the proper sequencing automatically.
 pub struct Runner<Event, Effect, Storage, Resources = ()>
 where
@@ -92,7 +97,8 @@ where
     ///     .model(Model::default())
     ///     .event_handler(|_event: Event, _ctx| Command::none())
     ///     .effect_handler(|_effect: Effect, _ctx| async move { Outcome::None })
-    ///     .build();
+    ///     .build()
+    ///     .split();
     ///
     /// let runner = Runner::new(core, shell);
     /// ```
@@ -120,20 +126,16 @@ where
     /// Run the event loop continuously
     ///
     /// This will run until the shell is shut down or an error occurs.
-    pub async fn run<S>(&mut self, scheduler: S) -> Result<(), RunnerError>
-    where
-        S: Scheduler,
-    {
+    pub fn run(&mut self, scheduler: impl Scheduler + Clone) -> Result<(), ShellError> {
         loop {
             let did_work = self.step_with(scheduler.clone())?;
 
-            if !did_work {
-                self.config.runtime.sleep(self.config.idle_sleep).await;
-            }
-
-            // Check if shell is closed
             if self.shell.is_closed() {
                 break;
+            }
+
+            if !did_work {
+                self.wait_for_work();
             }
         }
 
@@ -143,14 +145,13 @@ where
     /// Run until a condition is met
     ///
     /// Useful for testing or conditional execution.
-    pub async fn run_until<F, S>(
+    pub fn run_until<F>(
         &mut self,
         mut condition: F,
-        scheduler: S,
-    ) -> Result<(), RunnerError>
+        scheduler: impl Scheduler + Clone,
+    ) -> Result<(), ShellError>
     where
         F: FnMut(&Core<Event, Effect, Storage>, &Shell<Event, Effect, Resources>) -> bool,
-        S: Scheduler,
     {
         loop {
             let did_work = self.step_with(scheduler.clone())?;
@@ -160,53 +161,16 @@ where
                 break;
             }
 
+            if self.shell.is_closed() {
+                break;
+            }
+
             if !did_work {
-                self.config.runtime.sleep(self.config.idle_sleep).await;
+                self.wait_for_work();
             }
         }
 
         Ok(())
-    }
-
-    /// Execute a single tick of the event loop
-    ///
-    /// Returns true if work was done, false if idle.
-    ///
-    /// # Deprecated
-    /// This method is deprecated. Use `step()` or `step_with()` instead for synchronous operation.
-    /// The async version will be removed in a future version.
-    ///
-    /// # Example
-    /// ```rust
-    /// # use syzygy::prelude::*;
-    /// # #[derive(Debug, Default)] struct Model;
-    /// # #[derive(Debug, Clone)] enum Event { Test }
-    /// # #[derive(Debug, Clone)] enum Effect { Test }
-    /// let (core, shell) = Syzygy::builder::<Event, Effect>()
-    ///     .model(Model::default())
-    ///     .event_handler(|_event: Event, _ctx| Command::none())
-    ///     .effect_handler(|_effect: Effect, _ctx| async move { Outcome::None })
-    ///     .build();
-    ///
-    /// let mut runner = Runner::new(core, shell);
-    /// runner.core().send_event(Event::Test)?;
-    ///
-    /// // Process the event synchronously
-    /// let did_work = runner.tick(syzygy::scheduler::scheduler()).await?;
-    /// assert!(did_work);
-    /// # Ok(())
-    /// # }
-    /// ```
-    #[deprecated(
-        since = "0.1.0",
-        note = "Use `step()` or `step_with()` for synchronous operation"
-    )]
-    pub fn tick<S>(&mut self, scheduler: S) -> Result<bool, RunnerError>
-    where
-        S: Scheduler,
-    {
-        // Delegate to the synchronous step_with method
-        self.step_with(scheduler)
     }
 
     /// Get a reference to the Core
@@ -239,22 +203,37 @@ where
         self.config = config;
     }
 
-    /// Shutdown the runner gracefully
-    /// Create runner with custom idle sleep duration
-    #[must_use]
-    pub fn with_idle_sleep(mut self, duration: Duration) -> Self {
-        self.config.idle_sleep = duration;
-        self
-    }
-
-    /// Create runner with custom runtime
-    #[must_use]
-    pub fn with_runtime(mut self, runtime: Time) -> Self {
-        self.config.runtime = runtime;
-        self
-    }
+    /// Request that the shell stop scheduling further work.
     pub fn shutdown(&mut self) {
         self.shell.shutdown();
+    }
+
+    fn wait_for_work(&mut self) {
+        if self.shell.is_closed() {
+            return;
+        }
+
+        if self.config.idle_sleep.is_zero() {
+            thread::yield_now();
+            return;
+        }
+
+        if self.core.has_pending_events() || self.shell.pending_effects() > 0 {
+            return;
+        }
+
+        let start = Instant::now();
+        if self.core.wait_for_event(self.config.idle_sleep) {
+            return;
+        }
+
+        let elapsed = start.elapsed();
+        let remaining = match self.config.idle_sleep.checked_sub(elapsed) {
+            Some(remaining) if !remaining.is_zero() => remaining,
+            _ => return,
+        };
+
+        self.shell.wait_for_effect(remaining);
     }
 
     /// Execute a single synchronous step of the event loop
@@ -268,24 +247,22 @@ where
     /// # #[derive(Debug, Default)] struct Model;
     /// # #[derive(Debug, Clone)] enum Event { Test }
     /// # #[derive(Debug, Clone)] enum Effect { Test }
-    /// let (core, shell) = Syzygy::builder::<Event, Effect>()
+    /// let mut runner = Syzygy::builder::<Event, Effect>()
     ///     .model(Model::default())
     ///     .event_handler(|_event: Event, _ctx| Command::none())
     ///     .effect_handler(|_effect: Effect, _ctx| async move { Outcome::None })
     ///     .build();
-    ///
-    /// let mut runner = Runner::new(core, shell);
     /// runner.core().send_event(Event::Test)?;
     ///
     /// // Process the event synchronously
     /// let did_work = runner.step()?;
     /// assert!(did_work);
     /// ```
-    pub fn step(&mut self) -> Result<bool, RunnerError> {
+    pub fn step(&mut self) -> Result<bool, ShellError> {
         match crate::scheduler::scheduler_strict() {
             Ok(sched) => self.step_with(sched),
-            Err(e) => Err(RunnerError::Shell(ShellError::CommandExecutionFailed(
-                format!("No runtime available: {e}"),
+            Err(e) => Err(ShellError::CommandExecutionFailed(format!(
+                "No runtime available: {e}"
             ))),
         }
     }
@@ -294,66 +271,60 @@ where
     ///
     /// This processes events from Core and effects from Shell synchronously.
     /// Returns true if work was done, false if idle.
-    pub fn step_with<S>(&mut self, scheduler: S) -> Result<bool, RunnerError>
-    where
-        S: Scheduler,
-    {
-        let mut did_work = false;
-
-        // Process all events from Core
-        let (core_work, commands) = self.core.process_events();
-
-        if core_work {
-            did_work = true;
-
-            // Dispatch commands to Shell (may route events back to Core)
-            for command in commands {
-                self.shell
-                    .enqueue_command(command)
-                    .map_err(RunnerError::Shell)?;
-            }
-        }
-
-        // Process effects in Shell synchronously
-        let shell_work = self
-            .shell
-            .drain_with(scheduler)
-            .map_err(RunnerError::Shell)?;
-        if shell_work > 0 {
-            did_work = true;
-        }
-
-        Ok(did_work)
+    pub fn step_with(&mut self, scheduler: impl Scheduler + Clone) -> Result<bool, ShellError> {
+        step_core_shell(&mut self.core, &mut self.shell, scheduler)
     }
 
-    /// Run with default scheduler
-    pub async fn run_default(&mut self) -> Result<(), RunnerError> {
-        match crate::scheduler::scheduler_strict() {
-            Ok(sched) => self.run(sched).await,
-            Err(e) => Err(RunnerError::Shell(ShellError::CommandExecutionFailed(
-                format!("No runtime available: {e}"),
-            ))),
-        }
-    }
-
-    /// Tick with default scheduler (deprecated, use step() instead)
-    #[deprecated(since = "0.1.0", note = "Use `step()` for synchronous operation")]
-    pub fn tick_default(&mut self) -> Result<bool, RunnerError> {
-        self.step()
+    /// Consume the runner and return ownership of the Core and Shell.
+    pub fn split(
+        self,
+    ) -> (
+        Core<Event, Effect, Storage>,
+        Shell<Event, Effect, Resources>,
+    ) {
+        (self.core, self.shell)
     }
 }
 
-/// Errors that can occur in the Runner
-#[derive(Debug, thiserror::Error)]
-pub enum RunnerError {
-    #[error("Core error: {0}")]
-    Core(CoreError),
+/// Process pending events and effects once using the same logic as `Runner::step_with`.
+pub fn step_core_shell<Event, Effect, Storage, Resources>(
+    core: &mut Core<Event, Effect, Storage>,
+    shell: &mut Shell<Event, Effect, Resources>,
+    scheduler: impl Scheduler + Clone,
+) -> Result<bool, ShellError>
+where
+    Event: Send + 'static,
+    Effect: Send + 'static,
+    Resources: Clone + Send + Sync + 'static,
+{
+    let (core_work, commands) = core.process_events();
+    for command in commands {
+        shell.dispatch_command(command)?;
+    }
 
-    #[error("Shell error: {0}")]
-    Shell(ShellError),
+    let shell_work = shell.drain_with(scheduler)?;
 
-    #[error("Runner timed out")]
-    Timeout,
+    Ok(core_work || shell_work > 0)
+}
+
+impl<Event, Effect, Storage, Resources>
+    From<(
+        Core<Event, Effect, Storage>,
+        Shell<Event, Effect, Resources>,
+    )> for Runner<Event, Effect, Storage, Resources>
+where
+    Event: Send + 'static,
+    Effect: Send + 'static,
+    Resources: Clone + Send + Sync + 'static,
+{
+    fn from(
+        parts: (
+            Core<Event, Effect, Storage>,
+            Shell<Event, Effect, Resources>,
+        ),
+    ) -> Self {
+        Self::new(parts.0, parts.1)
+    }
 }
 
 impl<Event, Effect, Storage, Resources> std::fmt::Debug
@@ -372,8 +343,8 @@ where
 #[cfg(all(test, feature = "legacy_tests"))]
 mod tests {
     use super::*;
-    use crate::prelude::*;
     use crate::executor::ExecutorRegistry;
+    use crate::prelude::*;
 
     #[derive(Debug, Clone)]
     enum TestEvent {
@@ -412,21 +383,19 @@ mod tests {
     #[cfg(feature = "tokio")]
     #[tokio::test]
     async fn test_runner_basic() {
-        let (core, shell) = Syzygy::builder::<TestEvent, TestEffect>()
+        let mut runner = Syzygy::builder::<TestEvent, TestEffect>()
             .model(TestModel { count: 0 })
             .event_handler(test_update)
             .with_executor_registry(ExecutorRegistry::new())
             .effect_handler(|_e: TestEffect, _ctx| crate::executor::Task::events(Vec::new()))
             .build();
 
-        let event_sender = core.event_sender();
-
-        let mut runner = Runner::new(core, shell);
+        let event_sender = runner.core().event_sender();
 
         // Send an event
         event_sender.send(TestEvent::Ping).unwrap();
 
-        // Process one tick
+        // Process one step
         let did_work = runner.step_with(crate::scheduler::scheduler()).unwrap();
 
         assert!(did_work);
@@ -436,23 +405,18 @@ mod tests {
     #[cfg(feature = "tokio")]
     #[tokio::test]
     async fn test_runner_until_condition() {
-        let (core, shell) = Syzygy::builder::<TestEvent, TestEffect>()
+        let mut runner = Syzygy::builder::<TestEvent, TestEffect>()
             .model(TestModel { count: 0 })
             .event_handler(test_update)
             .with_executor_registry(ExecutorRegistry::new())
             .effect_handler(|_e: TestEffect, _ctx| crate::executor::Task::events(Vec::new()))
             .build();
 
-        let event_sender = core.event_sender();
+        runner.set_config(RunnerConfig {
+            idle_sleep: Duration::from_millis(1),
+        });
 
-        let mut runner = Runner::with_config(
-            core,
-            shell,
-            RunnerConfig {
-                idle_sleep: Duration::from_millis(1),
-                runtime: crate::timer::time(),
-            },
-        );
+        let event_sender = runner.core().event_sender();
 
         // Send multiple events
         for _ in 0..5 {
@@ -462,7 +426,6 @@ mod tests {
         // Run until count reaches 10
         runner
             .run_until(|_core, _shell| true, crate::scheduler::scheduler())
-            .await
             .unwrap();
 
         // Skipped model access check in refactor
@@ -471,15 +434,14 @@ mod tests {
     #[cfg(feature = "tokio")]
     #[tokio::test]
     async fn test_step_returns_true_when_work_was_done() {
-        let (core, shell) = Syzygy::builder::<TestEvent, TestEffect>()
+        let mut runner = Syzygy::builder::<TestEvent, TestEffect>()
             .model(TestModel { count: 0 })
             .event_handler(test_update)
             .with_executor_registry(ExecutorRegistry::new())
             .effect_handler(|_e: TestEffect, _ctx| crate::executor::Task::events(Vec::new()))
             .build();
 
-        let event_sender = core.event_sender();
-        let mut runner = Runner::new(core, shell);
+        let event_sender = runner.core().event_sender();
 
         // Send an event to create work
         event_sender.send(TestEvent::Ping).unwrap();
@@ -492,14 +454,12 @@ mod tests {
     #[cfg(feature = "tokio")]
     #[tokio::test]
     async fn test_step_returns_false_when_no_work_to_do() {
-        let (core, shell) = Syzygy::builder::<TestEvent, TestEffect>()
+        let mut runner = Syzygy::builder::<TestEvent, TestEffect>()
             .model(TestModel { count: 0 })
             .event_handler(test_update)
             .with_executor_registry(ExecutorRegistry::new())
             .effect_handler(|_e: TestEffect, _ctx| crate::executor::Task::events(Vec::new()))
             .build();
-
-        let mut runner = Runner::new(core, shell);
 
         // No events sent, so no work to do
         let did_work = runner.step().expect("Step should succeed");
@@ -509,15 +469,14 @@ mod tests {
     #[cfg(feature = "tokio")]
     #[tokio::test]
     async fn test_step_with_custom_scheduler() {
-        let (core, shell) = Syzygy::builder::<TestEvent, TestEffect>()
+        let mut runner = Syzygy::builder::<TestEvent, TestEffect>()
             .model(TestModel { count: 0 })
             .event_handler(test_update)
             .with_executor_registry(ExecutorRegistry::new())
             .effect_handler(|_e: TestEffect, _ctx| crate::executor::Task::events(Vec::new()))
             .build();
 
-        let event_sender = core.event_sender();
-        let mut runner = Runner::new(core, shell);
+        let event_sender = runner.core().event_sender();
 
         // Send an event
         event_sender.send(TestEvent::Ping).unwrap();
@@ -534,15 +493,14 @@ mod tests {
     #[cfg(feature = "tokio")]
     #[tokio::test]
     async fn test_step_processes_exactly_one_event() {
-        let (core, shell) = Syzygy::builder::<TestEvent, TestEffect>()
+        let mut runner = Syzygy::builder::<TestEvent, TestEffect>()
             .model(TestModel { count: 0 })
             .event_handler(test_update)
             .with_executor_registry(ExecutorRegistry::new())
             .effect_handler(|_e: TestEffect, _ctx| crate::executor::Task::events(Vec::new()))
             .build();
 
-        let event_sender = core.event_sender();
-        let mut runner = Runner::new(core, shell);
+        let event_sender = runner.core().event_sender();
 
         // Send multiple events
         event_sender.send(TestEvent::Ping).unwrap();
@@ -551,11 +509,17 @@ mod tests {
 
         // First step should process ALL 3 events and return true
         let did_work1 = runner.step().expect("First step should succeed");
-        assert!(did_work1, "First step should return true (processed all 3 events)");
+        assert!(
+            did_work1,
+            "First step should return true (processed all 3 events)"
+        );
 
         // Second step should process effects and return true
         let did_work2 = runner.step().expect("Second step should succeed");
-        assert!(did_work2, "Second step should return true (processed effects)");
+        assert!(
+            did_work2,
+            "Second step should return true (processed effects)"
+        );
 
         // Third step should have no more work and return false
         let did_work3 = runner.step().expect("Third step should succeed");
@@ -565,15 +529,14 @@ mod tests {
     #[cfg(feature = "tokio")]
     #[tokio::test]
     async fn test_step_handles_multiple_events_and_effects_in_sequence() {
-        let (core, shell) = Syzygy::builder::<TestEvent, TestEffect>()
+        let mut runner = Syzygy::builder::<TestEvent, TestEffect>()
             .model(TestModel { count: 0 })
             .event_handler(test_update)
             .with_executor_registry(ExecutorRegistry::new())
             .effect_handler(|_e: TestEffect, _ctx| crate::executor::Task::events(Vec::new()))
             .build();
 
-        let event_sender = core.event_sender();
-        let mut runner = Runner::new(core, shell);
+        let event_sender = runner.core().event_sender();
 
         // Send Ping event (will generate Pong event and Log effect)
         event_sender.send(TestEvent::Ping).unwrap();

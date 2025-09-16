@@ -116,27 +116,31 @@ async fn test_timeout_event_pattern() {
     let mut registry = ExecutorRegistry::new();
     registry.insert_async(TokioExecutor::multi_thread_io("test", 2));
 
-    let (core, shell) = Syzygy::builder::<TimeoutEvent, TimeoutEffect>()
+    let runner = Syzygy::builder::<TimeoutEvent, TimeoutEffect>()
         .model(TimeoutModel::default())
         .event_handler(timeout_update)
         .effect_handler(timeout_aware_effect_handler)
         .with_executor_registry(registry)
         .build();
 
-    let event_sender = core.event_sender();
-    let mut runner = Runner::new(core, shell);
+    let event_sender = runner.core().event_sender();
 
     // Start a slow operation
     event_sender.send(TimeoutEvent::StartSlowOperation).unwrap();
 
     // Run until operation completes or times out
-    runner
-        .run_until(
-            |core, _shell| !core.model().is_loading,
-            scheduler(), // Auto-detect runtime for maximum compatibility
-        )
-        .await
-        .unwrap();
+    let runner = tokio::task::spawn_blocking(move || {
+        let mut runner = runner;
+        runner
+            .run_until(
+                |core, _shell| !core.model().is_loading,
+                scheduler(), // Auto-detect runtime for maximum compatibility
+            )
+            .unwrap();
+        runner
+    })
+    .await
+    .expect("spawn_blocking failed");
 
     let model = runner.core().model();
 

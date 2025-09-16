@@ -236,16 +236,13 @@ let runner = Runner::with_config(
     core,
     shell,
     RunnerConfig {
-        max_run_duration: Some(Duration::from_secs(30)),
         idle_sleep: Duration::from_millis(10),
-        debug_logging: true,
     }
 );
 ```
 
-- **max_run_duration**: Timeout for `run_until()` operations
 - **idle_sleep**: Sleep duration when no work is available
-- **debug_logging**: Enable step-by-step logging
+  while idle. Set to zero to disable sleeping.
 
 ### Shell Configuration
 
@@ -269,8 +266,7 @@ let runner = Runner::with_config(
     core,
     shell,
     RunnerConfig {
-        debug_logging: true,
-        ..Default::default()
+        idle_sleep: Duration::from_millis(16),
     }
 );
 ```
@@ -378,8 +374,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         core,
         shell,
         RunnerConfig {
-            debug_logging: true,
-            ..Default::default()
+            idle_sleep: Duration::from_millis(16),
         }
     );
     
