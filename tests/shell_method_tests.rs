@@ -86,8 +86,6 @@ mod tokio_tests {
 
         // Should be able to access config
         let config = shell.config();
-        // Config should have default values
-        assert!(config.effect_timeout.is_none(), "Timeouts are opt-in");
         assert!(
             config.effect_channel_capacity.is_none(),
             "Default queue should be unbounded"

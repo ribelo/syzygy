@@ -224,23 +224,10 @@ async fn handle_effect(effect: AppEffect, ctx: EffectContext<AppEvent>) {
 }
 ```
 
-## Shell Configuration
-
-Configure effect timeouts in your Shell:
-
-```rust
-let shell = Shell::new()
-    .with_config(ShellConfig {
-        effect_timeout: Some(Duration::from_secs(30)), // Global timeout
-        runtime: Time::Tokio,
-    })
-    .with_effect_handler(handle_effect);
-```
-
 ## Best Practices
 
 1. **Always handle timeouts as events** - Don't rely on logging alone
-2. **Set appropriate timeout values** - Balance responsiveness with allowing effects to complete
+2. **Choose sensible per-effect limits** - Balance responsiveness with allowing effects to complete
 3. **Implement retries for transient failures** - Network requests, file I/O, etc.
 4. **Update UI state on timeout** - Clear loading indicators, show error messages
 5. **Consider progressive timeouts** - Short timeout for quick feedback, longer for actual failure
@@ -374,12 +361,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .model(AppModel::default())
         .build();
     
-    let shell = shell
-        .with_config(ShellConfig {
-            effect_timeout: Some(Duration::from_secs(10)), // Backup timeout
-            runtime: Time::Tokio,
-        })
-        .with_effect_handler(handle_effect);
+    let shell = shell.with_effect_handler(handle_effect);
     
     let mut runner = Runner::new(core, shell);
     

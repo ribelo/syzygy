@@ -17,8 +17,6 @@ use crate::error::ShellError;
 use crate::executor::spec::{Outcome, drive_spec};
 use crate::executor::{ExecutorRegistry, Task};
 
-use crate::timer::{Time, time};
-
 /// Representation of the work produced by an effect handler.
 pub enum EffectWork<E, R> {
     Task(Task<E, R>),
@@ -66,12 +64,6 @@ use tracing::{Level, debug, span, warn};
 
 /// Configuration for Shell effect execution
 pub struct ShellConfig {
-    /// Timeout for individual effect execution enforced at the shell level
-    pub effect_timeout: Option<Duration>,
-    /// Runtime implementation for timeout handling - provides runtime neutrality
-    pub runtime: Time,
-    /// Optional callback to handle timeout events
-    pub on_timeout_callback: Option<Arc<dyn Fn() + Send + Sync>>,
     /// Capacity for effect queue (None => unbounded, default: unbounded)
     pub effect_channel_capacity: Option<usize>,
 }
@@ -79,9 +71,6 @@ pub struct ShellConfig {
 impl Default for ShellConfig {
     fn default() -> Self {
         Self {
-            effect_timeout: None,
-            runtime: time(),
-            on_timeout_callback: None,
             effect_channel_capacity: None,
         }
     }

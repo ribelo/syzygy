@@ -249,13 +249,11 @@ let runner = Runner::with_config(
 ```rust
 let shell = Shell::new()
     .with_config(ShellConfig {
-        effect_timeout: Some(Duration::from_secs(30)),
-        runtime: Time::Tokio,
+        effect_channel_capacity: Some(1_024),
     });
 ```
 
-- **effect_timeout**: Individual effect timeout
-- **runtime**: Async runtime implementation
+- **effect_channel_capacity**: Optional bounded queue size for effects
 
 ## Debugging Event Flow
 

@@ -256,24 +256,6 @@ struct ErrorRecord {
 5. **Test Error Paths** - Write tests that trigger error conditions and verify correct event flow
 6. **User Experience** - Consider what the user should see/do when errors occur
 
-## Shell Timeout Handling
-
-The Shell provides infrastructure-level timeout handling through configuration:
-
-```rust
-let shell_config = ShellConfig {
-    effect_timeout: Some(Duration::from_secs(30)), // Global timeout
-    on_timeout_callback: Some(Arc::new(|| {
-        eprintln!("Effect timed out - check your effect handlers for infinite loops");
-    })),
-    ..Default::default()
-};
-
-let shell = Shell::with_config(shell_config);
-```
-
-The timeout callback is for infrastructure monitoring, not application logic. Application-level timeout handling should happen in your effect handlers as shown above.
-
 ## Example: Complete Error Handling Flow
 
 ```rust
