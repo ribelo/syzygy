@@ -360,31 +360,36 @@ where
                     return;
                 }
 
+                if scheduler.allows_overlap() {
+                    for effect in effects {
+                        let fut = self.process_effect(effect, scheduler);
+                        scheduler.schedule(fut);
+                    }
+                    return;
+                }
+
+                #[cfg(feature = "tracing")]
+                let effect_len = effects.len();
+
+                #[cfg(feature = "tracing")]
+                if effect_len > 1 {
+                    warn!(
+                        "Parallel command executed on non-overlapping scheduler; falling back to sequential execution"
+                    );
+                }
+
                 let mut futures = Vec::with_capacity(effects.len());
                 for effect in effects {
                     futures.push(self.process_effect(effect, scheduler));
                 }
 
-                if scheduler.allows_overlap() {
+                let sequence = async move {
                     for fut in futures {
-                        scheduler.schedule(fut);
+                        fut.await;
                     }
-                } else {
-                    #[cfg(feature = "tracing")]
-                    if futures.len() > 1 {
-                        warn!(
-                            "Parallel command executed on non-overlapping scheduler; falling back to sequential execution"
-                        );
-                    }
+                };
 
-                    let sequence = async move {
-                        for fut in futures {
-                            fut.await;
-                        }
-                    };
-
-                    scheduler.schedule(sequence);
-                }
+                scheduler.schedule(sequence);
             }
             CommandStep::Event(_) => unreachable!(),
         }
