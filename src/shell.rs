@@ -7,7 +7,7 @@
 use crossbeam_channel::{Receiver, RecvTimeoutError, Sender, TrySendError};
 use futures::future::BoxFuture;
 use std::collections::VecDeque;
-use std::pin::Pin;
+use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -50,7 +50,7 @@ impl<E, R> IntoEffectWork<E, R> for Outcome<E> {
 
 impl<E, R, F> IntoEffectWork<E, R> for F
 where
-    F: std::future::Future<Output = Outcome<E>> + Send + 'static,
+    F: Future<Output = Outcome<E>> + Send + 'static,
 {
     fn into_effect_work(self) -> EffectWork<E, R> {
         EffectWork::Future(Box::pin(self))
@@ -134,8 +134,8 @@ where
 
     fn wrap_with_timeout(
         &self,
-        fut: impl std::future::Future<Output = ()> + Send + 'static,
-    ) -> Pin<Box<dyn std::future::Future<Output = ()> + Send + 'static>> {
+        fut: impl Future<Output = ()> + Send + 'static,
+    ) -> BoxFuture<'static, ()> {
         if let Some(limit) = self.config.effect_timeout {
             let runtime = self.config.runtime.clone();
             let on_timeout = self.config.on_timeout_callback.clone();
@@ -210,7 +210,7 @@ where
         work: EffectWork<E, R>,
         ctx: EffectContext<E, R>,
         scheduler: &S,
-    ) -> Pin<Box<dyn std::future::Future<Output = ()> + Send + 'static>> {
+    ) -> BoxFuture<'static, ()> {
         match work {
             EffectWork::Task(task) => {
                 let event_tx = self.event_tx.clone();
@@ -237,7 +237,7 @@ where
         &mut self,
         effect: X,
         scheduler: &S,
-    ) -> Pin<Box<dyn std::future::Future<Output = ()> + Send + 'static>> {
+    ) -> BoxFuture<'static, ()> {
         let ctx = self.effect_context();
         let work = {
             let handler = &mut self.effect_handler;
