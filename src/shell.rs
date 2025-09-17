@@ -79,7 +79,7 @@ pub struct ShellConfig {
 impl Default for ShellConfig {
     fn default() -> Self {
         Self {
-            effect_timeout: Some(Duration::from_secs(30)),
+            effect_timeout: None,
             runtime: time(),
             on_timeout_callback: None,
             effect_channel_capacity: None,
@@ -130,35 +130,6 @@ where
 {
     fn effect_context(&self) -> EffectContext<E, R> {
         EffectContext::new(Arc::clone(&self.resources), Arc::clone(&self.executors))
-    }
-
-    fn wrap_with_timeout(
-        &self,
-        fut: impl Future<Output = ()> + Send + 'static,
-    ) -> BoxFuture<'static, ()> {
-        if let Some(limit) = self.config.effect_timeout {
-            let runtime = self.config.runtime.clone();
-            let on_timeout = self.config.on_timeout_callback.clone();
-
-            Box::pin(async move {
-                match runtime.timeout(limit, fut).await {
-                    Ok(()) => {}
-                    Err(err) => {
-                        if let Some(callback) = on_timeout {
-                            callback();
-                        }
-
-                        #[cfg(feature = "tracing")]
-                        tracing::warn!(elapsed = ?err.duration, "Effect handler exceeded timeout");
-
-                        #[cfg(not(feature = "tracing"))]
-                        let _ = err;
-                    }
-                }
-            })
-        } else {
-            Box::pin(fut)
-        }
     }
 
     fn push_effect_step(&mut self, step: CommandStep<E, X>) -> Result<(), ShellError> {
@@ -215,20 +186,18 @@ where
             EffectWork::Task(task) => {
                 let event_tx = self.event_tx.clone();
                 let scheduler_clone = scheduler.clone();
-                let fut = drive_spec(task, ctx, event_tx, scheduler_clone);
-                self.wrap_with_timeout(fut)
+                Box::pin(drive_spec(task, ctx, event_tx, scheduler_clone))
             }
             EffectWork::Future(fut) => {
                 let event_tx = self.event_tx.clone();
-                let fut = async move {
+                Box::pin(async move {
                     let outcome = fut.await;
                     Self::forward_outcome(&event_tx, outcome);
-                };
-                self.wrap_with_timeout(fut)
+                })
             }
             EffectWork::Immediate(outcome) => {
                 Self::forward_outcome(&self.event_tx, outcome);
-                self.wrap_with_timeout(async move {})
+                Box::pin(async move {})
             }
         }
     }
