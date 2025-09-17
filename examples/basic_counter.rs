@@ -5,7 +5,7 @@
 //! cargo run --example basic_counter --features examples
 //! ```
 
-use syzygy::executor::{ExecutorRegistry, Task};
+use syzygy::executor::{ExecutorRegistry, InlineAsync, Outcome, Task};
 use syzygy::prelude::*;
 
 #[derive(Debug, Default)]
@@ -24,47 +24,58 @@ enum CounterEffect {
     Log(String),
 }
 
-fn update_counter(
+fn event_handler(
     event: CounterEvent,
     ctx: &mut EventContext<CounterEvent, CounterEffect, CounterModel>,
 ) -> Command<CounterEvent, CounterEffect> {
-    let model = ctx.model_mut();
     match event {
-        CounterEvent::Increment => {
-            model.value += 1;
-            Command::effect(CounterEffect::Log(format!(
-                "Count incremented to {}",
-                model.value
-            )))
-        }
-        CounterEvent::Decrement => {
-            model.value -= 1;
-            Command::effect(CounterEffect::Log(format!(
-                "Count decremented to {}",
-                model.value
-            )))
-        }
+        CounterEvent::Increment => on_increment(ctx.model_mut()),
+        CounterEvent::Decrement => on_decrement(ctx.model_mut()),
     }
 }
 
-fn handle_effect(
+fn on_increment(model: &mut CounterModel) -> Command<CounterEvent, CounterEffect> {
+    model.value += 1;
+    Command::effect(CounterEffect::Log(format!(
+        "Count incremented to {}",
+        model.value
+    )))
+}
+
+fn on_decrement(model: &mut CounterModel) -> Command<CounterEvent, CounterEffect> {
+    model.value -= 1;
+    Command::effect(CounterEffect::Log(format!(
+        "Count decremented to {}",
+        model.value
+    )))
+}
+
+fn effect_handler(
     effect: CounterEffect,
-    _ctx: &EffectContext<CounterEvent, ()>,
+    _ctx: EffectContext<CounterEvent, ()>,
 ) -> Task<CounterEvent, ()> {
-    let CounterEffect::Log(message) = effect;
-    println!("{message}");
-    Task::none()
+    match effect {
+        CounterEffect::Log(message) => log_message(message),
+    }
+}
+
+fn log_message(message: String) -> Task<CounterEvent, ()> {
+    Task::async_task::<InlineAsync<CounterEvent>, _>(async move {
+        println!("{message}");
+        Outcome::None
+    })
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let registry = ExecutorRegistry::new();
+    let mut registry = ExecutorRegistry::new();
+    registry.insert_async(InlineAsync::<CounterEvent>::new());
 
     let mut runner = Syzygy::builder::<CounterEvent, CounterEffect>()
         .model(CounterModel::default())
-        .event_handler(update_counter)
-        .effect_handler(handle_effect)
+        .event_handler(event_handler)
+        .effect_handler(effect_handler)
         .with_executor_registry(registry)
-        .build_runner();
+        .build();
 
     runner.core().send_event(CounterEvent::Increment);
     runner.core().send_event(CounterEvent::Increment);

@@ -37,21 +37,25 @@ fn event_handler(
     event: DemoEvent,
     ctx: &mut EventContext<DemoEvent, DemoEffect, DemoModel>,
 ) -> Command<DemoEvent, DemoEffect> {
-    let model = ctx.model_mut();
     match event {
-        DemoEvent::Start => Command::batch([
-            Command::effect(DemoEffect::FetchGreeting),
-            Command::effect(DemoEffect::CrunchNumber(38)),
-        ]),
-        DemoEvent::IoFinished(message) => {
-            model.io_message = Some(message);
-            Command::none()
-        }
-        DemoEvent::CpuFinished(value) => {
-            model.cpu_result = Some(value);
-            Command::none()
-        }
+        DemoEvent::Start => on_start(),
+        DemoEvent::IoFinished(message) => on_io_finished(ctx.model_mut(), message),
+        DemoEvent::CpuFinished(value) => on_cpu_finished(ctx.model_mut(), value),
     }
+}
+
+fn on_start() -> Command<DemoEvent, DemoEffect> {
+    Command::parallel([DemoEffect::FetchGreeting, DemoEffect::CrunchNumber(38)])
+}
+
+fn on_io_finished(model: &mut DemoModel, message: String) -> Command<DemoEvent, DemoEffect> {
+    model.io_message = Some(message);
+    Command::none()
+}
+
+fn on_cpu_finished(model: &mut DemoModel, value: u128) -> Command<DemoEvent, DemoEffect> {
+    model.cpu_result = Some(value);
+    Command::none()
 }
 
 #[derive(Clone)]
@@ -101,21 +105,28 @@ impl<E: Send + 'static> AsyncExecutor<E> for CpuRuntime {
 impl Concurrent for IoRuntime {}
 impl Concurrent for CpuRuntime {}
 
-fn handle_effect(effect: DemoEffect, _ctx: &EffectContext<DemoEvent>) -> Task<DemoEvent> {
+fn effect_handler(effect: DemoEffect, _ctx: EffectContext<DemoEvent>) -> Task<DemoEvent> {
     match effect {
-        DemoEffect::FetchGreeting => Task::async_task::<IoRuntime, _>(async move {
-            tokio::time::sleep(Duration::from_millis(40)).await;
-            Outcome::Event(DemoEvent::IoFinished(format!(
-                "hello from thread {:?}",
-                std::thread::current().id()
-            )))
-        }),
-
-        DemoEffect::CrunchNumber(n) => Task::async_task::<CpuRuntime, _>(async move {
-            let result = fibonacci(n);
-            Outcome::Event(DemoEvent::CpuFinished(result))
-        }),
+        DemoEffect::FetchGreeting => fetch_greeting(),
+        DemoEffect::CrunchNumber(n) => crunch_number(n),
     }
+}
+
+fn fetch_greeting() -> Task<DemoEvent> {
+    Task::async_task::<IoRuntime, _>(async move {
+        tokio::time::sleep(Duration::from_millis(40)).await;
+        Outcome::Event(DemoEvent::IoFinished(format!(
+            "hello from thread {:?}",
+            std::thread::current().id()
+        )))
+    })
+}
+
+fn crunch_number(n: u64) -> Task<DemoEvent> {
+    Task::async_task::<CpuRuntime, _>(async move {
+        let result = fibonacci(n);
+        Outcome::Event(DemoEvent::CpuFinished(result))
+    })
 }
 
 fn fibonacci(n: u64) -> u128 {
@@ -143,7 +154,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut runner = Syzygy::builder::<DemoEvent, DemoEffect>()
         .model(DemoModel::default())
         .event_handler(event_handler)
-        .effect_handler(handle_effect)
+        .effect_handler(effect_handler)
         .with_executor_registry(registry)
         .build();
 

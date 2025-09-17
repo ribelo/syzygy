@@ -50,31 +50,36 @@
 //! }
 //!
 //! // 4. Handle side effects
-//! async fn handle_effects(
+//! fn effect_handler(
 //!     effect: CounterEffect,
-//!     _ctx: EffectContext<CounterEvent, EmptyStorage>
-//! ) -> Outcome<CounterEvent> {
+//!     _ctx: EffectContext<CounterEvent, EmptyStorage>,
+//! ) -> Task<CounterEvent, EmptyStorage> {
 //!     match effect {
-//!         CounterEffect::LogMessage(message) => {
+//!         CounterEffect::LogMessage(message) => Task::async_task::<
+//!             crate::executor::InlineAsync<CounterEvent>,
+//!             _
+//!         >(async move {
 //!             println!("LOG: {}", message);
 //!             Outcome::None
-//!         }
+//!         }),
 //!     }
 //! }
 //!
 //! // 5. Build and run your application
-//! # #[tokio::main]
-//! # async fn main() -> Result<(), Box<dyn std::error::Error>> {
+//! # fn main() -> Result<(), Box<dyn std::error::Error>> {
+//! let mut registry = ExecutorRegistry::new();
+//! registry.insert_async(crate::executor::InlineAsync::<CounterEvent>::new());
 //! let (core, shell) = Syzygy::builder()
 //!     .model(CounterModel::default())
 //!     .event_handler(update_counter)
-//!     .effect_handler(handle_effects)
+//!     .effect_handler(effect_handler)
+//!     .with_executor_registry(registry)
 //!     .build();
 //! let mut runner = Runner::new(core, shell);
 //!
 //! // Send events and run
 //! runner.core().send_event(CounterEvent::Increment)?;
-//! runner.tick(syzygy::scheduler::scheduler()).await?;
+//! runner.tick(syzygy::scheduler::scheduler())?;
 //! # Ok(())
 //! # }
 //! ```
@@ -388,8 +393,11 @@
 pub mod command;
 pub mod core;
 pub mod effect_context;
-pub mod syzygy;
 pub mod shell;
+pub mod syzygy;
+
+// Shared runtime facade powering scheduling, spawning, and timers
+pub mod runtime;
 
 // Builder pattern
 pub mod builder;
@@ -425,8 +433,8 @@ pub mod prelude {
 
     // Core/Shell architecture
     pub use crate::core::{Core, EventHandler};
-    pub use crate::syzygy::{Syzygy, SyzygyConfig};
     pub use crate::shell::{Shell, ShellConfig};
+    pub use crate::syzygy::{Syzygy, SyzygyConfig};
 
     // Type aliases for common use cases
     /// A simple Shell for applications that only need models (no resources or executors).
@@ -458,6 +466,9 @@ pub mod prelude {
 
     // Timer abstractions for runtime neutrality
     pub use crate::timer::{Time, TimeoutError, time};
+
+    // Shared runtime facade
+    pub use crate::runtime::{Runtime, RuntimeError};
 
     // Scheduler adapters for runtime neutrality
     // Scheduler trait is always available

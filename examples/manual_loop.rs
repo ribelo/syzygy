@@ -5,7 +5,7 @@
 //! cargo run --example manual_loop --features examples
 //! ```
 
-use syzygy::executor::{ExecutorRegistry, Task};
+use syzygy::executor::{ExecutorRegistry, InlineAsync, Outcome, Task};
 use syzygy::prelude::*;
 
 #[derive(Debug, Default)]
@@ -25,36 +25,46 @@ enum AppEffect {
     ProduceMessage,
 }
 
-fn update(
+fn event_handler(
     event: AppEvent,
     ctx: &mut EventContext<AppEvent, AppEffect, AppModel>,
 ) -> Command<AppEvent, AppEffect> {
-    let model = ctx.model_mut();
     match event {
-        AppEvent::Start => Command::effect(AppEffect::ProduceMessage),
-        AppEvent::Completed(message) => {
-            model.logs.push(message);
-            model.completed = true;
-            Command::none()
-        }
+        AppEvent::Start => on_start(),
+        AppEvent::Completed(message) => on_completed(ctx.model_mut(), message),
     }
 }
 
-fn handle_effect(effect: AppEffect, _ctx: &EffectContext<AppEvent, ()>) -> Task<AppEvent, ()> {
+fn on_start() -> Command<AppEvent, AppEffect> {
+    Command::effect(AppEffect::ProduceMessage)
+}
+
+fn on_completed(model: &mut AppModel, message: String) -> Command<AppEvent, AppEffect> {
+    model.logs.push(message);
+    model.completed = true;
+    Command::none()
+}
+
+fn effect_handler(effect: AppEffect, _ctx: EffectContext<AppEvent, ()>) -> Task<AppEvent, ()> {
     match effect {
-        AppEffect::ProduceMessage => {
-            Task::events(vec![AppEvent::Completed("effect finished".to_string())])
-        }
+        AppEffect::ProduceMessage => produce_message(),
     }
+}
+
+fn produce_message() -> Task<AppEvent, ()> {
+    Task::async_task::<InlineAsync<AppEvent>, _>(async move {
+        Outcome::Event(AppEvent::Completed("effect finished".to_string()))
+    })
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let registry = ExecutorRegistry::new();
+    let mut registry = ExecutorRegistry::new();
+    registry.insert_async(InlineAsync::<AppEvent>::new());
 
     let (mut core, mut shell) = Syzygy::builder::<AppEvent, AppEffect>()
         .model(AppModel::default())
-        .event_handler(update)
-        .effect_handler(handle_effect)
+        .event_handler(event_handler)
+        .effect_handler(effect_handler)
         .with_executor_registry(registry)
         .build()
         .split();
