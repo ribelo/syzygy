@@ -105,7 +105,7 @@ fn bench_command_iteration(c: &mut Criterion) {
             for output in black_box(small_cmd.clone()) {
                 count += match output {
                     CommandStep::Event(_) | CommandStep::Effect(_) => 1,
-                    CommandStep::Batch(e) => e.len(),
+                    CommandStep::Batch(e) | CommandStep::Parallel(e) => e.len(),
                 };
             }
             black_box(count)
@@ -118,7 +118,7 @@ fn bench_command_iteration(c: &mut Criterion) {
             for output in black_box(large_cmd.clone()) {
                 count += match output {
                     CommandStep::Event(_) | CommandStep::Effect(_) => 1,
-                    CommandStep::Batch(e) => e.len(),
+                    CommandStep::Batch(e) | CommandStep::Parallel(e) => e.len(),
                 };
             }
             black_box(count)

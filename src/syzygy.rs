@@ -1,12 +1,12 @@
-//! # Runner - Core/Shell Orchestration
+//! # Syzygy - Core/Shell Orchestration
 //!
-//! This module provides the `Runner`, a component that automates the interaction
+//! This module provides the `Syzygy`, a component that automates the interaction
 //! between the `Core` and the `Shell`. It simplifies the process of building and
 //! running a Syzygy application by managing the event loop.
 //!
 //! ## Key Components
-//! - `Runner` - The main struct that drives the application by orchestrating `Core` and `Shell`.
-//! - `RunnerConfig` - Configuration for the runner's behavior.
+//! - `Syzygy` - The main struct that drives the application by orchestrating `Core` and `Shell`.
+//! - `SyzygyConfig` - Configuration for the syzygy's behavior.
 //!
 //! ## Example
 //! ```rust,no_run
@@ -39,14 +39,14 @@ use crate::error::ShellError;
 use crate::scheduler::Scheduler;
 use crate::shell::Shell;
 
-/// Configuration for the Runner
+/// Configuration for the Syzygy
 #[derive(Clone, Debug)]
-pub struct RunnerConfig {
+pub struct SyzygyConfig {
     /// How often to yield control when no work is being done
     pub idle_sleep: Duration,
 }
 
-impl Default for RunnerConfig {
+impl Default for SyzygyConfig {
     fn default() -> Self {
         Self {
             idle_sleep: Duration::from_millis(16), // ~60 FPS
@@ -54,7 +54,7 @@ impl Default for RunnerConfig {
     }
 }
 
-impl RunnerConfig {
+impl SyzygyConfig {
     /// Override the idle sleep interval with any type convertible to `Duration`.
     #[must_use]
     pub fn idle_sleep(mut self, duration: impl Into<Duration>) -> Self {
@@ -63,12 +63,12 @@ impl RunnerConfig {
     }
 }
 
-/// Runner automatically orchestrates Core/Shell interaction
+/// Syzygy automatically orchestrates Core/Shell interaction
 ///
 /// This solves Grug's complaint about manual event loop orchestration.
 /// Instead of users manually calling `poll_events` → process → execute → step,
-/// Runner handles the proper sequencing automatically.
-pub struct Runner<Event, Effect, Storage, Resources = ()>
+/// Syzygy handles the proper sequencing automatically.
+pub struct Syzygy<Event, Effect, Storage, Resources = ()>
 where
     Event: Send + 'static,
     Effect: Send + 'static,
@@ -76,16 +76,16 @@ where
 {
     core: Core<Event, Effect, Storage>,
     shell: Shell<Event, Effect, Resources>,
-    config: RunnerConfig,
+    config: SyzygyConfig,
 }
 
-impl<Event, Effect, Storage, Resources> Runner<Event, Effect, Storage, Resources>
+impl<Event, Effect, Storage, Resources> Syzygy<Event, Effect, Storage, Resources>
 where
     Event: Send + 'static,
     Effect: Send + 'static,
     Resources: Clone + Send + Sync + 'static,
 {
-    /// Create a new Runner with Core and Shell
+    /// Create a new Syzygy with Core and Shell
     ///
     /// # Example
     /// ```rust
@@ -100,21 +100,21 @@ where
     ///     .build()
     ///     .split();
     ///
-    /// let runner = Runner::new(core, shell);
+    /// let syzygy = Syzygy::new(core, shell);
     /// ```
     pub fn new(core: Core<Event, Effect, Storage>, shell: Shell<Event, Effect, Resources>) -> Self {
         Self {
             core,
             shell,
-            config: RunnerConfig::default(),
+            config: SyzygyConfig::default(),
         }
     }
 
-    /// Create a new Runner with custom configuration
+    /// Create a new Syzygy with custom configuration
     pub fn with_config(
         core: Core<Event, Effect, Storage>,
         shell: Shell<Event, Effect, Resources>,
-        config: RunnerConfig,
+        config: SyzygyConfig,
     ) -> Self {
         Self {
             core,
@@ -173,6 +173,26 @@ where
         Ok(())
     }
 
+    /// Get an immutable reference to the model
+    #[must_use]
+    pub fn model(&self) -> &Storage {
+        self.core.model()
+    }
+
+    /// Get a mutable reference to the model
+    ///
+    /// This should be used carefully as it bypasses event processing.
+    /// Prefer sending events for state changes.
+    pub fn model_mut(&mut self) -> &mut Storage {
+        self.core.model_mut()
+    }
+
+    /// Get an immutable reference to resources
+    #[must_use]
+    pub fn resource(&self) -> &Resources {
+        self.shell.resource()
+    }
+
     /// Get a reference to the Core
     pub fn core(&self) -> &Core<Event, Effect, Storage> {
         &self.core
@@ -193,13 +213,15 @@ where
         &mut self.shell
     }
 
-    /// Get the runner configuration
-    pub fn config(&self) -> &RunnerConfig {
+
+
+    /// Get the syzygy configuration
+    pub fn config(&self) -> &SyzygyConfig {
         &self.config
     }
 
-    /// Update the runner configuration
-    pub fn set_config(&mut self, config: RunnerConfig) {
+    /// Update the syzygy configuration
+    pub fn set_config(&mut self, config: SyzygyConfig) {
         self.config = config;
     }
 
@@ -286,7 +308,7 @@ where
     }
 }
 
-/// Process pending events and effects once using the same logic as `Runner::step_with`.
+/// Process pending events and effects once using the same logic as `Syzygy::step_with`.
 pub fn step_core_shell<Event, Effect, Storage, Resources>(
     core: &mut Core<Event, Effect, Storage>,
     shell: &mut Shell<Event, Effect, Resources>,
@@ -311,7 +333,7 @@ impl<Event, Effect, Storage, Resources>
     From<(
         Core<Event, Effect, Storage>,
         Shell<Event, Effect, Resources>,
-    )> for Runner<Event, Effect, Storage, Resources>
+    )> for Syzygy<Event, Effect, Storage, Resources>
 where
     Event: Send + 'static,
     Effect: Send + 'static,
@@ -328,18 +350,31 @@ where
 }
 
 impl<Event, Effect, Storage, Resources> std::fmt::Debug
-    for Runner<Event, Effect, Storage, Resources>
+    for Syzygy<Event, Effect, Storage, Resources>
 where
     Event: Send + 'static,
     Effect: Send + 'static,
     Resources: Clone + Send + Sync + 'static,
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Runner")
+        f.debug_struct("Syzygy")
             .field("config", &self.config)
             .finish_non_exhaustive()
     }
 }
+
+impl Syzygy<(), (), (), ()> {
+    /// Create a new builder for Syzygy systems
+    #[must_use]
+    pub fn builder<NewEvent, NewEffect>() -> crate::builder::SyzygyBuilder<NewEvent, NewEffect, (), ()>
+    where
+        NewEvent: Send + 'static,
+        NewEffect: Send + 'static,
+    {
+        crate::builder::SyzygyBuilder::new()
+    }
+}
+
 #[cfg(all(test, feature = "legacy_tests"))]
 mod tests {
     use super::*;
@@ -412,7 +447,7 @@ mod tests {
             .effect_handler(|_e: TestEffect, _ctx| crate::executor::Task::events(Vec::new()))
             .build();
 
-        runner.set_config(RunnerConfig {
+        runner.set_config(SyzygyConfig {
             idle_sleep: Duration::from_millis(1),
         });
 

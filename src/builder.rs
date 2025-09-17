@@ -1,11 +1,10 @@
 use crate::core::{Core, EventHandler};
 use crate::effect_context::EffectContext;
-use crate::executor::Task;
-
+use crate::executor::Outcome;
 use crate::executor::{AsyncExecutor, ExecutorRegistry, SyncExecutor};
-use crate::prelude::EffectHandler;
-use crate::runner::Runner;
-use crate::shell::Shell;
+use crate::shell::{EffectHandler, EffectWork, IntoEffectWork, Shell, ShellConfig};
+use crate::syzygy::Syzygy;
+use std::collections::VecDeque;
 use std::marker::PhantomData;
 use std::sync::Arc;
 
@@ -55,7 +54,7 @@ where
     Event: Send + 'static,
     Effect: Send + 'static,
     Model: 'static,
-    Resource: Clone + Send + Sync + 'static,
+    Resource: Send + Sync + 'static,
 {
     /// Add a model to the builder
     #[must_use]
@@ -70,7 +69,7 @@ where
 
     /// Add resources to the builder
     #[must_use]
-    pub fn resource<R: Clone + Send + Sync + 'static>(
+    pub fn resource<R: Send + Sync + 'static>(
         self,
         resources: R,
     ) -> SyzygyBuilder<Event, Effect, Model, R> {
@@ -94,6 +93,7 @@ where
             model: self.model,
             resources: self.resources,
             exec_registry: self.exec_registry,
+            shell_config: ShellConfig::default(),
             _executor_state: PhantomData,
         }
     }
@@ -106,6 +106,7 @@ pub struct ConfiguredBuilder<Event, Effect, Model, Resource, ExecutorState = NoE
     model: Model,
     resources: Resource,
     exec_registry: Option<ExecutorRegistry<Event>>,
+    shell_config: ShellConfig,
     _executor_state: PhantomData<ExecutorState>,
 }
 
@@ -114,20 +115,28 @@ impl<Event, Effect, Model, Resource, ExecutorState>
 where
     Event: Send + Sync + 'static,
     Effect: Send + 'static,
-    Resource: Clone + Send + Sync + 'static,
+    Resource: Send + Sync + 'static,
 {
     /// Set the effect handler that processes effects
     #[must_use]
-    pub fn effect_handler(
+    pub fn effect_handler<H, T>(
         self,
-        handler: EffectHandler<Event, Effect, Resource>,
-    ) -> ConfiguredBuilder<Event, Effect, Model, Resource, ExecutorState> {
+        handler: H,
+    ) -> ConfiguredBuilder<Event, Effect, Model, Resource, ExecutorState>
+    where
+        H: FnMut(Effect, EffectContext<Event, Resource>) -> T + Send + 'static,
+        T: IntoEffectWork<Event, Resource>,
+    {
+        let mut handler = handler;
+        let boxed: EffectHandler<Event, Effect, Resource> =
+            Box::new(move |effect, ctx| handler(effect, ctx).into_effect_work());
         ConfiguredBuilder {
             event_handler: self.event_handler,
-            effect_handler: Some(handler),
+            effect_handler: Some(boxed),
             model: self.model,
             resources: self.resources,
             exec_registry: self.exec_registry,
+            shell_config: self.shell_config,
             _executor_state: PhantomData,
         }
     }
@@ -144,6 +153,7 @@ where
             model: self.model,
             resources: self.resources,
             exec_registry: Some(registry),
+            shell_config: self.shell_config,
             _executor_state: PhantomData,
         }
     }
@@ -165,6 +175,7 @@ where
             model: self.model,
             resources: self.resources,
             exec_registry: Some(reg),
+            shell_config: self.shell_config,
             _executor_state: PhantomData,
         }
     }
@@ -186,6 +197,24 @@ where
             model: self.model,
             resources: self.resources,
             exec_registry: Some(reg),
+            shell_config: self.shell_config,
+            _executor_state: PhantomData,
+        }
+    }
+
+    /// Override the shell configuration before building the system.
+    #[must_use]
+    pub fn with_shell_config(
+        self,
+        config: ShellConfig,
+    ) -> ConfiguredBuilder<Event, Effect, Model, Resource, ExecutorState> {
+        ConfiguredBuilder {
+            event_handler: self.event_handler,
+            effect_handler: self.effect_handler,
+            model: self.model,
+            resources: self.resources,
+            exec_registry: self.exec_registry,
+            shell_config: config,
             _executor_state: PhantomData,
         }
     }
@@ -196,34 +225,42 @@ where
         exec_registry: Arc<ExecutorRegistry<Event>>,
         effect_handler: Option<EffectHandler<Event, Effect, Resource>>,
         event_tx: crossbeam_channel::Sender<Event>,
+        config: ShellConfig,
     ) -> Shell<Event, Effect, Resource> {
-        use crate::shell::ShellConfig;
-        use crossbeam_channel::unbounded;
+        use crossbeam_channel::{bounded, unbounded};
 
-        fn default_effect_handler<E, X, R>(_: X, _: &EffectContext<E, R>) -> Task<E, R>
+        fn default_effect_handler<E, X, R>(_: X, _: EffectContext<E, R>) -> EffectWork<E, R>
         where
             E: Send + 'static,
             X: Send + 'static,
-            R: Clone + Send + Sync + 'static,
+            R: Send + Sync + 'static,
         {
-            Task::events(Vec::new())
+            EffectWork::Immediate(Outcome::None)
         }
 
-        let config = ShellConfig::default();
-        let (effect_tx, effect_rx) = unbounded();
+        let capacity = config.effect_channel_capacity;
+        let (effect_tx, effect_rx) = match capacity {
+            Some(capacity) => bounded(capacity),
+            None => unbounded(),
+        };
+
+        let effect_handler = effect_handler.unwrap_or_else(|| {
+            Box::new(move |effect, ctx| {
+                default_effect_handler::<Event, Effect, Resource>(effect, ctx)
+            })
+        });
 
         Shell {
             effect_rx,
             effect_tx,
             event_tx,
-            resources,
+            resources: Arc::new(resources),
             // use provided handler or a no-op
-            effect_handler: effect_handler
-                .unwrap_or(default_effect_handler::<Event, Effect, Resource>),
+            effect_handler,
             config,
             executors: exec_registry,
             closed: false,
-            prefetched_effect: None,
+            prefetched_effects: VecDeque::new(),
         }
     }
 }
@@ -233,38 +270,24 @@ impl<Event, Effect, Model, Resource> ConfiguredBuilder<Event, Effect, Model, Res
 where
     Event: Send + Sync + 'static,
     Effect: Send + 'static,
-    Resource: Clone + Send + Sync + 'static,
+    Resource: Send + Sync + 'static,
 {
-    /// Build the system and return a `Runner` that owns the Core and Shell.
-    pub fn build(self) -> Runner<Event, Effect, Model, Resource> {
+    /// Build the system and return a `Syzygy` that owns the Core and Shell.
+    pub fn build(self) -> Syzygy<Event, Effect, Model, Resource> {
         let (core, event_tx) = Core::new(self.event_handler, self.model);
         let shell = Self::build_shell(
             self.resources,
             Arc::new(self.exec_registry.unwrap()), // Safe to unwrap due to type system guarantee
             self.effect_handler,
             event_tx,
+            self.shell_config,
         );
-        Runner::new(core, shell)
+        Syzygy::new(core, shell)
     }
 
-    /// Build the system and return a Runner that owns both Core and Shell.
-    pub fn build_runner(self) -> Runner<Event, Effect, Model, Resource> {
+    /// Build the system and return a Syzygy that owns both Core and Shell.
+    pub fn build_syzygy(self) -> Syzygy<Event, Effect, Model, Resource> {
         self.build()
-    }
-}
-
-/// Main entry point for creating Syzygy systems
-pub struct Syzygy;
-
-impl Syzygy {
-    /// Create a new builder for the given Event and Effect types
-    #[must_use]
-    pub fn builder<Event, Effect>() -> SyzygyBuilder<Event, Effect, (), ()>
-    where
-        Event: Send + 'static,
-        Effect: Send + 'static,
-    {
-        SyzygyBuilder::new()
     }
 }
 

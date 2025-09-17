@@ -4,14 +4,16 @@ use smallvec::SmallVec;
 ///
 /// This is what actually happens when your event handler returns a Command.
 /// Events go back to Core for immediate processing. Effects get queued for
-/// async execution. Batch effects run sequentially - no parallelism, no race
-/// conditions, no surprises at 3 AM when your app shits itself in production.
+/// async execution. Batch effects run sequentially; use the `Parallel` variant
+/// when you explicitly want concurrent execution.
 #[derive(Clone)]
 pub enum CommandStep<Event, Effect> {
     Event(Event),
     Effect(Effect),
     /// Sequential effects; Shell runs them in order
     Batch(Vec<Effect>),
+    /// Concurrent effects; Shell schedules them without waiting between each one
+    Parallel(Vec<Effect>),
 }
 
 impl<Event, Effect> PartialEq for CommandStep<Event, Effect>
@@ -24,6 +26,7 @@ where
             (Self::Event(a), Self::Event(b)) => a == b,
             (Self::Effect(a), Self::Effect(b)) => a == b,
             (Self::Batch(a), Self::Batch(b)) => a == b,
+            (Self::Parallel(a), Self::Parallel(b)) => a == b,
             _ => false,
         }
     }
@@ -39,6 +42,7 @@ where
             Self::Event(e) => f.debug_tuple("Event").field(e).finish(),
             Self::Effect(x) => f.debug_tuple("Effect").field(x).finish(),
             Self::Batch(v) => f.debug_tuple("Batch").field(v).finish(),
+            Self::Parallel(v) => f.debug_tuple("Parallel").field(v).finish(),
         }
     }
 }
@@ -178,11 +182,29 @@ impl<Event, Effect> Command<Event, Effect> {
     /// Creates a command that runs multiple effects sequentially as a single Batch step.
     ///
     /// The Shell executes the effects in order, with no parallelism. This is equivalent
-    /// to constructing `CommandStep::Batch` manually.
+    /// to constructing `CommandStep::Batch` manually. Use [`Command::parallel`] when you
+    /// explicitly want the Shell to schedule effects concurrently.
     pub fn effects(effects: impl IntoIterator<Item = Effect>) -> Self {
+        Self::sequential(effects)
+    }
+
+    /// Alias for [`Command::effects`] that makes ordering intent explicit.
+    pub fn sequential(effects: impl IntoIterator<Item = Effect>) -> Self {
         let mut outputs = SmallVec::new();
         let batch: Vec<Effect> = effects.into_iter().collect();
         outputs.push(CommandStep::Batch(batch));
+        Self { outputs }
+    }
+
+    /// Creates a command that runs multiple effects in parallel.
+    ///
+    /// Each effect is dispatched without waiting for the previous one to complete. When
+    /// using a scheduler that supports overlap, the effects can run concurrently. On
+    /// schedulers that do not, they will still execute in order but without failing.
+    pub fn parallel(effects: impl IntoIterator<Item = Effect>) -> Self {
+        let mut outputs = SmallVec::new();
+        let batch: Vec<Effect> = effects.into_iter().collect();
+        outputs.push(CommandStep::Parallel(batch));
         Self { outputs }
     }
 
@@ -229,6 +251,7 @@ impl<Event, Effect> Command<Event, Effect> {
             .iter()
             .map(|o| match o {
                 CommandStep::Batch(v) => v.len(),
+                CommandStep::Parallel(v) => v.len(),
                 _ => 1,
             })
             .sum()

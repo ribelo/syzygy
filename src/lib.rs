@@ -388,7 +388,7 @@
 pub mod command;
 pub mod core;
 pub mod effect_context;
-pub mod runner;
+pub mod syzygy;
 pub mod shell;
 
 // Builder pattern
@@ -425,7 +425,7 @@ pub mod prelude {
 
     // Core/Shell architecture
     pub use crate::core::{Core, EventHandler};
-    pub use crate::runner::{Runner, RunnerConfig};
+    pub use crate::syzygy::{Syzygy, SyzygyConfig};
     pub use crate::shell::{Shell, ShellConfig};
 
     // Type aliases for common use cases
@@ -482,7 +482,7 @@ pub mod prelude {
     pub use crate::executor::{ExecutorRegistry, InlineAsync, SingleThreadExecutor, Task};
 
     // Builder
-    pub use crate::builder::{Syzygy, SyzygyBuilder};
+    pub use crate::builder::SyzygyBuilder;
 
     // Errors
     pub use crate::error::{CommandError, CoreError, EffectError, ShellError};

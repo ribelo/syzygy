@@ -62,7 +62,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     core.send_event(AppEvent::Start);
 
     let scheduler = syzygy::scheduler::scheduler();
-    while syzygy::runner::step_core_shell(&mut core, &mut shell, scheduler.clone())? {}
+    while syzygy::syzygy::step_core_shell(&mut core, &mut shell, scheduler.clone())? {}
 
     println!("Logs: {:?}", core.model().logs);
     Ok(())
