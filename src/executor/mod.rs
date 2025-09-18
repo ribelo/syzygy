@@ -139,7 +139,19 @@ thread_local! {
 }
 
 use futures_util::future::BoxFuture;
+use std::any::Any;
 use thiserror::Error;
+
+/// Extract panic message from a panic payload
+pub(crate) fn panic_message(panic_payload: Box<dyn Any + Send>) -> String {
+    if let Some(s) = panic_payload.downcast_ref::<String>() {
+        s.clone()
+    } else if let Some(s) = panic_payload.downcast_ref::<&str>() {
+        (*s).to_string()
+    } else {
+        "unknown internal error".to_string()
+    }
+}
 // Executor storage types removed
 #[cfg(feature = "rayon")]
 pub use rayon_sync_executor::RayonExecutor;
@@ -265,13 +277,7 @@ where
                 Ok(Err(_aborted)) => Err(ExecutorError::Cancelled),
                 Err(join_err) => match join_err.try_into_panic() {
                     Ok(p) => {
-                        let msg = if let Some(s) = p.downcast_ref::<String>() {
-                            s.clone()
-                        } else if let Some(s) = p.downcast_ref::<&str>() {
-                            (*s).to_string()
-                        } else {
-                            "unknown internal error".to_string()
-                        };
+                        let msg = panic_message(p);
                         Err(ExecutorError::Panic { msg })
                     }
                     Err(_) => Err(ExecutorError::WorkerGone),

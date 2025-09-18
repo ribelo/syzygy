@@ -8,7 +8,9 @@ use futures_util::future::{BoxFuture, FutureExt, Shared};
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
-use crate::executor::{ExecutorError, ExecutorLifecycle, Outcome, Sequential, SyncExecutor};
+use crate::executor::{
+    ExecutorError, ExecutorLifecycle, Outcome, Sequential, SyncExecutor, panic_message,
+};
 
 /// `SingleThreadExecutor` — FIFO, single-worker executor for sync work only
 ///
@@ -188,7 +190,7 @@ fn worker_loop(rx: Receiver<Job>, shutdown_tx: oneshot::Sender<()>) {
             Job::Sync { job, tx } => {
                 // Catch panics and map to ExecutorError::Panic
                 let res = catch_unwind(AssertUnwindSafe(job)).map_err(|p| ExecutorError::Panic {
-                    msg: panic_to_msg(p),
+                    msg: panic_message(p),
                 });
 
                 let _ = tx.send(res);
@@ -199,16 +201,6 @@ fn worker_loop(rx: Receiver<Job>, shutdown_tx: oneshot::Sender<()>) {
 
     // Notify completion
     let _ = shutdown_tx.send(());
-}
-
-fn panic_to_msg(p: Box<dyn Any + Send>) -> String {
-    if let Some(s) = p.downcast_ref::<String>() {
-        s.clone()
-    } else if let Some(s) = p.downcast_ref::<&str>() {
-        (*s).to_string()
-    } else {
-        "unknown internal error".to_string()
-    }
 }
 
 struct JoinFuture<E> {
