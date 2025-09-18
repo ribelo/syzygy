@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use futures;
 
-use super::{AsyncExecutor, SyncExecutor};
+use super::{AsyncExecutor, ExecutorLifecycle, SyncExecutor};
 
 /// Registry of executors keyed by `TypeId` markers with separate async and sync capabilities.
 pub struct ExecutorRegistry<E> {
@@ -108,25 +108,28 @@ where
         self.sync_map.get(&key).cloned()
     }
 
+    /// Get an iterator over all executors as the common ExecutorLifecycle trait
+    fn all_executors(&self) -> impl Iterator<Item = Arc<dyn ExecutorLifecycle>> + '_ {
+        self.async_map
+            .values()
+            .map(|exec| Arc::clone(exec) as Arc<dyn ExecutorLifecycle>)
+            .chain(
+                self.sync_map
+                    .values()
+                    .map(|exec| Arc::clone(exec) as Arc<dyn ExecutorLifecycle>),
+            )
+    }
+
     /// Shutdown all executors in the registry
     pub fn shutdown_all(&self) {
-        for executor in self.async_map.values() {
-            executor.shutdown();
-        }
-        for executor in self.sync_map.values() {
+        for executor in self.all_executors() {
             executor.shutdown();
         }
     }
 
     /// Wait for all executors to complete shutdown
     pub async fn join_all(&self) {
-        let mut futures = Vec::new();
-        for executor in self.async_map.values() {
-            futures.push(executor.join());
-        }
-        for executor in self.sync_map.values() {
-            futures.push(executor.join());
-        }
+        let futures: Vec<_> = self.all_executors().map(|exec| exec.join()).collect();
         futures::future::join_all(futures).await;
     }
 }
