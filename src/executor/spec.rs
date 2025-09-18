@@ -5,13 +5,22 @@ use std::future::Future;
 
 use super::{AsyncExecutor, ExecutorError};
 use crate::effect_context::EffectContext;
+use crate::error::ShellError;
 use std::any::TypeId;
 
-fn missing_executor(kind: &'static str, exec: TypeId) -> ! {
+fn missing_executor(kind: &'static str, exec: TypeId) -> ShellError {
     #[cfg(feature = "tracing")]
-    tracing::error!(?exec, kind, "Missing executor; effect will panic");
+    tracing::error!(
+        ?exec,
+        kind,
+        "Missing executor; effect could not be scheduled"
+    );
 
-    panic!("Missing {kind} executor for type {exec:?}");
+    // Log the error but don't panic - allow the system to continue
+    #[cfg(not(feature = "tracing"))]
+    eprintln!("Missing {kind} executor for type {exec:?}; effect could not be scheduled");
+
+    ShellError::TaskSpawnFailed(format!("Missing {kind} executor for type {exec:?}"))
 }
 
 /// Unified effect output: a single event, multiple events, or none
@@ -149,102 +158,115 @@ pub(crate) fn drive_spec<E, R>(
     spec: Task<E, R>,
     ctx: EffectContext<E, R>,
     event_tx: crossbeam_channel::Sender<E>,
-) -> BoxFuture<'static, ()>
+) -> Result<BoxFuture<'static, ()>, ShellError>
 where
     E: Send + 'static,
     R: Send + Sync + 'static,
 {
-    async move {
-        match spec {
-            Task::Events(events) => {
-                for e in events {
-                    let _ = event_tx.send(e);
-                }
-            }
-            Task::Future { exec, task } => {
-                if let Some(exec_ref) = ctx.executors().async_exec_by_key(exec) {
-                    let ctx_for_task = ctx.clone();
-                    let fut = Box::pin(async move { (task)(ctx_for_task).await });
-                    match exec_ref.spawn_future(fut).await {
-                        Ok(outcome) => match outcome {
-                            Outcome::Events(events) => {
-                                for event in events {
-                                    let _ = event_tx.send(event);
-                                }
-                            }
-                            Outcome::Event(event) => {
-                                let _ = event_tx.send(event);
-                            }
-                            Outcome::None => {}
-                        },
-                        Err(
-                            ExecutorError::WorkerGone
-                            | ExecutorError::Panic { .. }
-                            | ExecutorError::Cancelled,
-                        ) => {}
-                    }
-                } else {
-                    missing_executor("async", exec);
-                }
-            }
-
-            Task::Sync { exec, task } => {
-                if let Some(exec_ref) = ctx.executors().sync_exec_by_key(exec) {
-                    let ctx_for_job = ctx.clone();
-                    let job = Box::new(move || (task)(ctx_for_job));
-                    match exec_ref.spawn_sync(job).await {
-                        Ok(output) => {
-                            // Inline consume logic
-                            match output {
-                                Outcome::None => {}
-                                Outcome::Event(event) => {
-                                    let _ = event_tx.send(event);
-                                }
-                                Outcome::Events(events) => {
-                                    for event in events {
-                                        let _ = event_tx.send(event);
-                                    }
-                                }
-                            }
-                        }
-                        Err(
-                            ExecutorError::WorkerGone
-                            | ExecutorError::Panic { .. }
-                            | ExecutorError::Cancelled,
-                        ) => { /* ignore or log */ }
-                    }
-                } else {
-                    missing_executor("sync", exec);
-                }
-            }
-            Task::Stream { exec, factory } => {
-                if let Some(exec_ref) = ctx.executors().async_exec_by_key(exec) {
-                    let stream = (factory)(ctx.clone());
-                    let fut = async move {
-                        use futures::pin_mut;
-                        pin_mut!(stream);
-                        while let Some(event) = stream.next().await {
-                            let _ = event_tx.send(event);
-                        }
-                        Outcome::None
-                    }
-                    .boxed();
-
-                    match exec_ref.spawn_future(fut).await {
-                        Ok(_)
-                        | Err(
-                            ExecutorError::WorkerGone
-                            | ExecutorError::Panic { .. }
-                            | ExecutorError::Cancelled,
-                        ) => { /* ignore or log */ }
-                    }
-                } else {
-                    missing_executor("async-stream", exec);
-                }
+    match spec {
+        Task::Events(events) => Ok(async move {
+            for e in events {
+                let _ = event_tx.send(e);
             }
         }
+        .boxed()),
+        Task::Future { exec, task } => {
+            let exec_ref = ctx
+                .executors()
+                .async_exec_by_key(exec)
+                .ok_or_else(|| missing_executor("async", exec))?;
+
+            let ctx_for_task = ctx.clone();
+            let event_tx = event_tx.clone();
+
+            Ok(async move {
+                let fut = Box::pin(async move { (task)(ctx_for_task).await });
+                match exec_ref.spawn_future(fut).await {
+                    Ok(outcome) => match outcome {
+                        Outcome::Events(events) => {
+                            for event in events {
+                                let _ = event_tx.send(event);
+                            }
+                        }
+                        Outcome::Event(event) => {
+                            let _ = event_tx.send(event);
+                        }
+                        Outcome::None => {}
+                    },
+                    Err(
+                        ExecutorError::WorkerGone
+                        | ExecutorError::Panic { .. }
+                        | ExecutorError::Cancelled,
+                    ) => {}
+                }
+            }
+            .boxed())
+        }
+        Task::Sync { exec, task } => {
+            let exec_ref = ctx
+                .executors()
+                .sync_exec_by_key(exec)
+                .ok_or_else(|| missing_executor("sync", exec))?;
+
+            let ctx_for_job = ctx.clone();
+            let event_tx = event_tx.clone();
+
+            Ok(async move {
+                let job = Box::new(move || (task)(ctx_for_job));
+                match exec_ref.spawn_sync(job).await {
+                    Ok(output) => match output {
+                        Outcome::None => {}
+                        Outcome::Event(event) => {
+                            let _ = event_tx.send(event);
+                        }
+                        Outcome::Events(events) => {
+                            for event in events {
+                                let _ = event_tx.send(event);
+                            }
+                        }
+                    },
+                    Err(
+                        ExecutorError::WorkerGone
+                        | ExecutorError::Panic { .. }
+                        | ExecutorError::Cancelled,
+                    ) => { /* ignore or log */ }
+                }
+            }
+            .boxed())
+        }
+        Task::Stream { exec, factory } => {
+            let exec_ref = ctx
+                .executors()
+                .async_exec_by_key(exec)
+                .ok_or_else(|| missing_executor("async-stream", exec))?;
+
+            let ctx_for_stream = ctx.clone();
+            let event_tx = event_tx.clone();
+
+            Ok(async move {
+                let stream = (factory)(ctx_for_stream);
+                let fut = async move {
+                    use futures::pin_mut;
+                    pin_mut!(stream);
+                    while let Some(event) = stream.next().await {
+                        let _ = event_tx.send(event);
+                    }
+                    Outcome::None
+                }
+                .boxed();
+
+                match exec_ref.spawn_future(fut).await {
+                    Ok(_)
+                    | Err(
+                        ExecutorError::WorkerGone
+                        | ExecutorError::Panic { .. }
+                        | ExecutorError::Cancelled,
+                    ) => { /* ignore or log */ }
+                }
+            }
+            .boxed())
+        }
     }
-    .boxed()
 }
 
 #[cfg(test)]

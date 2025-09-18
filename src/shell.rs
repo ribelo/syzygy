@@ -104,12 +104,16 @@ where
         }
     }
 
-    fn effect_future(&self, task: Task<E, R>, ctx: EffectContext<E, R>) -> BoxFuture<'static, ()> {
+    fn effect_future(
+        &self,
+        task: Task<E, R>,
+        ctx: EffectContext<E, R>,
+    ) -> Result<BoxFuture<'static, ()>, ShellError> {
         let event_tx = self.event_tx.clone();
         drive_spec(task, ctx, event_tx)
     }
 
-    fn process_effect(&mut self, effect: X) -> BoxFuture<'static, ()> {
+    fn process_effect(&mut self, effect: X) -> Result<BoxFuture<'static, ()>, ShellError> {
         let ctx = self.effect_context();
         let task = {
             let handler = &mut self.effect_handler;
@@ -203,20 +207,20 @@ where
         &mut self,
         step: CommandStep<E, X>,
         executor: &Arc<dyn AsyncExecutor<E>>,
-    ) {
+    ) -> Result<(), ShellError> {
         match step {
             CommandStep::Effect(effect) => {
-                let fut = self.process_effect(effect);
+                let fut = self.process_effect(effect)?;
                 executor.spawn_detached(fut);
             }
             CommandStep::Batch(effects) => {
                 if effects.is_empty() {
-                    return;
+                    return Ok(());
                 }
 
                 let mut futures = Vec::with_capacity(effects.len());
                 for effect in effects {
-                    futures.push(self.process_effect(effect));
+                    futures.push(self.process_effect(effect)?);
                 }
 
                 let sequence = async move {
@@ -230,15 +234,15 @@ where
             }
             CommandStep::Parallel(effects) => {
                 if effects.is_empty() {
-                    return;
+                    return Ok(());
                 }
 
                 if executor.allows_overlap() {
                     for effect in effects {
-                        let fut = self.process_effect(effect);
+                        let fut = self.process_effect(effect)?;
                         executor.spawn_detached(fut);
                     }
-                    return;
+                    return Ok(());
                 }
 
                 #[cfg(feature = "tracing")]
@@ -253,7 +257,7 @@ where
 
                 let mut futures = Vec::with_capacity(effects.len());
                 for effect in effects {
-                    futures.push(self.process_effect(effect));
+                    futures.push(self.process_effect(effect)?);
                 }
 
                 let sequence = async move {
@@ -267,6 +271,7 @@ where
             }
             CommandStep::Event(_) => unreachable!(),
         }
+        Ok(())
     }
 
     /// Process all pending effects synchronously and return count of effects processed
@@ -287,7 +292,7 @@ where
                 }
                 CommandStep::Event(_) => {}
             }
-            self.handle_effect_step(step, &executor);
+            self.handle_effect_step(step, &executor)?;
         }
 
         #[cfg(feature = "tracing")]
@@ -312,7 +317,7 @@ where
         executor: Arc<dyn AsyncExecutor<E>>,
     ) -> Result<bool, ShellError> {
         if let Some(step) = self.next_effect_step() {
-            self.handle_effect_step(step, &executor);
+            self.handle_effect_step(step, &executor)?;
             Ok(true)
         } else {
             Ok(false)

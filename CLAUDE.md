@@ -84,8 +84,9 @@ The first async executor registered becomes the Shell's default. Additional exec
 targeted explicitly from effect handlers via `Task::async_task::<YourExecutor, _>(...)`.
 
 `syzygy::spawn::spawner()` remains available behind the `tokio` feature for ad-hoc spawning
-and panics if no Tokio runtime is active. Prefer declarative `Task` plans inside effect
-handlers for most work.
+and now returns an error if no Tokio runtime is active. Prefer declarative `Task` plans inside
+effect handlers for most work, and remember to propagate the `Result` when you need the
+spawner directly.
 
 ### Task Plans & Zero-Cost Spawning
 
@@ -359,7 +360,7 @@ async fn test_complete_flow() {
 
     // Send events and test results
     runner.core().send_event(MyEvent::UserClicked)?;
-    runner.tick(syzygy::spawn::spawner()).await?;
+    runner.tick(syzygy::spawn::spawner()?).await?;
 
     assert_eq!(runner.core().model().count, 1);
 }

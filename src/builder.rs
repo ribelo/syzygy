@@ -82,6 +82,36 @@ where
             Err(Box::new(self))
         }
     }
+
+    /// Promote a registry-backed builder to the `HasAsyncExecutor` state using the registry's
+    /// existing default executor. This is more ergonomic than `try_with_existing_default` when
+    /// the registry already has a default set (which happens automatically when the first
+    /// async executor is registered).
+    ///
+    /// Returns `Err(self)` if no async executor has been registered or no default is set.
+    pub fn try_use_registry_default(
+        mut self,
+    ) -> Result<ConfiguredBuilder<Event, Effect, Model, Resource, HasAsyncExecutor>, Box<Self>>
+    {
+        let Some(registry) = self.exec_registry.take() else {
+            unreachable!("registry typestate violation: expected stored registry");
+        };
+
+        if registry.has_default_async() {
+            Ok(ConfiguredBuilder {
+                event_handler: self.event_handler,
+                effect_handler: self.effect_handler,
+                model: self.model,
+                resources: self.resources,
+                exec_registry: Some(registry),
+                effect_channel_capacity: self.effect_channel_capacity,
+                _executor_state: PhantomData,
+            })
+        } else {
+            self.exec_registry = Some(registry);
+            Err(Box::new(self))
+        }
+    }
 }
 
 impl<E, X> Default for SyzygyBuilder<E, X, (), ()>
@@ -467,8 +497,8 @@ mod tests {
             .with_executor_registry(registry);
 
         let runner = runner
-            .try_with_existing_default::<crate::executor::InlineAsync<TestEvent>>()
-            .unwrap_or_else(|_| panic!("registry should contain InlineAsync"))
+            .try_use_registry_default()
+            .unwrap_or_else(|_| panic!("registry should have a default async executor"))
             .build();
 
         let (mut core, _shell) = runner.split();
@@ -479,6 +509,49 @@ mod tests {
 
         // Skipped model assertions in refactor
         assert_eq!(config.theme, "dark");
+    }
+
+    #[test]
+    fn test_try_use_registry_default() {
+        // Test the ergonomic registry default method
+        let mut registry = crate::executor::ExecutorRegistry::new();
+        registry.insert_async(crate::executor::InlineAsync::<TestEvent>::new());
+
+        let runner = Syzygy::builder::<TestEvent, TestEffect>()
+            .model(TestModel { count: 0 })
+            .event_handler(test_update)
+            .effect_handler(|_e: TestEffect, _ctx| crate::executor::Task::events(Vec::new()))
+            .with_executor_registry(registry);
+
+        // This should work without specifying the executor type
+        let runner = runner
+            .try_use_registry_default()
+            .unwrap_or_else(|_| panic!("registry should have a default async executor"))
+            .build();
+
+        let (_core, _shell) = runner.split();
+
+        // If we get here, the ergonomic method worked correctly
+    }
+
+    #[test]
+    fn test_try_use_registry_default_fails_without_async_executor() {
+        // Test that try_use_registry_default fails when no async executor is registered
+        let registry = crate::executor::ExecutorRegistry::<TestEvent>::new();
+        // Note: no async executor registered
+
+        let runner = Syzygy::builder::<TestEvent, TestEffect>()
+            .model(TestModel { count: 0 })
+            .event_handler(test_update)
+            .effect_handler(|_e: TestEffect, _ctx| crate::executor::Task::events(Vec::new()))
+            .with_executor_registry(registry);
+
+        // This should fail because no async executor was registered
+        let result = runner.try_use_registry_default();
+        assert!(
+            result.is_err(),
+            "Should fail when no async executor is registered"
+        );
     }
 
     #[test]
@@ -508,8 +581,8 @@ mod tests {
             .with_executor_registry(registry);
 
         let runner = runner
-            .try_with_existing_default::<crate::executor::InlineAsync<TestEvent>>()
-            .unwrap_or_else(|_| panic!("registry should contain InlineAsync"))
+            .try_use_registry_default()
+            .unwrap_or_else(|_| panic!("registry should have a default async executor"))
             .build();
 
         let (_core, _shell) = runner.split();

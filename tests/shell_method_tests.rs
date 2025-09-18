@@ -44,6 +44,7 @@ mod tokio_tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
+    use syzygy::error::ShellError;
 
     fn create_test_runner() -> Syzygy<TestEvent, TestEffect, TestModel, ()> {
         Syzygy::builder::<TestEvent, TestEffect>()
@@ -130,6 +131,40 @@ mod tokio_tests {
             total_steps, 2,
             "Should process exactly 2 steps for 3 Ping events (batch processing)"
         );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn shell_reports_missing_async_executor() {
+        let mut runner = Syzygy::builder::<TestEvent, TestEffect>()
+            .model(TestModel::default())
+            .event_handler(|event, _ctx| match event {
+                TestEvent::Ping => Command::effect(TestEffect::Work(99)),
+                TestEvent::Pong => Command::none(),
+            })
+            .effect_handler(|effect: TestEffect, _ctx| match effect {
+                TestEffect::Work(_) => Task::async_task::<TokioExecutor, _>(async move {
+                    Outcome::None
+                }),
+                _ => Task::none(),
+            })
+            .with_async_executor(InlineAsync::<TestEvent>::new())
+            .build();
+
+        runner.core_mut().send_event(TestEvent::Ping);
+
+        let err = runner
+            .step()
+            .expect_err("step should fail when required executor is missing");
+
+        match err {
+            ShellError::TaskSpawnFailed(message) => {
+                assert!(
+                    message.contains("Missing async executor"),
+                    "error should mention missing async executor, got: {message:?}"
+                );
+            }
+            other => panic!("Expected TaskSpawnFailed, got {other:?}"),
+        }
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -401,5 +436,64 @@ mod tokio_tests {
             1,
             "No overlapping work should occur when executor disallows overlap",
         );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn wait_for_work_returns_immediately_when_work_available() {
+        use std::time::Duration;
+
+        // Create a runner with non-zero idle sleep
+        let mut runner = Syzygy::builder::<TestEvent, TestEffect>()
+            .model(TestModel::default())
+            .event_handler(test_update)
+            .effect_handler(|_effect: TestEffect, _ctx| Task::none())
+            .with_async_executor(InlineAsync::<TestEvent>::new())
+            .build();
+
+        // Set idle sleep to a long duration
+        let mut config = SyzygyConfig::default();
+        config.idle_sleep = Duration::from_millis(200);
+        runner.set_config(config);
+
+        // Send an event so there's work available
+        runner.core_mut().send_event(TestEvent::Ping);
+        
+        // Verify work is pending before wait_for_work
+        assert!(runner.core().has_pending_events(), "Should have pending work before wait_for_work");
+
+        // wait_for_work should return immediately since there's pending work
+        runner.wait_for_work();
+
+        // Verify work is still pending after wait_for_work (it doesn't process, just waits)
+        assert!(runner.core().has_pending_events(), "Should still have pending work after wait_for_work");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn wait_for_work_yields_when_idle_sleep_zero() {
+        use std::time::Duration;
+
+        // Create a runner with zero idle sleep
+        let mut runner = Syzygy::builder::<TestEvent, TestEffect>()
+            .model(TestModel::default())
+            .event_handler(test_update)
+            .effect_handler(|_effect: TestEffect, _ctx| Task::none())
+            .with_async_executor(InlineAsync::<TestEvent>::new())
+            .build();
+
+        // Set idle sleep to zero
+        let mut config = SyzygyConfig::default();
+        config.idle_sleep = Duration::from_millis(0);
+        runner.set_config(config);
+
+        // Verify no work is pending
+        assert!(!runner.core().has_pending_events(), "Should have no pending work");
+        assert_eq!(runner.shell().pending_effects(), 0, "Should have no pending effects");
+
+        // wait_for_work should yield immediately when idle_sleep is zero
+        runner.wait_for_work();
+
+        // State should be unchanged - no work was added or processed
+        assert!(!runner.core().has_pending_events(), "Should still have no pending work");
+        assert_eq!(runner.shell().pending_effects(), 0, "Should still have no pending effects");
     }
 }

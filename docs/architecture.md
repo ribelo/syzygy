@@ -599,7 +599,7 @@ runner.core().send_event(AppEvent::AppStarted)?;
 // Run until some condition
 runner.run_until(
     |core, _shell| core.model().should_quit,
-    syzygy::spawn::spawner()  // Runtime-neutral spawning
+    syzygy::spawn::spawner()?  // Runtime-neutral spawning
 ).await?;
 ```
 
@@ -776,14 +776,14 @@ async fn test_complete_login_flow() {
     runner.core().send_event(AppEvent::LoginClicked)?;
 
     // Process one tick
-    runner.tick(syzygy::spawn::spawner()).await?;
+    runner.tick(syzygy::spawn::spawner()?).await?;
 
     // Simulate successful response
     runner.core().send_event(AppEvent::DataReceived {
         data: r#"{"token": "abc123", "user": {"name": "Alice"}}"#.to_string()
     })?;
 
-    runner.tick(syzygy::spawn::spawner()).await?;
+    runner.tick(syzygy::spawn::spawner()?).await?;
 
     // Check final state
     let model = runner.core().model();

@@ -276,7 +276,44 @@ where
         self.shell.shutdown();
     }
 
-    fn wait_for_work(&mut self) {
+    /// Wait for work to arrive, trying core first then shell
+    ///
+    /// Returns true if work arrived, false if we timed out
+    #[must_use = "ignoring work detection defeats the purpose of waiting"]
+    fn wait_for_idle(&mut self, duration: Duration) -> bool {
+        let start = Instant::now();
+        
+        // Try core first - bail immediately if channel closed
+        if self.core.wait_for_event(duration) {
+            return true;
+        }
+
+        // If core didn't get work and shell is closed, bail
+        if self.shell.is_closed() {
+            return false;
+        }
+
+        // Calculate remaining time for shell
+        let elapsed = start.elapsed();
+        let remaining = match duration.checked_sub(elapsed) {
+            Some(remaining) if !remaining.is_zero() => remaining,
+            _ => return false, // No time left
+        };
+
+        // Try shell with remaining time and return its result
+        self.shell.wait_for_effect(remaining)
+    }
+
+    /// Wait for work to arrive, blocking the current thread until either:
+    /// - An event arrives in the core
+    /// - An effect arrives in the shell
+    /// - The idle sleep timeout expires
+    /// - The shell is closed
+    ///
+    /// This method is called automatically by `run()` and `run_until()` when no work
+    /// is available, but can also be called manually for fine-grained control.
+    pub fn wait_for_work(&mut self) {
+        // Early returns for cases where we shouldn't wait
         if self.shell.is_closed() {
             return;
         }
@@ -290,18 +327,12 @@ where
             return;
         }
 
-        let start = Instant::now();
-        if self.core.wait_for_event(self.config.idle_sleep) {
-            return;
+        // Wait for work to arrive - we ignore the result since the main loop
+        // will check for pending work on the next iteration anyway
+        #[allow(unused_must_use)]
+        {
+            self.wait_for_idle(self.config.idle_sleep);
         }
-
-        let elapsed = start.elapsed();
-        let remaining = match self.config.idle_sleep.checked_sub(elapsed) {
-            Some(remaining) if !remaining.is_zero() => remaining,
-            _ => return,
-        };
-
-        self.shell.wait_for_effect(remaining);
     }
 
     /// Execute a single synchronous step of the event loop
