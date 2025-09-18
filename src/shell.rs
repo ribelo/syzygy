@@ -203,6 +203,32 @@ where
         }
     }
 
+    /// Spawn a sequence of effects to run one after another
+    fn spawn_sequence(
+        &mut self,
+        effects: Vec<X>,
+        executor: &Arc<dyn AsyncExecutor<E>>,
+    ) -> Result<(), ShellError> {
+        if effects.is_empty() {
+            return Ok(());
+        }
+
+        let mut futures = Vec::with_capacity(effects.len());
+        for effect in effects {
+            futures.push(self.process_effect(effect)?);
+        }
+
+        let sequence = async move {
+            for fut in futures {
+                fut.await;
+            }
+        }
+        .boxed();
+
+        executor.spawn_detached(sequence);
+        Ok(())
+    }
+
     fn handle_effect_step(
         &mut self,
         step: CommandStep<E, X>,
@@ -214,23 +240,7 @@ where
                 executor.spawn_detached(fut);
             }
             CommandStep::Batch(effects) => {
-                if effects.is_empty() {
-                    return Ok(());
-                }
-
-                let mut futures = Vec::with_capacity(effects.len());
-                for effect in effects {
-                    futures.push(self.process_effect(effect)?);
-                }
-
-                let sequence = async move {
-                    for fut in futures {
-                        fut.await;
-                    }
-                }
-                .boxed();
-
-                executor.spawn_detached(sequence);
+                self.spawn_sequence(effects, executor)?;
             }
             CommandStep::Parallel(effects) => {
                 if effects.is_empty() {
@@ -255,19 +265,7 @@ where
                     );
                 }
 
-                let mut futures = Vec::with_capacity(effects.len());
-                for effect in effects {
-                    futures.push(self.process_effect(effect)?);
-                }
-
-                let sequence = async move {
-                    for fut in futures {
-                        fut.await;
-                    }
-                }
-                .boxed();
-
-                executor.spawn_detached(sequence);
+                self.spawn_sequence(effects, executor)?;
             }
             CommandStep::Event(_) => unreachable!(),
         }
