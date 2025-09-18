@@ -113,6 +113,13 @@ impl<Event, Effect> Command<Event, Effect> {
         }
     }
 
+    /// Create a command with a single step
+    fn from_step(step: CommandStep<Event, Effect>) -> Self {
+        let mut outputs = SmallVec::new();
+        outputs.push(step);
+        Self { outputs }
+    }
+
     /// Creates a command that immediately triggers another event.
     ///
     /// The event gets processed synchronously in the same tick. No async
@@ -132,9 +139,7 @@ impl<Event, Effect> Command<Event, Effect> {
     /// }
     /// ```
     pub fn event(event: impl Into<Event>) -> Self {
-        let mut outputs = SmallVec::new();
-        outputs.push(CommandStep::Event(event.into()));
-        Self { outputs }
+        Self::from_step(CommandStep::Event(event.into()))
     }
 
     /// Creates a command that triggers an async side effect.
@@ -151,9 +156,7 @@ impl<Event, Effect> Command<Event, Effect> {
     /// }
     /// ```
     pub fn effect(effect: impl Into<Effect>) -> Self {
-        let mut outputs = SmallVec::new();
-        outputs.push(CommandStep::Effect(effect.into()));
-        Self { outputs }
+        Self::from_step(CommandStep::Effect(effect.into()))
     }
 
     /// Creates a command that fires multiple events in order.
@@ -189,10 +192,8 @@ impl<Event, Effect> Command<Event, Effect> {
 
     /// Alias for [`Command::effects`] that makes ordering intent explicit.
     pub fn sequential(effects: impl IntoIterator<Item = Effect>) -> Self {
-        let mut outputs = SmallVec::new();
         let batch: Vec<Effect> = effects.into_iter().collect();
-        outputs.push(CommandStep::Batch(batch));
-        Self { outputs }
+        Self::from_step(CommandStep::Batch(batch))
     }
 
     /// Creates a command that runs multiple effects in parallel.
@@ -201,10 +202,8 @@ impl<Event, Effect> Command<Event, Effect> {
     /// using an executor that supports overlap, the effects can run concurrently. On
     /// executors that do not, they will still execute in order but without failing.
     pub fn parallel(effects: impl IntoIterator<Item = Effect>) -> Self {
-        let mut outputs = SmallVec::new();
         let batch: Vec<Effect> = effects.into_iter().collect();
-        outputs.push(CommandStep::Parallel(batch));
-        Self { outputs }
+        Self::from_step(CommandStep::Parallel(batch))
     }
 
     /// Combines multiple commands into one.
