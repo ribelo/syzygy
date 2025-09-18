@@ -28,7 +28,7 @@
 //! sender.send(TestEvent::Increment).unwrap();
 //!
 //! // Process the event queue
-//! core.process_events();
+//! let commands = core.process_events();
 //!
 //! // The model is now updated
 //! let model_ref: &CounterModel = core.model();
@@ -119,12 +119,11 @@ where
     /// Process all events in the queue
     ///
     /// This processes all pending events and collects their commands.
-    /// Returns true if any events were processed, false if queue was empty.
-    pub fn process_events(&mut self) -> (bool, Vec<Command<E, X>>) {
+    /// Returns a Vec<Command<E, X>> containing all commands generated.
+    /// An empty vector indicates no events were processed.
+    pub fn process_events(&mut self) -> Vec<Command<E, X>> {
         #[cfg(feature = "tracing")]
         let _span = span!(Level::DEBUG, "process_events").entered();
-
-        let mut processed_any = false;
 
         // Process events from external channel first
         while let Ok(event) = self.event_rx.try_recv() {
@@ -133,18 +132,16 @@ where
 
         // Process all events in queue
         while let Some(event) = self.event_queue.pop_front() {
-            processed_any = true;
-
             let command = self.handle_event(event);
             self.command_buffer.push(command);
         }
 
         #[cfg(feature = "tracing")]
-        if processed_any {
+        if !self.command_buffer.is_empty() {
             debug!(events_processed = self.command_buffer.len());
         }
 
-        (processed_any, std::mem::take(&mut self.command_buffer))
+        std::mem::take(&mut self.command_buffer)
     }
 
     /// Send an event to be processed in the next tick.
@@ -295,9 +292,9 @@ mod tests {
         sender.send(TestEvent::Decrement).unwrap();
 
         // Process all events
-        let (processed, commands) = core.process_events();
+        let commands = core.process_events();
 
-        assert!(processed);
+        assert!(!commands.is_empty());
         assert_eq!(commands.len(), 3);
 
         // Verify final model state
@@ -318,7 +315,7 @@ mod tests {
         assert!(core.pending_count() > 0);
         assert!(core.has_pending_events());
 
-        core.process_events();
+        let _commands = core.process_events();
         assert_eq!(core.pending_count(), 0);
         assert!(!core.has_pending_events());
     }

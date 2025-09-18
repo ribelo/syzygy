@@ -408,7 +408,8 @@ where
     Effect: Send + 'static,
     Resources: Send + Sync + 'static,
 {
-    let (core_work, commands) = core.process_events();
+    let commands = core.process_events();
+    let core_work = !commands.is_empty();
     for command in commands {
         shell.dispatch_command(command)?;
     }
