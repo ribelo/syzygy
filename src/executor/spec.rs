@@ -152,6 +152,21 @@ where
     }
 }
 
+/// Forward an `Outcome` to the event channel
+fn forward_outcome<E>(event_tx: &crossbeam_channel::Sender<E>, outcome: Outcome<E>) {
+    match outcome {
+        Outcome::None => {},
+        Outcome::Event(event) => {
+            let _ = event_tx.send(event);
+        },
+        Outcome::Events(events) => {
+            for event in events {
+                let _ = event_tx.send(event);
+            }
+        },
+    }
+}
+
 /// Drive a `Task` by spawning appropriate work on executors and
 /// forwarding produced events to Core via the supplied `EffectContext`.
 pub(crate) fn drive_spec<E, R>(
@@ -182,17 +197,7 @@ where
             Ok(async move {
                 let fut = Box::pin(async move { (task)(ctx_for_task).await });
                 match exec_ref.spawn_future(fut).await {
-                    Ok(outcome) => match outcome {
-                        Outcome::Events(events) => {
-                            for event in events {
-                                let _ = event_tx.send(event);
-                            }
-                        }
-                        Outcome::Event(event) => {
-                            let _ = event_tx.send(event);
-                        }
-                        Outcome::None => {}
-                    },
+                    Ok(outcome) => forward_outcome(&event_tx, outcome),
                     Err(
                         ExecutorError::WorkerGone
                         | ExecutorError::Panic { .. }
@@ -214,17 +219,7 @@ where
             Ok(async move {
                 let job = Box::new(move || (task)(ctx_for_job));
                 match exec_ref.spawn_sync(job).await {
-                    Ok(output) => match output {
-                        Outcome::None => {}
-                        Outcome::Event(event) => {
-                            let _ = event_tx.send(event);
-                        }
-                        Outcome::Events(events) => {
-                            for event in events {
-                                let _ = event_tx.send(event);
-                            }
-                        }
-                    },
+                    Ok(output) => forward_outcome(&event_tx, output),
                     Err(
                         ExecutorError::WorkerGone
                         | ExecutorError::Panic { .. }
