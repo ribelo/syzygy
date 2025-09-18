@@ -131,19 +131,7 @@ where
     ///
     /// This will run until the shell is shut down or an error occurs.
     pub fn run(&mut self) -> Result<(), ShellError> {
-        loop {
-            let did_work = self.step()?;
-
-            if self.shell.is_closed() {
-                break;
-            }
-
-            if !did_work {
-                self.wait_for_work();
-            }
-        }
-
-        Ok(())
+        self.run_loop(|syzygy| syzygy.step(), |_| false)
     }
 
     /// Run the event loop continuously using a specific executor for shell work.
@@ -151,19 +139,10 @@ where
         &mut self,
         executor: Arc<dyn AsyncExecutor<Event>>,
     ) -> Result<(), ShellError> {
-        loop {
-            let did_work = self.step_with_executor(Arc::clone(&executor))?;
-
-            if self.shell.is_closed() {
-                break;
-            }
-
-            if !did_work {
-                self.wait_for_work();
-            }
-        }
-
-        Ok(())
+        self.run_loop(
+            |syzygy| syzygy.step_with_executor(Arc::clone(&executor)),
+            |_| false,
+        )
     }
 
     /// Run until a condition is met
@@ -173,24 +152,10 @@ where
     where
         F: FnMut(&Core<Event, Effect, Storage>, &Shell<Event, Effect, Resources>) -> bool,
     {
-        loop {
-            let did_work = self.step()?;
-
-            // Check condition
-            if condition(&self.core, &self.shell) {
-                break;
-            }
-
-            if self.shell.is_closed() {
-                break;
-            }
-
-            if !did_work {
-                self.wait_for_work();
-            }
-        }
-
-        Ok(())
+        self.run_loop(
+            |syzygy| syzygy.step(),
+            move |syzygy| condition(&syzygy.core, &syzygy.shell),
+        )
     }
 
     /// Run until a condition is met using a specific executor.
@@ -202,23 +167,10 @@ where
     where
         F: FnMut(&Core<Event, Effect, Storage>, &Shell<Event, Effect, Resources>) -> bool,
     {
-        loop {
-            let did_work = self.step_with_executor(Arc::clone(&executor))?;
-
-            if condition(&self.core, &self.shell) {
-                break;
-            }
-
-            if self.shell.is_closed() {
-                break;
-            }
-
-            if !did_work {
-                self.wait_for_work();
-            }
-        }
-
-        Ok(())
+        self.run_loop(
+            |syzygy| syzygy.step_with_executor(Arc::clone(&executor)),
+            move |syzygy| condition(&syzygy.core, &syzygy.shell),
+        )
     }
 
     /// Get an immutable reference to the model
@@ -282,7 +234,7 @@ where
     #[must_use = "ignoring work detection defeats the purpose of waiting"]
     fn wait_for_idle(&mut self, duration: Duration) -> bool {
         let start = Instant::now();
-        
+
         // Try core first - bail immediately if channel closed
         if self.core.wait_for_event(duration) {
             return true;
@@ -333,6 +285,30 @@ where
         {
             self.wait_for_idle(self.config.idle_sleep);
         }
+    }
+
+    fn run_loop<Step, Exit>(
+        &mut self,
+        mut step: Step,
+        mut should_exit: Exit,
+    ) -> Result<(), ShellError>
+    where
+        Step: FnMut(&mut Self) -> Result<bool, ShellError>,
+        Exit: FnMut(&Self) -> bool,
+    {
+        loop {
+            let did_work = step(self)?;
+
+            if should_exit(self) || self.shell.is_closed() {
+                break;
+            }
+
+            if !did_work {
+                self.wait_for_work();
+            }
+        }
+
+        Ok(())
     }
 
     /// Execute a single synchronous step of the event loop

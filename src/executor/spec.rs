@@ -155,15 +155,15 @@ where
 /// Forward an `Outcome` to the event channel
 fn forward_outcome<E>(event_tx: &crossbeam_channel::Sender<E>, outcome: Outcome<E>) {
     match outcome {
-        Outcome::None => {},
+        Outcome::None => {}
         Outcome::Event(event) => {
             let _ = event_tx.send(event);
-        },
+        }
         Outcome::Events(events) => {
             for event in events {
                 let _ = event_tx.send(event);
             }
-        },
+        }
     }
 }
 

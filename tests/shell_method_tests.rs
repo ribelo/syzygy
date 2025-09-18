@@ -142,9 +142,9 @@ mod tokio_tests {
                 TestEvent::Pong => Command::none(),
             })
             .effect_handler(|effect: TestEffect, _ctx| match effect {
-                TestEffect::Work(_) => Task::async_task::<TokioExecutor, _>(async move {
-                    Outcome::None
-                }),
+                TestEffect::Work(_) => {
+                    Task::async_task::<TokioExecutor, _>(async move { Outcome::None })
+                }
                 _ => Task::none(),
             })
             .with_async_executor(InlineAsync::<TestEvent>::new())
@@ -457,15 +457,21 @@ mod tokio_tests {
 
         // Send an event so there's work available
         runner.core_mut().send_event(TestEvent::Ping);
-        
+
         // Verify work is pending before wait_for_work
-        assert!(runner.core().has_pending_events(), "Should have pending work before wait_for_work");
+        assert!(
+            runner.core().has_pending_events(),
+            "Should have pending work before wait_for_work"
+        );
 
         // wait_for_work should return immediately since there's pending work
         runner.wait_for_work();
 
         // Verify work is still pending after wait_for_work (it doesn't process, just waits)
-        assert!(runner.core().has_pending_events(), "Should still have pending work after wait_for_work");
+        assert!(
+            runner.core().has_pending_events(),
+            "Should still have pending work after wait_for_work"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -486,14 +492,28 @@ mod tokio_tests {
         runner.set_config(config);
 
         // Verify no work is pending
-        assert!(!runner.core().has_pending_events(), "Should have no pending work");
-        assert_eq!(runner.shell().pending_effects(), 0, "Should have no pending effects");
+        assert!(
+            !runner.core().has_pending_events(),
+            "Should have no pending work"
+        );
+        assert_eq!(
+            runner.shell().pending_effects(),
+            0,
+            "Should have no pending effects"
+        );
 
         // wait_for_work should yield immediately when idle_sleep is zero
         runner.wait_for_work();
 
         // State should be unchanged - no work was added or processed
-        assert!(!runner.core().has_pending_events(), "Should still have no pending work");
-        assert_eq!(runner.shell().pending_effects(), 0, "Should still have no pending effects");
+        assert!(
+            !runner.core().has_pending_events(),
+            "Should still have no pending work"
+        );
+        assert_eq!(
+            runner.shell().pending_effects(),
+            0,
+            "Should still have no pending effects"
+        );
     }
 }
