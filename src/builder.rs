@@ -56,6 +56,22 @@ where
     Effect: Send + 'static,
     Resource: Send + Sync + 'static,
 {
+    /// Helper to promote this builder to HasAsyncExecutor state with the given registry
+    fn promote_with_registry(
+        self,
+        registry: ExecutorRegistry<Event>,
+    ) -> ConfiguredBuilder<Event, Effect, Model, Resource, HasAsyncExecutor> {
+        ConfiguredBuilder {
+            event_handler: self.event_handler,
+            effect_handler: self.effect_handler,
+            model: self.model,
+            resources: self.resources,
+            exec_registry: Some(registry),
+            effect_channel_capacity: self.effect_channel_capacity,
+            _executor_state: PhantomData,
+        }
+    }
+
     /// Promote a registry-backed builder to the `HasAsyncExecutor` state by selecting an
     /// already-registered executor as the default. Returns `Err(self)` if the executor type
     /// has not been registered.
@@ -68,15 +84,7 @@ where
         };
 
         if registry.set_default_async::<T>() {
-            Ok(ConfiguredBuilder {
-                event_handler: self.event_handler,
-                effect_handler: self.effect_handler,
-                model: self.model,
-                resources: self.resources,
-                exec_registry: Some(registry),
-                effect_channel_capacity: self.effect_channel_capacity,
-                _executor_state: PhantomData,
-            })
+            Ok(self.promote_with_registry(registry))
         } else {
             self.exec_registry = Some(registry);
             Err(Box::new(self))
@@ -98,15 +106,7 @@ where
         };
 
         if registry.has_default_async() {
-            Ok(ConfiguredBuilder {
-                event_handler: self.event_handler,
-                effect_handler: self.effect_handler,
-                model: self.model,
-                resources: self.resources,
-                exec_registry: Some(registry),
-                effect_channel_capacity: self.effect_channel_capacity,
-                _executor_state: PhantomData,
-            })
+            Ok(self.promote_with_registry(registry))
         } else {
             self.exec_registry = Some(registry);
             Err(Box::new(self))
