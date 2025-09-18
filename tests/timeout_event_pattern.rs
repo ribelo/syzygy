@@ -13,9 +13,8 @@
 
 use std::time::Duration;
 use syzygy::event_context::EventContext;
-use syzygy::executor::{ExecutorRegistry, TokioExecutor};
+use syzygy::executor::TokioExecutor;
 use syzygy::prelude::*;
-use syzygy::scheduler::scheduler;
 
 use syzygy::executor::Outcome;
 
@@ -83,10 +82,10 @@ fn timeout_update(
     }
 }
 
-// Effect handler that implements manual timeout detection using the new EffectSpec plan
+// Effect handler that implements manual timeout detection using Task plans
 fn timeout_aware_effect_handler(
     effect: TimeoutEffect,
-    _ctx: &EffectContext<TimeoutEvent, ()>,
+    _ctx: EffectContext<TimeoutEvent, ()>,
 ) -> syzygy::executor::Task<TimeoutEvent, ()> {
     match effect {
         TimeoutEffect::SlowOperation { delay_ms } => {
@@ -111,16 +110,13 @@ fn timeout_aware_effect_handler(
 
 /// Test that timeout events are properly emitted and handled
 #[cfg(feature = "tokio")]
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn test_timeout_event_pattern() {
-    let mut registry = ExecutorRegistry::new();
-    registry.insert_async(TokioExecutor::multi_thread_io("test", 2));
-
     let runner = Syzygy::builder::<TimeoutEvent, TimeoutEffect>()
         .model(TimeoutModel::default())
         .event_handler(timeout_update)
         .effect_handler(timeout_aware_effect_handler)
-        .with_executor_registry(registry)
+        .with_async_executor(TokioExecutor::multi_thread_io("timeout-pattern", 2))
         .build();
 
     let event_sender = runner.core().event_sender();
@@ -132,10 +128,7 @@ async fn test_timeout_event_pattern() {
     let runner = tokio::task::spawn_blocking(move || {
         let mut runner = runner;
         runner
-            .run_until(
-                |core, _shell| !core.model().is_loading,
-                scheduler(), // Auto-detect runtime for maximum compatibility
-            )
+            .run_until(|core, _shell| !core.model().is_loading)
             .unwrap();
         runner
     })
@@ -154,7 +147,7 @@ async fn test_timeout_event_pattern() {
 }
 
 /// Test timeout event structure and data
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn test_timeout_event_data() {
     let timeout_duration = Duration::from_millis(100);
     let event = TimeoutEvent::OperationTimeout {

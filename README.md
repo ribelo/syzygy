@@ -130,26 +130,18 @@ fn log_message(message: String) -> Task<AppEvent, ()> {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut registry = ExecutorRegistry::new();
-    registry.insert_async(InlineAsync::<AppEvent>::new());
-    registry.insert_async(TokioExecutor::multi_thread_io("app-io", 2));
-
     let mut app = Syzygy::builder::<AppEvent, AppEffect>()
         .model(AppModel::default())
         .event_handler(event_handler)
         .effect_handler(effect_handler)
-        .with_executor_registry(registry)
+        .with_async_executor(InlineAsync::<AppEvent>::new())
+        .with_async_executor(TokioExecutor::multi_thread_io("app-io", 2))
         .build();
 
     app.core().send_event(AppEvent::Increment)?;
     app.core().send_event(AppEvent::LoadData)?;
 
-    // Auto-detect whichever async runtime is active; falls back to inline
-    // execution when none is available (perfect for CLIs and tests).
-    app.run_until(
-        |core, _| !core.model().is_loading,
-        syzygy::scheduler::scheduler(),
-    )?;
+    app.run_until(|core, _| !core.model().is_loading)?;
 
     println!("Final state: {:?}", app.core().model());
     Ok(())
@@ -360,15 +352,13 @@ let (core, shell) = Syzygy::builder::<MyEvent, MyEffect>()
 When you need to inject dependencies or customize the setup:
 
 ```rust
-let registry = ExecutorRegistry::new();
-registry.insert_async(TokioExecutor::multi_thread_io("io-pool", 4));
-registry.insert_sync(RayonExecutor::new());
-
 let (core, shell) = Syzygy::builder::<MyEvent, MyEffect>()
     .model(MyModel::default())
     .event_handler(my_update)
     .effect_handler(my_effect_handler)
-    .with_executor_registry(registry)
+    .with_async_executor(TokioExecutor::multi_thread_io("io-pool", 4))
+    .with_async_executor(TokioExecutor::multi_thread_cpu("cpu-pool", 4))
+    .with_sync_executor(RayonExecutor::new())
     .build();
 ```
 
@@ -381,98 +371,53 @@ The specialized executor architecture eliminates impedance mismatches:
 
 ```rust
 // IO-bound async work - ~4ns per task spawn
-ctx.spawn(async {
+Task::async_task::<TokioExecutor, _>(async move {
     let response = reqwest::get("https://api.example.com").await?;
     // Network operations here
+    Outcome::None
 });
 
 // CPU-bound async work - same performance
-ctx.spawn(async {
+Task::async_task::<TokioExecutor, _>(async move {
     let result = expensive_async_computation().await;
-    // CPU-intensive async work
+    Outcome::None
 });
 
 // Parallel sync work - Rayon work-stealing
-ctx.spawn_sync(|| {
-    let result = parallel_computation();
-    // CPU-bound parallel work
-});
+Task::Sync {
+    exec: std::any::TypeId::of::<RayonExecutor>(),
+    task: Box::new(|_| Outcome::None),
+};
 
 // Sequential sync work - strict FIFO
-ctx.spawn_sync(|| {
-    let result = sequential_database_write();
-    // Must be processed in order
-});
+Task::Sync {
+    exec: std::any::TypeId::of::<SingleThreadExecutor>(),
+    task: Box::new(|_| Outcome::None),
+};
 ```
 
 ## Runtime Support
+Syzygy ships with production-ready executors so you can match every workload to the right engine:
 
-Syzygy takes a **"tokio-first with runtime flexibility"** approach:
+- **InlineAsync** – deterministic single-threaded execution for CLIs and tests
+- **TokioExecutor** – dedicated Tokio runtimes for async IO and CPU work
+- **SingleThreadExecutor** – FIFO execution for blocking operations that must stay ordered
+- **RayonExecutor** *(optional feature)* – parallel CPU work with Rayon
 
-- **Primary**: Tokio (most mature ecosystem, recommended for production)
-- **Alternative**: Smol (lightweight, resource-constrained environments)
-- **Alternative**: Async-std (standard library approach)
-- **Custom**: Any executor through generic spawn functions
-
-### Runtime Priority
-When multiple runtime features are enabled, Syzygy uses this priority:
-1. **tokio** - Most mature ecosystem
-2. **smol** - Lightweight alternative
-3. **async-std** - Standard library approach
-
-### Quick Runtime Selection
-```rust
-// Auto-detect runtime (recommended)
-runner.run_until(condition, syzygy::spawn::spawner()).await?;
-
-// Explicit runtime selection
-runner.run_until(condition, syzygy::spawn::TokioSpawn).await?;
-runner.run_until(condition, syzygy::spawn::SmolSpawn).await?;
-runner.run_until(condition, syzygy::spawn::AsyncStdSpawn).await?;
-
-// Custom spawn function
-let custom_spawn = |future| my_executor.spawn(future);
-runner.run_until(condition, custom_spawn).await?;
-```
-
-### Zero-Cost Async Spawning (Rust 1.85+)
-Syzygy provides zero-cost async spawning with no boxing overhead:
+Register them directly on the builder:
 
 ```rust
-// Direct zero-cost async spawning - no allocations!
-syzygy::spawn::spawner().spawn(async {
-    println!("This runs on the auto-detected runtime!");
-});
-
-// Runtime-specific zero-cost spawning
-syzygy::spawn::TokioSpawn.spawn(async { /* tokio work */ });
-syzygy::spawn::SmolSpawn.spawn(async { /* smol work */ });
-
-// Also works with async function calls
-async fn my_work() { println!("Zero-cost!"); }
-syzygy::spawn::spawner().spawn(my_work());
+Syzygy::builder::<Event, Effect>()
+    .model(Model::default())
+    .event_handler(update)
+    .effect_handler(effects)
+    .with_async_executor(TokioExecutor::multi_thread_io("io", 4))
+    .with_async_executor(TokioExecutor::multi_thread_cpu("cpu", 4))
+    .with_sync_executor(RayonExecutor::new())
+    .build();
 ```
 
-### Why Tokio-First?
-Tokio has the most mature ecosystem for production async Rust applications. It's battle-tested, has excellent tooling, and integrates with most async libraries. Other runtimes are supported for specific use cases where tokio's overhead isn't acceptable.
-
-### Runtime Neutrality Details
-Syzygy achieves runtime neutrality through trait abstraction:
-
-```rust
-pub trait Spawn: Clone + Send + Sync + 'static {
-    fn spawn<F>(&self, future: F)
-    where
-        F: Future<Output = ()> + Send + 'static;
-}
-
-// Implementations for each runtime
-impl Spawn for TokioSpawn { /* ... */ }
-impl Spawn for SmolSpawn { /* ... */ }
-impl Spawn for AsyncStdSpawn { /* ... */ }
-```
-
-This means you can write your application once and run it on any supported runtime without code changes.
+Need something custom? Implement the unified `AsyncExecutor` trait, register it with `with_async_executor`, and Syzygy will drive it alongside the built-ins.
 
 ## Executor Architecture
 
@@ -577,18 +522,6 @@ async fn handle_effects(effect: MyEffect, ctx: EffectContext<MyEvent>) -> Task<M
 [dependencies]
 syzygy = { git = "https://github.com/your-repo/syzygy" }
 tokio = { version = "1.0", features = ["full"] }
-```
-
-### Alternative Runtimes
-```toml
-[dependencies]
-# Smol runtime
-syzygy = { git = "https://github.com/your-repo/syzygy", default-features = false, features = ["smol"] }
-smol = "2.0"
-
-# Async-std runtime
-syzygy = { git = "https://github.com/your-repo/syzygy", default-features = false, features = ["async-std"] }
-async-std = { version = "1.0", features = ["attributes"] }
 ```
 
 ## Documentation

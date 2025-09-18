@@ -127,6 +127,7 @@ pub mod tokio_executor;
 // IO runtime registration - inspired by InfluxDB's design
 use std::future::Future;
 use std::sync::RwLock;
+use std::time::Duration;
 
 #[cfg(feature = "tokio")]
 static IO_RUNTIME: RwLock<Option<tokio::runtime::Handle>> = RwLock::new(None);
@@ -300,6 +301,17 @@ pub trait AsyncExecutor<E>: ExecutorLifecycle {
         &self,
         fut: BoxFuture<'static, Outcome<E>>,
     ) -> BoxFuture<'static, Result<Outcome<E>, ExecutorError>>;
+
+    /// Spawn a detached future that does not produce shell events directly.
+    fn spawn_detached(&self, fut: BoxFuture<'static, ()>);
+
+    /// Sleep for the provided duration using the executor's timer facilities.
+    fn sleep(&self, duration: Duration) -> BoxFuture<'static, ()>;
+
+    /// Whether the executor can run multiple tasks concurrently.
+    fn allows_overlap(&self) -> bool {
+        true
+    }
 }
 
 /// Executor specialized for blocking/synchronous work

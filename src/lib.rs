@@ -6,15 +6,14 @@
 //! ## Quick Start
 //!
 //! ```rust
+//! use syzygy::executor::{InlineAsync, Outcome, Task};
 //! use syzygy::prelude::*;
 //!
-//! // 1. Define your models
 //! #[derive(Debug, Default)]
 //! struct CounterModel {
 //!     count: i32,
 //! }
 //!
-//! // 2. Define events and effects
 //! #[derive(Debug, Clone)]
 //! enum CounterEvent {
 //!     Increment,
@@ -23,63 +22,61 @@
 //!
 //! #[derive(Debug, Clone)]
 //! enum CounterEffect {
-//!     LogMessage(String),
+//!     Log(String),
 //! }
 //!
-//! // 3. Write your update function (the heart of TEA)
-//! fn update_counter(
+//! fn event_handler(
 //!     event: CounterEvent,
 //!     ctx: &mut EventContext<CounterEvent, CounterEffect, CounterModel>,
 //! ) -> Command<CounterEvent, CounterEffect> {
-//!     let model: &mut CounterModel = ctx.model_mut();
-//!
 //!     match event {
-//!         CounterEvent::Increment => {
-//!             model.count += 1;
-//!             Command::effect(CounterEffect::LogMessage(
-//!                 format!("Count incremented to {}", model.count)
-//!             ))
-//!         }
-//!         CounterEvent::Decrement => {
-//!             model.count -= 1;
-//!             Command::effect(CounterEffect::LogMessage(
-//!                 format!("Count decremented to {}", model.count)
-//!             ))
-//!         }
+//!         CounterEvent::Increment => on_increment(ctx.model_mut()),
+//!         CounterEvent::Decrement => on_decrement(ctx.model_mut()),
 //!     }
 //! }
 //!
-//! // 4. Handle side effects
+//! fn on_increment(model: &mut CounterModel) -> Command<CounterEvent, CounterEffect> {
+//!     model.count += 1;
+//!     Command::effect(CounterEffect::Log(format!(
+//!         "Count incremented to {}",
+//!         model.count
+//!     )))
+//! }
+//!
+//! fn on_decrement(model: &mut CounterModel) -> Command<CounterEvent, CounterEffect> {
+//!     model.count -= 1;
+//!     Command::effect(CounterEffect::Log(format!(
+//!         "Count decremented to {}",
+//!         model.count
+//!     )))
+//! }
+//!
 //! fn effect_handler(
 //!     effect: CounterEffect,
-//!     _ctx: EffectContext<CounterEvent, EmptyStorage>,
-//! ) -> Task<CounterEvent, EmptyStorage> {
+//!     _ctx: EffectContext<CounterEvent, ()>,
+//! ) -> Task<CounterEvent, ()> {
 //!     match effect {
-//!         CounterEffect::LogMessage(message) => Task::async_task::<
-//!             crate::executor::InlineAsync<CounterEvent>,
-//!             _
-//!         >(async move {
-//!             println!("LOG: {}", message);
-//!             Outcome::None
-//!         }),
+//!         CounterEffect::Log(message) => log_message(message),
 //!     }
 //! }
 //!
-//! // 5. Build and run your application
-//! # fn main() -> Result<(), Box<dyn std::error::Error>> {
-//! let mut registry = ExecutorRegistry::new();
-//! registry.insert_async(crate::executor::InlineAsync::<CounterEvent>::new());
-//! let (core, shell) = Syzygy::builder()
-//!     .model(CounterModel::default())
-//!     .event_handler(update_counter)
-//!     .effect_handler(effect_handler)
-//!     .with_executor_registry(registry)
-//!     .build();
-//! let mut runner = Runner::new(core, shell);
+//! fn log_message(message: String) -> Task<CounterEvent, ()> {
+//!     Task::async_task::<InlineAsync<CounterEvent>, _>(async move {
+//!         println!("LOG: {}", message);
+//!         Outcome::None
+//!     })
+//! }
 //!
-//! // Send events and run
+//! # fn main() -> Result<(), Box<dyn std::error::Error>> {
+//! let mut runner = Syzygy::builder::<CounterEvent, CounterEffect>()
+//!     .model(CounterModel::default())
+//!     .event_handler(event_handler)
+//!     .effect_handler(effect_handler)
+//!     .with_async_executor(InlineAsync::<CounterEvent>::new())
+//!     .build();
+//!
 //! runner.core().send_event(CounterEvent::Increment)?;
-//! runner.tick(syzygy::scheduler::scheduler())?;
+//! runner.run_until(|core, _shell| core.model().count == 1)?;
 //! # Ok(())
 //! # }
 //! ```
@@ -99,7 +96,7 @@
 //! # #[derive(Debug, Clone)] enum Event { Test }
 //! # #[derive(Debug, Clone)] enum Effect { Test }
 //! # fn update(e: Event, ctx: &mut EventContext<Event, Effect, (ConfigModel, UserModel)>) -> Command<Event, Effect> { Command::none() }
-//! # async fn effects(e: Effect, _ctx: EffectContext<Event, ()>) -> Outcome<Event> { Outcome::None }
+//! # fn effects(_e: Effect, _ctx: EffectContext<Event, ()>) -> Task<Event, ()> { Task::none() }
 //! let (core, shell) = Syzygy::builder()
 //!     .model(UserModel::default())     // Add multiple models
 //!     .model(ConfigModel::default())   // Type-safe composition
@@ -167,8 +164,7 @@
 //! syzygy = "0.1"
 //!
 //! # Alternative runtimes
-//! syzygy = { version = "0.1", default-features = false, features = ["smol"] }
-//! syzygy = { version = "0.1", default-features = false, features = ["async-std"] }
+//! syzygy = { version = "0.1" }
 //! ```
 //!
 //! ## Examples
@@ -312,7 +308,9 @@
 //! # #[derive(Debug, Clone)] enum Event { Test }
 //! # #[derive(Debug, Clone)] enum Effect { Test }
 //! # fn update(e: Event, ctx: &mut EventContext<Event, Effect, MyModel>) -> Command<Event, Effect> { Command::none() }
-//! # async fn effects(e: Effect, _ctx: EffectContext<Event, (HttpClient, Database)>) -> Outcome<Event> { Outcome::None }
+//! # fn effects(_e: Effect, _ctx: EffectContext<Event, (HttpClient, Database)>) -> Task<Event, (HttpClient, Database)> {
+//! #     Task::none()
+//! # }
 //! let (core, shell) = Syzygy::builder()
 //!     .model(MyModel::default())
 //!     .resource(Database { url: "postgres://...".to_string() })
@@ -397,8 +395,6 @@ pub mod shell;
 pub mod syzygy;
 
 // Shared runtime facade powering scheduling, spawning, and timers
-pub mod runtime;
-
 // Builder pattern
 pub mod builder;
 
@@ -408,20 +404,12 @@ pub mod event_context;
 // Error handling
 pub mod error;
 
-// Timer abstractions for runtime neutrality
-pub mod timer;
-
-// Scheduler adapters for different async runtimes
-pub mod scheduler;
-
-// Runtime-neutral spawn functions
-pub mod spawn;
-
 // Storage system with UnsafeCell-based chains
 // Storage module removed - using direct FxHashMap for resources
 
 // Executor system for specialized effect handling
 pub mod executor;
+pub mod spawn;
 
 pub mod prelude {
     // Contexts for update and effect functions
@@ -433,7 +421,7 @@ pub mod prelude {
 
     // Core/Shell architecture
     pub use crate::core::{Core, EventHandler};
-    pub use crate::shell::{Shell, ShellConfig};
+    pub use crate::shell::Shell;
     pub use crate::syzygy::{Syzygy, SyzygyConfig};
 
     // Type aliases for common use cases
@@ -457,31 +445,12 @@ pub mod prelude {
     ///     Syzygy::builder()
     ///         .model(())  // Some model
     ///         .event_handler(|_event, _ctx| Command::none())
-    ///         .effect_handler(|_effect, _ctx| async { Outcome::None })
+    ///         .effect_handler(|_effect, _ctx| Task::none())
     ///         .build()
     /// }
     /// ```
     // Effect handlers with AFIT
     pub use crate::shell::EffectHandler;
-
-    // Timer abstractions for runtime neutrality
-    pub use crate::timer::{Time, TimeoutError, time};
-
-    // Shared runtime facade
-    pub use crate::runtime::{Runtime, RuntimeError};
-
-    // Scheduler adapters for runtime neutrality
-    // Scheduler trait is always available
-    #[cfg(feature = "async-std")]
-    pub use crate::scheduler::AsyncStdScheduler;
-    #[cfg(feature = "smol")]
-    pub use crate::scheduler::SmolScheduler;
-    #[cfg(feature = "tokio")]
-    pub use crate::scheduler::TokioScheduler;
-    pub use crate::scheduler::{Scheduler, scheduler};
-
-    // Always available - no feature gate needed
-    pub use crate::scheduler::{BlockingScheduler, blocking_scheduler};
 
     // Executor system
     #[cfg(feature = "rayon")]
@@ -499,4 +468,8 @@ pub mod prelude {
     pub use crate::error::{CommandError, CoreError, EffectError, ShellError};
 
     // Effect output types
+
+    #[cfg(feature = "tokio")]
+    pub use crate::spawn::TokioSpawn;
+    pub use crate::spawn::{Spawn, spawner};
 }

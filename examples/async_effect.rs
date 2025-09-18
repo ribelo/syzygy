@@ -7,7 +7,7 @@
 
 use std::time::Duration;
 
-use syzygy::executor::{ExecutorRegistry, Outcome, Task, TokioExecutor};
+use syzygy::executor::{Outcome, Task, TokioExecutor};
 use syzygy::prelude::*;
 
 #[derive(Debug, Default)]
@@ -71,22 +71,16 @@ fn fetch_greeting_task() -> Task<DownloadEvent, ()> {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut registry = ExecutorRegistry::new();
-    registry.insert_async(TokioExecutor::multi_thread_io("async-example", 2));
-
     let mut runner = Syzygy::builder::<DownloadEvent, DownloadEffect>()
         .model(DownloadModel::default())
         .event_handler(event_handler)
         .effect_handler(effect_handler)
-        .with_executor_registry(registry)
+        .with_async_executor(TokioExecutor::multi_thread_io("async-example", 2))
         .build();
 
     runner.core().send_event(DownloadEvent::Start);
 
-    runner.run_until(
-        |core, _shell| core.model().finished,
-        syzygy::scheduler::scheduler(),
-    )?;
+    runner.run_until(|core, _shell| core.model().finished)?;
 
     println!("{}", runner.core().model().status);
     Ok(())

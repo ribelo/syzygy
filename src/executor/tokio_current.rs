@@ -3,7 +3,8 @@
 use crate::executor::{
     AbortOnDrop, AsyncExecutor, Concurrent, ExecutorError, ExecutorLifecycle, Outcome,
 };
-use futures_util::future::BoxFuture;
+use futures_util::future::{BoxFuture, FutureExt};
+use std::time::Duration;
 use tokio::runtime::Handle;
 
 /// Executor that uses the current tokio runtime only
@@ -39,6 +40,14 @@ where
             handle: join_handle,
             abort: abort_handle,
         })
+    }
+
+    fn spawn_detached(&self, fut: BoxFuture<'static, ()>) {
+        self.handle.spawn(fut);
+    }
+
+    fn sleep(&self, duration: Duration) -> BoxFuture<'static, ()> {
+        tokio::time::sleep(duration).boxed()
     }
 }
 

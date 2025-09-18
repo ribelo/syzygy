@@ -5,7 +5,7 @@
 //! cargo run --example manual_loop --features examples
 //! ```
 
-use syzygy::executor::{ExecutorRegistry, InlineAsync, Outcome, Task};
+use syzygy::executor::{InlineAsync, Outcome, Task};
 use syzygy::prelude::*;
 
 #[derive(Debug, Default)]
@@ -58,21 +58,17 @@ fn produce_message() -> Task<AppEvent, ()> {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut registry = ExecutorRegistry::new();
-    registry.insert_async(InlineAsync::<AppEvent>::new());
-
     let (mut core, mut shell) = Syzygy::builder::<AppEvent, AppEffect>()
         .model(AppModel::default())
         .event_handler(event_handler)
         .effect_handler(effect_handler)
-        .with_executor_registry(registry)
+        .with_async_executor(InlineAsync::<AppEvent>::new())
         .build()
         .split();
 
     core.send_event(AppEvent::Start);
 
-    let scheduler = syzygy::scheduler::scheduler();
-    while syzygy::syzygy::step_core_shell(&mut core, &mut shell, scheduler.clone())? {}
+    while syzygy::syzygy::step_core_shell(&mut core, &mut shell)? {}
 
     println!("Logs: {:?}", core.model().logs);
     Ok(())

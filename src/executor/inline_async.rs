@@ -5,8 +5,16 @@
 //! environments or when concurrency is not required.
 
 use super::{AsyncExecutor, ExecutorError, ExecutorLifecycle, Outcome, Sequential};
+use futures::executor::block_on;
 use futures::future::{BoxFuture, FutureExt, ready};
 use std::marker::PhantomData;
+use std::time::Duration;
+
+#[cfg(feature = "tokio")]
+use tokio::{
+    runtime::{Handle, RuntimeFlavor},
+    task::block_in_place,
+};
 
 /// An executor that runs futures inline without spawning
 ///
@@ -53,6 +61,28 @@ impl<E: Send + Sync + 'static> AsyncExecutor<E> for InlineAsync<E> {
     ) -> BoxFuture<'static, Result<Outcome<E>, ExecutorError>> {
         // Don't actually spawn - return a future that runs the original inline
         async move { Ok(fut.await) }.boxed()
+    }
+
+    fn spawn_detached(&self, fut: BoxFuture<'static, ()>) {
+        #[cfg(feature = "tokio")]
+        {
+            if let Ok(handle) = Handle::try_current()
+                && handle.runtime_flavor() == RuntimeFlavor::MultiThread
+            {
+                block_in_place(move || block_on(fut));
+                return;
+            }
+        }
+
+        block_on(fut);
+    }
+
+    fn sleep(&self, duration: Duration) -> BoxFuture<'static, ()> {
+        async move { std::thread::sleep(duration) }.boxed()
+    }
+
+    fn allows_overlap(&self) -> bool {
+        false
     }
 }
 

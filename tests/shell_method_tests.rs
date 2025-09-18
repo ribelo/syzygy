@@ -1,9 +1,8 @@
 //! Tests for Shell synchronous methods: `drain_with`, `dispatch_command`, etc.
 //! These tests use the Runner API for convenience.
 
-use syzygy::executor::Outcome;
+use syzygy::executor::{InlineAsync, Outcome, Task, TokioExecutor};
 use syzygy::prelude::*;
-use syzygy::scheduler::{Scheduler, TokioScheduler, blocking_scheduler};
 
 #[derive(Debug, Clone)]
 enum TestEvent {
@@ -42,32 +41,27 @@ fn test_update(
 #[cfg(feature = "tokio")]
 mod tokio_tests {
     use super::*;
-    use std::future::Future;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
     fn create_test_runner() -> Syzygy<TestEvent, TestEffect, TestModel, ()> {
-        let registry = syzygy::executor::ExecutorRegistry::new();
-
-        let runner = Syzygy::builder::<TestEvent, TestEffect>()
+        Syzygy::builder::<TestEvent, TestEffect>()
             .model(TestModel::default())
             .event_handler(test_update)
-            .effect_handler(|_effect: TestEffect, _ctx| async { Outcome::None })
-            .with_executor_registry(registry)
-            .build();
-
-        runner
+            .effect_handler(|_effect: TestEffect, _ctx| Task::none())
+            .with_async_executor(InlineAsync::<TestEvent>::new())
+            .build()
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn shell_pending_effects_starts_at_zero() {
         let runner = create_test_runner();
         let shell = runner.shell();
         assert_eq!(shell.pending_effects(), 0, "Should start with empty queue");
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn shell_handles_shutdown_state_correctly() {
         let mut runner = create_test_runner();
 
@@ -79,53 +73,44 @@ mod tokio_tests {
         assert!(runner.shell().is_closed());
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn shell_config_access_works() {
         let runner = create_test_runner();
         let shell = runner.shell();
 
         // Should be able to access config
-        let config = shell.config();
         assert!(
-            config.effect_channel_capacity.is_none(),
+            shell.effect_channel_capacity().is_none(),
             "Default queue should be unbounded"
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn shell_processes_events_and_effects_via_runner() {
         let mut runner = create_test_runner();
-        let scheduler = TokioScheduler::new().expect("Should have tokio runtime");
 
         // Send an event that will generate another event and an effect
         runner.core_mut().send_event(TestEvent::Ping);
 
         // First step: process Ping -> generates Pong event (which is routed back to Core)
-        let did_work1 = runner
-            .step_with(scheduler.clone())
-            .expect("First step should succeed");
+        let did_work1 = runner.step().expect("First step should succeed");
         assert!(did_work1, "First step should process Ping event");
 
         // Second step: process Pong event -> generates AND processes Log effect in same step
-        let did_work2 = runner
-            .step_with(scheduler.clone())
-            .expect("Second step should succeed");
+        let did_work2 = runner.step().expect("Second step should succeed");
         assert!(
             did_work2,
             "Second step should process Pong event and Log effect"
         );
 
         // Third step: no more work (effect was already processed in step 2)
-        let did_work3 = runner
-            .step_with(scheduler)
-            .expect("Third step should succeed");
+        let did_work3 = runner.step().expect("Third step should succeed");
         assert!(!did_work3, "Third step should have no more work");
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn shell_handles_multiple_events_correctly() {
         let mut runner = create_test_runner();
-        let scheduler = TokioScheduler::new().expect("Should have tokio runtime");
 
         // Send multiple events
         for _ in 0..3 {
@@ -134,10 +119,7 @@ mod tokio_tests {
 
         // Process all events and effects
         let mut total_steps = 0;
-        while runner
-            .step_with(scheduler.clone())
-            .expect("Step should succeed")
-        {
+        while runner.step().expect("Step should succeed") {
             total_steps += 1;
         }
 
@@ -150,16 +132,15 @@ mod tokio_tests {
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn batch_effects_execute_in_sequence() {
         let order = Arc::new(Mutex::new(Vec::new()));
         let in_flight = Arc::new(AtomicUsize::new(0));
         let max_in_flight = Arc::new(AtomicUsize::new(0));
 
-        let registry = syzygy::executor::ExecutorRegistry::new();
-        let order_for_handler = order.clone();
-        let in_flight_for_handler = in_flight.clone();
-        let max_in_flight_for_handler = max_in_flight.clone();
+        let order_for_handler = Arc::clone(&order);
+        let in_flight_for_handler = Arc::clone(&in_flight);
+        let max_in_flight_for_handler = Arc::clone(&max_in_flight);
 
         let mut runner = Syzygy::builder::<TestEvent, TestEffect>()
             .model(TestModel::default())
@@ -172,11 +153,11 @@ mod tokio_tests {
                 TestEvent::Pong => Command::none(),
             })
             .effect_handler(move |effect: TestEffect, _ctx| {
-                let order = order_for_handler.clone();
-                let in_flight = in_flight_for_handler.clone();
-                let max_in_flight = max_in_flight_for_handler.clone();
+                let order = Arc::clone(&order_for_handler);
+                let in_flight = Arc::clone(&in_flight_for_handler);
+                let max_in_flight = Arc::clone(&max_in_flight_for_handler);
 
-                async move {
+                Task::async_task::<TokioExecutor, _>(async move {
                     if let TestEffect::Work(id) = effect {
                         let active = in_flight.fetch_add(1, Ordering::SeqCst) + 1;
                         max_in_flight.fetch_max(active, Ordering::SeqCst);
@@ -197,18 +178,14 @@ mod tokio_tests {
                     }
 
                     Outcome::None
-                }
+                })
             })
-            .with_executor_registry(registry)
+            .with_async_executor(TokioExecutor::current_thread_io("batch-seq"))
             .build();
 
         runner.core_mut().send_event(TestEvent::Ping);
-        let scheduler = TokioScheduler::new().expect("Should have tokio runtime");
 
-        while runner
-            .step_with(scheduler.clone())
-            .expect("step should succeed")
-        {
+        while runner.step().expect("step should succeed") {
             tokio::task::yield_now().await;
         }
 
@@ -230,7 +207,7 @@ mod tokio_tests {
         assert_eq!(max_in_flight.load(Ordering::SeqCst), 1);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn shell_default_queue_is_unbounded() {
         let mut runner = create_test_runner();
         let shell = runner.shell_mut();
@@ -243,47 +220,21 @@ mod tokio_tests {
 
         assert_eq!(shell.pending_effects(), 1_500);
 
-        let processed = shell
-            .drain_with(blocking_scheduler())
-            .expect("Draining should succeed");
+        let processed = shell.drain().expect("Draining should succeed");
 
         assert_eq!(processed, 1_500);
         assert_eq!(shell.pending_effects(), 0);
     }
 
-    #[derive(Clone)]
-    struct SerialScheduler {
-        inner: TokioScheduler,
-    }
-
-    impl SerialScheduler {
-        fn new() -> Self {
-            Self {
-                inner: TokioScheduler::new().expect("Should have tokio runtime"),
-            }
-        }
-    }
-
-    impl Scheduler for SerialScheduler {
-        fn schedule(&self, future: impl Future<Output = ()> + Send + 'static) {
-            self.inner.schedule(future);
-        }
-
-        fn allows_overlap(&self) -> bool {
-            false
-        }
-    }
-
-    #[tokio::test]
-    async fn parallel_effects_overlap_on_concurrent_scheduler() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn parallel_effects_overlap_on_concurrent_executor() {
         let order = Arc::new(Mutex::new(Vec::new()));
         let in_flight = Arc::new(AtomicUsize::new(0));
         let max_in_flight = Arc::new(AtomicUsize::new(0));
 
-        let registry = syzygy::executor::ExecutorRegistry::new();
-        let order_for_handler = order.clone();
-        let in_flight_for_handler = in_flight.clone();
-        let max_in_flight_for_handler = max_in_flight.clone();
+        let order_for_handler = Arc::clone(&order);
+        let in_flight_for_handler = Arc::clone(&in_flight);
+        let max_in_flight_for_handler = Arc::clone(&max_in_flight);
 
         let mut runner = Syzygy::builder::<TestEvent, TestEffect>()
             .model(TestModel::default())
@@ -296,11 +247,11 @@ mod tokio_tests {
                 TestEvent::Pong => Command::none(),
             })
             .effect_handler(move |effect: TestEffect, _ctx| {
-                let order = order_for_handler.clone();
-                let in_flight = in_flight_for_handler.clone();
-                let max_in_flight = max_in_flight_for_handler.clone();
+                let order = Arc::clone(&order_for_handler);
+                let in_flight = Arc::clone(&in_flight_for_handler);
+                let max_in_flight = Arc::clone(&max_in_flight_for_handler);
 
-                async move {
+                Task::async_task::<TokioExecutor, _>(async move {
                     if let TestEffect::Work(id) = effect {
                         let active = in_flight.fetch_add(1, Ordering::SeqCst) + 1;
                         max_in_flight.fetch_max(active, Ordering::SeqCst);
@@ -321,18 +272,14 @@ mod tokio_tests {
                     }
 
                     Outcome::None
-                }
+                })
             })
-            .with_executor_registry(registry)
+            .with_async_executor(TokioExecutor::current_thread_io("parallel-overlap"))
             .build();
 
         runner.core_mut().send_event(TestEvent::Ping);
-        let scheduler = TokioScheduler::new().expect("Should have tokio runtime");
 
-        while runner
-            .step_with(scheduler.clone())
-            .expect("step should succeed")
-        {
+        while runner.step().expect("step should succeed") {
             tokio::task::yield_now().await;
         }
 
@@ -373,20 +320,19 @@ mod tokio_tests {
 
         assert!(
             max_in_flight.load(Ordering::SeqCst) >= 2,
-            "Parallel effects should overlap on concurrent scheduler",
+            "Parallel effects should overlap on concurrent executor",
         );
     }
 
-    #[tokio::test]
-    async fn parallel_effects_respect_non_overlapping_scheduler() {
+    #[tokio::test(flavor = "multi_thread")]
+    async fn parallel_effects_respect_non_overlapping_executor() {
         let order = Arc::new(Mutex::new(Vec::new()));
         let in_flight = Arc::new(AtomicUsize::new(0));
         let max_in_flight = Arc::new(AtomicUsize::new(0));
 
-        let registry = syzygy::executor::ExecutorRegistry::new();
-        let order_for_handler = order.clone();
-        let in_flight_for_handler = in_flight.clone();
-        let max_in_flight_for_handler = max_in_flight.clone();
+        let order_for_handler = Arc::clone(&order);
+        let in_flight_for_handler = Arc::clone(&in_flight);
+        let max_in_flight_for_handler = Arc::clone(&max_in_flight);
 
         let mut runner = Syzygy::builder::<TestEvent, TestEffect>()
             .model(TestModel::default())
@@ -399,11 +345,11 @@ mod tokio_tests {
                 TestEvent::Pong => Command::none(),
             })
             .effect_handler(move |effect: TestEffect, _ctx| {
-                let order = order_for_handler.clone();
-                let in_flight = in_flight_for_handler.clone();
-                let max_in_flight = max_in_flight_for_handler.clone();
+                let order = Arc::clone(&order_for_handler);
+                let in_flight = Arc::clone(&in_flight_for_handler);
+                let max_in_flight = Arc::clone(&max_in_flight_for_handler);
 
-                async move {
+                Task::async_task::<InlineAsync<TestEvent>, _>(async move {
                     if let TestEffect::Work(id) = effect {
                         let active = in_flight.fetch_add(1, Ordering::SeqCst) + 1;
                         max_in_flight.fetch_max(active, Ordering::SeqCst);
@@ -424,18 +370,13 @@ mod tokio_tests {
                     }
 
                     Outcome::None
-                }
+                })
             })
-            .with_executor_registry(registry)
+            .with_async_executor(InlineAsync::<TestEvent>::new())
             .build();
 
         runner.core_mut().send_event(TestEvent::Ping);
-        let scheduler = SerialScheduler::new();
-
-        while runner
-            .step_with(scheduler.clone())
-            .expect("step should succeed")
-        {
+        while runner.step().expect("step should succeed") {
             tokio::task::yield_now().await;
         }
 
@@ -458,7 +399,7 @@ mod tokio_tests {
         assert_eq!(
             max_in_flight.load(Ordering::SeqCst),
             1,
-            "No overlapping work should occur without scheduler support",
+            "No overlapping work should occur when executor disallows overlap",
         );
     }
 }

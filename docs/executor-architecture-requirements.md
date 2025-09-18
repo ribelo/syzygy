@@ -147,7 +147,7 @@ The architecture has evolved from a unified executor approach to a **two-trait s
 
 ### REQ-020: Runtime Selection
 **WHEN** async functionality is needed,
-**THE SYSTEM SHALL** support tokio, smol, and async-std runtimes,
+**THE SYSTEM SHALL** support the tokio runtime as the primary async executor,
 **WHERE** runtime selection is configurable per AsyncExecutor instance.
 
 ### REQ-021: Mixed Execution Models
@@ -311,10 +311,10 @@ let app = Syzygy::builder()
         .with_resource(Database::connect())))
     .executor(CpuExecutor(RayonExecutor::new()
         .with_thread_count(num_cpus::get())))
-    .executor(NetworkExecutor(AsyncExecutor::tokio()
+    .executor(NetworkExecutor(TokioExecutor::multi_thread_io("net", 4)
         .with_max_concurrent(100)
         .with_resource(HttpClient::new())))
-    .executor(FileExecutor(AsyncExecutor::smol()
+    .executor(FileExecutor(TokioExecutor::multi_thread_io("io", 4)
         .with_max_concurrent(50)
         .with_resource(FileSystem::new())))
     .handle_effects(|effect, shell| {

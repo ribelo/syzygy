@@ -1,8 +1,7 @@
 use crate::core::{Core, EventHandler};
 use crate::effect_context::EffectContext;
-use crate::executor::Outcome;
-use crate::executor::{AsyncExecutor, ExecutorRegistry, SyncExecutor};
-use crate::shell::{EffectHandler, EffectWork, IntoEffectWork, Shell, ShellConfig};
+use crate::executor::{AsyncExecutor, ExecutorRegistry, SyncExecutor, Task};
+use crate::shell::{EffectHandler, Shell};
 use crate::syzygy::Syzygy;
 use std::collections::VecDeque;
 use std::marker::PhantomData;
@@ -12,7 +11,10 @@ use std::sync::Arc;
 pub struct NoExecutor;
 
 /// Marker type indicating an executor registry has been provided
-pub struct HasExecutor;
+pub struct HasAsyncExecutor;
+
+/// Marker type indicating an executor registry is present but lacks a default async executor
+pub struct RegistryPending;
 
 /// Base builder phase: configure models, resources, executors
 pub struct SyzygyBuilder<E, X, M, R> {
@@ -20,6 +22,66 @@ pub struct SyzygyBuilder<E, X, M, R> {
     resources: R,
     exec_registry: Option<ExecutorRegistry<E>>,
     _marker: std::marker::PhantomData<X>,
+}
+
+impl<Event, Effect, Model, Resource> ConfiguredBuilder<Event, Effect, Model, Resource, NoExecutor>
+where
+    Event: Send + Sync + 'static,
+    Effect: Send + 'static,
+    Resource: Send + Sync + 'static,
+{
+    /// Provide a preconstructed executor registry. The registry must be given a default
+    /// async executor before `build()` becomes available.
+    #[must_use]
+    pub fn with_executor_registry(
+        self,
+        registry: ExecutorRegistry<Event>,
+    ) -> ConfiguredBuilder<Event, Effect, Model, Resource, RegistryPending> {
+        ConfiguredBuilder {
+            event_handler: self.event_handler,
+            effect_handler: self.effect_handler,
+            model: self.model,
+            resources: self.resources,
+            exec_registry: Some(registry),
+            effect_channel_capacity: self.effect_channel_capacity,
+            _executor_state: PhantomData,
+        }
+    }
+}
+
+impl<Event, Effect, Model, Resource>
+    ConfiguredBuilder<Event, Effect, Model, Resource, RegistryPending>
+where
+    Event: Send + Sync + 'static,
+    Effect: Send + 'static,
+    Resource: Send + Sync + 'static,
+{
+    /// Promote a registry-backed builder to the `HasAsyncExecutor` state by selecting an
+    /// already-registered executor as the default. Returns `Err(self)` if the executor type
+    /// has not been registered.
+    pub fn try_with_existing_default<T: 'static>(
+        mut self,
+    ) -> Result<ConfiguredBuilder<Event, Effect, Model, Resource, HasAsyncExecutor>, Box<Self>>
+    {
+        let Some(mut registry) = self.exec_registry.take() else {
+            unreachable!("registry typestate violation: expected stored registry");
+        };
+
+        if registry.set_default_async::<T>() {
+            Ok(ConfiguredBuilder {
+                event_handler: self.event_handler,
+                effect_handler: self.effect_handler,
+                model: self.model,
+                resources: self.resources,
+                exec_registry: Some(registry),
+                effect_channel_capacity: self.effect_channel_capacity,
+                _executor_state: PhantomData,
+            })
+        } else {
+            self.exec_registry = Some(registry);
+            Err(Box::new(self))
+        }
+    }
 }
 
 impl<E, X> Default for SyzygyBuilder<E, X, (), ()>
@@ -93,7 +155,7 @@ where
             model: self.model,
             resources: self.resources,
             exec_registry: self.exec_registry,
-            shell_config: ShellConfig::default(),
+            effect_channel_capacity: None,
             _executor_state: PhantomData,
         }
     }
@@ -106,7 +168,7 @@ pub struct ConfiguredBuilder<Event, Effect, Model, Resource, ExecutorState = NoE
     model: Model,
     resources: Resource,
     exec_registry: Option<ExecutorRegistry<Event>>,
-    shell_config: ShellConfig,
+    effect_channel_capacity: Option<usize>,
     _executor_state: PhantomData<ExecutorState>,
 }
 
@@ -119,41 +181,21 @@ where
 {
     /// Set the effect handler that processes effects
     #[must_use]
-    pub fn effect_handler<H, T>(
+    pub fn effect_handler<H>(
         self,
         handler: H,
     ) -> ConfiguredBuilder<Event, Effect, Model, Resource, ExecutorState>
     where
-        H: FnMut(Effect, EffectContext<Event, Resource>) -> T + Send + 'static,
-        T: IntoEffectWork<Event, Resource>,
+        H: FnMut(Effect, EffectContext<Event, Resource>) -> Task<Event, Resource> + Send + 'static,
     {
-        let mut handler = handler;
-        let boxed: EffectHandler<Event, Effect, Resource> =
-            Box::new(move |effect, ctx| handler(effect, ctx).into_effect_work());
+        let boxed: EffectHandler<Event, Effect, Resource> = Box::new(handler);
         ConfiguredBuilder {
             event_handler: self.event_handler,
             effect_handler: Some(boxed),
             model: self.model,
             resources: self.resources,
             exec_registry: self.exec_registry,
-            shell_config: self.shell_config,
-            _executor_state: PhantomData,
-        }
-    }
-
-    /// Provide a configurator that can build the registry when `event_tx` is available.
-    #[must_use]
-    pub fn with_executor_registry(
-        self,
-        registry: ExecutorRegistry<Event>,
-    ) -> ConfiguredBuilder<Event, Effect, Model, Resource, HasExecutor> {
-        ConfiguredBuilder {
-            event_handler: self.event_handler,
-            effect_handler: self.effect_handler,
-            model: self.model,
-            resources: self.resources,
-            exec_registry: Some(registry),
-            shell_config: self.shell_config,
+            effect_channel_capacity: self.effect_channel_capacity,
             _executor_state: PhantomData,
         }
     }
@@ -163,7 +205,7 @@ where
     pub fn with_async_executor<T>(
         self,
         exec: T,
-    ) -> ConfiguredBuilder<Event, Effect, Model, Resource, HasExecutor>
+    ) -> ConfiguredBuilder<Event, Effect, Model, Resource, HasAsyncExecutor>
     where
         T: AsyncExecutor<Event> + Send + 'static,
     {
@@ -175,38 +217,16 @@ where
             model: self.model,
             resources: self.resources,
             exec_registry: Some(reg),
-            shell_config: self.shell_config,
+            effect_channel_capacity: self.effect_channel_capacity,
             _executor_state: PhantomData,
         }
     }
 
-    /// Add a single sync executor to the registry by concrete type
+    /// Override the shell's effect channel capacity before building the system.
     #[must_use]
-    pub fn with_sync_executor<T>(
+    pub fn with_effect_channel_capacity(
         self,
-        exec: T,
-    ) -> ConfiguredBuilder<Event, Effect, Model, Resource, HasExecutor>
-    where
-        T: SyncExecutor<Event> + Send + 'static,
-    {
-        let mut reg = self.exec_registry.unwrap_or_default();
-        reg.insert_sync(exec);
-        ConfiguredBuilder {
-            event_handler: self.event_handler,
-            effect_handler: self.effect_handler,
-            model: self.model,
-            resources: self.resources,
-            exec_registry: Some(reg),
-            shell_config: self.shell_config,
-            _executor_state: PhantomData,
-        }
-    }
-
-    /// Override the shell configuration before building the system.
-    #[must_use]
-    pub fn with_shell_config(
-        self,
-        config: ShellConfig,
+        capacity: Option<usize>,
     ) -> ConfiguredBuilder<Event, Effect, Model, Resource, ExecutorState> {
         ConfiguredBuilder {
             event_handler: self.event_handler,
@@ -214,7 +234,7 @@ where
             model: self.model,
             resources: self.resources,
             exec_registry: self.exec_registry,
-            shell_config: config,
+            effect_channel_capacity: capacity,
             _executor_state: PhantomData,
         }
     }
@@ -225,21 +245,20 @@ where
         exec_registry: Arc<ExecutorRegistry<Event>>,
         effect_handler: Option<EffectHandler<Event, Effect, Resource>>,
         event_tx: crossbeam_channel::Sender<Event>,
-        config: ShellConfig,
+        effect_channel_capacity: Option<usize>,
     ) -> Shell<Event, Effect, Resource> {
         use crossbeam_channel::{bounded, unbounded};
 
-        fn default_effect_handler<E, X, R>(_: X, _: EffectContext<E, R>) -> EffectWork<E, R>
+        fn default_effect_handler<E, X, R>(_: X, _: EffectContext<E, R>) -> Task<E, R>
         where
             E: Send + 'static,
             X: Send + 'static,
             R: Send + Sync + 'static,
         {
-            EffectWork::Immediate(Outcome::None)
+            Task::none()
         }
 
-        let capacity = config.effect_channel_capacity;
-        let (effect_tx, effect_rx) = match capacity {
+        let (effect_tx, effect_rx) = match effect_channel_capacity {
             Some(capacity) => bounded(capacity),
             None => unbounded(),
         };
@@ -257,7 +276,7 @@ where
             resources: Arc::new(resources),
             // use provided handler or a no-op
             effect_handler,
-            config,
+            effect_channel_capacity,
             executors: exec_registry,
             closed: false,
             prefetched_effects: VecDeque::new(),
@@ -265,8 +284,29 @@ where
     }
 }
 
-// Separate impl block for HasExecutor state - only this state can build
-impl<Event, Effect, Model, Resource> ConfiguredBuilder<Event, Effect, Model, Resource, HasExecutor>
+impl<Event, Effect, Model, Resource>
+    ConfiguredBuilder<Event, Effect, Model, Resource, HasAsyncExecutor>
+where
+    Event: Send + Sync + 'static,
+    Effect: Send + 'static,
+    Resource: Send + Sync + 'static,
+{
+    /// Add a single sync executor to the registry by concrete type.
+    #[must_use]
+    pub fn with_sync_executor<T>(mut self, exec: T) -> Self
+    where
+        T: SyncExecutor<Event> + Send + 'static,
+    {
+        let mut reg = self.exec_registry.take().unwrap_or_default();
+        reg.insert_sync(exec);
+        self.exec_registry = Some(reg);
+        self
+    }
+}
+
+// Separate impl block for HasAsyncExecutor state - only this state can build
+impl<Event, Effect, Model, Resource>
+    ConfiguredBuilder<Event, Effect, Model, Resource, HasAsyncExecutor>
 where
     Event: Send + Sync + 'static,
     Effect: Send + 'static,
@@ -275,12 +315,14 @@ where
     /// Build the system and return a `Syzygy` that owns the Core and Shell.
     pub fn build(self) -> Syzygy<Event, Effect, Model, Resource> {
         let (core, event_tx) = Core::new(self.event_handler, self.model);
+        let registry = self.exec_registry.unwrap();
+
         let shell = Self::build_shell(
             self.resources,
-            Arc::new(self.exec_registry.unwrap()), // Safe to unwrap due to type system guarantee
+            Arc::new(registry),
             self.effect_handler,
             event_tx,
-            self.shell_config,
+            self.effect_channel_capacity,
         );
         Syzygy::new(core, shell)
     }
@@ -326,13 +368,11 @@ mod tests {
 
     #[test]
     fn test_builder() {
-        let registry = crate::executor::ExecutorRegistry::new();
-
         let runner = Syzygy::builder::<TestEvent, TestEffect>()
             .model(TestModel { count: 0 })
             .event_handler(test_update)
             .effect_handler(|_e: TestEffect, _ctx| crate::executor::Task::events(Vec::new()))
-            .with_executor_registry(registry)
+            .with_async_executor(crate::executor::InlineAsync::<TestEvent>::new())
             .build();
 
         let (mut core, _shell) = runner.split();
@@ -345,13 +385,11 @@ mod tests {
     #[test]
     fn test_shell_type_with_models_only() {
         // Test that Shell type remains simple when only models are added (no resources)
-        let registry = crate::executor::ExecutorRegistry::new();
-
         let runner = Syzygy::builder::<TestEvent, TestEffect>()
             .model(TestModel { count: 0 })
             .event_handler(test_update)
             .effect_handler(|_e: TestEffect, _ctx| crate::executor::Task::events(Vec::new()))
-            .with_executor_registry(registry)
+            .with_async_executor(crate::executor::InlineAsync::<TestEvent>::new())
             .build();
 
         let (_core, shell) = runner.split();
@@ -366,13 +404,11 @@ mod tests {
     #[test]
     fn test_shell_type_inference_works() {
         // Test that users don't need to specify complex types manually
-        let registry = crate::executor::ExecutorRegistry::new();
-
         let runner = Syzygy::builder::<TestEvent, TestEffect>()
             .model(TestModel { count: 0 })
             .event_handler(test_update)
             .effect_handler(|_e: TestEffect, _ctx| crate::executor::Task::events(Vec::new()))
-            .with_executor_registry(registry)
+            .with_async_executor(crate::executor::InlineAsync::<TestEvent>::new())
             .build();
 
         let (mut core, _shell) = runner.split();
@@ -414,7 +450,8 @@ mod tests {
             }
         }
 
-        let registry = crate::executor::ExecutorRegistry::new();
+        let mut registry = crate::executor::ExecutorRegistry::new();
+        registry.insert_async(crate::executor::InlineAsync::<TestEvent>::new());
 
         let runner = Syzygy::builder::<TestEvent, TestEffect>()
             .model((
@@ -427,7 +464,11 @@ mod tests {
             ))
             .event_handler(multi_update)
             .effect_handler(|_e: TestEffect, _ctx| crate::executor::Task::events(Vec::new()))
-            .with_executor_registry(registry)
+            .with_executor_registry(registry);
+
+        let runner = runner
+            .try_with_existing_default::<crate::executor::InlineAsync<TestEvent>>()
+            .unwrap_or_else(|_| panic!("registry should contain InlineAsync"))
             .build();
 
         let (mut core, _shell) = runner.split();
@@ -457,13 +498,18 @@ mod tests {
         // "no method named `build` found for struct `ConfiguredBuilder<TestEvent, TestEffect, TestModel, (), NoExecutor>`"
 
         // Instead, we verify that providing an executor allows compilation
-        let registry = crate::executor::ExecutorRegistry::new();
+        let mut registry = crate::executor::ExecutorRegistry::new();
+        registry.insert_async(crate::executor::InlineAsync::<TestEvent>::new());
 
         let runner = Syzygy::builder::<TestEvent, TestEffect>()
             .model(TestModel { count: 0 })
             .event_handler(test_update)
             .effect_handler(|_e: TestEffect, _ctx| crate::executor::Task::events(Vec::new()))
-            .with_executor_registry(registry)
+            .with_executor_registry(registry);
+
+        let runner = runner
+            .try_with_existing_default::<crate::executor::InlineAsync<TestEvent>>()
+            .unwrap_or_else(|_| panic!("registry should contain InlineAsync"))
             .build();
 
         let (_core, _shell) = runner.split();

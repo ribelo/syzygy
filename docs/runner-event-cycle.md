@@ -246,11 +246,16 @@ let runner = Runner::with_config(
 
 ### Shell Configuration
 
+Configure the shell's effect queue when building your system:
+
 ```rust
-let shell = Shell::new()
-    .with_config(ShellConfig {
-        effect_channel_capacity: Some(1_024),
-    });
+let runner = Syzygy::builder::<Event, Effect>()
+    .model(Model::default())
+    .event_handler(handler)
+    .effect_handler(effects)
+    .with_async_executor(InlineAsync::<Event>::new())
+    .with_effect_channel_capacity(Some(1_024))
+    .build();
 ```
 
 - **effect_channel_capacity**: Optional bounded queue size for effects

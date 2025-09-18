@@ -12,12 +12,13 @@
 //! # use syzygy::prelude::*;
 //! # #[derive(Debug, Clone)] enum TestEvent { Done }
 //! # #[derive(Debug, Clone)] enum TestEffect { PerformAsyncWork }
-//! async fn handle_effects(effect: TestEffect, ctx: EffectContext<TestEvent, EmptyStorage>) -> syzygy::executor::Outcome<TestEvent> {
-//!     if let TestEffect::PerformAsyncWork = effect {
-//!         // Use direct async handling or return event output
-//!         return syzygy::executor::Outcome::Event(TestEvent::Done);
+//! fn handle_effects(
+//!     effect: TestEffect,
+//!     _ctx: EffectContext<TestEvent, EmptyStorage>,
+//! ) -> syzygy::executor::Task<TestEvent, EmptyStorage> {
+//!     match effect {
+//!         TestEffect::PerformAsyncWork => syzygy::executor::Task::event(TestEvent::Done),
 //!     }
-//!     syzygy::executor::Outcome::None
 //! }
 //! ```
 //!
@@ -43,8 +44,8 @@ use std::any::TypeId;
 /// Executors handle all spawning and runtime operations.
 /// Event sending is handled internally by the framework.
 pub struct EffectContext<E, R = ()> {
-    /// Resources available to effect handlers (stored directly, user controls Arc/Mutex)
-    resources: R,
+    /// Resources available to effect handlers (shared via Arc)
+    resources: Arc<R>,
     /// Executors available to effect handlers
     executors: Arc<ExecutorRegistry<E>>,
 }
@@ -52,11 +53,11 @@ pub struct EffectContext<E, R = ()> {
 impl<E, R> EffectContext<E, R>
 where
     E: Send + 'static,
-    R: Clone + Send + Sync + 'static,
+    R: Send + Sync + 'static,
 {
     /// Create a new `EffectContext` (without event sending capability)
     #[must_use]
-    pub fn new(resources: R, executors: Arc<ExecutorRegistry<E>>) -> Self {
+    pub fn new(resources: Arc<R>, executors: Arc<ExecutorRegistry<E>>) -> Self {
         Self {
             resources,
             executors,
@@ -65,7 +66,7 @@ where
 
     /// Create a new `EffectContext` with explicit parts (without event sending)
     #[must_use]
-    pub fn with_parts(resources: R, executors: Arc<ExecutorRegistry<E>>) -> Self {
+    pub fn with_parts(resources: Arc<R>, executors: Arc<ExecutorRegistry<E>>) -> Self {
         Self {
             resources,
             executors,
@@ -73,8 +74,15 @@ where
     }
 
     /// Try to get a resource of type T
-    pub fn resources(&self) -> &R {
-        &self.resources
+    #[must_use]
+    pub fn resource(&self) -> &R {
+        self.resources.as_ref()
+    }
+
+    /// Access the shared resource Arc directly when cloning is required
+    #[must_use]
+    pub fn resource_arc(&self) -> Arc<R> {
+        Arc::clone(&self.resources)
     }
 
     /// Get the executors registry (for internal use)
@@ -95,12 +103,20 @@ where
         self.executors.sync_exec_by_key(key)
     }
 
+    #[must_use]
     pub fn async_executor<T: 'static>(&self) -> Option<Arc<dyn AsyncExecutor<E>>> {
         self.executors.async_exec::<T>()
     }
 
+    #[must_use]
     pub fn sync_executor<T: 'static>(&self) -> Option<Arc<dyn SyncExecutor<E>>> {
         self.executors.sync_exec::<T>()
+    }
+
+    /// Get the default async executor configured for the shell, if any.
+    #[must_use]
+    pub fn default_async_executor(&self) -> Option<Arc<dyn AsyncExecutor<E>>> {
+        self.executors.default_async()
     }
 
     /// Spawn a task using the specified executor
@@ -117,11 +133,11 @@ where
 impl<E, R> Clone for EffectContext<E, R>
 where
     E: Send + 'static,
-    R: Clone + Send + Sync + 'static,
+    R: Send + Sync + 'static,
 {
     fn clone(&self) -> Self {
         Self {
-            resources: self.resources.clone(),
+            resources: Arc::clone(&self.resources),
             executors: Arc::clone(&self.executors),
         }
     }

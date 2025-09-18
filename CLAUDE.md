@@ -58,8 +58,6 @@ cargo fmt                           # Format code
 
 # Feature Testing
 cargo test --features tokio         # Test with tokio (default)
-cargo test --features smol --no-default-features      # Test with smol runtime
-cargo test --features async-std --no-default-features # Test with async-std runtime
 cargo test --features view-model    # Test with view model support
 
 # Benchmarking
@@ -68,48 +66,45 @@ cargo bench                         # Run all benchmarks
 
 ## Runtime Support
 
-Syzygy takes a **"tokio-first with runtime flexibility"** approach:
-
-- **Primary**: Tokio (most mature ecosystem, recommended for production)
-- **Alternative**: Smol (lightweight, resource-constrained environments)
-- **Alternative**: Async-std (standard library approach)
-- **Custom**: Any executor through generic spawn functions
-
-### Using Spawn Functions
+Syzygy is **tokio-first**. Every Shell must be given an async executor before `build()`:
 
 ```rust
-use syzygy::prelude::*;
+use syzygy::executor::{InlineAsync, TokioExecutor};
 
-// Auto-detect runtime (recommended)
-runner.run_until(condition, syzygy::spawn::spawner()).await?;
-
-// Explicit runtime selection
-runner.run_until(condition, syzygy::spawn::TokioSpawn).await?;
-runner.run_until(condition, syzygy::spawn::SmolSpawn).await?;
-runner.run_until(condition, syzygy::spawn::AsyncStdSpawn).await?;
-
-// Custom spawn function
-let custom_spawn = |future| my_executor.spawn(future);
-runner.run_until(condition, custom_spawn).await?;
+let mut runner = Syzygy::builder::<Event, Effect>()
+    .model(Model::default())
+    .event_handler(event_handler)
+    .effect_handler(effect_handler)
+    .with_async_executor(InlineAsync::<Event>::new()) // tests & blocking contexts
+    .with_async_executor(TokioExecutor::multi_thread_io("app", 4)) // extra pools optional
+    .build();
 ```
 
-### Zero-Cost Async Spawning
+The first async executor registered becomes the Shell's default. Additional executors can be
+targeted explicitly from effect handlers via `Task::async_task::<YourExecutor, _>(...)`.
 
-Syzygy provides zero-cost async spawning with no boxing overhead:
+`syzygy::spawn::spawner()` remains available behind the `tokio` feature for ad-hoc spawning
+and panics if no Tokio runtime is active. Prefer declarative `Task` plans inside effect
+handlers for most work.
+
+### Task Plans & Zero-Cost Spawning
+
+Effect handlers now return `Task` plans instead of manually spawning futures. Tasks capture the
+desired executor type at compile time, so spawning remains allocation-free except for trait-object
+indirection when crossing into the Shell:
 
 ```rust
-// Direct zero-cost async spawning - no allocations!
-syzygy::spawn::spawner().spawn(async {
-    println!("This runs on the auto-detected runtime!");
-});
+use syzygy::executor::{Outcome, Task, TokioExecutor};
 
-// Runtime-specific zero-cost spawning
-syzygy::spawn::TokioSpawn.spawn(async { /* tokio work */ });
-syzygy::spawn::SmolSpawn.spawn(async { /* smol work */ });
-
-// Also works with async function calls
-async fn my_work() { println!("Zero-cost!"); }
-syzygy::spawn::spawner().spawn(my_work());
+fn effect_handler(effect: Effect, _ctx: EffectContext<Event>) -> Task<Event> {
+    match effect {
+        Effect::Fetch => Task::async_task::<TokioExecutor, _>(async move {
+            let data = "payload".to_string();
+            Outcome::Event(Event::Fetched(data))
+        }),
+        Effect::Log(msg) => Task::event(Event::Logged(msg)),
+    }
+}
 ```
 
 ## Core API Architecture
@@ -454,7 +449,7 @@ Current implementation files:
 - **Simple TEA**: Core implementation follows standard Elm Architecture without App trait boilerplate
 - **High Performance**: EffectContext provides 24x performance improvement with safety
 - **Memory Safety**: All tasks automatically cancelled to prevent leaks
-- **Runtime Flexible**: Works with tokio, smol, async-std, or custom executors
+- **Tokio Native**: Tuned for tokio executors (provide your own adapter for alternatives)
 - **Error-as-Events**: All errors flow through the event system
 - **Magic Handlers**: Axum-inspired parameter extraction for testable, decoupled functions
 - **Testing**: Comprehensive safety tests verify no orphaned tasks

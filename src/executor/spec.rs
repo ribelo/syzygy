@@ -3,11 +3,16 @@ use futures_util::stream::{BoxStream, StreamExt};
 
 use std::future::Future;
 
-use crate::effect_context::EffectContext;
-use crate::scheduler::Scheduler;
-
 use super::{AsyncExecutor, ExecutorError};
+use crate::effect_context::EffectContext;
 use std::any::TypeId;
+
+fn missing_executor(kind: &'static str, exec: TypeId) -> ! {
+    #[cfg(feature = "tracing")]
+    tracing::error!(?exec, kind, "Missing executor; effect will panic");
+
+    panic!("Missing {kind} executor for type {exec:?}");
+}
 
 /// Unified effect output: a single event, multiple events, or none
 #[derive(Debug, PartialEq)]
@@ -92,7 +97,7 @@ pub enum Task<E, R = ()> {
 impl<E, R> Task<E, R>
 where
     E: Send + 'static,
-    R: Clone + Send + Sync + 'static,
+    R: Send + Sync + 'static,
 {
     #[must_use]
     pub fn events<I>(events: I) -> Self
@@ -138,17 +143,16 @@ where
     }
 }
 
-/// Drive an `EffectSpec` by spawning appropriate tasks on executors and
+/// Drive a `Task` by spawning appropriate work on executors and
 /// forwarding produced events to Core via the supplied `EffectContext`.
 pub(crate) fn drive_spec<E, R>(
     spec: Task<E, R>,
     ctx: EffectContext<E, R>,
     event_tx: crossbeam_channel::Sender<E>,
-    _scheduler: impl Scheduler,
 ) -> BoxFuture<'static, ()>
 where
     E: Send + 'static,
-    R: Clone + Send + Sync + 'static,
+    R: Send + Sync + 'static,
 {
     async move {
         match spec {
@@ -180,13 +184,7 @@ where
                         ) => {}
                     }
                 } else {
-                    #[cfg(debug_assertions)]
-                    panic!("Missing executor for type {exec:?}");
-                    #[cfg(all(not(debug_assertions), feature = "tracing"))]
-                    tracing::warn!(
-                        "Missing executor for type {:?}, effect will be dropped",
-                        exec
-                    );
+                    missing_executor("async", exec);
                 }
             }
 
@@ -216,14 +214,7 @@ where
                         ) => { /* ignore or log */ }
                     }
                 } else {
-                    #[cfg(debug_assertions)]
-                    panic!("Missing executor for type {exec:?}");
-
-                    #[cfg(all(not(debug_assertions), feature = "tracing"))]
-                    tracing::warn!(
-                        "Missing executor for type {:?}, effect will be dropped",
-                        exec
-                    );
+                    missing_executor("sync", exec);
                 }
             }
             Task::Stream { exec, factory } => {
@@ -248,13 +239,7 @@ where
                         ) => { /* ignore or log */ }
                     }
                 } else {
-                    #[cfg(debug_assertions)]
-                    panic!("Missing executor for stream type {exec:?}");
-                    #[cfg(all(not(debug_assertions), feature = "tracing"))]
-                    tracing::warn!(
-                        "Missing executor for stream type {:?}, stream will be dropped",
-                        exec
-                    );
+                    missing_executor("async-stream", exec);
                 }
             }
         }

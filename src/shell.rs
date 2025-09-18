@@ -1,80 +1,27 @@
 //! # Shell - Asynchronous Effect Management
 //!
 //! The Shell orchestrates asynchronous effect execution, bridging pure Core updates
-//! with side-effectful operations. Effect handlers return `EffectSpec` plans which
+//! with side-effectful operations. Effect handlers now return `Task` plans which
 //! the Shell drives using executors registered in an immutable registry.
 
 use crossbeam_channel::{Receiver, RecvTimeoutError, Sender, TrySendError};
-use futures::future::BoxFuture;
+use futures::future::{BoxFuture, FutureExt};
 use std::collections::VecDeque;
-use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
 
 use crate::command::{Command, CommandStep};
 use crate::effect_context::EffectContext;
 use crate::error::ShellError;
-use crate::executor::spec::{Outcome, drive_spec};
-use crate::executor::{ExecutorRegistry, Task};
-
-/// Representation of the work produced by an effect handler.
-pub enum EffectWork<E, R> {
-    Task(Task<E, R>),
-    Future(BoxFuture<'static, Outcome<E>>),
-    Immediate(Outcome<E>),
-}
-
-pub trait IntoEffectWork<E, R> {
-    fn into_effect_work(self) -> EffectWork<E, R>;
-}
-
-impl<E, R> IntoEffectWork<E, R> for EffectWork<E, R> {
-    fn into_effect_work(self) -> EffectWork<E, R> {
-        self
-    }
-}
-
-impl<E, R> IntoEffectWork<E, R> for Task<E, R> {
-    fn into_effect_work(self) -> EffectWork<E, R> {
-        EffectWork::Task(self)
-    }
-}
-
-impl<E, R> IntoEffectWork<E, R> for Outcome<E> {
-    fn into_effect_work(self) -> EffectWork<E, R> {
-        EffectWork::Immediate(self)
-    }
-}
-
-impl<E, R, F> IntoEffectWork<E, R> for F
-where
-    F: Future<Output = Outcome<E>> + Send + 'static,
-{
-    fn into_effect_work(self) -> EffectWork<E, R> {
-        EffectWork::Future(Box::pin(self))
-    }
-}
-
-/// Effect handler accepting sync or async closures.
-pub type EffectHandler<E, X, R> =
-    Box<dyn FnMut(X, EffectContext<E, R>) -> EffectWork<E, R> + Send + 'static>;
+use crate::executor::spec::drive_spec;
+use crate::executor::{AsyncExecutor, ExecutorRegistry, Task};
 
 #[cfg(feature = "tracing")]
 use tracing::{Level, debug, span, warn};
 
-/// Configuration for Shell effect execution
-pub struct ShellConfig {
-    /// Capacity for effect queue (None => unbounded, default: unbounded)
-    pub effect_channel_capacity: Option<usize>,
-}
-
-impl Default for ShellConfig {
-    fn default() -> Self {
-        Self {
-            effect_channel_capacity: None,
-        }
-    }
-}
+/// Effect handler accepting closures that produce declarative tasks.
+pub type EffectHandler<E, X, R> =
+    Box<dyn FnMut(X, EffectContext<E, R>) -> Task<E, R> + Send + 'static>;
 
 /// The Shell orchestrates async effect execution independently of Core
 pub struct Shell<E, X, R = ()>
@@ -99,8 +46,8 @@ where
     /// User-provided effect handler
     pub(crate) effect_handler: EffectHandler<E, X, R>,
 
-    /// Configuration for error handling and timeouts
-    pub(crate) config: ShellConfig,
+    /// Optional capacity for the effect queue (None => unbounded)
+    pub(crate) effect_channel_capacity: Option<usize>,
 
     /// Closed flag for Runner shutdown checks
     pub(crate) closed: bool,
@@ -121,18 +68,24 @@ where
         EffectContext::new(Arc::clone(&self.resources), Arc::clone(&self.executors))
     }
 
+    pub(crate) fn default_executor(&self) -> Arc<dyn AsyncExecutor<E>> {
+        self.executors.default_async().expect(
+            "Shell requires a default async executor. Call Syzygy::builder().with_async_executor(...) before build().",
+        )
+    }
+
     fn push_effect_step(&mut self, step: CommandStep<E, X>) -> Result<(), ShellError> {
         match self.effect_tx.try_send(step) {
-            Ok(_) => Ok(()),
+            Ok(()) => Ok(()),
             Err(TrySendError::Full(step)) => {
                 if let Ok(queued_step) = self.effect_rx.try_recv() {
                     self.prefetched_effects.push_back(queued_step);
                 }
 
                 match self.effect_tx.try_send(step) {
-                    Ok(_) => Ok(()),
+                    Ok(()) => Ok(()),
                     Err(TrySendError::Full(step)) => {
-                        let limit = self.config.effect_channel_capacity.unwrap_or(usize::MAX);
+                        let limit = self.effect_channel_capacity.unwrap_or(usize::MAX);
                         if self.prefetched_effects.len() < limit {
                             self.prefetched_effects.push_back(step);
                             Ok(())
@@ -151,57 +104,18 @@ where
         }
     }
 
-    fn forward_outcome(event_tx: &Sender<E>, outcome: Outcome<E>) {
-        match outcome {
-            Outcome::None => {}
-            Outcome::Event(event) => {
-                let _ = event_tx.send(event);
-            }
-            Outcome::Events(events) => {
-                for event in events {
-                    let _ = event_tx.send(event);
-                }
-            }
-        }
+    fn effect_future(&self, task: Task<E, R>, ctx: EffectContext<E, R>) -> BoxFuture<'static, ()> {
+        let event_tx = self.event_tx.clone();
+        drive_spec(task, ctx, event_tx)
     }
 
-    fn effect_future<S: crate::scheduler::Scheduler>(
-        &self,
-        work: EffectWork<E, R>,
-        ctx: EffectContext<E, R>,
-        scheduler: &S,
-    ) -> BoxFuture<'static, ()> {
-        match work {
-            EffectWork::Task(task) => {
-                let event_tx = self.event_tx.clone();
-                let scheduler_clone = scheduler.clone();
-                Box::pin(drive_spec(task, ctx, event_tx, scheduler_clone))
-            }
-            EffectWork::Future(fut) => {
-                let event_tx = self.event_tx.clone();
-                Box::pin(async move {
-                    let outcome = fut.await;
-                    Self::forward_outcome(&event_tx, outcome);
-                })
-            }
-            EffectWork::Immediate(outcome) => {
-                Self::forward_outcome(&self.event_tx, outcome);
-                Box::pin(async move {})
-            }
-        }
-    }
-
-    fn process_effect<S: crate::scheduler::Scheduler>(
-        &mut self,
-        effect: X,
-        scheduler: &S,
-    ) -> BoxFuture<'static, ()> {
+    fn process_effect(&mut self, effect: X) -> BoxFuture<'static, ()> {
         let ctx = self.effect_context();
-        let work = {
+        let task = {
             let handler = &mut self.effect_handler;
             handler(effect, ctx.clone())
         };
-        self.effect_future(work, ctx, scheduler)
+        self.effect_future(task, ctx)
     }
 
     /// Get an immutable reference to resources
@@ -285,15 +199,15 @@ where
         }
     }
 
-    fn handle_effect_step<S: crate::scheduler::Scheduler>(
+    fn handle_effect_step(
         &mut self,
         step: CommandStep<E, X>,
-        scheduler: &S,
+        executor: &Arc<dyn AsyncExecutor<E>>,
     ) {
         match step {
             CommandStep::Effect(effect) => {
-                let fut = self.process_effect(effect, scheduler);
-                scheduler.schedule(fut);
+                let fut = self.process_effect(effect);
+                executor.spawn_detached(fut);
             }
             CommandStep::Batch(effects) => {
                 if effects.is_empty() {
@@ -302,26 +216,27 @@ where
 
                 let mut futures = Vec::with_capacity(effects.len());
                 for effect in effects {
-                    futures.push(self.process_effect(effect, scheduler));
+                    futures.push(self.process_effect(effect));
                 }
 
                 let sequence = async move {
                     for fut in futures {
                         fut.await;
                     }
-                };
+                }
+                .boxed();
 
-                scheduler.schedule(sequence);
+                executor.spawn_detached(sequence);
             }
             CommandStep::Parallel(effects) => {
                 if effects.is_empty() {
                     return;
                 }
 
-                if scheduler.allows_overlap() {
+                if executor.allows_overlap() {
                     for effect in effects {
-                        let fut = self.process_effect(effect, scheduler);
-                        scheduler.schedule(fut);
+                        let fut = self.process_effect(effect);
+                        executor.spawn_detached(fut);
                     }
                     return;
                 }
@@ -332,46 +247,47 @@ where
                 #[cfg(feature = "tracing")]
                 if effect_len > 1 {
                     warn!(
-                        "Parallel command executed on non-overlapping scheduler; falling back to sequential execution"
+                        "Parallel command executed on non-overlapping executor; falling back to sequential execution"
                     );
                 }
 
                 let mut futures = Vec::with_capacity(effects.len());
                 for effect in effects {
-                    futures.push(self.process_effect(effect, scheduler));
+                    futures.push(self.process_effect(effect));
                 }
 
                 let sequence = async move {
                     for fut in futures {
                         fut.await;
                     }
-                };
+                }
+                .boxed();
 
-                scheduler.schedule(sequence);
+                executor.spawn_detached(sequence);
             }
             CommandStep::Event(_) => unreachable!(),
         }
     }
 
     /// Process all pending effects synchronously and return count of effects processed
-    pub fn drain_with<S: crate::scheduler::Scheduler>(
+    pub fn drain_with_executor(
         &mut self,
-        scheduler: S,
+        executor: Arc<dyn AsyncExecutor<E>>,
     ) -> Result<usize, ShellError> {
         #[cfg(feature = "tracing")]
         let _span = span!(Level::DEBUG, "shell_drain").entered();
 
         let mut effect_count = 0usize;
-        let scheduler = scheduler;
 
         while let Some(step) = self.next_effect_step() {
             match &step {
                 CommandStep::Effect(_) => effect_count += 1,
-                CommandStep::Batch(effects) => effect_count += effects.len(),
-                CommandStep::Parallel(effects) => effect_count += effects.len(),
+                CommandStep::Batch(effects) | CommandStep::Parallel(effects) => {
+                    effect_count += effects.len();
+                }
                 CommandStep::Event(_) => {}
             }
-            self.handle_effect_step(step, &scheduler);
+            self.handle_effect_step(step, &executor);
         }
 
         #[cfg(feature = "tracing")]
@@ -382,19 +298,31 @@ where
         Ok(effect_count)
     }
 
+    /// Process all pending effects using the shell's default executor and return the count.
+    pub fn drain(&mut self) -> Result<usize, ShellError> {
+        let executor = self.default_executor();
+        self.drain_with_executor(executor)
+    }
+
     /// Process at most one effect from the queue synchronously
     ///
     /// Returns true if an effect was processed, false if the queue was empty
-    pub fn poll_one_with<S: crate::scheduler::Scheduler>(
+    pub fn poll_one_with_executor(
         &mut self,
-        scheduler: S,
+        executor: Arc<dyn AsyncExecutor<E>>,
     ) -> Result<bool, ShellError> {
         if let Some(step) = self.next_effect_step() {
-            self.handle_effect_step(step, &scheduler);
+            self.handle_effect_step(step, &executor);
             Ok(true)
         } else {
             Ok(false)
         }
+    }
+
+    /// Process at most one effect using the default executor.
+    pub fn poll_one(&mut self) -> Result<bool, ShellError> {
+        let executor = self.default_executor();
+        self.poll_one_with_executor(executor)
     }
 
     /// Block until an effect arrives or the timeout expires.
@@ -441,15 +369,15 @@ where
         self.closed
     }
 
-    /// Get the current shell configuration
+    /// Get the configured effect channel capacity (None => unbounded)
     #[must_use]
-    pub fn config(&self) -> &ShellConfig {
-        &self.config
+    pub fn effect_channel_capacity(&self) -> Option<usize> {
+        self.effect_channel_capacity
     }
 
-    /// Update the shell configuration
-    pub fn set_config(&mut self, config: ShellConfig) {
-        self.config = config;
+    /// Override the effect channel capacity (None => unbounded)
+    pub fn set_effect_channel_capacity(&mut self, capacity: Option<usize>) {
+        self.effect_channel_capacity = capacity;
     }
 
     /// Signal shutdown to higher-level Runner logic

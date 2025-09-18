@@ -1,34 +1,12 @@
-//! Runtime-neutral spawn functions for zero-cost task spawning
-//!
-//! This module provides spawn functions that work with different async runtimes.
-
 use std::future::Future;
 
-/// Spawn trait for runtime abstraction
+/// Trait representing the ability to spawn a future onto an async executor.
 pub trait Spawn: Clone + Send + Sync + 'static {
     fn spawn<F>(&self, future: F)
     where
         F: Future<Output = ()> + Send + 'static;
 }
 
-/// Auto-detecting spawner (strict - requires existing runtime)
-#[must_use]
-pub fn spawner() -> impl Spawn {
-    #[cfg(feature = "tokio")]
-    return TokioSpawn::new()
-        .expect("No tokio runtime is running. Use #[tokio::main] or create a runtime first.");
-
-    #[cfg(all(feature = "smol", not(feature = "tokio")))]
-    return SmolSpawn;
-
-    #[cfg(all(feature = "async-std", not(feature = "tokio"), not(feature = "smol")))]
-    return AsyncStdSpawn;
-
-    #[cfg(not(any(feature = "tokio", feature = "smol", feature = "async-std")))]
-    compile_error!("Enable at least one runtime feature: tokio, smol, or async-std");
-}
-
-/// Tokio-specific spawner (strict)
 #[cfg(feature = "tokio")]
 #[derive(Clone)]
 pub struct TokioSpawn {
@@ -37,12 +15,11 @@ pub struct TokioSpawn {
 
 #[cfg(feature = "tokio")]
 impl TokioSpawn {
-    pub fn new() -> Result<Self, &'static str> {
-        tokio::runtime::Handle::try_current()
-            .map_err(
-                |_| "No tokio runtime is running. Use #[tokio::main] or create a runtime first.",
-            )
-            .map(|handle| Self { handle })
+    fn new() -> Self {
+        let handle = tokio::runtime::Handle::try_current().expect(
+            "No tokio runtime available. Call Syzygy builder with_async_executor(...) or run inside #[tokio::main].",
+        );
+        Self { handle }
     }
 }
 
@@ -56,32 +33,19 @@ impl Spawn for TokioSpawn {
     }
 }
 
-/// Smol-specific spawner
-#[cfg(feature = "smol")]
-#[derive(Clone)]
-pub struct SmolSpawn;
-
-#[cfg(feature = "smol")]
-impl Spawn for SmolSpawn {
-    fn spawn<F>(&self, future: F)
-    where
-        F: Future<Output = ()> + Send + 'static,
-    {
-        smol::spawn(future).detach();
-    }
+/// Return the active async spawner.
+///
+/// This helper requires a registered async executor. If no executor/runtime is
+/// available, it fails fast instead of silently falling back to inline execution.
+#[cfg(feature = "tokio")]
+#[must_use]
+pub fn spawner() -> TokioSpawn {
+    TokioSpawn::new()
 }
 
-/// Async-std-specific spawner
-#[cfg(feature = "async-std")]
-#[derive(Clone)]
-pub struct AsyncStdSpawn;
-
-#[cfg(feature = "async-std")]
-impl Spawn for AsyncStdSpawn {
-    fn spawn<F>(&self, future: F)
-    where
-        F: Future<Output = ()> + Send + 'static,
-    {
-        async_std::task::spawn(future);
-    }
+#[cfg(not(feature = "tokio"))]
+pub fn spawner() -> ! {
+    panic!(
+        "No async runtime feature enabled. Enable the `tokio` feature or provide your own executor."
+    );
 }

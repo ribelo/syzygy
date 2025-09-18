@@ -11,13 +11,13 @@
 //! Verifies Syzygy works with the primary runtime (tokio) and auto-detection.
 //! Extended runtime testing is handled by spawn.rs unit tests.
 
+use std::sync::Arc;
 use std::time::Duration;
+
 use syzygy::prelude::*;
-use syzygy::scheduler::scheduler;
 
 use futures::FutureExt;
-use syzygy::executor::Outcome;
-use syzygy::executor::{ExecutorRegistry, TokioExecutor};
+use syzygy::executor::{AsyncExecutor, Outcome, TokioExecutor};
 
 #[derive(Debug, Clone)]
 enum TestEvent {
@@ -60,19 +60,12 @@ fn test_update(
 
 fn test_effect_handler(
     effect: TestEffect,
-    _ctx: &EffectContext<TestEvent, ()>,
+    _ctx: EffectContext<TestEvent, ()>,
 ) -> syzygy::executor::Task<TestEvent, ()> {
     match effect {
         TestEffect::Delay(duration) => {
             syzygy::executor::Task::async_task::<TokioExecutor, _>(async move {
-                #[cfg(feature = "tokio")]
                 tokio::time::sleep(duration).await;
-
-                #[cfg(all(feature = "smol", not(feature = "tokio")))]
-                smol::Timer::after(duration).await;
-
-                #[cfg(all(feature = "async-std", not(feature = "tokio"), not(feature = "smol")))]
-                async_std::task::sleep(duration).await;
 
                 Outcome::Events(vec![TestEvent::Work])
             })
@@ -81,16 +74,15 @@ fn test_effect_handler(
 }
 
 #[cfg(feature = "tokio")]
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn test_runtime_auto_detection() {
-    let mut registry = ExecutorRegistry::new();
-    registry.insert_async(TokioExecutor::multi_thread_io("test", 2));
+    let executor = TokioExecutor::multi_thread_io("runtime-auto", 2);
 
     let runner = Syzygy::builder::<TestEvent, TestEffect>()
         .model(TestModel::default())
         .event_handler(test_update)
         .effect_handler(test_effect_handler)
-        .with_executor_registry(registry)
+        .with_async_executor(executor)
         .build();
     let event_sender = runner.core().event_sender();
 
@@ -101,7 +93,7 @@ async fn test_runtime_auto_detection() {
     let runner = tokio::task::spawn_blocking(move || {
         let mut runner = runner;
         runner
-            .run_until(|core, _shell| core.model().completed, scheduler())
+            .run_until(|core, _shell| core.model().completed)
             .unwrap();
         runner
     })
@@ -114,16 +106,15 @@ async fn test_runtime_auto_detection() {
 }
 
 #[cfg(feature = "tokio")]
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn test_explicit_tokio_runtime() {
-    let mut registry = ExecutorRegistry::new();
-    registry.insert_async(TokioExecutor::multi_thread_io("test", 2));
+    let executor = TokioExecutor::multi_thread_io("runtime-explicit", 2);
 
     let runner = Syzygy::builder::<TestEvent, TestEffect>()
         .model(TestModel::default())
         .event_handler(test_update)
         .effect_handler(test_effect_handler)
-        .with_executor_registry(registry)
+        .with_async_executor(executor.clone())
         .build();
     let event_sender = runner.core().event_sender();
 
@@ -132,11 +123,9 @@ async fn test_explicit_tokio_runtime() {
     // Run with explicit tokio spawn
     let runner = tokio::task::spawn_blocking(move || {
         let mut runner = runner;
+        let executor_arc: Arc<dyn AsyncExecutor<TestEvent>> = Arc::new(executor);
         runner
-            .run_until(
-                |core, _shell| core.model().completed,
-                syzygy::scheduler::TokioScheduler::new().expect("tokio runtime required"),
-            )
+            .run_until_with_executor(|core, _shell| core.model().completed, executor_arc)
             .unwrap();
         runner
     })

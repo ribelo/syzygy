@@ -39,6 +39,7 @@ use crate::executor::{AbortOnDrop, AsyncExecutor, Concurrent, ExecutorError, reg
 use futures::{TryFutureExt, future::abortable};
 use futures_util::future::{BoxFuture, FutureExt};
 use std::sync::{Arc, RwLock};
+use std::time::Duration;
 use tokio::{
     runtime::{self, Handle},
     sync::{Notify, oneshot::error::RecvError},
@@ -201,6 +202,21 @@ where
             abort: abort_handle,
         }
         .boxed()
+    }
+
+    fn spawn_detached(&self, fut: BoxFuture<'static, ()>) {
+        let handle = {
+            let guard = self.state.read().expect("executor state poisoned");
+            guard.handle.clone()
+        };
+
+        if let Some(handle) = handle {
+            handle.spawn(fut);
+        }
+    }
+
+    fn sleep(&self, duration: Duration) -> BoxFuture<'static, ()> {
+        tokio::time::sleep(duration).boxed()
     }
 }
 

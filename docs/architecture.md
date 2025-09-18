@@ -605,7 +605,7 @@ runner.run_until(
 
 **Runner benefits**:
 - **Simple orchestration** - Manages Core ↔ Shell communication
-- **Runtime neutral** - Works with tokio, smol, async-std
+- **Tokio-native** - Tuned for tokio executors
 - **Condition-based** - Run until model reaches desired state
 
 ## Unidirectional Architecture

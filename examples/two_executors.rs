@@ -9,8 +9,7 @@ use std::time::Duration;
 
 use futures_util::future::BoxFuture;
 use syzygy::executor::{
-    AsyncExecutor, Concurrent, ExecutorError, ExecutorLifecycle, ExecutorRegistry, Outcome, Task,
-    TokioExecutor,
+    AsyncExecutor, Concurrent, ExecutorError, ExecutorLifecycle, Outcome, Task, TokioExecutor,
 };
 use syzygy::prelude::*;
 
@@ -91,6 +90,14 @@ impl<E: Send + 'static> AsyncExecutor<E> for IoRuntime {
     ) -> BoxFuture<'static, Result<Outcome<E>, ExecutorError>> {
         self.0.spawn_future(fut)
     }
+
+    fn spawn_detached(&self, fut: BoxFuture<'static, ()>) {
+        <TokioExecutor as AsyncExecutor<E>>::spawn_detached(&self.0, fut);
+    }
+
+    fn sleep(&self, duration: Duration) -> BoxFuture<'static, ()> {
+        <TokioExecutor as AsyncExecutor<E>>::sleep(&self.0, duration)
+    }
 }
 
 impl<E: Send + 'static> AsyncExecutor<E> for CpuRuntime {
@@ -99,6 +106,14 @@ impl<E: Send + 'static> AsyncExecutor<E> for CpuRuntime {
         fut: BoxFuture<'static, Outcome<E>>,
     ) -> BoxFuture<'static, Result<Outcome<E>, ExecutorError>> {
         self.0.spawn_future(fut)
+    }
+
+    fn spawn_detached(&self, fut: BoxFuture<'static, ()>) {
+        <TokioExecutor as AsyncExecutor<E>>::spawn_detached(&self.0, fut);
+    }
+
+    fn sleep(&self, duration: Duration) -> BoxFuture<'static, ()> {
+        <TokioExecutor as AsyncExecutor<E>>::sleep(&self.0, duration)
     }
 }
 
@@ -147,23 +162,20 @@ fn fibonacci(n: u64) -> u128 {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut registry = ExecutorRegistry::new();
-    registry.insert_async(IoRuntime(TokioExecutor::multi_thread_io("io-pool", 2)));
-    registry.insert_async(CpuRuntime(TokioExecutor::multi_thread_cpu("cpu-pool", 2)));
-
     let mut runner = Syzygy::builder::<DemoEvent, DemoEffect>()
         .model(DemoModel::default())
         .event_handler(event_handler)
         .effect_handler(effect_handler)
-        .with_executor_registry(registry)
+        .with_async_executor(IoRuntime(TokioExecutor::multi_thread_io("io-pool", 2)))
+        .with_async_executor(CpuRuntime(TokioExecutor::multi_thread_cpu("cpu-pool", 2)))
         .build();
 
     runner.core().send_event(DemoEvent::Start);
 
-    runner.run_until(
-        |core, _| core.model().io_message.is_some() && core.model().cpu_result.is_some(),
-        syzygy::scheduler::scheduler(),
-    )?;
+    runner.run_until(|core, _| {
+        let model = core.model();
+        model.io_message.is_some() && model.cpu_result.is_some()
+    })?;
 
     let model = runner.core().model();
     println!("IO result: {:?}", model.io_message);

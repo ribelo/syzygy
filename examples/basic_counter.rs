@@ -5,7 +5,7 @@
 //! cargo run --example basic_counter --features examples
 //! ```
 
-use syzygy::executor::{ExecutorRegistry, InlineAsync, Outcome, Task};
+use syzygy::executor::{InlineAsync, Outcome, Task};
 use syzygy::prelude::*;
 
 #[derive(Debug, Default)]
@@ -67,22 +67,18 @@ fn log_message(message: String) -> Task<CounterEvent, ()> {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut registry = ExecutorRegistry::new();
-    registry.insert_async(InlineAsync::<CounterEvent>::new());
-
     let mut runner = Syzygy::builder::<CounterEvent, CounterEffect>()
         .model(CounterModel::default())
         .event_handler(event_handler)
         .effect_handler(effect_handler)
-        .with_executor_registry(registry)
+        .with_async_executor(InlineAsync::<CounterEvent>::new())
         .build();
 
     runner.core().send_event(CounterEvent::Increment);
     runner.core().send_event(CounterEvent::Increment);
     runner.core().send_event(CounterEvent::Decrement);
 
-    let scheduler = syzygy::scheduler::scheduler();
-    while runner.step_with(scheduler.clone())? {}
+    while runner.step()? {}
 
     println!("Final count: {}", runner.core().model().value);
     Ok(())

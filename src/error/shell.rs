@@ -30,4 +30,8 @@ pub enum ShellError {
     /// Command execution failed
     #[error("Command execution failed: {0}")]
     CommandExecutionFailed(String),
+
+    /// Effect queue reached its configured capacity
+    #[error("Effect queue is full (capacity {capacity})")]
+    EffectQueueFull { capacity: usize },
 }

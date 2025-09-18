@@ -10,6 +10,7 @@ use super::{AsyncExecutor, SyncExecutor};
 pub struct ExecutorRegistry<E> {
     async_map: FxHashMap<TypeId, Arc<dyn AsyncExecutor<E>>>,
     sync_map: FxHashMap<TypeId, Arc<dyn SyncExecutor<E>>>,
+    default_async: Option<TypeId>,
 }
 
 impl<E> Default for ExecutorRegistry<E>
@@ -30,6 +31,7 @@ where
         Self {
             async_map: FxHashMap::default(),
             sync_map: FxHashMap::default(),
+            default_async: None,
         }
     }
 
@@ -38,10 +40,13 @@ where
     where
         T: AsyncExecutor<E> + 'static,
     {
-        self.async_map.insert(
-            TypeId::of::<T>(),
-            Arc::new(exec) as Arc<dyn AsyncExecutor<E>>,
-        );
+        let key = TypeId::of::<T>();
+        let arc_exec = Arc::new(exec) as Arc<dyn AsyncExecutor<E>>;
+        self.async_map.insert(key, Arc::clone(&arc_exec));
+
+        if self.default_async.is_none() {
+            self.default_async = Some(key);
+        }
     }
 
     /// Insert a sync executor using concrete type T as key.
@@ -71,6 +76,30 @@ where
     #[must_use]
     pub(crate) fn async_exec_by_key(&self, key: TypeId) -> Option<Arc<dyn AsyncExecutor<E>>> {
         self.async_map.get(&key).cloned()
+    }
+
+    /// Get the default async executor.
+    #[must_use]
+    pub fn default_async(&self) -> Option<Arc<dyn AsyncExecutor<E>>> {
+        self.default_async
+            .and_then(|id| self.async_map.get(&id).cloned())
+    }
+
+    /// Mark an already-registered async executor as the default.
+    pub fn set_default_async<T: 'static>(&mut self) -> bool {
+        let id = TypeId::of::<T>();
+        if self.async_map.contains_key(&id) {
+            self.default_async = Some(id);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Returns true when a default async executor has been configured.
+    #[must_use]
+    pub fn has_default_async(&self) -> bool {
+        self.default_async.is_some()
     }
 
     /// Get a sync executor by raw `TypeId` key.
@@ -105,7 +134,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::executor::{SingleThreadExecutor, TokioExecutor};
+    use crate::executor::{InlineAsync, SingleThreadExecutor, TokioExecutor};
 
     #[derive(Debug, Clone)]
     #[allow(dead_code)]
@@ -223,5 +252,32 @@ mod tests {
 
         // Then: Executor is found
         assert!(exec.is_some(), "Raw TypeId access should find executor");
+    }
+
+    #[test]
+    fn first_async_executor_is_default() {
+        let mut registry = ExecutorRegistry::<TestEvent>::default();
+        registry.insert_async(TokioExecutor::current_thread_io("primary"));
+
+        assert!(
+            registry.has_default_async(),
+            "default async executor should be set automatically"
+        );
+        assert!(
+            registry.default_async().is_some(),
+            "default async executor should be retrievable"
+        );
+    }
+
+    #[test]
+    fn default_async_can_switch_to_existing_executor() {
+        let mut registry = ExecutorRegistry::<TestEvent>::default();
+        registry.insert_async(TokioExecutor::current_thread_io("first"));
+        registry.insert_async(InlineAsync::<TestEvent>::new());
+
+        assert!(
+            registry.set_default_async::<InlineAsync<TestEvent>>(),
+            "existing executor should be markable as default"
+        );
     }
 }

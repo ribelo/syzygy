@@ -25,8 +25,7 @@ where
         match (self, other) {
             (Self::Event(a), Self::Event(b)) => a == b,
             (Self::Effect(a), Self::Effect(b)) => a == b,
-            (Self::Batch(a), Self::Batch(b)) => a == b,
-            (Self::Parallel(a), Self::Parallel(b)) => a == b,
+            (Self::Batch(a), Self::Batch(b)) | (Self::Parallel(a), Self::Parallel(b)) => a == b,
             _ => false,
         }
     }
@@ -199,8 +198,8 @@ impl<Event, Effect> Command<Event, Effect> {
     /// Creates a command that runs multiple effects in parallel.
     ///
     /// Each effect is dispatched without waiting for the previous one to complete. When
-    /// using a scheduler that supports overlap, the effects can run concurrently. On
-    /// schedulers that do not, they will still execute in order but without failing.
+    /// using an executor that supports overlap, the effects can run concurrently. On
+    /// executors that do not, they will still execute in order but without failing.
     pub fn parallel(effects: impl IntoIterator<Item = Effect>) -> Self {
         let mut outputs = SmallVec::new();
         let batch: Vec<Effect> = effects.into_iter().collect();
@@ -250,8 +249,7 @@ impl<Event, Effect> Command<Event, Effect> {
         self.outputs
             .iter()
             .map(|o| match o {
-                CommandStep::Batch(v) => v.len(),
-                CommandStep::Parallel(v) => v.len(),
+                CommandStep::Batch(v) | CommandStep::Parallel(v) => v.len(),
                 _ => 1,
             })
             .sum()
