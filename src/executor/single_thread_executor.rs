@@ -1,76 +1,54 @@
-use std::any::Any;
-use std::fmt;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use crossbeam_channel::{Receiver, Sender, unbounded};
 use futures::channel::oneshot;
 use futures_util::future::{BoxFuture, FutureExt, Shared};
 
-use std::panic::{AssertUnwindSafe, catch_unwind};
+use crate::executor::{ExecutorError, ExecutorLifecycle, SyncBorrowedExecutor, panic_message};
 
-use crate::executor::{
-    ExecutorError, ExecutorLifecycle, Outcome, Sequential, SyncExecutor, panic_message,
-};
-
-/// `SingleThreadExecutor` — FIFO, single-worker executor for sync work only
-///
-/// - Sync jobs: executed in strict FIFO order on a dedicated worker thread
-/// - Cancellation is supported via oneshot close (cancel-on-drop of the join future)
-/// - Panic isolation: panics in jobs are caught and mapped to `ExecutorError::Panic`
-///
-/// Notes:
-/// - This executor is runtime-neutral and only supports synchronous work
-/// - For single-threaded async work, use `TokioExecutor::current_thread`_* instead
-/// - All jobs run on a dedicated worker thread to avoid blocking the main thread
-pub struct SingleThreadExecutor {
-    state: Arc<State>,
+/// Single-threaded executor that runs blocking jobs on a dedicated worker thread,
+/// providing mutable access to executor-owned resources.
+pub struct SingleThreadExecutor<S = ()> {
+    state: Arc<State<S>>,
 }
 
-impl Sequential for SingleThreadExecutor {}
-
-impl fmt::Debug for SingleThreadExecutor {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        "SingleThreadExecutor".fmt(f)
-    }
-}
-
-impl Default for SingleThreadExecutor {
+impl Default for SingleThreadExecutor<()> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl SingleThreadExecutor {
-    /// Create a new single-threaded executor for synchronous work
-    ///
-    /// This executor runs all jobs on a single dedicated thread in strict FIFO order.
-    /// It's ideal for:
-    /// - Database writes that must be sequential
-    /// - State mutations that require ordering guarantees
-    /// - Work that should not block async runtimes
-    ///
-    /// # Panics
-    ///
-    /// Panics if the worker thread cannot be spawned.
+impl SingleThreadExecutor<()> {
     #[must_use]
     pub fn new() -> Self {
-        let (tx, rx) = unbounded::<Job>();
+        Self::with_resources(())
+    }
+}
+
+impl<R> SingleThreadExecutor<R>
+where
+    R: Send + Sync + 'static,
+{
+    #[must_use]
+    pub fn with_resources(resources: R) -> Self {
+        let (tx, rx) = unbounded::<Job<R>>();
         let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
 
         let thread = std::thread::Builder::new()
-            .name("syzygy-single-executor".to_string())
-            .spawn(move || worker_loop(rx, shutdown_tx))
-            .expect("failed to spawn single-thread executor worker");
+            .name("syzygy-single-executor".into())
+            .spawn(move || worker_loop(rx, shutdown_tx, resources))
+            .expect("failed to spawn single-thread executor");
 
-        let completed_shutdown: Shared<BoxFuture<'static, ()>> =
-            futures_util::FutureExt::boxed(async move {
-                // Ignore errors if the sender was dropped without sending
-                let _ = shutdown_rx.await;
-            })
-            .shared();
+        let completed_shutdown = async move {
+            let _ = shutdown_rx.await;
+        }
+        .boxed()
+        .shared();
 
         let state = State {
-            tx: Mutex::new(Some(tx)),
+            tx,
+            shutdown_requested: AtomicBool::new(false),
             completed_shutdown,
             thread: Mutex::new(Some(thread)),
         };
@@ -81,64 +59,38 @@ impl SingleThreadExecutor {
     }
 }
 
-impl<E> SyncExecutor<E> for SingleThreadExecutor
+impl<E, R> SyncBorrowedExecutor<E> for SingleThreadExecutor<R>
 where
-    E: Send + 'static,
+    E: Send + Sync + 'static,
+    R: Send + Sync + 'static,
 {
-    /// Spawn a synchronous job on the single worker thread
-    ///
-    /// Jobs are executed in strict FIFO order on a dedicated thread.
-    /// This provides deterministic execution ordering and prevents
-    /// blocking of async runtimes.
-    ///
-    /// # Cancellation
-    ///
-    /// Dropping the returned future cancels the job if it hasn't started
-    /// execution yet. Once a job starts running, cancellation is cooperative
-    /// and depends on the job's implementation.
-    fn spawn_sync(
-        &self,
-        job: Box<dyn FnOnce() -> Outcome<E> + Send>,
-    ) -> BoxFuture<'static, Result<Outcome<E>, ExecutorError>> {
-        // Wrap job to type erase its output
-        let wrapped_job: Box<dyn FnOnce() -> Box<dyn Any + Send> + Send> =
-            Box::new(move || -> Box<dyn Any + Send> { Box::new(job()) });
+    type Resources = R;
 
-        let (tx_result, rx_result) =
-            oneshot::channel::<Result<Box<dyn Any + Send>, ExecutorError>>();
-
-        let send_res = {
-            let guard = self.state.tx.lock().expect("executor state poisoned");
-            if let Some(sender) = guard.as_ref() {
-                sender.send(Job::Sync {
-                    job: wrapped_job,
-                    tx: tx_result,
-                })
-            } else {
-                Err(crossbeam_channel::SendError(Job::Shutdown))
-            }
-        };
-
-        if send_res.is_err() {
-            return futures_util::future::err(ExecutorError::WorkerGone).boxed();
+    fn spawn_sync<F>(&self, job: F) -> Result<(), ExecutorError>
+    where
+        F: FnOnce(&mut Self::Resources) + Send + 'static,
+    {
+        if self.state.shutdown_requested.load(Ordering::Acquire)
+            || self.state.tx.send(Job::Sync(Box::new(job))).is_err()
+        {
+            return Err(ExecutorError::WorkerGone);
         }
 
-        // No cancellation for sync jobs, just await completion
-        JoinFuture::<E>::new(rx_result).boxed()
+        Ok(())
     }
 }
 
-impl ExecutorLifecycle for SingleThreadExecutor {
+impl<R> ExecutorLifecycle for SingleThreadExecutor<R>
+where
+    R: Send + Sync + 'static,
+{
     fn shutdown(&self) {
-        let mut guard = self.state.tx.lock().expect("executor state poisoned");
-        if let Some(sender) = guard.take() {
-            // Signal shutdown; ignoring send error if worker already exited
-            let _ = sender.send(Job::Shutdown);
+        if !self.state.shutdown_requested.swap(true, Ordering::AcqRel) {
+            let _ = self.state.tx.send(Job::Shutdown);
         }
     }
 
     fn join(&self) -> BoxFuture<'static, ()> {
-        // Initiate shutdown and then await completion
         self.shutdown();
         let fut = self.state.completed_shutdown.clone();
         async move {
@@ -148,113 +100,52 @@ impl ExecutorLifecycle for SingleThreadExecutor {
     }
 }
 
-struct State {
-    tx: Mutex<Option<Sender<Job>>>,
+struct State<R> {
+    tx: Sender<Job<R>>,
+    shutdown_requested: AtomicBool,
     completed_shutdown: Shared<BoxFuture<'static, ()>>,
     thread: Mutex<Option<std::thread::JoinHandle<()>>>,
 }
 
-impl Drop for State {
+impl<R> Drop for State<R> {
     fn drop(&mut self) {
-        // Ensure shutdown signal is sent
-        if let Ok(mut guard) = self.tx.lock()
-            && let Some(sender) = guard.take()
-        {
-            let _ = sender.send(Job::Shutdown);
+        if !self.shutdown_requested.swap(true, Ordering::AcqRel) {
+            let _ = self.tx.send(Job::Shutdown);
         }
 
-        // Try to advance completion without blocking runtime executors
         let _ = self.completed_shutdown.clone().now_or_never();
 
-        // Join OS thread to avoid leaks
-        if let Ok(mut th) = self.thread.lock()
-            && let Some(handle) = th.take()
+        if let Ok(mut guard) = self.thread.lock()
+            && let Some(join) = guard.take()
         {
-            let _ = handle.join();
+            let _ = join.join();
         }
     }
 }
 
-enum Job {
-    Sync {
-        job: Box<dyn FnOnce() -> Box<dyn Any + Send> + Send>,
-        tx: oneshot::Sender<Result<Box<dyn Any + Send>, ExecutorError>>,
-    },
+enum Job<R> {
+    Sync(Box<dyn FnOnce(&mut R) + Send>),
     Shutdown,
 }
 
-fn worker_loop(rx: Receiver<Job>, shutdown_tx: oneshot::Sender<()>) {
-    // FIFO processing of sync jobs on this single worker thread
+fn worker_loop<R>(rx: Receiver<Job<R>>, shutdown_tx: oneshot::Sender<()>, mut resources: R)
+where
+    R: Send + Sync + 'static,
+{
     while let Ok(job) = rx.recv() {
         match job {
-            Job::Sync { job, tx } => {
-                // Catch panics and map to ExecutorError::Panic
-                let res = catch_unwind(AssertUnwindSafe(job)).map_err(|p| ExecutorError::Panic {
-                    msg: panic_message(p),
-                });
+            Job::Sync(job) => {
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    job(&mut resources);
+                }));
 
-                let _ = tx.send(res);
+                if let Err(panic) = result {
+                    let _ = panic_message(panic);
+                }
             }
             Job::Shutdown => break,
         }
     }
 
-    // Notify completion
     let _ = shutdown_tx.send(());
-}
-
-struct JoinFuture<E> {
-    rx: Option<oneshot::Receiver<Result<Box<dyn Any + Send>, ExecutorError>>>,
-    _phantom: std::marker::PhantomData<E>,
-}
-
-impl<E> JoinFuture<E> {
-    fn new(rx: oneshot::Receiver<Result<Box<dyn Any + Send>, ExecutorError>>) -> Self {
-        Self {
-            rx: Some(rx),
-            _phantom: std::marker::PhantomData,
-        }
-    }
-}
-
-impl<E> std::future::Future for JoinFuture<E>
-where
-    E: Send + 'static,
-{
-    type Output = Result<Outcome<E>, ExecutorError>;
-
-    fn poll(
-        self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Self::Output> {
-        use futures_util::FutureExt;
-
-        // SAFETY: JoinFuture contains no self-referential or pinned fields. We only access
-        // interior state (rx) and do not move the struct after it has been pinned. Using
-        // get_unchecked_mut here avoids requiring Unpin while remaining sound.
-        let this = unsafe { self.get_unchecked_mut() };
-        if let Some(rx) = &mut this.rx {
-            match rx.poll_unpin(cx) {
-                std::task::Poll::Pending => std::task::Poll::Pending,
-                std::task::Poll::Ready(res) => {
-                    this.rx = None;
-                    let out = match res {
-                        Ok(Ok(boxed)) => {
-                            // Downcast to the expected Outcome<E>
-                            match boxed.downcast::<Outcome<E>>() {
-                                Ok(typed) => Ok(*typed),
-                                Err(_boxed) => Err(ExecutorError::WorkerGone),
-                            }
-                        }
-                        Ok(Err(err)) => Err(err),
-                        Err(_canceled) => Err(ExecutorError::WorkerGone),
-                    };
-                    std::task::Poll::Ready(out)
-                }
-            }
-        } else {
-            // Already resolved
-            std::task::Poll::Ready(Err(ExecutorError::WorkerGone))
-        }
-    }
 }

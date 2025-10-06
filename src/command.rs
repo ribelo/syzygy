@@ -361,7 +361,7 @@ impl<Event, Effect> From<()> for Command<Event, Effect> {
 /// enum Effect { HttpGet(String), Log(String) }
 ///
 /// // In event handlers - context makes it clear what type we want
-/// fn handle_click(event: Event, ctx: &mut EventContext<Event, Effect, Model>) -> Command<Event, Effect> {
+/// fn handle_click(event: Event, model: &mut Model) -> Command<Event, Effect> {
 ///     match event {
 ///         Event::Click => {
 ///             // Convert event to command

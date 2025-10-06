@@ -11,12 +11,10 @@
 //! ## Example
 //! ```rust
 //! # use syzygy::prelude::*;
-//! # use syzygy::event_context::EventContext;
 //! # #[derive(Debug, Clone)] enum TestEvent { Increment }
 //! # #[derive(Debug, Clone)] enum TestEffect { Log }
 //! # #[derive(Debug, Default)] struct CounterModel { count: i32 }
-//! # fn counter_update(event: TestEvent, ctx: &mut EventContext<TestEvent, TestEffect, CounterModel>) -> Command<TestEvent, TestEffect> {
-//! #     let model: &mut CounterModel = ctx.model_mut();
+//! # fn counter_update(event: TestEvent, model: &mut CounterModel) -> Command<TestEvent, TestEffect> {
 //! #     model.count += 1;
 //! #     Command::none()
 //! # }
@@ -41,10 +39,10 @@ use std::time::Duration;
 #[cfg(feature = "tracing")]
 use tracing::{Level, debug, span};
 
-use crate::{command::Command, event_context::EventContext};
+use crate::command::Command;
 
-/// Update function type that takes an event and a mutable `EventContext`
-pub type EventHandler<E, X, M> = fn(event: E, ctx: &mut EventContext<E, X, M>) -> Command<E, X>;
+/// Update function type that takes an event and a mutable reference to the model.
+pub type EventHandler<E, X, M> = fn(event: E, model: &mut M) -> Command<E, X>;
 
 /// Core handles synchronous event processing and owns the model.
 ///
@@ -107,8 +105,7 @@ where
         #[cfg(feature = "tracing")]
         debug!("Processing event");
 
-        let mut ctx = EventContext::new(&mut self.model);
-        let command = (self.event_handler)(event, &mut ctx);
+        let command = (self.event_handler)(event, &mut self.model);
 
         #[cfg(feature = "tracing")]
         debug!("Event processed, command created");
@@ -250,9 +247,8 @@ mod tests {
 
     fn counter_update(
         event: TestEvent,
-        ctx: &mut EventContext<TestEvent, TestEffect, CounterModel>,
+        model: &mut CounterModel,
     ) -> Command<TestEvent, TestEffect> {
-        let model: &mut CounterModel = ctx.model_mut();
 
         match event {
             TestEvent::Increment => {
@@ -364,10 +360,9 @@ mod tests {
         // Update function for the multi-model app
         fn multi_model_update(
             event: TestEvent,
-            ctx: &mut EventContext<TestEvent, TestEffect, AppModel>,
+            model: &mut AppModel,
         ) -> Command<TestEvent, TestEffect> {
             // Just update the counter for simplicity
-            let model = ctx.model_mut();
             match event {
                 TestEvent::Increment => {
                     model.counter.count += 1;

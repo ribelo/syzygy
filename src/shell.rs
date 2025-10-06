@@ -5,30 +5,27 @@
 //! the Shell drives using executors registered in an immutable registry.
 
 use crossbeam_channel::{Receiver, RecvTimeoutError, Sender, TrySendError};
-use futures::future::{BoxFuture, FutureExt};
 use std::collections::VecDeque;
 use std::sync::Arc;
 use std::time::Duration;
 
 use crate::command::{Command, CommandStep};
-use crate::effect_context::EffectContext;
 use crate::error::ShellError;
-use crate::executor::spec::drive_spec;
-use crate::executor::{AsyncExecutor, ExecutorRegistry, Task};
+use crate::executor::task::drive_spec;
+use crate::executor::{ExecutorRegistry, Task};
 
 #[cfg(feature = "tracing")]
-use tracing::{Level, debug, span, warn};
+use tracing::{Level, debug, span};
 
 /// Effect handler accepting closures that produce declarative tasks.
-pub type EffectHandler<E, X, R> =
-    Box<dyn FnMut(X, EffectContext<E, R>) -> Task<E, R> + Send + 'static>;
+pub type EffectHandler<E, X, R> = Box<dyn FnMut(X, R) -> Task<E, X> + Send + 'static>;
 
 /// The Shell orchestrates async effect execution independently of Core
 pub struct Shell<E, X, R = ()>
 where
-    E: Send + 'static,
-    X: Send + 'static,
-    R: Send + Sync + 'static,
+    E: Send + Sync + 'static,
+    X: Send + Sync + 'static,
+    R: Clone + Send + Sync + 'static,
 {
     /// Channel for receiving command outputs (effects)
     pub(crate) effect_rx: Receiver<CommandStep<E, X>>,
@@ -37,14 +34,14 @@ where
     /// Channel for sending events back to Core
     pub(crate) event_tx: Sender<E>,
 
-    /// Resources shared with effect handlers (owned Arc)
-    pub(crate) resources: Arc<R>,
-
     /// Registry of pluggable executors
-    pub(crate) executors: Arc<ExecutorRegistry<E>>,
+    pub(crate) executors: Arc<ExecutorRegistry<E, X>>,
 
     /// User-provided effect handler
     pub(crate) effect_handler: EffectHandler<E, X, R>,
+
+    /// Shared application resources cloned per effect invocation
+    pub(crate) resources: R,
 
     /// Optional capacity for the effect queue (None => unbounded)
     pub(crate) effect_channel_capacity: Option<usize>,
@@ -60,20 +57,10 @@ where
 
 impl<E, X, R> Shell<E, X, R>
 where
-    E: Send + 'static,
-    X: Send + 'static,
-    R: Send + Sync + 'static,
+    E: Send + Sync + 'static,
+    X: Send + Sync + 'static,
+    R: Clone + Send + Sync + 'static,
 {
-    fn effect_context(&self) -> EffectContext<E, R> {
-        EffectContext::new(Arc::clone(&self.resources), Arc::clone(&self.executors))
-    }
-
-    pub(crate) fn default_executor(&self) -> Arc<dyn AsyncExecutor<E>> {
-        self.executors.default_async().expect(
-            "Shell requires a default async executor. Call Syzygy::builder().with_async_executor(...) before build().",
-        )
-    }
-
     fn push_effect_step(&mut self, step: CommandStep<E, X>) -> Result<(), ShellError> {
         match self.effect_tx.try_send(step) {
             Ok(()) => Ok(()),
@@ -104,34 +91,13 @@ where
         }
     }
 
-    fn effect_future(
-        &self,
-        task: Task<E, R>,
-        ctx: EffectContext<E, R>,
-    ) -> Result<BoxFuture<'static, ()>, ShellError> {
-        let event_tx = self.event_tx.clone();
-        drive_spec(task, ctx, event_tx)
-    }
-
-    fn process_effect(&mut self, effect: X) -> Result<BoxFuture<'static, ()>, ShellError> {
-        let ctx = self.effect_context();
+    fn process_effect(&mut self, effect: X) -> Result<(), ShellError> {
+        let resources = self.resources.clone();
         let task = {
             let handler = &mut self.effect_handler;
-            handler(effect, ctx.clone())
+            handler(effect, resources)
         };
-        self.effect_future(task, ctx)
-    }
-
-    /// Get an immutable reference to resources
-    #[must_use]
-    pub fn resource(&self) -> &R {
-        self.resources.as_ref()
-    }
-
-    /// Clone the shared resource Arc when ownership is required
-    #[must_use]
-    pub fn resource_arc(&self) -> Arc<R> {
-        Arc::clone(&self.resources)
+        drive_spec(&self.executors, task, self.event_tx.clone(), self.effect_tx.clone())
     }
 
     // No public effect sender accessors to keep the API minimal.
@@ -203,94 +169,33 @@ where
         }
     }
 
-    /// Spawn a sequence of effects to run one after another
-    fn spawn_sequence(
-        &mut self,
-        effects: Vec<X>,
-        executor: &Arc<dyn AsyncExecutor<E>>,
-    ) -> Result<(), ShellError> {
-        if effects.is_empty() {
-            return Ok(());
-        }
-
-        let mut futures = Vec::with_capacity(effects.len());
-        for effect in effects {
-            futures.push(self.process_effect(effect)?);
-        }
-
-        let sequence = async move {
-            for fut in futures {
-                fut.await;
-            }
-        }
-        .boxed();
-
-        executor.spawn_detached(sequence);
-        Ok(())
-    }
-
-    fn handle_effect_step(
-        &mut self,
-        step: CommandStep<E, X>,
-        executor: &Arc<dyn AsyncExecutor<E>>,
-    ) -> Result<(), ShellError> {
+    fn handle_effect_step(&mut self, step: CommandStep<E, X>) -> Result<usize, ShellError> {
         match step {
             CommandStep::Effect(effect) => {
-                let fut = self.process_effect(effect)?;
-                executor.spawn_detached(fut);
+                self.process_effect(effect)?;
+                Ok(1)
             }
-            CommandStep::Batch(effects) => {
-                self.spawn_sequence(effects, executor)?;
-            }
-            CommandStep::Parallel(effects) => {
-                if effects.is_empty() {
-                    return Ok(());
+            CommandStep::Batch(effects) | CommandStep::Parallel(effects) => {
+                let mut handled = 0usize;
+                for effect in effects {
+                    self.process_effect(effect)?;
+                    handled += 1;
                 }
-
-                if executor.allows_overlap() {
-                    for effect in effects {
-                        let fut = self.process_effect(effect)?;
-                        executor.spawn_detached(fut);
-                    }
-                    return Ok(());
-                }
-
-                #[cfg(feature = "tracing")]
-                let effect_len = effects.len();
-
-                #[cfg(feature = "tracing")]
-                if effect_len > 1 {
-                    warn!(
-                        "Parallel command executed on non-overlapping executor; falling back to sequential execution"
-                    );
-                }
-
-                self.spawn_sequence(effects, executor)?;
+                Ok(handled)
             }
             CommandStep::Event(_) => unreachable!(),
         }
-        Ok(())
     }
 
     /// Process all pending effects synchronously and return count of effects processed
-    pub fn drain_with_executor(
-        &mut self,
-        executor: Arc<dyn AsyncExecutor<E>>,
-    ) -> Result<usize, ShellError> {
+    pub fn drain(&mut self) -> Result<usize, ShellError> {
         #[cfg(feature = "tracing")]
         let _span = span!(Level::DEBUG, "shell_drain").entered();
 
         let mut effect_count = 0usize;
 
         while let Some(step) = self.next_effect_step() {
-            match &step {
-                CommandStep::Effect(_) => effect_count += 1,
-                CommandStep::Batch(effects) | CommandStep::Parallel(effects) => {
-                    effect_count += effects.len();
-                }
-                CommandStep::Event(_) => {}
-            }
-            self.handle_effect_step(step, &executor)?;
+            effect_count += self.handle_effect_step(step)?;
         }
 
         #[cfg(feature = "tracing")]
@@ -301,31 +206,16 @@ where
         Ok(effect_count)
     }
 
-    /// Process all pending effects using the shell's default executor and return the count.
-    pub fn drain(&mut self) -> Result<usize, ShellError> {
-        let executor = self.default_executor();
-        self.drain_with_executor(executor)
-    }
-
     /// Process at most one effect from the queue synchronously
     ///
     /// Returns true if an effect was processed, false if the queue was empty
-    pub fn poll_one_with_executor(
-        &mut self,
-        executor: Arc<dyn AsyncExecutor<E>>,
-    ) -> Result<bool, ShellError> {
+    pub fn poll_one(&mut self) -> Result<bool, ShellError> {
         if let Some(step) = self.next_effect_step() {
-            self.handle_effect_step(step, &executor)?;
+            self.handle_effect_step(step)?;
             Ok(true)
         } else {
             Ok(false)
         }
-    }
-
-    /// Process at most one effect using the default executor.
-    pub fn poll_one(&mut self) -> Result<bool, ShellError> {
-        let executor = self.default_executor();
-        self.poll_one_with_executor(executor)
     }
 
     /// Block until an effect arrives or the timeout expires.
@@ -391,13 +281,12 @@ where
 
 impl<E, X, R> std::fmt::Debug for Shell<E, X, R>
 where
-    E: Send + 'static,
-    X: Send + 'static,
+    E: Send + Sync + 'static,
+    X: Send + Sync + 'static,
     R: Clone + Send + Sync + 'static,
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Shell")
-            .field("resources", &"<resources>")
             .field("pending_effects", &"<pending>")
             .field("closed", &self.closed)
             .finish_non_exhaustive()

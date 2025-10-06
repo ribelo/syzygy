@@ -410,7 +410,7 @@ async fn handle_effects(effect: MyEffect, ctx: EffectContext<...>) {
 #[cfg(feature = "rayon")]
 let (core, shell) = Syzygy::builder()
     .model(MyModel::default())
-    .executor(RayonExecutor::new())  // Work-stealing thread pool
+    .executor(RayonExecutor::builder().build())  // Work-stealing thread pool
     .event_handler(update)
     .effect_handler(handle_effects)
     .build();
@@ -437,7 +437,7 @@ let (core, shell) = Syzygy::builder()
     .model(MyModel::default())
     .executor(SingleThreadExecutor::new())      // For DB writes
     .executor(ThreadPerCoreTokioExecutor::new()) // For I/O
-    .executor(RayonExecutor::new())             // For computation
+    .executor(RayonExecutor::builder().build())             // For computation
     .event_handler(update)
     .effect_handler(handle_effects)
     .build();

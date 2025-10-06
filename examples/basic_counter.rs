@@ -50,17 +50,14 @@ fn on_decrement(model: &mut CounterModel) -> Command<CounterEvent, CounterEffect
     )))
 }
 
-fn effect_handler(
-    effect: CounterEffect,
-    _ctx: EffectContext<CounterEvent, ()>,
-) -> Task<CounterEvent, ()> {
+fn effect_handler(effect: CounterEffect, _ctx: EffectContext<CounterEvent>) -> Task<CounterEvent> {
     match effect {
         CounterEffect::Log(message) => log_message(message),
     }
 }
 
-fn log_message(message: String) -> Task<CounterEvent, ()> {
-    Task::async_task::<InlineAsync<CounterEvent>, _>(async move {
+fn log_message(message: String) -> Task<CounterEvent> {
+    Task::async_owned::<InlineAsync<CounterEvent>, _, _>(|_ctx, _resources| async move {
         println!("{message}");
         Outcome::None
     })

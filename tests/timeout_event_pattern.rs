@@ -12,11 +12,10 @@
 //! relying on logging or system-level timeouts.
 
 use std::time::Duration;
-use syzygy::event_context::EventContext;
 use syzygy::executor::TokioExecutor;
 use syzygy::prelude::*;
 
-use syzygy::executor::Outcome;
+// Outcome removed; tasks now return Command
 
 #[derive(Debug, Default)]
 struct TimeoutModel {
@@ -41,9 +40,8 @@ enum TimeoutEffect {
 
 fn timeout_update(
     event: TimeoutEvent,
-    ctx: &mut EventContext<TimeoutEvent, TimeoutEffect, TimeoutModel>,
+    model: &mut TimeoutModel,
 ) -> Command<TimeoutEvent, TimeoutEffect> {
-    let model: &mut TimeoutModel = ctx.model_mut();
     match event {
         TimeoutEvent::StartSlowOperation => {
             model.is_loading = true;
@@ -85,25 +83,27 @@ fn timeout_update(
 // Effect handler that implements manual timeout detection using Task plans
 fn timeout_aware_effect_handler(
     effect: TimeoutEffect,
-    _ctx: EffectContext<TimeoutEvent, ()>,
-) -> syzygy::executor::Task<TimeoutEvent, ()> {
+    _resources: (),
+) -> syzygy::executor::Task<TimeoutEvent, TimeoutEffect> {
     match effect {
         TimeoutEffect::SlowOperation { delay_ms } => {
-            syzygy::executor::Task::async_task::<TokioExecutor, _>(async move {
-                let operation_future = async move {
-                    tokio::time::sleep(Duration::from_millis(delay_ms)).await;
-                    format!("Operation completed after {delay_ms}ms")
-                };
+            syzygy::executor::Task::<TimeoutEvent, TimeoutEffect>::async_owned::<TokioExecutor, _, _>(
+                move |_resources| async move {
+                    let operation_future = async move {
+                        tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+                        format!("Operation completed after {delay_ms}ms")
+                    };
 
-                // Use manual timeout with event emission
-                let timeout_duration = Duration::from_millis(200);
-                match tokio::time::timeout(timeout_duration, operation_future).await {
-                    Ok(data) => Outcome::Event(TimeoutEvent::OperationCompleted { data }),
-                    Err(_timeout) => Outcome::Event(TimeoutEvent::OperationTimeout {
-                        duration: timeout_duration,
-                    }),
-                }
-            })
+                    // Use manual timeout with event emission
+                    let timeout_duration = Duration::from_millis(200);
+                    match tokio::time::timeout(timeout_duration, operation_future).await {
+                        Ok(data) => Command::event(TimeoutEvent::OperationCompleted { data }),
+                        Err(_timeout) => Command::event(TimeoutEvent::OperationTimeout {
+                            duration: timeout_duration,
+                        }),
+                    }
+                },
+            )
         }
     }
 }

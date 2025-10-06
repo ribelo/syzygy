@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use thiserror::Error;
 
 /// Errors that can occur in Shell operations
@@ -34,4 +36,8 @@ pub enum ShellError {
     /// Effect queue reached its configured capacity
     #[error("Effect queue is full (capacity {capacity})")]
     EffectQueueFull { capacity: usize },
+
+    /// Timed out while waiting for work to complete
+    #[error("Timed out after {duration:?} while draining work")]
+    Timeout { duration: Duration },
 }

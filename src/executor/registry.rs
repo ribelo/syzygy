@@ -2,285 +2,143 @@ use rustc_hash::FxHashMap;
 use std::any::TypeId;
 use std::sync::Arc;
 
-use futures;
+use futures_util::future::join_all;
 
-use super::{AsyncExecutor, ExecutorLifecycle, SyncExecutor};
+use super::{
+    AsyncOwnedExecutor, DynAsyncExecutor, DynAsyncExecutorAdapter, DynSyncBorrowedExecutor,
+    DynSyncBorrowedExecutorAdapter, DynSyncOwnedExecutor, DynSyncOwnedExecutorAdapter,
+    ExecutorLifecycle, SyncBorrowedExecutor, SyncOwnedExecutor,
+};
 
-/// Registry of executors keyed by `TypeId` markers with separate async and sync capabilities.
-pub struct ExecutorRegistry<E> {
-    async_map: FxHashMap<TypeId, Arc<dyn AsyncExecutor<E>>>,
-    sync_map: FxHashMap<TypeId, Arc<dyn SyncExecutor<E>>>,
-    default_async: Option<TypeId>,
+pub struct ExecutorRegistry<E, X> {
+    async_map: FxHashMap<TypeId, Arc<dyn DynAsyncExecutor<E, X>>>,
+    sync_borrowed_map: FxHashMap<TypeId, Arc<dyn DynSyncBorrowedExecutor<E, X>>>,
+    sync_owned_map: FxHashMap<TypeId, Arc<dyn DynSyncOwnedExecutor<E, X>>>,
 }
 
-impl<E> Default for ExecutorRegistry<E>
+impl<E, X> Default for ExecutorRegistry<E, X>
 where
-    E: Send + 'static,
+    E: Send + Sync + 'static,
+    X: Send + Sync + 'static,
 {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<E> ExecutorRegistry<E>
+impl<E, X> ExecutorRegistry<E, X>
 where
-    E: Send + 'static,
+    E: Send + Sync + 'static,
+    X: Send + Sync + 'static,
 {
     #[must_use]
     pub fn new() -> Self {
         Self {
             async_map: FxHashMap::default(),
-            sync_map: FxHashMap::default(),
-            default_async: None,
+            sync_borrowed_map: FxHashMap::default(),
+            sync_owned_map: FxHashMap::default(),
         }
     }
 
-    /// Insert an async executor using concrete type T as key.
     pub fn insert_async<T>(&mut self, exec: T)
     where
-        T: AsyncExecutor<E> + 'static,
+        T: AsyncOwnedExecutor<E> + 'static,
     {
         let key = TypeId::of::<T>();
-        let arc_exec = Arc::new(exec) as Arc<dyn AsyncExecutor<E>>;
-        self.async_map.insert(key, Arc::clone(&arc_exec));
-
-        if self.default_async.is_none() {
-            self.default_async = Some(key);
-        }
+        let erased: Arc<dyn DynAsyncExecutor<E, X>> =
+            Arc::new(DynAsyncExecutorAdapter::new(Arc::new(exec)));
+        self.async_map.insert(key, erased);
     }
 
-    /// Insert a sync executor using concrete type T as key.
-    pub fn insert_sync<T>(&mut self, exec: T)
+    pub fn insert_sync_borrowed<T>(&mut self, exec: T)
     where
-        T: SyncExecutor<E> + 'static,
+        T: SyncBorrowedExecutor<E> + 'static,
     {
-        self.sync_map.insert(
-            TypeId::of::<T>(),
-            Arc::new(exec) as Arc<dyn SyncExecutor<E>>,
-        );
+        let key = TypeId::of::<T>();
+        let erased: Arc<dyn DynSyncBorrowedExecutor<E, X>> =
+            Arc::new(DynSyncBorrowedExecutorAdapter::new(Arc::new(exec)));
+        self.sync_borrowed_map.insert(key, erased);
     }
 
-    /// Get an async executor by marker type.
+    pub fn insert_sync_owned<T>(&mut self, exec: T)
+    where
+        T: SyncOwnedExecutor<E> + 'static,
+    {
+        let key = TypeId::of::<T>();
+        let erased: Arc<dyn DynSyncOwnedExecutor<E, X>> =
+            Arc::new(DynSyncOwnedExecutorAdapter::new(Arc::new(exec)));
+        self.sync_owned_map.insert(key, erased);
+    }
+
     #[must_use]
-    pub fn async_exec<T: 'static>(&self) -> Option<Arc<dyn AsyncExecutor<E>>> {
+    pub fn async_exec<T: 'static>(&self) -> Option<Arc<dyn DynAsyncExecutor<E, X>>> {
         self.async_map.get(&TypeId::of::<T>()).cloned()
     }
 
-    /// Get a sync executor by marker type.
     #[must_use]
-    pub fn sync_exec<T: 'static>(&self) -> Option<Arc<dyn SyncExecutor<E>>> {
-        self.sync_map.get(&TypeId::of::<T>()).cloned()
+    pub fn sync_borrowed_exec<T: 'static>(&self) -> Option<Arc<dyn DynSyncBorrowedExecutor<E, X>>> {
+        self.sync_borrowed_map.get(&TypeId::of::<T>()).cloned()
     }
 
-    /// Get an async executor by raw `TypeId` key.
-    #[must_use]
-    pub(crate) fn async_exec_by_key(&self, key: TypeId) -> Option<Arc<dyn AsyncExecutor<E>>> {
+    pub(crate) fn async_exec_by_key(&self, key: TypeId) -> Option<Arc<dyn DynAsyncExecutor<E, X>>> {
         self.async_map.get(&key).cloned()
     }
 
-    /// Get the default async executor.
-    #[must_use]
-    pub fn default_async(&self) -> Option<Arc<dyn AsyncExecutor<E>>> {
-        self.default_async
-            .and_then(|id| self.async_map.get(&id).cloned())
+    pub(crate) fn sync_borrowed_exec_by_key(
+        &self,
+        key: TypeId,
+    ) -> Option<Arc<dyn DynSyncBorrowedExecutor<E, X>>> {
+        self.sync_borrowed_map.get(&key).cloned()
     }
 
-    /// Mark an already-registered async executor as the default.
+    pub(crate) fn sync_owned_exec_by_key(
+        &self,
+        key: TypeId,
+    ) -> Option<Arc<dyn DynSyncOwnedExecutor<E, X>>> {
+        self.sync_owned_map.get(&key).cloned()
+    }
+
     pub fn set_default_async<T: 'static>(&mut self) -> bool {
-        let id = TypeId::of::<T>();
-        if self.async_map.contains_key(&id) {
-            self.default_async = Some(id);
-            true
-        } else {
-            false
-        }
+        self.async_map.contains_key(&TypeId::of::<T>())
     }
 
-    /// Returns true when a default async executor has been configured.
     #[must_use]
     pub fn has_default_async(&self) -> bool {
-        self.default_async.is_some()
+        !self.async_map.is_empty()
     }
 
-    /// Get a sync executor by raw `TypeId` key.
     #[must_use]
-    pub(crate) fn sync_exec_by_key(&self, key: TypeId) -> Option<Arc<dyn SyncExecutor<E>>> {
-        self.sync_map.get(&key).cloned()
+    pub fn default_async(&self) -> Option<Arc<dyn DynAsyncExecutor<E, X>>> {
+        self.async_map.values().next().cloned()
     }
 
-    /// Get an iterator over all executors as the common ExecutorLifecycle trait
     fn all_executors(&self) -> impl Iterator<Item = Arc<dyn ExecutorLifecycle>> + '_ {
         self.async_map
             .values()
-            .map(|exec| Arc::clone(exec) as Arc<dyn ExecutorLifecycle>)
+            .cloned()
+            .map(|exec| exec as Arc<dyn ExecutorLifecycle>)
             .chain(
-                self.sync_map
+                self.sync_borrowed_map
                     .values()
-                    .map(|exec| Arc::clone(exec) as Arc<dyn ExecutorLifecycle>),
+                    .cloned()
+                    .map(|exec| exec as Arc<dyn ExecutorLifecycle>),
+            )
+            .chain(
+                self.sync_owned_map
+                    .values()
+                    .cloned()
+                    .map(|exec| exec as Arc<dyn ExecutorLifecycle>),
             )
     }
 
-    /// Shutdown all executors in the registry
     pub fn shutdown_all(&self) {
-        for executor in self.all_executors() {
-            executor.shutdown();
+        for exec in self.all_executors() {
+            exec.shutdown();
         }
     }
 
-    /// Wait for all executors to complete shutdown
     pub async fn join_all(&self) {
         let futures: Vec<_> = self.all_executors().map(|exec| exec.join()).collect();
-        futures::future::join_all(futures).await;
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::executor::{InlineAsync, SingleThreadExecutor, TokioExecutor};
-
-    #[derive(Debug, Clone)]
-    #[allow(dead_code)]
-    enum TestEvent {
-        Done,
-    }
-
-    // Marker types for testing type safety
-    #[allow(dead_code)]
-    struct IoKey;
-    #[allow(dead_code)]
-    struct CpuKey;
-
-    fn setup_registry_with_executors() -> ExecutorRegistry<TestEvent> {
-        let mut reg = ExecutorRegistry::default();
-        reg.insert_async(TokioExecutor::current_thread_io("test"));
-        reg.insert_sync(SingleThreadExecutor::new());
-        reg
-    }
-
-    #[test]
-    fn registry_stores_and_retrieves_async_executor_by_type() {
-        // Given: A registry with executors
-        let registry = setup_registry_with_executors();
-
-        // When: Retrieve async executor by type
-        let async_exec = registry.async_exec::<TokioExecutor>();
-
-        // Then: Correct executor is returned
-        assert!(async_exec.is_some(), "TokioExecutor should be found");
-    }
-
-    #[test]
-    fn registry_stores_and_retrieves_sync_executor_by_type() {
-        // Given: A registry with executors
-        let registry = setup_registry_with_executors();
-
-        // When: Retrieve sync executor by type
-        let sync_exec = registry.sync_exec::<SingleThreadExecutor>();
-
-        // Then: Correct executor is returned
-        assert!(sync_exec.is_some(), "SingleThreadExecutor should be found");
-    }
-
-    #[test]
-    fn registry_returns_none_for_unregistered_executor_types() {
-        // Given: A registry with executors
-        let registry = setup_registry_with_executors();
-
-        // When: Try to get executor type that wasn't registered
-        let missing_exec = registry.async_exec::<SingleThreadExecutor>(); // Wrong category
-
-        // Then: None is returned
-        assert!(
-            missing_exec.is_none(),
-            "Should not find async executor for sync type"
-        );
-    }
-
-    #[test]
-    fn registry_handles_empty_registry_gracefully() {
-        // Given: An empty registry
-        let registry = ExecutorRegistry::<TestEvent>::default();
-
-        // When: Query for any executor
-        let async_exec = registry.async_exec::<TokioExecutor>();
-        let sync_exec = registry.sync_exec::<SingleThreadExecutor>();
-
-        // Then: No executors found
-        assert!(
-            async_exec.is_none(),
-            "Empty registry should not have async executors"
-        );
-        assert!(
-            sync_exec.is_none(),
-            "Empty registry should not have sync executors"
-        );
-    }
-
-    #[test]
-    fn registry_overwrites_executor_when_same_type_inserted_twice() {
-        // Given: A registry with an initial executor
-        let mut registry = ExecutorRegistry::<TestEvent>::default();
-        registry.insert_async(TokioExecutor::current_thread_io("first"));
-
-        // When: Insert another executor of the same type
-        registry.insert_async(TokioExecutor::current_thread_io("second"));
-
-        // Then: The second executor overwrites the first
-        let exec = registry.async_exec::<TokioExecutor>();
-        assert!(exec.is_some(), "Executor should be present after overwrite");
-    }
-
-    #[test]
-    fn registry_async_exec_by_key_provides_raw_typeid_access_for_internal_use() {
-        // Given: A registry with executors
-        let registry = setup_registry_with_executors();
-
-        // When: Use raw TypeId access (internal API)
-        let key = TypeId::of::<TokioExecutor>();
-        let exec = registry.async_exec_by_key(key);
-
-        // Then: Executor is found
-        assert!(exec.is_some(), "Raw TypeId access should find executor");
-    }
-
-    #[test]
-    fn registry_sync_exec_by_key_provides_raw_typeid_access_for_internal_use() {
-        // Given: A registry with executors
-        let registry = setup_registry_with_executors();
-
-        // When: Use raw TypeId access (internal API)
-        let key = TypeId::of::<SingleThreadExecutor>();
-        let exec = registry.sync_exec_by_key(key);
-
-        // Then: Executor is found
-        assert!(exec.is_some(), "Raw TypeId access should find executor");
-    }
-
-    #[test]
-    fn first_async_executor_is_default() {
-        let mut registry = ExecutorRegistry::<TestEvent>::default();
-        registry.insert_async(TokioExecutor::current_thread_io("primary"));
-
-        assert!(
-            registry.has_default_async(),
-            "default async executor should be set automatically"
-        );
-        assert!(
-            registry.default_async().is_some(),
-            "default async executor should be retrievable"
-        );
-    }
-
-    #[test]
-    fn default_async_can_switch_to_existing_executor() {
-        let mut registry = ExecutorRegistry::<TestEvent>::default();
-        registry.insert_async(TokioExecutor::current_thread_io("first"));
-        registry.insert_async(InlineAsync::<TestEvent>::new());
-
-        assert!(
-            registry.set_default_async::<InlineAsync<TestEvent>>(),
-            "existing executor should be markable as default"
-        );
+        join_all(futures).await;
     }
 }

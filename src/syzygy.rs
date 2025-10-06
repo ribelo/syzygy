@@ -11,14 +11,12 @@
 //! ## Example
 //! ```rust,no_run
 //! # use syzygy::prelude::*;
-//! # use syzygy::event_context::EventContext;
-//! # use syzygy::effect_context::EffectContext;
-//! # use syzygy::executor::{InlineAsync, Outcome, Task};
+//! # use syzygy::executor::{InlineAsync, Task};
 //! # #[derive(Debug, Clone)] enum TestEvent { Ping }
 //! # #[derive(Debug, Clone)] enum TestEffect { DoPing }
 //! # #[derive(Debug, Default)] struct Model;
-//! # fn update(_event: TestEvent, _ctx: &mut EventContext<TestEvent, TestEffect, Model>) -> Command<TestEvent, TestEffect> { Command::none() }
-//! # fn handle_effects(_effect: TestEffect, _ctx: EffectContext<TestEvent, ()>) -> Task<TestEvent, ()> { Task::none() }
+//! # fn update(_event: TestEvent, _model: &mut Model) -> Command<TestEvent, TestEffect> { Command::none() }
+//! # fn handle_effects(_effect: TestEffect, _resources: ()) -> Task<TestEvent, TestEffect> { Task::none() }
 //! # #[tokio::main]
 //! # async fn main() -> Result<(), Box<dyn std::error::Error>> {
 //! // In a real application, you would build and run the system like this:
@@ -39,9 +37,7 @@ use std::time::{Duration, Instant};
 
 use crate::core::Core;
 use crate::error::ShellError;
-use crate::executor::AsyncExecutor;
 use crate::shell::Shell;
-use std::sync::Arc;
 
 /// Configuration for the Syzygy
 #[derive(Clone, Debug)]
@@ -74,9 +70,9 @@ impl SyzygyConfig {
 /// Syzygy handles the proper sequencing automatically.
 pub struct Syzygy<Event, Effect, Storage, Resources = ()>
 where
-    Event: Send + 'static,
-    Effect: Send + 'static,
-    Resources: Send + Sync + 'static,
+    Event: Send + Sync + 'static,
+    Effect: Send + Sync + 'static,
+    Resources: Clone + Send + Sync + 'static,
 {
     core: Core<Event, Effect, Storage>,
     shell: Shell<Event, Effect, Resources>,
@@ -85,9 +81,9 @@ where
 
 impl<Event, Effect, Storage, Resources> Syzygy<Event, Effect, Storage, Resources>
 where
-    Event: Send + 'static,
-    Effect: Send + 'static,
-    Resources: Send + Sync + 'static,
+    Event: Send + Sync + 'static,
+    Effect: Send + Sync + 'static,
+    Resources: Clone + Send + Sync + 'static,
 {
     /// Create a new Syzygy with Core and Shell
     ///
@@ -99,14 +95,17 @@ where
     /// # #[derive(Debug, Clone)] enum Effect { Test }
     /// let (core, shell) = Syzygy::builder::<Event, Effect>()
     ///     .model(Model::default())
-    ///     .event_handler(|_event: Event, _ctx| Command::none())
-    ///     .effect_handler(|_effect: Effect, _ctx| Task::none())
+    ///     .event_handler(|_event: Event, _model| Command::none())
+    ///     .effect_handler(|_effect: Effect, _resources| Task::none())
     ///     .build()
     ///     .split();
     ///
     /// let syzygy = Syzygy::new(core, shell);
     /// ```
-    pub fn new(core: Core<Event, Effect, Storage>, shell: Shell<Event, Effect, Resources>) -> Self {
+    pub fn new(
+        core: Core<Event, Effect, Storage>,
+        shell: Shell<Event, Effect, Resources>,
+    ) -> Self {
         Self {
             core,
             shell,
@@ -131,18 +130,7 @@ where
     ///
     /// This will run until the shell is shut down or an error occurs.
     pub fn run(&mut self) -> Result<(), ShellError> {
-        self.run_loop(|syzygy| syzygy.step(), |_| false)
-    }
-
-    /// Run the event loop continuously using a specific executor for shell work.
-    pub fn run_with_executor(
-        &mut self,
-        executor: Arc<dyn AsyncExecutor<Event>>,
-    ) -> Result<(), ShellError> {
-        self.run_loop(
-            |syzygy| syzygy.step_with_executor(Arc::clone(&executor)),
-            |_| false,
-        )
+        self.run_loop(Syzygy::step, |_| false)
     }
 
     /// Run until a condition is met
@@ -150,27 +138,92 @@ where
     /// Useful for testing or conditional execution.
     pub fn run_until<F>(&mut self, mut condition: F) -> Result<(), ShellError>
     where
-        F: FnMut(&Core<Event, Effect, Storage>, &Shell<Event, Effect, Resources>) -> bool,
+        F: FnMut(
+            &Core<Event, Effect, Storage>,
+            &Shell<Event, Effect, Resources>,
+        ) -> bool,
     {
-        self.run_loop(
-            |syzygy| syzygy.step(),
-            move |syzygy| condition(&syzygy.core, &syzygy.shell),
-        )
+        self.run_loop(Syzygy::step, move |syzygy| {
+            condition(&syzygy.core, &syzygy.shell)
+        })
     }
 
-    /// Run until a condition is met using a specific executor.
-    pub fn run_until_with_executor<F>(
-        &mut self,
-        mut condition: F,
-        executor: Arc<dyn AsyncExecutor<Event>>,
-    ) -> Result<(), ShellError>
+    /// Drain the system for at most `max_steps` iterations.
+    ///
+    /// Returns the number of steps that performed work. Stops early if no work
+    /// remains before hitting `max_steps`.
+    pub fn drain_max(&mut self, max_steps: usize) -> Result<usize, ShellError> {
+        let mut steps = 0;
+        for _ in 0..max_steps {
+            if !self.step()? {
+                break;
+            }
+            steps += 1;
+        }
+        Ok(steps)
+    }
+
+    /// Drain until the predicate returns true or `timeout` elapses.
+    pub fn drain_until<F>(&mut self, mut predicate: F, timeout: Duration) -> Result<(), ShellError>
     where
-        F: FnMut(&Core<Event, Effect, Storage>, &Shell<Event, Effect, Resources>) -> bool,
+        F: FnMut(&Storage) -> bool,
     {
-        self.run_loop(
-            |syzygy| syzygy.step_with_executor(Arc::clone(&executor)),
-            move |syzygy| condition(&syzygy.core, &syzygy.shell),
-        )
+        if predicate(self.core.model()) {
+            return Ok(());
+        }
+
+        if timeout.is_zero() {
+            return Err(ShellError::Timeout { duration: timeout });
+        }
+
+        let start = Instant::now();
+        let deadline = start.checked_add(timeout);
+
+        loop {
+            if predicate(self.core.model()) {
+                return Ok(());
+            }
+
+            if let Some(deadline) = deadline {
+                if Instant::now() >= deadline {
+                    return Err(ShellError::Timeout { duration: timeout });
+                }
+            }
+
+            let did_work = self.step()?;
+
+            if predicate(self.core.model()) {
+                return Ok(());
+            }
+
+            if let Some(deadline) = deadline {
+                let now = Instant::now();
+                if now >= deadline {
+                    return Err(ShellError::Timeout { duration: timeout });
+                }
+
+                if !did_work {
+                    let remaining = deadline
+                        .checked_duration_since(now)
+                        .unwrap_or(Duration::ZERO);
+                    if remaining.is_zero() {
+                        return Err(ShellError::Timeout { duration: timeout });
+                    }
+
+                    let had_work = self.wait_for_idle(remaining);
+
+                    if predicate(self.core.model()) {
+                        return Ok(());
+                    }
+
+                    if !had_work && Instant::now() >= deadline {
+                        return Err(ShellError::Timeout { duration: timeout });
+                    }
+                }
+            } else if !did_work {
+                self.wait_for_work();
+            }
+        }
     }
 
     /// Get an immutable reference to the model
@@ -185,12 +238,6 @@ where
     /// Prefer sending events for state changes.
     pub fn model_mut(&mut self) -> &mut Storage {
         self.core.model_mut()
-    }
-
-    /// Get an immutable reference to resources
-    #[must_use]
-    pub fn resource(&self) -> &Resources {
-        self.shell.resource()
     }
 
     /// Get a reference to the Core
@@ -324,8 +371,8 @@ where
     /// # #[derive(Debug, Clone)] enum Effect { Test }
     /// let mut runner = Syzygy::builder::<Event, Effect>()
     ///     .model(Model::default())
-    ///     .event_handler(|_event: Event, _ctx| Command::none())
-    ///     .effect_handler(|_effect: Effect, _ctx| Task::none())
+    ///     .event_handler(|_event: Event, _model| Command::none())
+    ///     .effect_handler(|_effect: Effect, _resources| Task::none())
     ///     .build();
     /// runner.core().send_event(Event::Test)?;
     ///
@@ -337,24 +384,8 @@ where
         step_core_shell(&mut self.core, &mut self.shell)
     }
 
-    /// Execute a single synchronous step of the event loop using a specific executor.
-    ///
-    /// Useful for tests that want to force sequential execution by providing
-    /// an inline executor.
-    pub fn step_with_executor(
-        &mut self,
-        executor: Arc<dyn AsyncExecutor<Event>>,
-    ) -> Result<bool, ShellError> {
-        step_core_shell_with_executor(&mut self.core, &mut self.shell, executor)
-    }
-
     /// Consume the runner and return ownership of the Core and Shell.
-    pub fn split(
-        self,
-    ) -> (
-        Core<Event, Effect, Storage>,
-        Shell<Event, Effect, Resources>,
-    ) {
+    pub fn split(self) -> (Core<Event, Effect, Storage>, Shell<Event, Effect, Resources>) {
         (self.core, self.shell)
     }
 }
@@ -365,24 +396,9 @@ pub fn step_core_shell<Event, Effect, Storage, Resources>(
     shell: &mut Shell<Event, Effect, Resources>,
 ) -> Result<bool, ShellError>
 where
-    Event: Send + 'static,
-    Effect: Send + 'static,
-    Resources: Send + Sync + 'static,
-{
-    let executor = shell.default_executor();
-    step_core_shell_with_executor(core, shell, executor)
-}
-
-/// Same as [`step_core_shell`] but the caller provides the executor to run effects on.
-pub fn step_core_shell_with_executor<Event, Effect, Storage, Resources>(
-    core: &mut Core<Event, Effect, Storage>,
-    shell: &mut Shell<Event, Effect, Resources>,
-    executor: Arc<dyn AsyncExecutor<Event>>,
-) -> Result<bool, ShellError>
-where
-    Event: Send + 'static,
-    Effect: Send + 'static,
-    Resources: Send + Sync + 'static,
+    Event: Send + Sync + 'static,
+    Effect: Send + Sync + 'static,
+    Resources: Clone + Send + Sync + 'static,
 {
     let commands = core.process_events();
     let core_work = !commands.is_empty();
@@ -390,37 +406,30 @@ where
         shell.dispatch_command(command)?;
     }
 
-    let shell_work = shell.drain_with_executor(executor)?;
+    let shell_work = shell.drain()?;
 
     Ok(core_work || shell_work > 0)
 }
 
-impl<Event, Effect, Storage, Resources>
-    From<(
+impl<Event, Effect, Storage, Resources> From<(
         Core<Event, Effect, Storage>,
         Shell<Event, Effect, Resources>,
     )> for Syzygy<Event, Effect, Storage, Resources>
 where
-    Event: Send + 'static,
-    Effect: Send + 'static,
-    Resources: Send + Sync + 'static,
+    Event: Send + Sync + 'static,
+    Effect: Send + Sync + 'static,
+    Resources: Clone + Send + Sync + 'static,
 {
-    fn from(
-        parts: (
-            Core<Event, Effect, Storage>,
-            Shell<Event, Effect, Resources>,
-        ),
-    ) -> Self {
+    fn from(parts: (Core<Event, Effect, Storage>, Shell<Event, Effect, Resources>)) -> Self {
         Self::new(parts.0, parts.1)
     }
 }
 
-impl<Event, Effect, Storage, Resources> std::fmt::Debug
-    for Syzygy<Event, Effect, Storage, Resources>
+impl<Event, Effect, Storage, Resources> std::fmt::Debug for Syzygy<Event, Effect, Storage, Resources>
 where
-    Event: Send + 'static,
-    Effect: Send + 'static,
-    Resources: Send + Sync + 'static,
+    Event: Send + Sync + 'static,
+    Effect: Send + Sync + 'static,
+    Resources: Clone + Send + Sync + 'static,
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Syzygy")
@@ -429,14 +438,13 @@ where
     }
 }
 
-impl Syzygy<(), (), (), ()> {
+impl Syzygy<(), (), ()> {
     /// Create a new builder for Syzygy systems
     #[must_use]
-    pub fn builder<NewEvent, NewEffect>()
-    -> crate::builder::SyzygyBuilder<NewEvent, NewEffect, (), ()>
+    pub fn builder<NewEvent, NewEffect>() -> crate::builder::SyzygyBuilder<NewEvent, NewEffect, (), ()>
     where
-        NewEvent: Send + 'static,
-        NewEffect: Send + 'static,
+        NewEvent: Send + Sync + 'static,
+        NewEffect: Send + Sync + 'static,
     {
         crate::builder::SyzygyBuilder::new()
     }
@@ -465,9 +473,8 @@ mod tests {
 
     fn test_update(
         event: TestEvent,
-        ctx: &mut crate::event_context::EventContext<TestEvent, TestEffect, TestModel>,
+        model: &mut TestModel,
     ) -> Command<TestEvent, TestEffect> {
-        let model: &mut TestModel = ctx.model_mut();
 
         match event {
             TestEvent::Ping => {
@@ -488,7 +495,7 @@ mod tests {
             .model(TestModel { count: 0 })
             .event_handler(test_update)
             .with_async_executor(crate::executor::InlineAsync::<TestEvent>::new())
-            .effect_handler(|_e: TestEffect, _ctx| crate::executor::Task::events(Vec::new()))
+            .effect_handler(|_e: TestEffect, _resources| crate::executor::Task::<TestEvent, TestEffect>::events(Vec::new()))
             .build();
 
         let event_sender = runner.core().event_sender();
@@ -510,7 +517,7 @@ mod tests {
             .model(TestModel { count: 0 })
             .event_handler(test_update)
             .with_async_executor(crate::executor::InlineAsync::<TestEvent>::new())
-            .effect_handler(|_e: TestEffect, _ctx| crate::executor::Task::events(Vec::new()))
+            .effect_handler(|_e: TestEffect, _resources| crate::executor::Task::<TestEvent, TestEffect>::events(Vec::new()))
             .build();
 
         runner.set_config(SyzygyConfig {
@@ -537,7 +544,7 @@ mod tests {
             .model(TestModel { count: 0 })
             .event_handler(test_update)
             .with_async_executor(crate::executor::InlineAsync::<TestEvent>::new())
-            .effect_handler(|_e: TestEffect, _ctx| crate::executor::Task::events(Vec::new()))
+            .effect_handler(|_e: TestEffect, _resources| crate::executor::Task::<TestEvent, TestEffect>::events(Vec::new()))
             .build();
 
         let event_sender = runner.core().event_sender();
@@ -557,7 +564,7 @@ mod tests {
             .model(TestModel { count: 0 })
             .event_handler(test_update)
             .with_async_executor(crate::executor::InlineAsync::<TestEvent>::new())
-            .effect_handler(|_e: TestEffect, _ctx| crate::executor::Task::events(Vec::new()))
+            .effect_handler(|_e: TestEffect, _resources| crate::executor::Task::<TestEvent, TestEffect>::events(Vec::new()))
             .build();
 
         // No events sent, so no work to do
@@ -572,7 +579,7 @@ mod tests {
             .model(TestModel { count: 0 })
             .event_handler(test_update)
             .with_async_executor(crate::executor::InlineAsync::<TestEvent>::new())
-            .effect_handler(|_e: TestEffect, _ctx| crate::executor::Task::events(Vec::new()))
+            .effect_handler(|_e: TestEffect, _resources| crate::executor::Task::<TestEvent, TestEffect>::events(Vec::new()))
             .build();
 
         let event_sender = runner.core().event_sender();
@@ -580,13 +587,7 @@ mod tests {
         // Send an event
         event_sender.send(TestEvent::Ping).unwrap();
 
-        // Use custom executor
-        let executor = Arc::new(crate::executor::TokioExecutor::current_thread_io(
-            "test_step",
-        ));
-        let did_work = runner
-            .step_with_executor(executor)
-            .expect("Step should succeed");
+        let did_work = runner.step().expect("Step should succeed");
         assert!(
             did_work,
             "Step with custom executor should return true when work was done"
@@ -600,7 +601,7 @@ mod tests {
             .model(TestModel { count: 0 })
             .event_handler(test_update)
             .with_async_executor(crate::executor::InlineAsync::<TestEvent>::new())
-            .effect_handler(|_e: TestEffect, _ctx| crate::executor::Task::events(Vec::new()))
+            .effect_handler(|_e: TestEffect, _resources| crate::executor::Task::<TestEvent, TestEffect>::events(Vec::new()))
             .build();
 
         let event_sender = runner.core().event_sender();
@@ -636,7 +637,7 @@ mod tests {
             .model(TestModel { count: 0 })
             .event_handler(test_update)
             .with_async_executor(crate::executor::InlineAsync::<TestEvent>::new())
-            .effect_handler(|_e: TestEffect, _ctx| crate::executor::Task::events(Vec::new()))
+            .effect_handler(|_e: TestEffect, _resources| crate::executor::Task::<TestEvent, TestEffect>::events(Vec::new()))
             .build();
 
         let event_sender = runner.core().event_sender();

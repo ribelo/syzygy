@@ -45,14 +45,14 @@ fn on_completed(model: &mut AppModel, message: String) -> Command<AppEvent, AppE
     Command::none()
 }
 
-fn effect_handler(effect: AppEffect, _ctx: EffectContext<AppEvent, ()>) -> Task<AppEvent, ()> {
+fn effect_handler(effect: AppEffect, _ctx: EffectContext<AppEvent>) -> Task<AppEvent> {
     match effect {
         AppEffect::ProduceMessage => produce_message(),
     }
 }
 
-fn produce_message() -> Task<AppEvent, ()> {
-    Task::async_task::<InlineAsync<AppEvent>, _>(async move {
+fn produce_message() -> Task<AppEvent> {
+    Task::async_owned::<InlineAsync<AppEvent>, _, _>(|_ctx, _resources| async move {
         Outcome::Event(AppEvent::Completed("effect finished".to_string()))
     })
 }

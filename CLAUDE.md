@@ -81,7 +81,7 @@ let mut runner = Syzygy::builder::<Event, Effect>()
 ```
 
 The first async executor registered becomes the Shell's default. Additional executors can be
-targeted explicitly from effect handlers via `Task::async_task::<YourExecutor, _>(...)`.
+targeted explicitly from effect handlers via `Task::async_owned::<YourExecutor, _, _>(|ctx, resources| async { ... })`.
 
 `syzygy::spawn::spawner()` remains available behind the `tokio` feature for ad-hoc spawning
 and now returns an error if no Tokio runtime is active. Prefer declarative `Task` plans inside
@@ -99,7 +99,7 @@ use syzygy::executor::{Outcome, Task, TokioExecutor};
 
 fn effect_handler(effect: Effect, _ctx: EffectContext<Event>) -> Task<Event> {
     match effect {
-        Effect::Fetch => Task::async_task::<TokioExecutor, _>(async move {
+        Effect::Fetch => Task::async_owned::<TokioExecutor, _, _>(|_ctx, _resources| async move {
             let data = "payload".to_string();
             Outcome::Event(Event::Fetched(data))
         }),
@@ -230,18 +230,23 @@ pub trait ExecutorLifecycle: Send + Sync + 'static {
 
 /// Executor specialized for async work (futures)
 pub trait AsyncExecutor<E>: ExecutorLifecycle {
-    fn spawn_future(
-        &self,
-        fut: BoxFuture<'static, Outcome<E>>,
-    ) -> BoxFuture<'static, Result<Outcome<E>, ExecutorError>>;
+    type Resources: Clone + Send + Sync + 'static;
+
+    fn spawn_owned<F, Fut>(&self, job: F) -> Result<(), ExecutorError>
+    where
+        F: FnOnce(Self::Resources) -> Fut + Send + 'static,
+        Fut: Future<Output = ()> + Send + 'static;
+
+    fn sleep(&self, duration: Duration) -> BoxFuture<'static, ()>;
 }
 
-/// Executor specialized for blocking/synchronous work  
+/// Executor specialized for blocking/synchronous work
 pub trait SyncExecutor<E>: ExecutorLifecycle {
-    fn spawn_sync(
-        &self,
-        job: Box<dyn FnOnce() -> Outcome<E> + Send>,
-    ) -> BoxFuture<'static, Result<Outcome<E>, ExecutorError>>;
+    type Resources: Send + Sync + 'static;
+
+    fn spawn_sync<F>(&self, job: F) -> Result<(), ExecutorError>
+    where
+        F: FnOnce(&mut Self::Resources) + Send + 'static;
 }
 ```
 
@@ -251,25 +256,17 @@ The `ExecutorRegistry<E>` maintains separate registries for async and sync execu
 
 ```rust
 pub struct ExecutorRegistry<E> {
-    async_map: FxHashMap<TypeId, Arc<dyn AsyncExecutor<E>>>,
-    sync_map: FxHashMap<TypeId, Arc<dyn SyncExecutor<E>>>,
+    async_map: FxHashMap<TypeId, Arc<dyn DynAsyncExecutor<E>>>,
+    sync_map: FxHashMap<TypeId, Arc<dyn DynSyncExecutor<E>>>,
 }
-
-// Marker traits for type safety
-pub trait AsyncKey: 'static {}  // For I/O-bound work  
-pub trait SyncKey: 'static {}   // For CPU-bound work
-
-// Pre-defined markers
-pub struct Io;     // impl AsyncKey for Io  
-pub struct Cpu;    // impl SyncKey for Cpu
 ```
 
 ### Key Benefits
 
-1. **Performance**: No more impedance mismatches - async executors don't use `spawn_blocking`, sync executors don't use `block_on`
-2. **Type Safety**: `AsyncKey`/`SyncKey` marker traits prevent async/sync confusion
-3. **Clarity**: API explicitly shows work type intent
-4. **Extensibility**: Easy to register different executors per capability
+1. **Performance**: Async executors stay async (`spawn_owned`), sync executors stay blocking (`spawn_sync`)
+2. **Type Safety**: Typed resources per executor; `Task` plans encode executor types via `TypeId`
+3. **Clarity**: Effect handlers wire declarative jobs instead of ad-hoc spawns
+4. **Extensibility**: Register custom executors via `ExecutorRegistry` without special marker traits
 
 ### Available Executors
 

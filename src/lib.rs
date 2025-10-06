@@ -1,3 +1,4 @@
+#![feature(downcast_unchecked)]
 //! # Syzygy - Zero-Overhead TEA for Rust
 //!
 //! A high-performance implementation of The Elm Architecture (TEA) with Core/Shell separation,
@@ -6,70 +7,64 @@
 //! ## Quick Start
 //!
 //! ```rust
-//! use syzygy::executor::{InlineAsync, Outcome, Task};
+//! use syzygy::executor::{InlineAsync, Task};
 //! use syzygy::prelude::*;
 //!
-//! #[derive(Debug, Default)]
+//! #[derive(Default)]
 //! struct CounterModel {
 //!     count: i32,
 //! }
 //!
-//! #[derive(Debug, Clone)]
+//! #[derive(Clone)]
 //! enum CounterEvent {
 //!     Increment,
 //!     Decrement,
 //! }
 //!
-//! #[derive(Debug, Clone)]
+//! #[derive(Clone)]
 //! enum CounterEffect {
 //!     Log(String),
 //! }
 //!
+//! #[derive(Clone)]
+//! struct AppResources {
+//!     prefix: &'static str,
+//! }
+//!
 //! fn event_handler(
 //!     event: CounterEvent,
-//!     ctx: &mut EventContext<CounterEvent, CounterEffect, CounterModel>,
+//!     model: &mut CounterModel,
 //! ) -> Command<CounterEvent, CounterEffect> {
 //!     match event {
-//!         CounterEvent::Increment => on_increment(ctx.model_mut()),
-//!         CounterEvent::Decrement => on_decrement(ctx.model_mut()),
+//!         CounterEvent::Increment => {
+//!             model.count += 1;
+//!             Command::effect(CounterEffect::Log(format!("{}", model.count)))
+//!         }
+//!         CounterEvent::Decrement => {
+//!             model.count -= 1;
+//!             Command::effect(CounterEffect::Log(format!("{}", model.count)))
+//!         }
 //!     }
-//! }
-//!
-//! fn on_increment(model: &mut CounterModel) -> Command<CounterEvent, CounterEffect> {
-//!     model.count += 1;
-//!     Command::effect(CounterEffect::Log(format!(
-//!         "Count incremented to {}",
-//!         model.count
-//!     )))
-//! }
-//!
-//! fn on_decrement(model: &mut CounterModel) -> Command<CounterEvent, CounterEffect> {
-//!     model.count -= 1;
-//!     Command::effect(CounterEffect::Log(format!(
-//!         "Count decremented to {}",
-//!         model.count
-//!     )))
 //! }
 //!
 //! fn effect_handler(
 //!     effect: CounterEffect,
-//!     _ctx: EffectContext<CounterEvent, ()>,
-//! ) -> Task<CounterEvent, ()> {
+//!     resources: AppResources,
+//! ) -> Task<CounterEvent, CounterEffect> {
 //!     match effect {
-//!         CounterEffect::Log(message) => log_message(message),
+//!         CounterEffect::Log(message) => Task::async_owned::<InlineAsync<CounterEvent>, _, _>(
+//!             move |_res| async move {
+//!                 println!("{} {message}", resources.prefix);
+//!                 Command::none()
+//!             },
+//!         ),
 //!     }
-//! }
-//!
-//! fn log_message(message: String) -> Task<CounterEvent, ()> {
-//!     Task::async_task::<InlineAsync<CounterEvent>, _>(async move {
-//!         println!("LOG: {}", message);
-//!         Outcome::None
-//!     })
 //! }
 //!
 //! # fn main() -> Result<(), Box<dyn std::error::Error>> {
 //! let mut runner = Syzygy::builder::<CounterEvent, CounterEffect>()
 //!     .model(CounterModel::default())
+//!     .with_resources(AppResources { prefix: "LOG" })
 //!     .event_handler(event_handler)
 //!     .effect_handler(effect_handler)
 //!     .with_async_executor(InlineAsync::<CounterEvent>::new())
@@ -95,8 +90,8 @@
 //! # #[derive(Debug, Default)] struct ConfigModel { theme: String }
 //! # #[derive(Debug, Clone)] enum Event { Test }
 //! # #[derive(Debug, Clone)] enum Effect { Test }
-//! # fn update(e: Event, ctx: &mut EventContext<Event, Effect, (ConfigModel, UserModel)>) -> Command<Event, Effect> { Command::none() }
-//! # fn effects(_e: Effect, _ctx: EffectContext<Event, ()>) -> Task<Event, ()> { Task::none() }
+//! # fn update(e: Event, model: &mut (ConfigModel, UserModel)) -> Command<Event, Effect> { Command::none() }
+//! # fn effects(_e: Effect, _resources: ()) -> Task<Event, Effect> { Task::none() }
 //! let (core, shell) = Syzygy::builder()
 //!     .model(UserModel::default())     // Add multiple models
 //!     .model(ConfigModel::default())   // Type-safe composition
@@ -130,42 +125,45 @@
 //!
 //! ### ⚡ **Async Effects with Resources**
 //! ```rust
+//! # use std::sync::Arc;
+//! # use syzygy::executor::{InlineAsync, Task, TokioExecutor};
 //! # use syzygy::prelude::*;
-//! # #[derive(Debug, Clone)] struct Database { url: String }
-//! # #[derive(Debug, Clone)] enum Event { UserSaved }
-//! # #[derive(Debug, Clone)] enum Effect { SaveUser }
-//! async fn handle_effects(
-//!     effect: Effect,
-//!     database: &Database,           // Extract resources
-//!     sender: EventSender<Event>,    // Send events back
-//! ) {
+//! # struct Database;
+//! # impl Database {
+//! #     async fn save(&self) {}
+//! # }
+//! #[derive(Clone)]
+//! struct Services {
+//!     db: Arc<Database>,
+//! }
+//!
+//! fn effects(effect: Effect, services: Services) -> Task<Event, Effect> {
 //!     match effect {
 //!         Effect::SaveUser => {
-//!             println!("Saving to {}", database.url);
-//!             // Perform async work...
-//!             let _ = sender.send(Event::UserSaved);
+//!             let db = Arc::clone(&services.db);
+//!             Task::async_owned::<TokioExecutor, _, _>(move |_res| async move {
+//!                 db.save().await;
+//!                 Command::event(Event::UserSaved)
+//!             })
 //!         }
+//!         Effect::Log(msg) => Task::async_owned::<InlineAsync<Event>, _, _>(move |_res| async move {
+//!             println!("LOG {msg}");
+//!             Command::none()
+//!         }),
 //!     }
 //! }
 //! ```
 //!
 //! ## Runtime Support
 //!
-//! **Tokio-first with runtime flexibility:**
+//! Syzygy ships with dedicated executors:
 //!
-//! - **🥇 Tokio** (Default) - Production recommended
-//! - **🥈 Smol** - Lightweight for embedded/WASM
-//! - **🥉 Async-std** - Standard library approach
-//! - **🔧 Custom** - Bring your own executor
+//! - `TokioExecutor` – spawn async work onto a Tokio runtime you control
+//! - `InlineAsync` – execute futures immediately on the caller thread (great for tests)
+//! - `SingleThreadExecutor` – sequential, borrowing access to a worker resource
+//! - `RayonExecutor` (optional feature) – CPU-heavy parallel work
 //!
-//! ```toml
-//! [dependencies]
-//! # Default: tokio
-//! syzygy = "0.1"
-//!
-//! # Alternative runtimes
-//! syzygy = { version = "0.1" }
-//! ```
+//! Bring additional runtimes by implementing the `AsyncOwnedExecutor` trait.
 //!
 //! ## Examples
 //!
@@ -235,10 +233,7 @@
 //!     DataSaved,
 //! }
 //!
-//! fn update(
-//!     event: AppEvent,
-//!     ctx: &mut EventContext<AppEvent, Effect, Model>,
-//! ) -> Command<AppEvent, Effect> {
+//! fn update(event: AppEvent, model: &mut Model) -> Command<AppEvent, Effect> {
 //!     match event {
 //!         AppEvent::ProcessData { data } => {
 //!             if data.is_empty() {
@@ -299,27 +294,6 @@
 //! let session: &SessionModel = storage.get();
 //! ```
 //!
-//! ### Resource Management
-//! ```rust
-//! # use syzygy::prelude::*;
-//! # #[derive(Debug, Default)] struct MyModel;
-//! # #[derive(Clone)] struct Database { url: String }
-//! # #[derive(Clone)] struct HttpClient { base_url: String }
-//! # #[derive(Debug, Clone)] enum Event { Test }
-//! # #[derive(Debug, Clone)] enum Effect { Test }
-//! # fn update(e: Event, ctx: &mut EventContext<Event, Effect, MyModel>) -> Command<Event, Effect> { Command::none() }
-//! # fn effects(_e: Effect, _ctx: EffectContext<Event, (HttpClient, Database)>) -> Task<Event, (HttpClient, Database)> {
-//! #     Task::none()
-//! # }
-//! let (core, shell) = Syzygy::builder()
-//!     .model(MyModel::default())
-//!     .resource(Database { url: "postgres://...".to_string() })
-//!     .resource(HttpClient { base_url: "https://api.example.com".to_string() })
-//!     .event_handler(update)
-//!     .effect_handler(effects)
-//!     .build();
-//! ```
-//!
 //! ### Background Task Management
 //! ```rust
 //! # use syzygy::prelude::*;
@@ -327,7 +301,7 @@
 //! # #[derive(Debug, Clone)] enum MyEffect { DoWork }
 //! async fn handle_effect(
 //!     effect: MyEffect,
-//!     _ctx: EffectContext<Event, ()>,
+//!     _ctx: EffectContext<Event>,
 //! ) -> Outcome<Event> {
 //!     match effect {
 //!         MyEffect::DoWork => {
@@ -390,7 +364,7 @@
 // Core modules
 pub mod command;
 pub mod core;
-pub mod effect_context;
+// effect_context removed from public API; routing is handled internally
 pub mod shell;
 pub mod syzygy;
 
@@ -399,7 +373,7 @@ pub mod syzygy;
 pub mod builder;
 
 // EventContext for synchronous update functions
-pub mod event_context;
+// event_context removed from public API; event handlers receive &mut model directly
 
 // Error handling
 pub mod error;
@@ -409,12 +383,12 @@ pub mod error;
 
 // Executor system for specialized effect handling
 pub mod executor;
+pub mod resource_cell;
 pub mod spawn;
 
 pub mod prelude {
     // Contexts for update and effect functions
-    pub use crate::effect_context::EffectContext;
-    pub use crate::event_context::EventContext;
+    // (removed) EffectContext and EventContext were deleted; handlers receive plain args
 
     // Command system
     pub use crate::command::{Command, CommandStep, IntoCommand};
@@ -458,7 +432,6 @@ pub mod prelude {
 
     #[cfg(feature = "tokio")]
     pub use crate::executor::TokioExecutor;
-    pub use crate::executor::spec::Outcome;
     pub use crate::executor::{ExecutorRegistry, InlineAsync, SingleThreadExecutor, Task};
 
     // Builder
@@ -469,6 +442,7 @@ pub mod prelude {
 
     // Effect output types
 
+    pub use crate::resource_cell::{ResourceCell, SetOnceError};
     #[cfg(feature = "tokio")]
     pub use crate::spawn::TokioSpawn;
     pub use crate::spawn::{Spawn, spawner};

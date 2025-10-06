@@ -29,7 +29,7 @@ Most software isn't web servers - it's desktop apps, games, CLI tools, IoT devic
 ```rust
 use std::time::Duration;
 
-use syzygy::executor::{ExecutorRegistry, InlineAsync, Outcome, Task, TokioExecutor};
+use syzygy::executor::{InlineAsync, Task, TokioExecutor};
 use syzygy::prelude::*;
 
 // Define your events (what can happen)
@@ -59,13 +59,13 @@ enum AppEffect {
 // Event handler function (no trait needed!)
 fn event_handler(
     event: AppEvent,
-    ctx: &mut EventContext<AppEvent, AppEffect, AppModel>,
+    model: &mut AppModel,
 ) -> Command<AppEvent, AppEffect> {
     match event {
-        AppEvent::Increment => on_increment(ctx.model_mut()),
-        AppEvent::LoadData => on_load_data(ctx.model_mut()),
-        AppEvent::DataLoaded { data } => on_data_loaded(ctx.model_mut(), data),
-        AppEvent::Error { message } => on_error(ctx.model_mut(), message),
+        AppEvent::Increment => on_increment(model),
+        AppEvent::LoadData => on_load_data(model),
+        AppEvent::DataLoaded { data } => on_data_loaded(model, data),
+        AppEvent::Error { message } => on_error(model, message),
     }
 }
 
@@ -101,41 +101,52 @@ fn on_error(model: &mut AppModel, message: String) -> Command<AppEvent, AppEffec
     Command::effect(AppEffect::Log { message })
 }
 
-fn effect_handler(
-    effect: AppEffect,
-    _ctx: EffectContext<AppEvent, ()>,
-) -> Task<AppEvent, ()> {
+#[derive(Clone)]
+struct AppResources {
+    log_prefix: &'static str,
+}
+
+fn effect_handler(effect: AppEffect, resources: AppResources) -> Task<AppEvent, AppEffect> {
     match effect {
         AppEffect::HttpRequest { url } => fetch_data(url),
-        AppEffect::Log { message } => log_message(message),
+        AppEffect::Log { message } => log_message(&resources, message),
     }
 }
 
-fn fetch_data(url: String) -> Task<AppEvent, ()> {
-    Task::async_task::<TokioExecutor, _>(async move {
+fn fetch_data(url: String) -> Task<AppEvent, AppEffect> {
+    Task::async_owned::<TokioExecutor, _, _>(|_resources| async move {
         println!("🌐 Fetching: {url}");
         tokio::time::sleep(Duration::from_millis(100)).await;
-        Outcome::Event(AppEvent::DataLoaded {
+        Command::event(AppEvent::DataLoaded {
             data: "Hello from API!".to_string(),
         })
     })
 }
 
-fn log_message(message: String) -> Task<AppEvent, ()> {
-    Task::async_task::<InlineAsync<AppEvent>, _>(async move {
-        println!("📝 {message}");
-        Outcome::None
+fn log_message(resources: &AppResources, message: String) -> Task<AppEvent, AppEffect> {
+    let prefix = resources.log_prefix;
+    Task::async_owned::<InlineAsync<AppEvent>, _, _>(move |_resources| async move {
+        println!("{prefix} {message}");
+        Command::none()
     })
 }
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let io_executor = TokioExecutor::builder()
+        .name("app-io")
+        .multi_thread()
+        .worker_threads(2)
+        .io()
+        .build();
+
     let mut app = Syzygy::builder::<AppEvent, AppEffect>()
         .model(AppModel::default())
+        .with_resources(AppResources { log_prefix: "📝" })
         .event_handler(event_handler)
         .effect_handler(effect_handler)
         .with_async_executor(InlineAsync::<AppEvent>::new())
-        .with_async_executor(TokioExecutor::multi_thread_io("app-io", 2))
+        .with_async_executor(io_executor)
         .build();
 
     app.core().send_event(AppEvent::Increment)?;
@@ -147,6 +158,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 ```
+
+> **Resources are cloned per effect** – use `Arc` (or other cheap-to-clone handles) for expensive dependencies like HTTP clients and DB pools. If you require interior mutability, wrap fields inside your resource struct (e.g. `Arc<Mutex<T>>`).
 
 ## Perfect For
 
@@ -192,8 +205,8 @@ External World              Core (Pure)                    Shell (Impure)
                                                                ▼
                                                         Effect Handler (async)
                                                         ┌────────────────────┐
-                                                        │ ctx.run_on::<Exec> │
-                                                        │ per-effect routing │
+                                                        │ (effect, resources)│
+                                                        │   -> Task::async…  │
                                                         └──────────┬─────────┘
                                                                    │ spawns
                             Multiple Executors (Policy)            ▼
@@ -219,6 +232,7 @@ Event → Core.event_handler() → Command → Shell.execute() → Effect Handle
 - Handles all async operations and side effects
 - Manages executor registry for different work types
 - Routes events back to Core when effects complete
+- Clones application resources per effect invocation (keep them cheap to clone)
 - Your async playground - but with adult supervision
 
 ### Executors (Runtime Services)
@@ -352,13 +366,31 @@ let (core, shell) = Syzygy::builder::<MyEvent, MyEffect>()
 When you need to inject dependencies or customize the setup:
 
 ```rust
+let io_executor = TokioExecutor::builder()
+    .name("io-pool")
+    .multi_thread()
+    .worker_threads(4)
+    .io()
+    .build();
+
+let cpu_executor = TokioExecutor::builder()
+    .name("cpu-pool")
+    .multi_thread()
+    .worker_threads(4)
+    .cpu()
+    .build();
+
+let rayon_executor = RayonExecutor::builder()
+    .threads(4)
+    .build();
+
 let (core, shell) = Syzygy::builder::<MyEvent, MyEffect>()
     .model(MyModel::default())
     .event_handler(my_update)
     .effect_handler(my_effect_handler)
-    .with_async_executor(TokioExecutor::multi_thread_io("io-pool", 4))
-    .with_async_executor(TokioExecutor::multi_thread_cpu("cpu-pool", 4))
-    .with_sync_executor(RayonExecutor::new())
+    .with_async_executor(io_executor)
+    .with_async_executor(cpu_executor)
+    .with_sync_owned_executor(rayon_executor)
     .build();
 ```
 
@@ -371,14 +403,14 @@ The specialized executor architecture eliminates impedance mismatches:
 
 ```rust
 // IO-bound async work - ~4ns per task spawn
-Task::async_task::<TokioExecutor, _>(async move {
+Task::async_owned::<TokioExecutor, _, _>(|_ctx, _resources| async move {
     let response = reqwest::get("https://api.example.com").await?;
     // Network operations here
     Outcome::None
 });
 
 // CPU-bound async work - same performance
-Task::async_task::<TokioExecutor, _>(async move {
+Task::async_owned::<TokioExecutor, _, _>(|_ctx, _resources| async move {
     let result = expensive_async_computation().await;
     Outcome::None
 });
@@ -404,16 +436,32 @@ Syzygy ships with production-ready executors so you can match every workload to 
 - **SingleThreadExecutor** – FIFO execution for blocking operations that must stay ordered
 - **RayonExecutor** *(optional feature)* – parallel CPU work with Rayon
 
+`TokioExecutor::builder()` lets you configure thread model, capabilities, and supplied resources when creating dedicated runtimes. To reuse an existing Tokio runtime, use `TokioExecutor::from_handle(handle, resources)` or `TokioExecutor::try_from_current_with(resources)`.
+
 Register them directly on the builder:
 
 ```rust
+let io_executor = TokioExecutor::builder()
+    .name("io")
+    .multi_thread()
+    .worker_threads(4)
+    .io()
+    .build();
+
+let cpu_executor = TokioExecutor::builder()
+    .name("cpu")
+    .multi_thread()
+    .worker_threads(4)
+    .cpu()
+    .build();
+
 Syzygy::builder::<Event, Effect>()
     .model(Model::default())
     .event_handler(update)
     .effect_handler(effects)
-    .with_async_executor(TokioExecutor::multi_thread_io("io", 4))
-    .with_async_executor(TokioExecutor::multi_thread_cpu("cpu", 4))
-    .with_sync_executor(RayonExecutor::new())
+    .with_async_executor(io_executor)
+    .with_async_executor(cpu_executor)
+    .with_sync_owned_executor(RayonExecutor::builder().build())
     .build();
 ```
 
@@ -433,18 +481,23 @@ pub trait ExecutorLifecycle: Send + Sync + 'static {
 
 /// Executor specialized for async work (futures)
 pub trait AsyncExecutor<E>: ExecutorLifecycle {
-    fn spawn_future(
-        &self,
-        fut: BoxFuture<'static, Outcome<E>>,
-    ) -> BoxFuture<'static, Result<Outcome<E>, ExecutorError>>;
+    type Resources: Clone + Send + Sync + 'static;
+
+    fn spawn_owned<F, Fut>(&self, job: F) -> Result<(), ExecutorError>
+    where
+        F: FnOnce(Self::Resources) -> Fut + Send + 'static,
+        Fut: Future<Output = ()> + Send + 'static;
+
+    fn sleep(&self, duration: Duration) -> BoxFuture<'static, ()>;
 }
 
-/// Executor specialized for blocking/synchronous work  
+/// Executor specialized for blocking/synchronous work
 pub trait SyncExecutor<E>: ExecutorLifecycle {
-    fn spawn_sync(
-        &self,
-        job: Box<dyn FnOnce() -> Outcome<E> + Send>,
-    ) -> BoxFuture<'static, Result<Outcome<E>, ExecutorError>>;
+    type Resources: Send + Sync + 'static;
+
+    fn spawn_sync<F>(&self, job: F) -> Result<(), ExecutorError>
+    where
+        F: FnOnce(&mut Self::Resources) + Send + 'static;
 }
 ```
 
@@ -453,36 +506,10 @@ The `ExecutorRegistry<E>` maintains separate registries for async and sync execu
 
 ```rust
 pub struct ExecutorRegistry<E> {
-    async_map: FxHashMap<TypeId, Arc<dyn AsyncExecutor<E>>>,
-    sync_map: FxHashMap<TypeId, Arc<dyn SyncExecutor<E>>>,
+    async_map: FxHashMap<TypeId, Arc<dyn DynAsyncExecutor<E>>>,
+    sync_map: FxHashMap<TypeId, Arc<dyn DynSyncExecutor<E>>>,
 }
-
-// Marker traits for type safety
-pub trait AsyncKey: 'static {}  // For I/O-bound work  
-pub trait SyncKey: 'static {}   // For CPU-bound work
-
-// Pre-defined markers
-pub struct Io;     // impl AsyncKey for Io  
-pub struct Cpu;    // impl SyncKey for Cpu
 ```
-
-### IO Runtime Registration
-Syzygy provides IO runtime registration inspired by InfluxDB's design:
-
-```rust
-use syzygy::executor::{register_current_runtime_for_io, spawn_io};
-
-// Register the current runtime for IO operations
-register_current_runtime_for_io();
-
-// Later, spawn IO work on the registered runtime
-spawn_io(async {
-    // Network/file IO operations here
-    println!("Running on IO runtime");
-});
-```
-
-This ensures IO operations run on the appropriate runtime while CPU-bound effects stay on their dedicated executors.
 
 ## Multi-Executor Routing
 
@@ -499,14 +526,14 @@ async fn handle_effects(effect: MyEffect, ctx: EffectContext<MyEvent>) -> Task<M
     match effect {
         MyEffect::HttpGet { url } => {
             // Route to IO executor
-            Task::async_task::<NetExec, _>(async move {
+            Task::async_owned::<NetExec, _, _>(|_ctx, _resources| async move {
                 let response = reqwest::get(&url).await?;
                 Outcome::Event(MyEvent::DataLoaded { data: response.text().await? })
             })
         }
         MyEffect::SaveToDatabase { data } => {
             // Route to database executor
-            Task::async_task::<DbExec, _>(async move {
+            Task::async_owned::<DbExec, _, _>(|_ctx, _resources| async move {
                 database.save(&data).await?;
                 Outcome::Event(MyEvent::SaveComplete)
             })

@@ -53,15 +53,15 @@ fn on_completed(
 
 fn effect_handler(
     effect: DownloadEffect,
-    _ctx: EffectContext<DownloadEvent, ()>,
-) -> Task<DownloadEvent, ()> {
+    _ctx: EffectContext<DownloadEvent>,
+) -> Task<DownloadEvent> {
     match effect {
         DownloadEffect::FetchGreeting => fetch_greeting_task(),
     }
 }
 
-fn fetch_greeting_task() -> Task<DownloadEvent, ()> {
-    Task::async_task::<TokioExecutor, _>(async move {
+fn fetch_greeting_task() -> Task<DownloadEvent> {
+    Task::async_owned::<TokioExecutor, _, _>(move |_ctx, _resources| async move {
         tokio::time::sleep(Duration::from_millis(50)).await;
         Outcome::Event(DownloadEvent::Completed(
             "hello from async effect".to_string(),
