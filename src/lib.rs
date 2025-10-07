@@ -67,7 +67,7 @@
 //!     .with_resources(AppResources { prefix: "LOG" })
 //!     .event_handler(event_handler)
 //!     .effect_handler(effect_handler)
-//!     .with_async_executor(InlineAsync::<CounterEvent>::new())
+//!     .with_async_executor(TokioExecutor::current_thread_cpu("syzygy-docs"))
 //!     .build();
 //!
 //! runner.core().send_event(CounterEvent::Increment)?;
@@ -100,33 +100,10 @@
 //!     .build();
 //! ```
 //!
-//! ### Magic Handlers (Axum-style Parameter Injection)
-//! ```rust
-//! # use syzygy::prelude::*;
-//! # #[derive(Debug, Default)] struct UserModel { name: String }
-//! # #[derive(Debug, Default)] struct ConfigModel { theme: String }
-//! # #[derive(Debug, Clone)] enum Event { UpdateUser { name: String } }
-//! # #[derive(Debug, Clone)] enum Effect { SaveUser }
-//! // Automatically extract what you need - no boilerplate!
-//! fn handle_user_update(
-//!     event: Event,
-//!     user: &mut UserModel,    // Automatic extraction
-//!     config: &ConfigModel,    // Mix read-only and mutable
-//! ) -> Command<Event, Effect> {
-//!     match event {
-//!         Event::UpdateUser { name } => {
-//!             user.name = name;
-//!             println!("Updated user in {} theme", config.theme);
-//!             Command::effect(Effect::SaveUser)
-//!         }
-//!     }
-//! }
-//! ```
-//!
 //! ### Async Effects with Resources
 //! ```rust
 //! # use std::sync::Arc;
-//! # use syzygy::executor::{InlineAsync, Task, TokioExecutor};
+//! # use syzygy::executor::{Task, TokioExecutor};
 //! # use syzygy::prelude::*;
 //! # struct Database;
 //! # impl Database {
@@ -146,7 +123,7 @@
 //!                 Command::event(Event::UserSaved)
 //!             })
 //!         }
-//!         Effect::Log(msg) => Task::async_on::<InlineAsync<Event>, _>(async move {
+//!         Effect::Log(msg) => Task::async_current(async move {
 //!             println!("LOG {msg}");
 //!             Command::none()
 //!         }),
@@ -159,7 +136,7 @@
 //! Syzygy ships with dedicated executors:
 //!
 //! - `TokioExecutor` – spawn async work onto a Tokio runtime you control
-//! - `InlineAsync` – execute futures immediately on the caller thread (great for tests)
+//! - Custom inline executors exist for tests/CLIs when needed (niche)
 //! - `SingleThreadExecutor` – sequential, borrowing access to a worker resource
 //! - `RayonExecutor` (optional feature) – CPU-heavy parallel work
 //!

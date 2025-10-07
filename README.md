@@ -18,19 +18,18 @@ Most software isn't web servers - it's desktop apps, games, CLI tools, IoT devic
 - Core/Shell Separation — Pure sync Core + async Shell for effects
 
 - Predictable Event Processing — FIFO ordering, deterministic behavior
-- Magic Handlers — Axum-inspired parameter extraction for testable code
+- Explicit Effects — You decide what runs and when
 - Zero-overhead Commands — Simple data structures, no complex execution
 - User-defined effects — Library provides no effects, users define their own
-- Sequential & Parallel execution — Predictable, composable command processing
+- Executor Abstraction — Pick async/blocking executors; parallelism lives in executors
 - Error-as-events — All errors flow through the same event pipeline
-- High Performance — Handles 100K+ events/sec with safety guarantees
 
 ## Quick Start
 
 ```rust
 use std::time::Duration;
 
-use syzygy::executor::{InlineAsync, Task, TokioExecutor};
+use syzygy::executor::{Task, TokioExecutor};
 use syzygy::prelude::*;
 
 // Define your events (what can happen)
@@ -126,7 +125,7 @@ fn fetch_data(url: String) -> Task<AppEvent, AppEffect> {
 
 fn log_message(resources: &AppResources, message: String) -> Task<AppEvent, AppEffect> {
     let prefix = resources.log_prefix;
-    Task::async_on::<InlineAsync<AppEvent>, _>(async move {
+    Task::async_current(async move {
         println!("{prefix} {message}");
         Command::none()
     })
@@ -146,7 +145,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_resources(AppResources { log_prefix: "LOG" })
         .event_handler(event_handler)
         .effect_handler(effect_handler)
-        .with_async_executor(InlineAsync::<AppEvent>::new())
+        // You can also skip executor registration entirely via Task::async_current
         .with_async_executor(io_executor)
         .build();
 
