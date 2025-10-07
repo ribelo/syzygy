@@ -6,7 +6,10 @@ use futures::future::{BoxFuture, FutureExt};
 
 use super::{AsyncExecutor, ExecutorError, ExecutorLifecycle};
 
-/// Inline async executor - executes jobs immediately on the caller thread.
+/// Inline async executor — executes futures immediately on the caller thread.
+///
+/// Great for tests and CLIs where determinism beats concurrency. `sleep()`
+/// blocks the current thread.
 pub struct InlineAsync<E> {
     _marker: PhantomData<E>,
 }

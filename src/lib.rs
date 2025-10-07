@@ -165,6 +165,10 @@
 //!
 //! Bring additional runtimes by implementing the `AsyncOwnedExecutor` trait.
 //!
+//! Don’t want to register executors? Use `Task::async_current`/`Task::stream_current`
+//! in your effect handler. They run on the current Tokio runtime if available,
+//! or complete inline by blocking the current thread when no runtime is active.
+//!
 //! ## Examples
 //!
 //! Learn Syzygy progressively with our example series:
@@ -283,32 +287,30 @@
 //!
 //! ### Multi-Model Access
 //! ```rust
-//! # use syzygy::prelude::*;
 //! # #[derive(Debug, Default)] struct UserModel { name: String }
 //! # #[derive(Debug, Default)] struct ConfigModel { theme: String }
 //! # #[derive(Debug, Default)] struct SessionModel { active: bool }
-//! # type MyModel = (SessionModel, ConfigModel, UserModel);
-//! # let model: MyModel = (SessionModel::default(), ConfigModel::default(), UserModel::default());
-//! // Access individual models by type
-//! let config: &ConfigModel = storage.get();
-//! let session: &SessionModel = storage.get();
+//! # let mut model = (SessionModel::default(), ConfigModel::default(), UserModel::default());
+//! // Model is your own type; pattern match to access parts
+//! let (session, config, user) = &model;
+//! assert!(!session.active);
+//! let _ = &config.theme;
+//! let _ = &user.name;
 //! ```
 //!
 //! ### Background Task Management
 //! ```rust
 //! # use syzygy::prelude::*;
+//! # use syzygy::executor::{Task, InlineAsync};
 //! # #[derive(Debug, Clone)] enum Event { TaskComplete }
 //! # #[derive(Debug, Clone)] enum MyEffect { DoWork }
-//! async fn handle_effect(
-//!     effect: MyEffect,
-//!     _ctx: EffectContext<Event>,
-//! ) -> Outcome<Event> {
+//! fn handle_effect(effect: MyEffect, _res: ()) -> Task<Event, MyEffect> {
 //!     match effect {
-//!         MyEffect::DoWork => {
-//!             // Do async work and return result as event
-//!             tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
-//!             Outcome::Event(Event::TaskComplete)
-//!         }
+//!         MyEffect::DoWork => Task::async_on::<InlineAsync<Event>, _>(async move {
+//!             // Do async work and return events/effects via Command
+//!             // tokio timers require a runtime; InlineAsync uses thread sleep
+//!             Command::event(Event::TaskComplete)
+//!         }),
 //!     }
 //! }
 //! ```
@@ -328,43 +330,28 @@
 //! # use syzygy::prelude::*;
 //! # #[derive(Debug, Default, PartialEq)] struct CounterModel { count: i32 }
 //! # #[derive(Debug, Clone)] enum CounterEvent { Increment }
-//! # #[derive(Debug, Clone)] enum CounterEffect { Log }
-//! # fn update(event: CounterEvent, ctx: &mut EventContext<CounterEvent, CounterEffect, CounterModel>) -> Command<CounterEvent, CounterEffect> {
-//! #     let model: &mut CounterModel = ctx.model_mut();
-//! #     match event {
-//! #         CounterEvent::Increment => { model.count += 1; Command::effect(CounterEffect::Log) }
-//! #     }
-//! # }
-//! #[cfg(test)]
-//! mod tests {
-//!     use super::*;
-//!
-//!     #[test]
-//!     fn test_counter_increment() {
-//!         let mut model = CounterModel::default();
-//!         let mut ctx = EventContext::new(&mut model);
-//!
-//!         let command = update(CounterEvent::Increment, &mut ctx);
-//!
-//!         let model: &CounterModel = &model;
-//!         assert_eq!(model.count, 1);
-//!
-//!         // Verify command contains expected effect
-//!         let effects: Vec<_> = command.into_iter()
-//!             .filter_map(|step| match step {
-//!                 CommandStep::Effect(effect) => Some(effect),
-//!                 _ => None,
-//!             })
-//!             .collect();
-//!         assert_eq!(effects.len(), 1);
+//! # #[derive(Debug, Clone, PartialEq)] enum CounterEffect { Log }
+//! fn update(event: CounterEvent, model: &mut CounterModel) -> Command<CounterEvent, CounterEffect> {
+//!     match event {
+//!         CounterEvent::Increment => { model.count += 1; Command::effect(CounterEffect::Log) }
 //!     }
 //! }
+//! # #[cfg(test)]
+//! # mod tests { use super::*; #[test] fn test_counter_increment() {
+//! #     let mut model = CounterModel::default();
+//! #     let command = update(CounterEvent::Increment, &mut model);
+//! #     assert_eq!(model.count, 1);
+//! #     let steps: Vec<_> = command.into_iter().collect();
+//! #     assert!(matches!(steps[0], CommandStep::Effect(CounterEffect::Log)));
+//! # }}
 //! ```
 
 // Core modules
 pub mod command;
 pub mod core;
-// effect_context removed from public API; routing is handled internally
+// EffectContext/EventContext were removed from public API; handlers receive
+// plain arguments: event handlers get `&mut model`, effect handlers get
+// `(effect, resources)` and return `Task`.
 pub mod shell;
 pub mod syzygy;
 
@@ -372,22 +359,19 @@ pub mod syzygy;
 // Builder pattern
 pub mod builder;
 
-// EventContext for synchronous update functions
-// event_context removed from public API; event handlers receive &mut model directly
+// EventContext removed from public API; event handlers receive &mut model directly
 
 // Error handling
 pub mod error;
 
-// Storage system with UnsafeCell-based chains
-// Storage module removed - using direct FxHashMap for resources
+// Resources are provided by user code and cloned per-effect; no internal storage module.
 
 // Executor system for specialized effect handling
 pub mod executor;
 pub mod resource_cell;
 
 pub mod prelude {
-    // Contexts for update and effect functions
-    // (removed) EffectContext and EventContext were deleted; handlers receive plain args
+    // No public contexts in the new API; handlers receive plain args
 
     // Command system
     pub use crate::command::{Command, CommandStep, IntoCommand};

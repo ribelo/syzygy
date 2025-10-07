@@ -15,6 +15,10 @@ type JobFn = Box<dyn FnOnce(&mut dyn Any) + Send>;
 
 /// Single-threaded executor that runs blocking jobs on a dedicated worker thread,
 /// providing mutable access to executor-owned resources.
+///
+/// This is your strict FIFO lane for jobs that must serialize access to a
+/// single resource (e.g. a device or legacy client that explodes under
+/// concurrency).
 pub struct SingleThreadExecutor<R = ()> {
     state: Arc<State>,
     resource_type_id: TypeId,
@@ -152,10 +156,10 @@ impl Drop for State {
 
         let _ = self.completed_shutdown.clone().now_or_never();
 
-        if let Ok(mut guard) = self.thread.lock()
-            && let Some(join) = guard.take()
-        {
-            let _ = join.join();
+        if let Ok(mut guard) = self.thread.lock() {
+            if let Some(join) = guard.take() {
+                let _ = join.join();
+            }
         }
     }
 }

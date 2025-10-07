@@ -1,3 +1,8 @@
+//! Declarative task plans returned by effect handlers.
+//!
+//! A `Task<E, X>` describes what work to schedule and on which executor type.
+//! The Shell interprets the plan and routes any resulting `Command` steps back
+//! into the Core/Shell pipeline.
 use std::any::{Any, TypeId};
 use std::future::Future;
 use std::sync::Arc;
@@ -72,6 +77,7 @@ where
     E: Send + Sync + 'static,
     X: Send + 'static,
 {
+    /// Emit multiple events back to Core.
     pub fn events<I>(events: I) -> Self
     where
         I: IntoIterator<Item = E>,
@@ -79,15 +85,22 @@ where
         Self::Events(events.into_iter().collect())
     }
 
+    /// No-op task. Useful when effects are conditionally skipped.
     #[must_use]
     pub fn none() -> Self {
         Self::Events(vec![])
     }
 
+    /// Emit a single event back to Core.
     pub fn event(event: E) -> Self {
         Self::Event(event)
     }
 
+    /// Run a future on a specific async executor type.
+    ///
+    /// Selects the executor by its concrete type; register the same type on
+    /// the builder. The future resolves to a `Command` whose outputs are routed
+    /// back through the system.
     pub fn async_on<Exec, Fut>(future: Fut) -> Self
     where
         Exec: AsyncExecutor<E> + 'static,
@@ -123,6 +136,7 @@ where
         Self::StreamCurrent { stream }
     }
 
+    /// Forward a stream’s items as events on a specific async executor.
     pub fn stream_on<Exec, S>(stream: S) -> Self
     where
         Exec: AsyncExecutor<E> + 'static,
@@ -136,6 +150,7 @@ where
         }
     }
 
+    /// Run a blocking job on a blocking executor (no shared mutable resource).
     pub fn blocking_on<Exec, F>(job: F) -> Self
     where
         Exec: BlockingExecutor<E> + 'static,
@@ -146,6 +161,7 @@ where
         Self::Blocking { exec_type_id, job }
     }
 
+    /// Run a blocking job that requires mutable access to an executor-owned resource.
     pub fn blocking_with_resource_on<Exec, R, F>(job: F) -> Self
     where
         Exec: ResourceBlockingExecutor<E> + 'static,

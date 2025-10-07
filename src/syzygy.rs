@@ -178,11 +178,11 @@ where
                 return Ok(());
             }
 
-            if let Some(deadline) = deadline
-                && Instant::now() >= deadline
-            {
+        if let Some(deadline) = deadline {
+            if Instant::now() >= deadline {
                 return Err(ShellError::Timeout { duration: timeout });
             }
+        }
 
             let did_work = self.step()?;
 

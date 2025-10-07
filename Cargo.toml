@@ -1,7 +1,16 @@
 [package]
 name = "syzygy"
 version = "0.1.0"
-edition = "2024"
+edition = "2021"
+description = "Zero-overhead TEA for Rust: pure Core, async Shell, and explicit Commands/Tasks for side effects."
+license = "Unlicense"
+repository = "https://github.com/ribelo/syzygy"
+homepage = "https://github.com/ribelo/syzygy"
+documentation = "https://docs.rs/syzygy"
+readme = "README.md"
+keywords = ["tea", "state", "architecture", "async", "effects"]
+categories = ["asynchronous", "rust-patterns"]
+rust-version = "1.75"
 
 [lib]
 path = "src/lib.rs"

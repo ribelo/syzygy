@@ -211,8 +211,8 @@ External World              Core (Pure)                    Shell (Impure)
                                                                    │ spawns
                             Multiple Executors (Policy)            ▼
      ┌────────────────────────────┬────────────────────────────┬───────────────┐
-     │ TokioExecutor              │ ThreadPerCoreTokioExecutor │ SingleThread │
-     │ (general async IO)         │ (actix-like per-core)      │ (single-writer)
+     │ TokioExecutor              │ InlineAsync                │ SingleThread │
+     │ (general async IO)         │ (deterministic tests)      │ (single-writer)
      ├────────────────────────────┼────────────────────────────┼───────────────┤
      │ RayonExecutor (CPU heavy, pure compute)                  │ ... custom   │
      └──────────────────────────────────────────────────────────┴──────────────┘
@@ -242,7 +242,7 @@ Syzygy uses a specialized two-trait executor system that eliminates impedance mi
 - **`TokioExecutor`**: General async work (network, files) with `enable_all()` runtime
 - **`RayonSyncExecutor`**: Parallel CPU work using Rayon's work-stealing
 - **`SingleThreadExecutor`**: Sequential sync work with strict FIFO ordering
-- **`ThreadPerCoreTokioExecutor`**: Thread-per-core Tokio for CPU-bound async work
+// removed executor: `ThreadPerCoreTokioExecutor` (not part of current API)
 
 ### Commands
 Commands are the bridge between your pure event handler and the chaotic async world. They're like a shopping list for side effects - your event handler writes it, the Shell executes it.
@@ -402,29 +402,26 @@ Syzygy is designed for high-performance event processing with deterministic beha
 The specialized executor architecture eliminates impedance mismatches:
 
 ```rust
-// IO-bound async work - ~4ns per task spawn
+// IO-bound async work
 Task::async_on::<TokioExecutor, _>(async move {
-    let response = reqwest::get("https://api.example.com").await?;
-    // Network operations here
-    Outcome::None
+    let _ = reqwest::get("https://api.example.com").await;
+    Command::none()
 });
 
-// CPU-bound async work - same performance
+// CPU-bound async work on a Tokio runtime (still a future)
 Task::async_on::<TokioExecutor, _>(async move {
-    let result = expensive_async_computation().await;
-    Outcome::None
+    let _ = expensive_async_computation().await;
+    Command::none()
 });
 
-// Parallel blocking work - Rayon work-stealing
-Task::blocking_on::<RayonExecutor, _>(|| Outcome::None);
+// Parallel blocking work — if you register a Rayon-backed BlockingExecutor
+Task::blocking_on::<RayonExecutor, _>(|| Command::none());
 
-// Sequential blocking work with shared resource - strict FIFO
-Task::blocking_with_resource_on::<SingleThreadExecutor<MyResource>, MyResource, _>(
-    |resource| {
-        resource.push("work done");
-        Outcome::None
-    },
-);
+// Sequential blocking work with shared resource — strict FIFO
+Task::blocking_with_resource_on::<SingleThreadExecutor<MyResource>, MyResource, _>(|resource| {
+    resource.push("work done");
+    Command::none()
+});
 ```
 
 ## Runtime Support
@@ -436,6 +433,8 @@ Syzygy ships with production-ready executors so you can match every workload to 
 - **RayonExecutor** *(optional feature)* – parallel CPU work with Rayon
 
 `TokioExecutor::builder()` lets you configure thread model and capabilities when creating dedicated runtimes. To reuse an existing Tokio runtime, use `TokioExecutor::from_handle(handle)` or `TokioExecutor::try_from_current()`.
+
+Don’t want to register any executors? Use `Task::async_current` or `Task::stream_current` in your effect handler. They run on the current Tokio runtime if one is present (e.g. inside `#[tokio::main]`), or they will finish inline by blocking the current thread when no runtime is available.
 
 Register them directly on the builder:
 
@@ -460,8 +459,18 @@ Syzygy::builder::<Event, Effect>()
     .effect_handler(effects)
     .with_async_executor(io_executor)
     .with_async_executor(cpu_executor)
-    .with_sync_owned_executor(RayonExecutor::builder().build())
+    // optionally register blocking or resource-blocking executors here
     .build();
+
+// Or, skip registry entirely using async_current from your effect handler:
+// fn effects(effect: Effect, _res: ()) -> Task<Event, Effect> {
+//     match effect {
+//         Effect::Fetch => Task::async_current(async move {
+//             // uses current Tokio runtime if present, otherwise blocks
+//             Command::none()
+//         }),
+//     }
+// }
 ```
 
 Need something custom? Implement the unified `AsyncExecutor` trait, register it with `with_async_executor`, and Syzygy will drive it alongside the built-ins.
@@ -556,20 +565,28 @@ fn handle_effects(effect: MyEffect, resources: AppResources) -> Task<MyEvent, My
 
 ## Installation
 
-### Tokio (Recommended)
+When published on crates.io:
 ```toml
 [dependencies]
-syzygy = { git = "https://github.com/your-repo/syzygy" }
-tokio = { version = "1.0", features = ["full"] }
+syzygy = "0.1"
+tokio = { version = "1", features = ["full"] }
+```
+
+Using the repo directly (pre-release or bleeding edge):
+```toml
+[dependencies]
+syzygy = { git = "https://github.com/ribelo/syzygy" }
+tokio = { version = "1", features = ["full"] }
 ```
 
 ## Documentation
-- [API Documentation](https://docs.rs/syzygy)
+- [API Documentation](https://docs.rs/syzygy) (coming with the first release)
 - [Examples](./examples/)
 - [Architecture Guide](./docs/architecture.md)
 
 ## License
-MIT OR Apache-2.0
+This is free and unencumbered software released into the public domain.
+See UNLICENSE for details.
 
 ## Rationale
 

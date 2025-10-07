@@ -1,3 +1,11 @@
+//! Builder for composing Core, Shell, resources, and executors.
+//!
+//! The builder wires your pure event handler to the async effect handler and
+//! registers any executors you want the Shell to use. Keep models and resources
+//! cheap to move/clone; the Shell clones resources for each effect call.
+//!
+//! This module intentionally avoids traits and lifetimes in the public surface
+//! so usage stays straightforward in real apps and tests.
 use crate::core::{Core, EventHandler};
 use crate::executor::{
     AsyncExecutor, BlockingExecutor, ExecutorRegistry, ResourceBlockingExecutor, Task,
@@ -9,6 +17,12 @@ use std::marker::PhantomData;
 use std::sync::Arc;
 
 /// Entry point for building a `Syzygy`.
+///
+/// Typical flow:
+/// - set `.model(..)` and optional `.with_resources(..)`
+/// - install `.event_handler(..)` and `.effect_handler(..)`
+/// - register executors via `.with_*_executor(..)`
+/// - call `.build()`
 pub struct SyzygyBuilder<E, X, M, R = ()>
 where
     E: Send + Sync + 'static,
@@ -53,6 +67,8 @@ where
     Resources: Clone + Send + Sync + 'static,
 {
     /// Replace the current model with a new one.
+    ///
+    /// Models are owned by `Core` and mutated only by your event handler.
     #[must_use]
     pub fn model<M: 'static>(self, model: M) -> SyzygyBuilder<Event, Effect, M, Resources> {
         SyzygyBuilder {
@@ -63,6 +79,9 @@ where
     }
 
     /// Install application resources that all effects can access.
+    ///
+    /// The Shell clones `Resources` per effect call. Use `Arc<_>` for heavy
+    /// dependencies (DB pools, clients) or wrap interior mutability explicitly.
     #[must_use]
     pub fn with_resources<R2>(self, resources: R2) -> SyzygyBuilder<Event, Effect, Model, R2>
     where
@@ -76,6 +95,9 @@ where
     }
 
     /// Finalize model configuration and set the event handler.
+    ///
+    /// Your event handler is a pure function. It mutates the model and returns
+    /// a `Command` telling the Shell what effects to run.
     #[must_use]
     pub fn event_handler(
         self,
@@ -94,6 +116,12 @@ where
 }
 
 /// Builder stage where handlers and executors are configured.
+///
+/// After installing handlers you can register any number of executors. If a
+/// `Task` targets a specific executor type you didn’t register, the Shell will
+/// error when scheduling it. You can avoid registry lookups entirely by using
+/// `Task::async_current`/`Task::stream_current` (runs on the current Tokio
+/// runtime if available; otherwise completes inline by blocking the thread).
 pub struct ConfiguredBuilder<Event, Effect, Model, Resources>
 where
     Event: Send + Sync + 'static,
@@ -117,6 +145,10 @@ where
     Resources: Clone + Send + Sync + 'static,
 {
     /// Install the effect handler.
+    ///
+    /// The handler receives a single effect and the cloned `Resources` value
+    /// and returns a `Task` plan. The Shell drives the plan on the registered
+    /// executors.
     #[must_use]
     pub fn effect_handler<H>(mut self, handler: H) -> Self
     where
@@ -134,6 +166,8 @@ where
     }
 
     /// Register an async executor.
+    ///
+    /// Use for futures/streams scheduling (e.g. `TokioExecutor`, `InlineAsync`).
     #[must_use]
     pub fn with_async_executor<T>(mut self, exec: T) -> Self
     where
@@ -144,6 +178,9 @@ where
     }
 
     /// Register a blocking executor.
+    ///
+    /// Use for CPU-bound or blocking work that doesn’t require a shared
+    /// resource (e.g. Rayon-based executor).
     #[must_use]
     pub fn with_blocking_executor<T>(mut self, exec: T) -> Self
     where
@@ -154,6 +191,9 @@ where
     }
 
     /// Register a resource-blocking executor (single-threaded shared resource).
+    ///
+    /// Use when jobs need mutable access to a single owned resource with FIFO
+    /// guarantees (e.g. a device handle that must not be used concurrently).
     #[must_use]
     pub fn with_resource_blocking_executor<T>(mut self, exec: T) -> Self
     where
@@ -164,6 +204,9 @@ where
     }
 
     /// Override the shell effect channel capacity.
+    ///
+    /// `None` means unbounded. Bounded channels apply backpressure to the
+    /// caller when the effect queue is saturated.
     #[must_use]
     pub fn with_effect_channel_capacity(mut self, capacity: Option<usize>) -> Self {
         self.effect_channel_capacity = capacity;
