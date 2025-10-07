@@ -14,15 +14,16 @@ Most software isn't web servers - it's desktop apps, games, CLI tools, IoT devic
 
 ## Features
 
-- 🎯 **The Elm Architecture** - Unidirectional data flow (Event → Model → Command)
-- 🔧 **Core/Shell Separation** - Pure sync Core + async Shell for effects  
-- 📋 **Predictable Event Processing** - FIFO ordering, deterministic behavior
-- 🧪 **Magic Handlers** - Axum-inspired parameter extraction for testable code
-- 🚀 **Zero-overhead Commands** - Simple data structures, no complex execution
-- 🌊 **User-defined effects** - Library provides no effects, users define their own
-- ⚡ **Sequential & Parallel execution** - Predictable, composable command processing
-- 🛡️ **Error-as-events** - All errors flow through the same event pipeline
-- 🏎️ **High Performance** - Handles 100K+ events/sec with safety guarantees
+- The Elm Architecture — Unidirectional data flow (Event → Model → Command)
+- Core/Shell Separation — Pure sync Core + async Shell for effects
+
+- Predictable Event Processing — FIFO ordering, deterministic behavior
+- Magic Handlers — Axum-inspired parameter extraction for testable code
+- Zero-overhead Commands — Simple data structures, no complex execution
+- User-defined effects — Library provides no effects, users define their own
+- Sequential & Parallel execution — Predictable, composable command processing
+- Error-as-events — All errors flow through the same event pipeline
+- High Performance — Handles 100K+ events/sec with safety guarantees
 
 ## Quick Start
 
@@ -115,7 +116,7 @@ fn effect_handler(effect: AppEffect, resources: AppResources) -> Task<AppEvent, 
 
 fn fetch_data(url: String) -> Task<AppEvent, AppEffect> {
     Task::async_on::<TokioExecutor, _>(async move {
-        println!("🌐 Fetching: {url}");
+        println!("Fetching: Fetching: {url}");
         tokio::time::sleep(Duration::from_millis(100)).await;
         Command::event(AppEvent::DataLoaded {
             data: "Hello from API!".to_string(),
@@ -142,7 +143,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut app = Syzygy::builder::<AppEvent, AppEffect>()
         .model(AppModel::default())
-        .with_resources(AppResources { log_prefix: "📝" })
+        .with_resources(AppResources { log_prefix: "LOG" })
         .event_handler(event_handler)
         .effect_handler(effect_handler)
         .with_async_executor(InlineAsync::<AppEvent>::new())
@@ -163,28 +164,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ## Perfect For
 
-**✅ Desktop Applications**
+**Desktop Applications**
 - GUI apps (egui, dioxus, tauri) with complex state
 - Note-taking apps, IDEs, media players
 - Configuration management tools
 
-**✅ Game Development** 
+**Game Development** 
 - Turn-based games with complex state machines
 - Real-time games with centralized state
 - Game servers and matchmaking systems
 
-**✅ System Tools**
+**System Tools**
 - CLI tools with interactive modes
 - Build systems and deployment tools
 - IoT device controllers and data processors
 
-**✅ Simple Servers**
+**Simple Servers**
 - Chat servers and notification systems  
 - Real-time data processing pipelines
 - Workflow engines and task orchestrators
 - Financial systems where event ordering matters
 
-**❌ Not Ideal For**
+**Not Ideal For**
 - High-concurrency web servers (use axum/warp instead)
 - Distributed systems with multiple nodes
 - Applications where massive parallelism is core requirement

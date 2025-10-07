@@ -78,12 +78,12 @@
 //!
 //! ## Core Features
 //!
-//! ### 🚀 **Zero-Overhead Performance**
+//! ### Zero-Overhead Performance
 //! - Direct storage access without runtime overhead
 //! - Compile-time type safety with zero-cost abstractions
 //! - Task spawning 24x faster than alternatives (~4ns per task)
 //!
-//! ### 🏗️ **Multi-Model Architecture**
+//! ### Multi-Model Architecture
 //! ```rust
 //! # use syzygy::prelude::*;
 //! # #[derive(Debug, Default)] struct UserModel { name: String }
@@ -100,7 +100,7 @@
 //!     .build();
 //! ```
 //!
-//! ### 🎯 **Magic Handlers** (Axum-style Parameter Injection)
+//! ### Magic Handlers (Axum-style Parameter Injection)
 //! ```rust
 //! # use syzygy::prelude::*;
 //! # #[derive(Debug, Default)] struct UserModel { name: String }
@@ -123,7 +123,7 @@
 //! }
 //! ```
 //!
-//! ### ⚡ **Async Effects with Resources**
+//! ### Async Effects with Resources
 //! ```rust
 //! # use std::sync::Arc;
 //! # use syzygy::executor::{InlineAsync, Task, TokioExecutor};
