@@ -5,7 +5,7 @@
 //! cargo run --example basic_counter --features examples
 //! ```
 
-use syzygy::executor::{InlineAsync, Outcome, Task};
+use syzygy::executor::{InlineAsync, Task};
 use syzygy::prelude::*;
 
 #[derive(Debug, Default)]
@@ -26,11 +26,11 @@ enum CounterEffect {
 
 fn event_handler(
     event: CounterEvent,
-    ctx: &mut EventContext<CounterEvent, CounterEffect, CounterModel>,
+    model: &mut CounterModel,
 ) -> Command<CounterEvent, CounterEffect> {
     match event {
-        CounterEvent::Increment => on_increment(ctx.model_mut()),
-        CounterEvent::Decrement => on_decrement(ctx.model_mut()),
+        CounterEvent::Increment => on_increment(model),
+        CounterEvent::Decrement => on_decrement(model),
     }
 }
 
@@ -50,16 +50,16 @@ fn on_decrement(model: &mut CounterModel) -> Command<CounterEvent, CounterEffect
     )))
 }
 
-fn effect_handler(effect: CounterEffect, _ctx: EffectContext<CounterEvent>) -> Task<CounterEvent> {
+fn effect_handler(effect: CounterEffect, _resources: ()) -> Task<CounterEvent, CounterEffect> {
     match effect {
         CounterEffect::Log(message) => log_message(message),
     }
 }
 
-fn log_message(message: String) -> Task<CounterEvent> {
-    Task::async_owned::<InlineAsync<CounterEvent>, _, _>(|_ctx, _resources| async move {
+fn log_message(message: String) -> Task<CounterEvent, CounterEffect> {
+    Task::async_on::<InlineAsync<CounterEvent>, _>(async move {
         println!("{message}");
-        Outcome::None
+        Command::none()
     })
 }
 

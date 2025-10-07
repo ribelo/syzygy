@@ -4,11 +4,7 @@ use std::sync::{
 };
 use std::time::Duration;
 
-use syzygy::executor::{
-    ExecutorError, ExecutorLifecycle, SingleThreadExecutor, SyncBorrowedExecutor,
-};
-
-type Event = ();
+use syzygy::executor::{ExecutorError, ExecutorLifecycle, SingleThreadExecutor};
 
 type Resources = Arc<Mutex<Vec<usize>>>;
 
@@ -18,13 +14,13 @@ fn spawn_job<F>(executor: &Exec, job: F) -> Result<(), ExecutorError>
 where
     F: FnOnce(&mut Resources) + Send + 'static,
 {
-    <Exec as SyncBorrowedExecutor<Event>>::spawn_sync(executor, job)
+    executor.spawn(job)
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn spawn_sync_executes_jobs_in_order() {
     let shared: Resources = Arc::new(Mutex::new(Vec::new()));
-    let executor = Arc::new(Exec::with_resources(shared.clone()));
+    let executor = Arc::new(Exec::with_resources(Arc::clone(&shared)));
 
     for idx in 0..5 {
         let exec_cl = Arc::clone(&executor);
@@ -36,7 +32,7 @@ async fn spawn_sync_executes_jobs_in_order() {
     }
 
     executor.shutdown();
-    executor.join().await;
+    executor.wait();
 
     assert_eq!(*shared.lock().unwrap(), vec![0, 1, 2, 3, 4]);
 }
@@ -50,7 +46,7 @@ async fn spawn_sync_rejects_after_shutdown() {
     let result = spawn_job(&executor, |_resources| {});
     assert!(matches!(result, Err(ExecutorError::WorkerGone)));
 
-    executor.join().await;
+    executor.wait();
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -67,7 +63,7 @@ async fn shutdown_waits_for_inflight_job() {
     .expect("spawn should succeed");
 
     executor.shutdown();
-    executor.join().await;
+    executor.wait();
 
     assert!(flag.load(Ordering::SeqCst));
 }
@@ -75,7 +71,7 @@ async fn shutdown_waits_for_inflight_job() {
 #[tokio::test(flavor = "multi_thread")]
 async fn panicking_job_does_not_poison_executor() {
     let shared: Resources = Arc::new(Mutex::new(Vec::new()));
-    let executor = Exec::with_resources(shared.clone());
+    let executor = Exec::with_resources(Arc::clone(&shared));
 
     spawn_job(&executor, |_resources| panic!("boom"))
         .expect("panic happens on worker thread, spawn succeeds");
@@ -87,7 +83,7 @@ async fn panicking_job_does_not_poison_executor() {
     .expect("executor should continue after panic");
 
     executor.shutdown();
-    executor.join().await;
+    executor.wait();
 
     assert_eq!(*shared.lock().unwrap(), vec![1]);
 }

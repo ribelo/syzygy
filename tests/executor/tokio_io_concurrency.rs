@@ -88,6 +88,5 @@ async fn nonblocking_io_allows_other_tasks_to_progress() {
     );
 
     exec.shutdown();
-    exec.join().await;
+    exec.wait();
 }
-

@@ -145,7 +145,7 @@ enum AppEffect {
 **Key insight**: Effects are **data, not functions**:
 - **Testable** - You can assert effects were created without executing them
 - **Serializable** - Can be logged, replayed, or sent over network
-- **Runtime-agnostic** - Shell can execute with any async runtime
+- **Explicit runtime choice** - Use registered executors (e.g., Tokio) for async work
 
 ### 5. Commands - Simple Data Orchestration
 
@@ -597,10 +597,7 @@ let mut runner = Runner::new(core, shell);
 runner.core().send_event(AppEvent::AppStarted)?;
 
 // Run until some condition
-runner.run_until(
-    |core, _shell| core.model().should_quit,
-    syzygy::spawn::spawner()?  // Runtime-neutral spawning
-).await?;
+runner.run_until(|core, _shell| core.model().should_quit).await?;
 ```
 
 **Runner benefits**:
@@ -776,14 +773,14 @@ async fn test_complete_login_flow() {
     runner.core().send_event(AppEvent::LoginClicked)?;
 
     // Process one tick
-    runner.tick(syzygy::spawn::spawner()?).await?;
+    runner.tick().await?;
 
     // Simulate successful response
     runner.core().send_event(AppEvent::DataReceived {
         data: r#"{"token": "abc123", "user": {"name": "Alice"}}"#.to_string()
     })?;
 
-    runner.tick(syzygy::spawn::spawner()?).await?;
+    runner.tick().await?;
 
     // Check final state
     let model = runner.core().model();
@@ -867,7 +864,7 @@ async fn main() {
 
     runner.run_until(
         |core, _| core.model().finished,
-        syzygy::spawn::auto_spawn
+        // uses the ambient Tokio runtime for async effects
     ).await.unwrap();
 
     println!("Result: {:?}", runner.core().model().result);

@@ -5,7 +5,7 @@
 //! cargo run --example manual_loop --features examples
 //! ```
 
-use syzygy::executor::{InlineAsync, Outcome, Task};
+use syzygy::executor::{InlineAsync, Task};
 use syzygy::prelude::*;
 
 #[derive(Debug, Default)]
@@ -25,13 +25,10 @@ enum AppEffect {
     ProduceMessage,
 }
 
-fn event_handler(
-    event: AppEvent,
-    ctx: &mut EventContext<AppEvent, AppEffect, AppModel>,
-) -> Command<AppEvent, AppEffect> {
+fn event_handler(event: AppEvent, model: &mut AppModel) -> Command<AppEvent, AppEffect> {
     match event {
         AppEvent::Start => on_start(),
-        AppEvent::Completed(message) => on_completed(ctx.model_mut(), message),
+        AppEvent::Completed(message) => on_completed(model, message),
     }
 }
 
@@ -45,15 +42,15 @@ fn on_completed(model: &mut AppModel, message: String) -> Command<AppEvent, AppE
     Command::none()
 }
 
-fn effect_handler(effect: AppEffect, _ctx: EffectContext<AppEvent>) -> Task<AppEvent> {
+fn effect_handler(effect: AppEffect, _resources: ()) -> Task<AppEvent, AppEffect> {
     match effect {
         AppEffect::ProduceMessage => produce_message(),
     }
 }
 
-fn produce_message() -> Task<AppEvent> {
-    Task::async_owned::<InlineAsync<AppEvent>, _, _>(|_ctx, _resources| async move {
-        Outcome::Event(AppEvent::Completed("effect finished".to_string()))
+fn produce_message() -> Task<AppEvent, AppEffect> {
+    Task::async_on::<InlineAsync<AppEvent>, _>(async move {
+        Command::event(AppEvent::Completed("effect finished".to_string()))
     })
 }
 

@@ -1,17 +1,18 @@
 use std::any::{Any, TypeId};
 use std::future::Future;
+use std::sync::Arc;
 
 use crossbeam_channel::Sender;
+#[cfg(feature = "tokio")]
+use futures::executor::block_on;
 use futures_util::future::{BoxFuture, FutureExt};
 use futures_util::stream::{BoxStream, StreamExt};
-// no-op import; keep tracing optional
 
-use super::{
-    AsyncOwnedExecutor, ErasedAsyncOwnedFn, ErasedOwnedSyncFn, ErasedSyncBorrowedFn,
-    SyncBorrowedExecutor, SyncOwnedExecutor,
-};
 use crate::command::{Command, CommandStep};
 use crate::error::ShellError;
+use crate::executor::{
+    AsyncExecutor, BlockingExecutor, ExecutorRegistry, ResourceBlockingExecutor,
+};
 
 fn missing_executor(kind: &'static str, exec: TypeId) -> ShellError {
     #[cfg(feature = "tracing")]
@@ -27,13 +28,7 @@ fn missing_executor(kind: &'static str, exec: TypeId) -> ShellError {
     ShellError::TaskSpawnFailed(format!("Missing {kind} executor for type {exec:?}"))
 }
 
-type AsyncOwnedFutureFactory<E, X> =
-    Box<dyn FnOnce(Box<dyn Any + Send>) -> BoxFuture<'static, Command<E, X>> + Send>;
-type AsyncOwnedStreamFactory<E> = Box<dyn FnOnce(Box<dyn Any + Send>) -> BoxStream<'static, E> + Send>;
-type SyncBorrowedFactory<E, X> = Box<dyn FnOnce(&mut dyn Any) -> Command<E, X> + Send>;
-type SyncOwnedFactory<E, X> =
-    Box<dyn FnOnce(Box<dyn Any + Send>) -> Command<E, X> + Send>;
-
+/// Declarative unit of work returned by effect handlers.
 pub enum Task<E, X>
 where
     E: Send + Sync + 'static,
@@ -41,155 +36,35 @@ where
 {
     Event(E),
     Events(Vec<E>),
-    AsyncOwned {
+    Async {
+        exec_type_id: TypeId,
+        future: BoxFuture<'static, Command<E, X>>,
+    },
+    Stream {
+        exec_type_id: TypeId,
+        stream: BoxStream<'static, E>,
+    },
+    #[cfg(feature = "tokio")]
+    /// Run on the current async runtime if available (e.g. inside #[tokio::main]).
+    /// Falls back to blocking execution on the current thread if no runtime.
+    AsyncCurrent {
+        future: BoxFuture<'static, Command<E, X>>,
+    },
+    #[cfg(feature = "tokio")]
+    /// Forward a stream on the current async runtime if available.
+    /// Falls back to draining the stream on the current thread if no runtime.
+    StreamCurrent {
+        stream: BoxStream<'static, E>,
+    },
+    Blocking {
+        exec_type_id: TypeId,
+        job: Box<dyn FnOnce() -> Command<E, X> + Send>,
+    },
+    BlockingWithResource {
         exec_type_id: TypeId,
         resource_type_id: TypeId,
-        make_future: AsyncOwnedFutureFactory<E, X>,
+        job: Box<dyn FnOnce(&mut dyn Any) -> Command<E, X> + Send>,
     },
-    AsyncOwnedStream {
-        exec_type_id: TypeId,
-        resource_type_id: TypeId,
-        make_stream: AsyncOwnedStreamFactory<E>,
-    },
-    SyncBorrowed {
-        exec_type_id: TypeId,
-        resource_type_id: TypeId,
-        run_with_borrowed: SyncBorrowedFactory<E, X>,
-    },
-    SyncOwned {
-        exec_type_id: TypeId,
-        resource_type_id: TypeId,
-        run_with_owned: SyncOwnedFactory<E, X>,
-    },
-}
-
-struct AsyncOwnedJob<E, X>
-where
-    E: Send + Sync + 'static,
-    X: Send + 'static,
-{
-    resource_type_id: TypeId,
-    kind: AsyncOwnedKind<E, X>,
-}
-enum AsyncOwnedKind<E, X>
-where
-    E: Send + Sync + 'static,
-    X: Send + 'static,
-{
-    Future(AsyncOwnedFutureFactory<E, X>),
-    // Streams remain event-only (return events)
-    Stream(AsyncOwnedStreamFactory<E>),
-}
-
-impl<E, X> ErasedAsyncOwnedFn<E, X> for AsyncOwnedJob<E, X>
-where
-    E: Send + Sync + 'static,
-    X: Send + 'static,
-{
-    fn resource_type_id(&self) -> TypeId {
-        self.resource_type_id
-    }
-    fn call(
-        self: Box<Self>,
-        state: Box<dyn Any + Send>,
-        event_tx: Sender<E>,
-        effect_tx: Sender<CommandStep<E, X>>,
-    ) -> BoxFuture<'static, ()> {
-        let Self {
-            resource_type_id: _,
-            kind,
-        } = *self;
-        match kind {
-            AsyncOwnedKind::Future(factory) => {
-                let fut = factory(state);
-                async move {
-                    let command = fut.await;
-                    route_command(&event_tx, &effect_tx, command);
-                }
-                .boxed()
-            }
-            AsyncOwnedKind::Stream(factory) => {
-                let stream = factory(state);
-                async move {
-                    futures::pin_mut!(stream);
-                    while let Some(event) = stream.next().await {
-                        if let Err(_e) = event_tx.send(event) {
-                            #[cfg(feature = "tracing")]
-                            tracing::debug!("event channel closed while forwarding stream item");
-                            break;
-                        }
-                    }
-                }
-                .boxed()
-            }
-        }
-    }
-}
-
-struct SyncBorrowedJob<E, X>
-where
-    E: Send + Sync + 'static,
-    X: Send + 'static,
-{
-    resource_type_id: TypeId,
-    run_with_borrowed: SyncBorrowedFactory<E, X>,
-}
-
-impl<E, X> ErasedSyncBorrowedFn<E, X> for SyncBorrowedJob<E, X>
-where
-    E: Send + Sync + 'static,
-    X: Send + 'static,
-{
-    fn resource_type_id(&self) -> TypeId {
-        self.resource_type_id
-    }
-
-    fn call(
-        self: Box<Self>,
-        state: &mut dyn Any,
-        event_tx: Sender<E>,
-        effect_tx: Sender<CommandStep<E, X>>,
-    ) {
-        let Self {
-            resource_type_id: _,
-            run_with_borrowed,
-        } = *self;
-        let command = run_with_borrowed(state);
-        route_command(&event_tx, &effect_tx, command);
-    }
-}
-
-struct SyncOwnedJob<E, X>
-where
-    E: Send + Sync + 'static,
-    X: Send + 'static,
-{
-    resource_type_id: TypeId,
-    run_with_owned: SyncOwnedFactory<E, X>,
-}
-
-impl<E, X> ErasedOwnedSyncFn<E, X> for SyncOwnedJob<E, X>
-where
-    E: Send + Sync + 'static,
-    X: Send + 'static,
-{
-    fn resource_type_id(&self) -> TypeId {
-        self.resource_type_id
-    }
-
-    fn call(
-        self: Box<Self>,
-        state: Box<dyn Any + Send>,
-        event_tx: Sender<E>,
-        effect_tx: Sender<CommandStep<E, X>>,
-    ) {
-        let Self {
-            resource_type_id: _,
-            run_with_owned,
-        } = *self;
-        let command = run_with_owned(state);
-        route_command(&event_tx, &effect_tx, command);
-    }
 }
 
 impl<E, X> Task<E, X>
@@ -210,111 +85,114 @@ where
     }
 
     pub fn event(event: E) -> Self {
-        Self::Events(vec![event])
+        Self::Event(event)
     }
 
-    pub fn async_owned<Exec, F, Fut>(f: F) -> Self
+    pub fn async_on<Exec, Fut>(future: Fut) -> Self
     where
-        Exec: AsyncOwnedExecutor<E> + 'static,
-        Exec::Resources: Any + Send + 'static,
-        F: FnOnce(Exec::Resources) -> Fut + Send + 'static,
+        Exec: AsyncExecutor<E> + 'static,
         Fut: Future<Output = Command<E, X>> + Send + 'static,
     {
         let exec_type_id = TypeId::of::<Exec>();
-        let resource_type_id = TypeId::of::<Exec::Resources>();
-        let factory: AsyncOwnedFutureFactory<E, X> = Box::new(move |resources| {
-            // Safety: The resources match Exec::Resources; ensured by the executor lookup.
-            unsafe {
-                let resources = *resources.downcast_unchecked::<Exec::Resources>();
-                Box::pin(f(resources).boxed())
-            }
-        });
-        Self::AsyncOwned {
+        let future: BoxFuture<'static, Command<E, X>> = future.boxed();
+        Self::Async {
             exec_type_id,
-            resource_type_id,
-            make_future: factory,
+            future,
         }
     }
 
-    
-
-    pub fn stream_owned<Exec, F>(f: F) -> Self
+    #[cfg(feature = "tokio")]
+    /// Create an async task that runs on the current runtime if present,
+    /// otherwise completes inline by blocking the current thread.
+    pub fn async_current<Fut>(future: Fut) -> Self
     where
-        Exec: AsyncOwnedExecutor<E> + 'static,
-        Exec::Resources: Any + Send + 'static,
-        F: FnOnce(Exec::Resources) -> BoxStream<'static, E> + Send + 'static,
+        Fut: Future<Output = Command<E, X>> + Send + 'static,
+    {
+        let future: BoxFuture<'static, Command<E, X>> = future.boxed();
+        Self::AsyncCurrent { future }
+    }
+
+    #[cfg(feature = "tokio")]
+    /// Create a stream task that runs on the current runtime if present,
+    /// otherwise drains inline by blocking the current thread.
+    pub fn stream_current<S>(stream: S) -> Self
+    where
+        S: futures_util::stream::Stream<Item = E> + Send + 'static,
+    {
+        let stream: BoxStream<'static, E> = stream.boxed();
+        Self::StreamCurrent { stream }
+    }
+
+    pub fn stream_on<Exec, S>(stream: S) -> Self
+    where
+        Exec: AsyncExecutor<E> + 'static,
+        S: futures_util::stream::Stream<Item = E> + Send + 'static,
     {
         let exec_type_id = TypeId::of::<Exec>();
-        let resource_type_id = TypeId::of::<Exec::Resources>();
-        let factory: AsyncOwnedStreamFactory<E> = Box::new(move |resources| {
-            // Safety: resource type is validated via executor lookup.
-            unsafe {
-                let resources = *resources.downcast_unchecked::<Exec::Resources>();
-                f(resources)
-            }
-        });
-        Self::AsyncOwnedStream {
+        let stream: BoxStream<'static, E> = stream.boxed();
+        Self::Stream {
             exec_type_id,
-            resource_type_id,
-            make_stream: factory,
+            stream,
         }
     }
 
-    
-
-    pub fn sync_borrowed<Exec, F>(f: F) -> Self
+    pub fn blocking_on<Exec, F>(job: F) -> Self
     where
-        Exec: SyncBorrowedExecutor<E> + 'static,
-        Exec::Resources: Any + Send + 'static,
-        F: FnOnce(&mut Exec::Resources) -> Command<E, X> + Send + 'static,
+        Exec: BlockingExecutor<E> + 'static,
+        F: FnOnce() -> Command<E, X> + Send + 'static,
     {
         let exec_type_id = TypeId::of::<Exec>();
-        let resource_type_id = TypeId::of::<Exec::Resources>();
-        let factory: SyncBorrowedFactory<E, X> = Box::new(move |resources| {
-            // Safety: resource type is validated via executor lookup.
-            unsafe {
-                let resources = resources.downcast_mut_unchecked::<Exec::Resources>();
-                f(resources)
-            }
-        });
-        Self::SyncBorrowed {
-            exec_type_id,
-            resource_type_id,
-            run_with_borrowed: factory,
-        }
+        let job: Box<dyn FnOnce() -> Command<E, X> + Send> = Box::new(job);
+        Self::Blocking { exec_type_id, job }
     }
 
-    
-
-    /// Create a sync task for an executor that supplies owned resources per job
-    pub fn sync_owned<Exec, F>(f: F) -> Self
+    pub fn blocking_with_resource_on<Exec, R, F>(job: F) -> Self
     where
-        Exec: SyncOwnedExecutor<E> + 'static,
-        Exec::Resources: Any + Send + 'static,
-        F: FnOnce(Exec::Resources) -> Command<E, X> + Send + 'static,
+        Exec: ResourceBlockingExecutor<E> + 'static,
+        R: 'static,
+        F: FnOnce(&mut R) -> Command<E, X> + Send + 'static,
     {
         let exec_type_id = TypeId::of::<Exec>();
-        let resource_type_id = TypeId::of::<Exec::Resources>();
-        let factory: SyncOwnedFactory<E, X> = Box::new(move |resources| {
-            // Safety: resource type validated via executor lookup.
-            unsafe {
-                let resources = *resources.downcast_unchecked::<Exec::Resources>();
-                f(resources)
-            }
-        });
-        Self::SyncOwned {
+        let resource_type_id = TypeId::of::<R>();
+        let job = Box::new(move |resource: &mut dyn Any| {
+            let resource = resource
+                .downcast_mut::<R>()
+                .expect("resource type mismatch for single-thread executor");
+            job(resource)
+        }) as Box<dyn FnOnce(&mut dyn Any) -> Command<E, X> + Send>;
+        Self::BlockingWithResource {
             exec_type_id,
             resource_type_id,
-            run_with_owned: factory,
+            job,
         }
     }
+}
 
-    
+#[cfg(feature = "tokio")]
+impl<E, X> From<BoxFuture<'static, Command<E, X>>> for Task<E, X>
+where
+    E: Send + Sync + 'static,
+    X: Send + 'static,
+{
+    fn from(future: BoxFuture<'static, Command<E, X>>) -> Self {
+        Task::AsyncCurrent { future }
+    }
+}
+
+#[cfg(feature = "tokio")]
+impl<E, X> From<BoxStream<'static, E>> for Task<E, X>
+where
+    E: Send + Sync + 'static,
+    X: Send + 'static,
+{
+    fn from(stream: BoxStream<'static, E>) -> Self {
+        Task::StreamCurrent { stream }
+    }
 }
 
 fn route_command<E, X>(
-    event_tx: &crossbeam_channel::Sender<E>,
-    effect_tx: &crossbeam_channel::Sender<CommandStep<E, X>>,
+    event_tx: &Sender<E>,
+    effect_tx: &Sender<CommandStep<E, X>>,
     command: Command<E, X>,
 ) where
     E: Send + Sync + 'static,
@@ -338,20 +216,17 @@ fn route_command<E, X>(
     }
 }
 
-use crate::executor::ExecutorRegistry;
-use std::sync::Arc;
-
-pub(crate) fn drive_spec<E, X>(
-    executors: &Arc<ExecutorRegistry<E, X>>,
-    spec: Task<E, X>,
-    event_tx: crossbeam_channel::Sender<E>,
-    effect_tx: crossbeam_channel::Sender<CommandStep<E, X>>,
+pub(crate) fn drive_task<E, X>(
+    executors: &Arc<ExecutorRegistry<E>>,
+    task: Task<E, X>,
+    event_tx: Sender<E>,
+    effect_tx: Sender<CommandStep<E, X>>,
 ) -> Result<(), ShellError>
 where
     E: Send + Sync + 'static,
     X: Send + Sync + 'static,
 {
-    match spec {
+    match task {
         Task::Event(event) => {
             let _ = event_tx.send(event);
         }
@@ -360,148 +235,141 @@ where
                 let _ = event_tx.send(e);
             }
         }
-        Task::AsyncOwned {
-            exec_type_id,
-            resource_type_id,
-            make_future,
-        } => {
-            let job = Box::new(AsyncOwnedJob {
-                resource_type_id,
-                kind: AsyncOwnedKind::Future(make_future),
-            }) as Box<dyn ErasedAsyncOwnedFn<E, X>>;
-            dispatch_async_owned(
-                "async",
-                exec_type_id,
-                resource_type_id,
-                job,
-                executors,
-                event_tx,
-                effect_tx,
-            )?;
+        #[cfg(feature = "tokio")]
+        Task::AsyncCurrent { future } => {
+            // Try to spawn on the current Tokio runtime; if unavailable, run inline.
+            if let Ok(handle) = tokio::runtime::Handle::try_current() {
+                let event_tx_cl = event_tx.clone();
+                let effect_tx_cl = effect_tx.clone();
+                let fut = async move {
+                    let command = future.await;
+                    route_command(&event_tx_cl, &effect_tx_cl, command);
+                };
+                handle.spawn(fut);
+            } else {
+                let command = block_on(future);
+                route_command(&event_tx, &effect_tx, command);
+            }
         }
-        Task::AsyncOwnedStream {
+        Task::Async {
             exec_type_id,
-            resource_type_id,
-            make_stream,
+            future,
         } => {
-            let job = Box::new(AsyncOwnedJob {
-                resource_type_id,
-                kind: AsyncOwnedKind::Stream(make_stream),
-            }) as Box<dyn ErasedAsyncOwnedFn<E, X>>;
-            dispatch_async_owned(
-                "async-stream",
-                exec_type_id,
-                resource_type_id,
-                job,
-                executors,
-                event_tx,
-                effect_tx,
-            )?;
+            let exec = executors
+                .async_exec_by_key(exec_type_id)
+                .ok_or_else(|| missing_executor("async", exec_type_id))?;
+
+            let event_tx_cl = event_tx.clone();
+            let effect_tx_cl = effect_tx.clone();
+            let fut = async move {
+                let command = future.await;
+                route_command(&event_tx_cl, &effect_tx_cl, command);
+            }
+            .boxed();
+
+            exec.spawn_async(fut).map_err(|err| {
+                ShellError::TaskSpawnFailed(format!("async executor {exec_type_id:?}: {err}"))
+            })?;
         }
-        Task::SyncBorrowed {
-            exec_type_id,
-            resource_type_id,
-            run_with_borrowed,
-        } => {
-            let job = Box::new(SyncBorrowedJob {
-                resource_type_id,
-                run_with_borrowed,
-            }) as Box<dyn ErasedSyncBorrowedFn<E, X>>;
-            dispatch_sync_borrowed(executors, exec_type_id, resource_type_id, job, event_tx, effect_tx)?;
+        #[cfg(feature = "tokio")]
+        Task::StreamCurrent { stream } => {
+            if let Ok(handle) = tokio::runtime::Handle::try_current() {
+                let event_tx_cl = event_tx.clone();
+                let fut = async move {
+                    futures_util::pin_mut!(stream);
+                    while let Some(event) = stream.next().await {
+                        if event_tx_cl.send(event).is_err() {
+                            #[cfg(feature = "tracing")]
+                            tracing::debug!("event channel closed while forwarding stream item");
+                            break;
+                        }
+                    }
+                };
+                handle.spawn(fut);
+            } else {
+                block_on(async move {
+                    futures_util::pin_mut!(stream);
+                    while let Some(event) = stream.next().await {
+                        if event_tx.send(event).is_err() {
+                            #[cfg(feature = "tracing")]
+                            tracing::debug!("event channel closed while forwarding stream item");
+                            break;
+                        }
+                    }
+                });
+            }
         }
-        Task::SyncOwned {
+        Task::Stream {
+            exec_type_id,
+            stream,
+        } => {
+            let exec = executors
+                .async_exec_by_key(exec_type_id)
+                .ok_or_else(|| missing_executor("stream", exec_type_id))?;
+
+            let event_tx_cl = event_tx.clone();
+            let fut = async move {
+                futures_util::pin_mut!(stream);
+                while let Some(event) = stream.next().await {
+                    if event_tx_cl.send(event).is_err() {
+                        #[cfg(feature = "tracing")]
+                        tracing::debug!("event channel closed while forwarding stream item");
+                        break;
+                    }
+                }
+            }
+            .boxed();
+
+            exec.spawn_async(fut).map_err(|err| {
+                ShellError::TaskSpawnFailed(format!("stream executor {exec_type_id:?}: {err}"))
+            })?;
+        }
+        Task::Blocking { exec_type_id, job } => {
+            let exec = executors
+                .blocking_exec_by_key(exec_type_id)
+                .ok_or_else(|| missing_executor("blocking", exec_type_id))?;
+
+            let event_tx_cl = event_tx.clone();
+            let effect_tx_cl = effect_tx.clone();
+            let job = Box::new(move || {
+                let command = job();
+                route_command(&event_tx_cl, &effect_tx_cl, command);
+            }) as Box<dyn FnOnce() + Send>;
+
+            exec.spawn_blocking(job).map_err(|err| {
+                ShellError::TaskSpawnFailed(format!("blocking executor {exec_type_id:?}: {err}"))
+            })?;
+        }
+        Task::BlockingWithResource {
             exec_type_id,
             resource_type_id,
-            run_with_owned,
+            job,
         } => {
-            let job = Box::new(SyncOwnedJob {
-                resource_type_id,
-                run_with_owned,
-            }) as Box<dyn ErasedOwnedSyncFn<E, X>>;
-            dispatch_sync_owned(executors, exec_type_id, resource_type_id, job, event_tx, effect_tx)?;
+            let exec = executors
+                .resource_blocking_exec_by_key(exec_type_id)
+                .ok_or_else(|| missing_executor("resource-blocking", exec_type_id))?;
+
+            let actual = exec.resource_type_id();
+            if actual != resource_type_id {
+                return Err(ShellError::TaskSpawnFailed(format!(
+                    "resource type mismatch for executor {exec_type_id:?}: expected {resource_type_id:?}, got {actual:?}"
+                )));
+            }
+
+            let event_tx_cl = event_tx.clone();
+            let effect_tx_cl = effect_tx.clone();
+            let job = Box::new(move |resource: &mut dyn Any| {
+                let command = job(resource);
+                route_command(&event_tx_cl, &effect_tx_cl, command);
+            }) as Box<dyn FnOnce(&mut dyn Any) + Send>;
+
+            exec.spawn_blocking_with_resource(job).map_err(|err| {
+                ShellError::TaskSpawnFailed(format!(
+                    "resource-blocking executor {exec_type_id:?}: {err}"
+                ))
+            })?;
         }
     }
+
     Ok(())
-}
-
-fn dispatch_async_owned<E, X>(
-    kind: &'static str,
-    exec_type_id: TypeId,
-    resource_type_id: TypeId,
-    job: Box<dyn ErasedAsyncOwnedFn<E, X>>,
-    executors: &Arc<ExecutorRegistry<E, X>>,
-    event_tx: Sender<E>,
-    effect_tx: Sender<CommandStep<E, X>>,
-) -> Result<(), ShellError>
-where
-    E: Send + Sync + 'static,
-    X: Send + Sync + 'static,
-{
-    let exec_ref = executors
-        .async_exec_by_key(exec_type_id)
-        .ok_or_else(|| missing_executor(kind, exec_type_id))?;
-    debug_assert_eq!(
-        exec_ref.resource_type_id(),
-        resource_type_id,
-        "async executor state mismatch for {exec_type_id:?}"
-    );
-    exec_ref
-        .spawn_async_owned_erased(job, event_tx, effect_tx)
-        .map_err(|err| {
-            ShellError::TaskSpawnFailed(format!("{kind} executor {exec_type_id:?}: {err}"))
-        })
-}
-
-fn dispatch_sync_borrowed<E, X>(
-    executors: &Arc<ExecutorRegistry<E, X>>,
-    exec_type_id: TypeId,
-    resource_type_id: TypeId,
-    job: Box<dyn ErasedSyncBorrowedFn<E, X>>,
-    event_tx: Sender<E>,
-    effect_tx: Sender<CommandStep<E, X>>,
-) -> Result<(), ShellError>
-where
-    E: Send + Sync + 'static,
-    X: Send + Sync + 'static,
-{
-    let exec_ref = executors
-        .sync_borrowed_exec_by_key(exec_type_id)
-        .ok_or_else(|| missing_executor("sync", exec_type_id))?;
-    debug_assert_eq!(
-        exec_ref.resource_type_id(),
-        resource_type_id,
-        "sync executor state mismatch for {exec_type_id:?}"
-    );
-    exec_ref
-        .spawn_sync_borrowed_erased(job, event_tx, effect_tx)
-        .map_err(|err| {
-            ShellError::TaskSpawnFailed(format!("sync executor {exec_type_id:?}: {err}"))
-        })
-}
-
-fn dispatch_sync_owned<E, X>(
-    executors: &Arc<ExecutorRegistry<E, X>>,
-    exec_type_id: TypeId,
-    resource_type_id: TypeId,
-    job: Box<dyn ErasedOwnedSyncFn<E, X>>,
-    event_tx: Sender<E>,
-    effect_tx: Sender<CommandStep<E, X>>,
-) -> Result<(), ShellError>
-where
-    E: Send + Sync + 'static,
-    X: Send + Sync + 'static,
-{
-    let exec_ref = executors
-        .sync_owned_exec_by_key(exec_type_id)
-        .ok_or_else(|| missing_executor("sync-owned", exec_type_id))?;
-    debug_assert_eq!(
-        exec_ref.resource_type_id(),
-        resource_type_id,
-        "sync-owned executor state mismatch for {exec_type_id:?}"
-    );
-    exec_ref
-        .spawn_sync_owned_erased(job, event_tx, effect_tx)
-        .map_err(|err| {
-            ShellError::TaskSpawnFailed(format!("sync-owned executor {exec_type_id:?}: {err}"))
-        })
 }

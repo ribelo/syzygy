@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use crate::command::{Command, CommandStep};
 use crate::error::ShellError;
-use crate::executor::task::drive_spec;
+use crate::executor::task::drive_task;
 use crate::executor::{ExecutorRegistry, Task};
 
 #[cfg(feature = "tracing")]
@@ -35,7 +35,7 @@ where
     pub(crate) event_tx: Sender<E>,
 
     /// Registry of pluggable executors
-    pub(crate) executors: Arc<ExecutorRegistry<E, X>>,
+    pub(crate) executors: Arc<ExecutorRegistry<E>>,
 
     /// User-provided effect handler
     pub(crate) effect_handler: EffectHandler<E, X, R>,
@@ -97,7 +97,12 @@ where
             let handler = &mut self.effect_handler;
             handler(effect, resources)
         };
-        drive_spec(&self.executors, task, self.event_tx.clone(), self.effect_tx.clone())
+        drive_task(
+            &self.executors,
+            task,
+            self.event_tx.clone(),
+            self.effect_tx.clone(),
+        )
     }
 
     // No public effect sender accessors to keep the API minimal.

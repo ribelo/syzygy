@@ -102,10 +102,7 @@ where
     ///
     /// let syzygy = Syzygy::new(core, shell);
     /// ```
-    pub fn new(
-        core: Core<Event, Effect, Storage>,
-        shell: Shell<Event, Effect, Resources>,
-    ) -> Self {
+    pub fn new(core: Core<Event, Effect, Storage>, shell: Shell<Event, Effect, Resources>) -> Self {
         Self {
             core,
             shell,
@@ -138,10 +135,7 @@ where
     /// Useful for testing or conditional execution.
     pub fn run_until<F>(&mut self, mut condition: F) -> Result<(), ShellError>
     where
-        F: FnMut(
-            &Core<Event, Effect, Storage>,
-            &Shell<Event, Effect, Resources>,
-        ) -> bool,
+        F: FnMut(&Core<Event, Effect, Storage>, &Shell<Event, Effect, Resources>) -> bool,
     {
         self.run_loop(Syzygy::step, move |syzygy| {
             condition(&syzygy.core, &syzygy.shell)
@@ -184,10 +178,10 @@ where
                 return Ok(());
             }
 
-            if let Some(deadline) = deadline {
-                if Instant::now() >= deadline {
-                    return Err(ShellError::Timeout { duration: timeout });
-                }
+            if let Some(deadline) = deadline
+                && Instant::now() >= deadline
+            {
+                return Err(ShellError::Timeout { duration: timeout });
             }
 
             let did_work = self.step()?;
@@ -385,7 +379,12 @@ where
     }
 
     /// Consume the runner and return ownership of the Core and Shell.
-    pub fn split(self) -> (Core<Event, Effect, Storage>, Shell<Event, Effect, Resources>) {
+    pub fn split(
+        self,
+    ) -> (
+        Core<Event, Effect, Storage>,
+        Shell<Event, Effect, Resources>,
+    ) {
         (self.core, self.shell)
     }
 }
@@ -411,7 +410,8 @@ where
     Ok(core_work || shell_work > 0)
 }
 
-impl<Event, Effect, Storage, Resources> From<(
+impl<Event, Effect, Storage, Resources>
+    From<(
         Core<Event, Effect, Storage>,
         Shell<Event, Effect, Resources>,
     )> for Syzygy<Event, Effect, Storage, Resources>
@@ -420,12 +420,18 @@ where
     Effect: Send + Sync + 'static,
     Resources: Clone + Send + Sync + 'static,
 {
-    fn from(parts: (Core<Event, Effect, Storage>, Shell<Event, Effect, Resources>)) -> Self {
+    fn from(
+        parts: (
+            Core<Event, Effect, Storage>,
+            Shell<Event, Effect, Resources>,
+        ),
+    ) -> Self {
         Self::new(parts.0, parts.1)
     }
 }
 
-impl<Event, Effect, Storage, Resources> std::fmt::Debug for Syzygy<Event, Effect, Storage, Resources>
+impl<Event, Effect, Storage, Resources> std::fmt::Debug
+    for Syzygy<Event, Effect, Storage, Resources>
 where
     Event: Send + Sync + 'static,
     Effect: Send + Sync + 'static,
@@ -441,7 +447,8 @@ where
 impl Syzygy<(), (), ()> {
     /// Create a new builder for Syzygy systems
     #[must_use]
-    pub fn builder<NewEvent, NewEffect>() -> crate::builder::SyzygyBuilder<NewEvent, NewEffect, (), ()>
+    pub fn builder<NewEvent, NewEffect>()
+    -> crate::builder::SyzygyBuilder<NewEvent, NewEffect, (), ()>
     where
         NewEvent: Send + Sync + 'static,
         NewEffect: Send + Sync + 'static,
@@ -471,11 +478,7 @@ mod tests {
         Log,
     }
 
-    fn test_update(
-        event: TestEvent,
-        model: &mut TestModel,
-    ) -> Command<TestEvent, TestEffect> {
-
+    fn test_update(event: TestEvent, model: &mut TestModel) -> Command<TestEvent, TestEffect> {
         match event {
             TestEvent::Ping => {
                 model.count += 1;
@@ -495,7 +498,9 @@ mod tests {
             .model(TestModel { count: 0 })
             .event_handler(test_update)
             .with_async_executor(crate::executor::InlineAsync::<TestEvent>::new())
-            .effect_handler(|_e: TestEffect, _resources| crate::executor::Task::<TestEvent, TestEffect>::events(Vec::new()))
+            .effect_handler(|_e: TestEffect, _resources| {
+                crate::executor::Task::<TestEvent, TestEffect>::events(Vec::new())
+            })
             .build();
 
         let event_sender = runner.core().event_sender();
@@ -517,7 +522,9 @@ mod tests {
             .model(TestModel { count: 0 })
             .event_handler(test_update)
             .with_async_executor(crate::executor::InlineAsync::<TestEvent>::new())
-            .effect_handler(|_e: TestEffect, _resources| crate::executor::Task::<TestEvent, TestEffect>::events(Vec::new()))
+            .effect_handler(|_e: TestEffect, _resources| {
+                crate::executor::Task::<TestEvent, TestEffect>::events(Vec::new())
+            })
             .build();
 
         runner.set_config(SyzygyConfig {
@@ -544,7 +551,9 @@ mod tests {
             .model(TestModel { count: 0 })
             .event_handler(test_update)
             .with_async_executor(crate::executor::InlineAsync::<TestEvent>::new())
-            .effect_handler(|_e: TestEffect, _resources| crate::executor::Task::<TestEvent, TestEffect>::events(Vec::new()))
+            .effect_handler(|_e: TestEffect, _resources| {
+                crate::executor::Task::<TestEvent, TestEffect>::events(Vec::new())
+            })
             .build();
 
         let event_sender = runner.core().event_sender();
@@ -564,7 +573,9 @@ mod tests {
             .model(TestModel { count: 0 })
             .event_handler(test_update)
             .with_async_executor(crate::executor::InlineAsync::<TestEvent>::new())
-            .effect_handler(|_e: TestEffect, _resources| crate::executor::Task::<TestEvent, TestEffect>::events(Vec::new()))
+            .effect_handler(|_e: TestEffect, _resources| {
+                crate::executor::Task::<TestEvent, TestEffect>::events(Vec::new())
+            })
             .build();
 
         // No events sent, so no work to do
@@ -579,7 +590,9 @@ mod tests {
             .model(TestModel { count: 0 })
             .event_handler(test_update)
             .with_async_executor(crate::executor::InlineAsync::<TestEvent>::new())
-            .effect_handler(|_e: TestEffect, _resources| crate::executor::Task::<TestEvent, TestEffect>::events(Vec::new()))
+            .effect_handler(|_e: TestEffect, _resources| {
+                crate::executor::Task::<TestEvent, TestEffect>::events(Vec::new())
+            })
             .build();
 
         let event_sender = runner.core().event_sender();
@@ -601,7 +614,9 @@ mod tests {
             .model(TestModel { count: 0 })
             .event_handler(test_update)
             .with_async_executor(crate::executor::InlineAsync::<TestEvent>::new())
-            .effect_handler(|_e: TestEffect, _resources| crate::executor::Task::<TestEvent, TestEffect>::events(Vec::new()))
+            .effect_handler(|_e: TestEffect, _resources| {
+                crate::executor::Task::<TestEvent, TestEffect>::events(Vec::new())
+            })
             .build();
 
         let event_sender = runner.core().event_sender();
@@ -637,7 +652,9 @@ mod tests {
             .model(TestModel { count: 0 })
             .event_handler(test_update)
             .with_async_executor(crate::executor::InlineAsync::<TestEvent>::new())
-            .effect_handler(|_e: TestEffect, _resources| crate::executor::Task::<TestEvent, TestEffect>::events(Vec::new()))
+            .effect_handler(|_e: TestEffect, _resources| {
+                crate::executor::Task::<TestEvent, TestEffect>::events(Vec::new())
+            })
             .build();
 
         let event_sender = runner.core().event_sender();

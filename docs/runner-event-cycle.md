@@ -385,19 +385,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     event_sender.send(Event::Start)?;
     
     println!("=== Step 1 ===");
-    let _ = runner.tick(syzygy::spawn::TokioSpawn).await?;
+    let _ = runner.tick().await?;
     println!("Model: {:?}", runner.core().model());
     // Output: Model { step: "Fetching", data: None }
     // Events processed: Start → BeginFetch → Effect::FetchData queued
     
     println!("=== Step 2 ===");
-    let _ = runner.tick(syzygy::spawn::TokioSpawn).await?;
+    let _ = runner.tick().await?;
     println!("Model: {:?}", runner.core().model());
     // Output: Model { step: "Done", data: Some("API Response") }
     // Effect::FetchData executed → Event::DataFetched → Event::Complete → Effect::LogCompletion queued
     
     println!("=== Step 3 ===");
-    let _ = runner.tick(syzygy::spawn::TokioSpawn).await?;
+    let _ = runner.tick().await?;
     println!("Model: {:?}", runner.core().model());
     // Output: "Process completed!" logged
     // Effect::LogCompletion executed

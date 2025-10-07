@@ -1,7 +1,7 @@
 //! Tests for Shell synchronous methods: `drain_with`, `dispatch_command`, etc.
 //! These tests use the Runner API for convenience.
 
-use syzygy::executor::{InlineAsync, SingleThreadExecutor, Task, TokioExecutor};
+use syzygy::executor::{InlineAsync, Task, TokioExecutor};
 use syzygy::prelude::*;
 
 #[derive(Debug, Clone)]
@@ -21,10 +21,7 @@ struct TestModel {
     count: i32,
 }
 
-fn test_update(
-    event: TestEvent,
-    model: &mut TestModel,
-) -> Command<TestEvent, TestEffect> {
+fn test_update(event: TestEvent, model: &mut TestModel) -> Command<TestEvent, TestEffect> {
     match event {
         TestEvent::Ping => {
             model.count += 1;
@@ -134,21 +131,22 @@ mod tokio_tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn shell_reports_missing_async_executor() {
-        let mut runner =
-            Syzygy::builder::<TestEvent, TestEffect>()
-                .model(TestModel::default())
-                .event_handler(|event, _model| match event {
-                    TestEvent::Ping => Command::effect(TestEffect::Work(99)),
-                    TestEvent::Pong => Command::none(),
-                })
+        let mut runner = Syzygy::builder::<TestEvent, TestEffect>()
+            .model(TestModel::default())
+            .event_handler(|event, _model| match event {
+                TestEvent::Ping => Command::effect(TestEffect::Work(99)),
+                TestEvent::Pong => Command::none(),
+            })
             .effect_handler(|effect: TestEffect, _resources| match effect {
-                    TestEffect::Work(_) => Task::<TestEvent, TestEffect>::async_owned::<TokioExecutor, _, _>(
-                        move |_resources| async move { Command::none() },
-                    ),
-                    _ => Task::<TestEvent, TestEffect>::none(),
-                })
-                .with_async_executor(InlineAsync::<TestEvent>::new())
-                .build();
+                TestEffect::Work(_) => {
+                    Task::<TestEvent, TestEffect>::async_on::<TokioExecutor, _>(async move {
+                        Command::none()
+                    })
+                }
+                TestEffect::Log => Task::<TestEvent, TestEffect>::none(),
+            })
+            .with_async_executor(InlineAsync::<TestEvent>::new())
+            .build();
 
         runner.core_mut().send_event(TestEvent::Ping);
 
@@ -223,7 +221,7 @@ mod tokio_tests {
                 let in_flight = Arc::clone(&in_flight_for_handler);
                 let max_in_flight = Arc::clone(&max_in_flight_for_handler);
 
-                Task::<TestEvent, TestEffect>::sync_borrowed::<SingleThreadExecutor<()>, _>(move |_resources| {
+                Task::<TestEvent, TestEffect>::async_on::<InlineAsync<TestEvent>, _>(async move {
                     if let TestEffect::Work(id) = effect {
                         let active = in_flight.fetch_add(1, Ordering::SeqCst) + 1;
                         max_in_flight.fetch_max(active, Ordering::SeqCst);
@@ -246,8 +244,7 @@ mod tokio_tests {
                     Command::none()
                 })
             })
-            .with_async_executor(TokioExecutor::current_thread_io("batch-seq"))
-            .with_sync_borrowed_executor(SingleThreadExecutor::new())
+            .with_async_executor(InlineAsync::<TestEvent>::new())
             .build();
 
         runner.core_mut().send_event(TestEvent::Ping);
@@ -305,7 +302,7 @@ mod tokio_tests {
 
         let mut runner = Syzygy::builder::<TestEvent, TestEffect>()
             .model(TestModel::default())
-                .event_handler(|event, _model| match event {
+            .event_handler(|event, _model| match event {
                 TestEvent::Ping => Command::parallel([
                     TestEffect::Work(1),
                     TestEffect::Work(2),
@@ -318,7 +315,7 @@ mod tokio_tests {
                 let in_flight = Arc::clone(&in_flight_for_handler);
                 let max_in_flight = Arc::clone(&max_in_flight_for_handler);
 
-                Task::<TestEvent, TestEffect>::async_owned::<TokioExecutor, _, _>(move |_resources| async move {
+                Task::<TestEvent, TestEffect>::async_on::<TokioExecutor, _>(async move {
                     if let TestEffect::Work(id) = effect {
                         let active = in_flight.fetch_add(1, Ordering::SeqCst) + 1;
                         max_in_flight.fetch_max(active, Ordering::SeqCst);
@@ -416,30 +413,28 @@ mod tokio_tests {
                 let in_flight = Arc::clone(&in_flight_for_handler);
                 let max_in_flight = Arc::clone(&max_in_flight_for_handler);
 
-                Task::<TestEvent, TestEffect>::async_owned::<InlineAsync<TestEvent>, _, _>(
-                    move |_resources| async move {
-                        if let TestEffect::Work(id) = effect {
-                            let active = in_flight.fetch_add(1, Ordering::SeqCst) + 1;
-                            max_in_flight.fetch_max(active, Ordering::SeqCst);
+                Task::<TestEvent, TestEffect>::async_on::<InlineAsync<TestEvent>, _>(async move {
+                    if let TestEffect::Work(id) = effect {
+                        let active = in_flight.fetch_add(1, Ordering::SeqCst) + 1;
+                        max_in_flight.fetch_max(active, Ordering::SeqCst);
 
-                            {
-                                let mut log = order.lock().unwrap();
-                                log.push(format!("start-{id}"));
-                            }
-
-                            tokio::time::sleep(Duration::from_millis(5)).await;
-
-                            {
-                                let mut log = order.lock().unwrap();
-                                log.push(format!("end-{id}"));
-                            }
-
-                            in_flight.fetch_sub(1, Ordering::SeqCst);
+                        {
+                            let mut log = order.lock().unwrap();
+                            log.push(format!("start-{id}"));
                         }
 
-                        Command::none()
-                    },
-                )
+                        tokio::time::sleep(Duration::from_millis(5)).await;
+
+                        {
+                            let mut log = order.lock().unwrap();
+                            log.push(format!("end-{id}"));
+                        }
+
+                        in_flight.fetch_sub(1, Ordering::SeqCst);
+                    }
+
+                    Command::none()
+                })
             })
             .with_async_executor(InlineAsync::<TestEvent>::new())
             .build();
@@ -485,8 +480,9 @@ mod tokio_tests {
             .build();
 
         // Set idle sleep to a long duration
-        let mut config = SyzygyConfig::default();
-        config.idle_sleep = Duration::from_millis(200);
+        let config = SyzygyConfig {
+            idle_sleep: Duration::from_millis(200),
+        };
         runner.set_config(config);
 
         // Send an event so there's work available
@@ -521,8 +517,9 @@ mod tokio_tests {
             .build();
 
         // Set idle sleep to zero
-        let mut config = SyzygyConfig::default();
-        config.idle_sleep = Duration::from_millis(0);
+        let config = SyzygyConfig {
+            idle_sleep: Duration::from_millis(0),
+        };
         runner.set_config(config);
 
         // Verify no work is pending

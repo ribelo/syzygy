@@ -51,6 +51,7 @@ impl<T> ResourceCell<T> {
     }
 
     /// Take the value out of the cell, leaving it empty.
+    #[must_use]
     pub fn take(&self) -> Option<T> {
         self.inner.write().expect("lock poisoned").take()
     }
@@ -70,6 +71,7 @@ impl<T> ResourceCell<T> {
     }
 
     /// Clone the inner value if it is present.
+    #[must_use]
     pub fn cloned(&self) -> Option<T>
     where
         T: Clone,

@@ -114,7 +114,7 @@ fn effect_handler(effect: AppEffect, resources: AppResources) -> Task<AppEvent, 
 }
 
 fn fetch_data(url: String) -> Task<AppEvent, AppEffect> {
-    Task::async_owned::<TokioExecutor, _, _>(|_resources| async move {
+    Task::async_on::<TokioExecutor, _>(async move {
         println!("🌐 Fetching: {url}");
         tokio::time::sleep(Duration::from_millis(100)).await;
         Command::event(AppEvent::DataLoaded {
@@ -125,7 +125,7 @@ fn fetch_data(url: String) -> Task<AppEvent, AppEffect> {
 
 fn log_message(resources: &AppResources, message: String) -> Task<AppEvent, AppEffect> {
     let prefix = resources.log_prefix;
-    Task::async_owned::<InlineAsync<AppEvent>, _, _>(move |_resources| async move {
+    Task::async_on::<InlineAsync<AppEvent>, _>(async move {
         println!("{prefix} {message}");
         Command::none()
     })
@@ -390,7 +390,7 @@ let (core, shell) = Syzygy::builder::<MyEvent, MyEffect>()
     .effect_handler(my_effect_handler)
     .with_async_executor(io_executor)
     .with_async_executor(cpu_executor)
-    .with_sync_owned_executor(rayon_executor)
+    .with_blocking_executor(rayon_executor)
     .build();
 ```
 
@@ -403,29 +403,28 @@ The specialized executor architecture eliminates impedance mismatches:
 
 ```rust
 // IO-bound async work - ~4ns per task spawn
-Task::async_owned::<TokioExecutor, _, _>(|_ctx, _resources| async move {
+Task::async_on::<TokioExecutor, _>(async move {
     let response = reqwest::get("https://api.example.com").await?;
     // Network operations here
     Outcome::None
 });
 
 // CPU-bound async work - same performance
-Task::async_owned::<TokioExecutor, _, _>(|_ctx, _resources| async move {
+Task::async_on::<TokioExecutor, _>(async move {
     let result = expensive_async_computation().await;
     Outcome::None
 });
 
-// Parallel sync work - Rayon work-stealing
-Task::Sync {
-    exec: std::any::TypeId::of::<RayonExecutor>(),
-    task: Box::new(|_| Outcome::None),
-};
+// Parallel blocking work - Rayon work-stealing
+Task::blocking_on::<RayonExecutor, _>(|| Outcome::None);
 
-// Sequential sync work - strict FIFO
-Task::Sync {
-    exec: std::any::TypeId::of::<SingleThreadExecutor>(),
-    task: Box::new(|_| Outcome::None),
-};
+// Sequential blocking work with shared resource - strict FIFO
+Task::blocking_with_resource_on::<SingleThreadExecutor<MyResource>, MyResource, _>(
+    |resource| {
+        resource.push("work done");
+        Outcome::None
+    },
+);
 ```
 
 ## Runtime Support
@@ -436,7 +435,7 @@ Syzygy ships with production-ready executors so you can match every workload to 
 - **SingleThreadExecutor** – FIFO execution for blocking operations that must stay ordered
 - **RayonExecutor** *(optional feature)* – parallel CPU work with Rayon
 
-`TokioExecutor::builder()` lets you configure thread model, capabilities, and supplied resources when creating dedicated runtimes. To reuse an existing Tokio runtime, use `TokioExecutor::from_handle(handle, resources)` or `TokioExecutor::try_from_current_with(resources)`.
+`TokioExecutor::builder()` lets you configure thread model and capabilities when creating dedicated runtimes. To reuse an existing Tokio runtime, use `TokioExecutor::from_handle(handle)` or `TokioExecutor::try_from_current()`.
 
 Register them directly on the builder:
 
@@ -476,28 +475,38 @@ Syzygy uses a specialized two-trait executor system for optimal performance:
 /// Shared lifecycle management for all executor types
 pub trait ExecutorLifecycle: Send + Sync + 'static {
     fn shutdown(&self);
-    fn join(&self) -> BoxFuture<'static, ()>;
+    fn wait(&self);
 }
 
 /// Executor specialized for async work (futures)
-pub trait AsyncExecutor<E>: ExecutorLifecycle {
-    type Resources: Clone + Send + Sync + 'static;
-
-    fn spawn_owned<F, Fut>(&self, job: F) -> Result<(), ExecutorError>
-    where
-        F: FnOnce(Self::Resources) -> Fut + Send + 'static,
-        Fut: Future<Output = ()> + Send + 'static;
+pub trait AsyncExecutor<E>: ExecutorLifecycle
+where
+    E: Send + Sync + 'static,
+{
+    fn spawn_async(&self, job: BoxFuture<'static, ()>) -> Result<(), ExecutorError>;
 
     fn sleep(&self, duration: Duration) -> BoxFuture<'static, ()>;
 }
 
-/// Executor specialized for blocking/synchronous work
-pub trait SyncExecutor<E>: ExecutorLifecycle {
-    type Resources: Send + Sync + 'static;
+/// Executor for blocking work without shared resources
+pub trait BlockingExecutor<E>: ExecutorLifecycle
+where
+    E: Send + Sync + 'static,
+{
+    fn spawn_blocking(&self, job: Box<dyn FnOnce() + Send>) -> Result<(), ExecutorError>;
+}
 
-    fn spawn_sync<F>(&self, job: F) -> Result<(), ExecutorError>
-    where
-        F: FnOnce(&mut Self::Resources) + Send + 'static;
+/// Executor for blocking work with a dedicated mutable resource
+pub trait ResourceBlockingExecutor<E>: ExecutorLifecycle
+where
+    E: Send + Sync + 'static,
+{
+    fn resource_type_id(&self) -> TypeId;
+
+    fn spawn_blocking_with_resource(
+        &self,
+        job: Box<dyn FnOnce(&mut dyn Any) + Send>,
+    ) -> Result<(), ExecutorError>;
 }
 ```
 
@@ -506,8 +515,9 @@ The `ExecutorRegistry<E>` maintains separate registries for async and sync execu
 
 ```rust
 pub struct ExecutorRegistry<E> {
-    async_map: FxHashMap<TypeId, Arc<dyn DynAsyncExecutor<E>>>,
-    sync_map: FxHashMap<TypeId, Arc<dyn DynSyncExecutor<E>>>,
+    async_map: FxHashMap<TypeId, Arc<dyn AsyncExecutor<E>>>,
+    blocking_map: FxHashMap<TypeId, Arc<dyn BlockingExecutor<E>>>,
+    resource_blocking_map: FxHashMap<TypeId, Arc<dyn ResourceBlockingExecutor<E>>>,
 }
 ```
 
@@ -516,26 +526,28 @@ pub struct ExecutorRegistry<E> {
 Syzygy supports routing effects to different executors based on workload type:
 
 ```rust
-struct HttpClient;
-struct Database;
-
 struct NetExec;
 struct DbExec;
 
-async fn handle_effects(effect: MyEffect, ctx: EffectContext<MyEvent>) -> Task<MyEvent> {
+struct AppResources {
+    http: Arc<HttpClient>,
+    database: Arc<Database>,
+}
+
+fn handle_effects(effect: MyEffect, resources: AppResources) -> Task<MyEvent, MyEffect> {
     match effect {
         MyEffect::HttpGet { url } => {
             // Route to IO executor
-            Task::async_owned::<NetExec, _, _>(|_ctx, _resources| async move {
-                let response = reqwest::get(&url).await?;
-                Outcome::Event(MyEvent::DataLoaded { data: response.text().await? })
+            Task::async_on::<NetExec, _>(async move {
+                let response = resources.http.get(&url).await?;
+                Command::event(MyEvent::DataLoaded { data: response.body })
             })
         }
         MyEffect::SaveToDatabase { data } => {
             // Route to database executor
-            Task::async_owned::<DbExec, _, _>(|_ctx, _resources| async move {
-                database.save(&data).await?;
-                Outcome::Event(MyEvent::SaveComplete)
+            Task::async_on::<DbExec, _>(async move {
+                resources.database.save(&data).await?;
+                Command::event(MyEvent::SaveComplete)
             })
         }
     }

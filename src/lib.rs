@@ -52,8 +52,8 @@
 //!     resources: AppResources,
 //! ) -> Task<CounterEvent, CounterEffect> {
 //!     match effect {
-//!         CounterEffect::Log(message) => Task::async_owned::<InlineAsync<CounterEvent>, _, _>(
-//!             move |_res| async move {
+//!         CounterEffect::Log(message) => Task::async_on::<InlineAsync<CounterEvent>, _>(
+//!             async move {
 //!                 println!("{} {message}", resources.prefix);
 //!                 Command::none()
 //!             },
@@ -141,12 +141,12 @@
 //!     match effect {
 //!         Effect::SaveUser => {
 //!             let db = Arc::clone(&services.db);
-//!             Task::async_owned::<TokioExecutor, _, _>(move |_res| async move {
+//!             Task::async_on::<TokioExecutor, _>(async move {
 //!                 db.save().await;
 //!                 Command::event(Event::UserSaved)
 //!             })
 //!         }
-//!         Effect::Log(msg) => Task::async_owned::<InlineAsync<Event>, _, _>(move |_res| async move {
+//!         Effect::Log(msg) => Task::async_on::<InlineAsync<Event>, _>(async move {
 //!             println!("LOG {msg}");
 //!             Command::none()
 //!         }),
@@ -384,7 +384,6 @@ pub mod error;
 // Executor system for specialized effect handling
 pub mod executor;
 pub mod resource_cell;
-pub mod spawn;
 
 pub mod prelude {
     // Contexts for update and effect functions
@@ -443,7 +442,5 @@ pub mod prelude {
     // Effect output types
 
     pub use crate::resource_cell::{ResourceCell, SetOnceError};
-    #[cfg(feature = "tokio")]
-    pub use crate::spawn::TokioSpawn;
-    pub use crate::spawn::{Spawn, spawner};
+    // spawn facade removed; use tokio::runtime::Handle directly when needed
 }

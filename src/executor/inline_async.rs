@@ -2,9 +2,9 @@ use std::marker::PhantomData;
 use std::time::Duration;
 
 use futures::executor::block_on;
-use futures::future::{BoxFuture, FutureExt, ready};
+use futures::future::{BoxFuture, FutureExt};
 
-use super::{AsyncOwnedExecutor, ExecutorError, ExecutorLifecycle};
+use super::{AsyncExecutor, ExecutorError, ExecutorLifecycle};
 
 /// Inline async executor - executes jobs immediately on the caller thread.
 pub struct InlineAsync<E> {
@@ -32,18 +32,12 @@ impl<E> std::fmt::Debug for InlineAsync<E> {
     }
 }
 
-impl<E> AsyncOwnedExecutor<E> for InlineAsync<E>
+impl<E> AsyncExecutor<E> for InlineAsync<E>
 where
     E: Send + Sync + 'static,
 {
-    type Resources = ();
-
-    fn spawn_owned<F, Fut>(&self, job: F) -> Result<(), ExecutorError>
-    where
-        F: FnOnce(Self::Resources) -> Fut + Send + 'static,
-        Fut: std::future::Future<Output = ()> + Send + 'static,
-    {
-        block_on(job(()));
+    fn spawn_async(&self, job: BoxFuture<'static, ()>) -> Result<(), ExecutorError> {
+        block_on(job);
         Ok(())
     }
 
@@ -58,7 +52,7 @@ where
 {
     fn shutdown(&self) {}
 
-    fn join(&self) -> BoxFuture<'static, ()> {
-        ready(()).boxed()
+    fn wait(&self) {
+        // inline executor completes work immediately; nothing to wait on
     }
 }

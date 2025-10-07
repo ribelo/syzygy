@@ -1,6 +1,6 @@
 use crate::core::{Core, EventHandler};
 use crate::executor::{
-    AsyncOwnedExecutor, ExecutorRegistry, SyncBorrowedExecutor, SyncOwnedExecutor, Task,
+    AsyncExecutor, BlockingExecutor, ExecutorRegistry, ResourceBlockingExecutor, Task,
 };
 use crate::shell::{EffectHandler, Shell};
 use crate::syzygy::Syzygy;
@@ -104,7 +104,7 @@ where
     effect_handler: Option<EffectHandler<Event, Effect, Resources>>,
     model: Model,
     resources: Resources,
-    exec_registry: ExecutorRegistry<Event, Effect>,
+    exec_registry: ExecutorRegistry<Event>,
     effect_channel_capacity: Option<usize>,
     _marker: PhantomData<Effect>,
 }
@@ -128,7 +128,7 @@ where
 
     /// Replace the executor registry with a pre-built one.
     #[must_use]
-    pub fn with_executor_registry(mut self, registry: ExecutorRegistry<Event, Effect>) -> Self {
+    pub fn with_executor_registry(mut self, registry: ExecutorRegistry<Event>) -> Self {
         self.exec_registry = registry;
         self
     }
@@ -137,29 +137,29 @@ where
     #[must_use]
     pub fn with_async_executor<T>(mut self, exec: T) -> Self
     where
-        T: AsyncOwnedExecutor<Event> + Send + 'static,
+        T: AsyncExecutor<Event> + Send + Sync + 'static,
     {
         self.exec_registry.insert_async(exec);
         self
     }
 
-    /// Register a sync executor that shares mutable resources.
+    /// Register a blocking executor.
     #[must_use]
-    pub fn with_sync_borrowed_executor<T>(mut self, exec: T) -> Self
+    pub fn with_blocking_executor<T>(mut self, exec: T) -> Self
     where
-        T: SyncBorrowedExecutor<Event> + Send + 'static,
+        T: BlockingExecutor<Event> + Send + Sync + 'static,
     {
-        self.exec_registry.insert_sync_borrowed(exec);
+        self.exec_registry.insert_blocking(exec);
         self
     }
 
-    /// Register a sync executor that supplies owned resources per job.
+    /// Register a resource-blocking executor (single-threaded shared resource).
     #[must_use]
-    pub fn with_sync_owned_executor<T>(mut self, exec: T) -> Self
+    pub fn with_resource_blocking_executor<T>(mut self, exec: T) -> Self
     where
-        T: SyncOwnedExecutor<Event> + Send + 'static,
+        T: ResourceBlockingExecutor<Event> + Send + Sync + 'static,
     {
-        self.exec_registry.insert_sync_owned(exec);
+        self.exec_registry.insert_resource_blocking(exec);
         self
     }
 
@@ -186,7 +186,7 @@ where
     }
 
     fn build_shell(
-        exec_registry: Arc<ExecutorRegistry<Event, Effect>>,
+        exec_registry: Arc<ExecutorRegistry<Event>>,
         effect_handler: Option<EffectHandler<Event, Effect, Resources>>,
         resources: Resources,
         event_tx: crossbeam_channel::Sender<Event>,
@@ -209,7 +209,9 @@ where
         };
 
         let effect_handler = effect_handler.unwrap_or_else(|| {
-            Box::new(move |effect, resources| default_effect_handler::<Event, Effect, _>(effect, resources))
+            Box::new(move |effect, resources| {
+                default_effect_handler::<Event, Effect, _>(effect, resources)
+            })
         });
 
         Shell {
@@ -246,10 +248,7 @@ mod tests {
         Log,
     }
 
-    fn test_update(
-        event: TestEvent,
-        model: &mut TestModel,
-    ) -> Command<TestEvent, TestEffect> {
+    fn test_update(event: TestEvent, model: &mut TestModel) -> Command<TestEvent, TestEffect> {
         match event {
             TestEvent::Increment => {
                 model.count += 1;
@@ -263,7 +262,9 @@ mod tests {
         let runner = Syzygy::builder::<TestEvent, TestEffect>()
             .model(TestModel { count: 0 })
             .event_handler(test_update)
-            .effect_handler(|_e: TestEffect, _resources| crate::executor::Task::<TestEvent, TestEffect>::events(Vec::new()))
+            .effect_handler(|_e: TestEffect, _resources| {
+                crate::executor::Task::<TestEvent, TestEffect>::events(Vec::new())
+            })
             .with_async_executor(crate::executor::InlineAsync::<TestEvent>::new())
             .build();
 
@@ -277,7 +278,9 @@ mod tests {
         let runner = Syzygy::builder::<TestEvent, TestEffect>()
             .model(TestModel { count: 0 })
             .event_handler(test_update)
-            .effect_handler(|_e: TestEffect, _resources| crate::executor::Task::<TestEvent, TestEffect>::events(Vec::new()))
+            .effect_handler(|_e: TestEffect, _resources| {
+                crate::executor::Task::<TestEvent, TestEffect>::events(Vec::new())
+            })
             .with_async_executor(crate::executor::InlineAsync::<TestEvent>::new())
             .build();
 
@@ -290,7 +293,9 @@ mod tests {
         let mut runner = Syzygy::builder::<TestEvent, TestEffect>()
             .model(TestModel::default())
             .event_handler(test_update)
-            .effect_handler(|_e: TestEffect, _resources| crate::executor::Task::<TestEvent, TestEffect>::events(Vec::new()))
+            .effect_handler(|_e: TestEffect, _resources| {
+                crate::executor::Task::<TestEvent, TestEffect>::events(Vec::new())
+            })
             .build();
 
         // With no executors registered, processing events still works as long as
@@ -336,7 +341,9 @@ mod tests {
                 },
             ))
             .event_handler(multi_update)
-            .effect_handler(|_e: TestEffect, _resources| crate::executor::Task::<TestEvent, TestEffect>::events(Vec::new()))
+            .effect_handler(|_e: TestEffect, _resources| {
+                crate::executor::Task::<TestEvent, TestEffect>::events(Vec::new())
+            })
             .with_async_executor(crate::executor::InlineAsync::<TestEvent>::new())
             .build();
 

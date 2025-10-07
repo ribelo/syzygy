@@ -38,11 +38,11 @@ struct AppResources {
 
 fn effects(effect: Effect, resources: AppResources) -> Task<Event, Effect> {
     match effect {
-        Effect::Fetch(url) => Task::async_owned::<TokioExecutor, _, _>(move |_res| async move {
+        Effect::Fetch(url) => Task::async_on::<TokioExecutor, _>(async move {
             let body = resources.http.get(&url).await?;
             Command::event(Event::Fetched(body))
         }),
-        Effect::Log(msg) => Task::async_owned::<InlineAsync<Event>, _, _>(move |_res| async move {
+        Effect::Log(msg) => Task::async_on::<InlineAsync<Event>, _>(async move {
             println!("{} {msg}", resources.log_prefix);
             Command::none()
         }),
@@ -72,13 +72,13 @@ Task closures now produce `Command<Event, Effect>` directly. The `Outcome` enum 
 
 ```rust
 // Before
-Task::async_owned::<TokioExecutor, _, _>(|ctx, runtime| async move {
+Task::async_on::<TokioExecutor, _>(async move {
     runtime.do_work().await;
     Outcome::Event(Event::Done)
 });
 
 // After
-Task::async_owned::<TokioExecutor, _, _>(|_runtime| async move {
+Task::async_on::<TokioExecutor, _>(async move {
     do_work().await;
     Command::event(Event::Done)
 });
@@ -95,8 +95,8 @@ Executors no longer carry application resources:
   closure.
 - `TokioExecutor` exposes `builder()`, `multi_thread_io(...)`, etc. without extra resource
   arguments. Use the global application resources (see §2) when tasks need shared state.
-- `SingleThreadExecutor` still owns its dedicated worker resources and continues to provide
-  mutable access inside `Task::sync_borrowed`.
+- Dedicated sync task helpers will return in a future release; for now, offload blocking work
+  via async executors (for example using `tokio::task::spawn_blocking`).
 
 To reuse an existing Tokio runtime, call `TokioExecutor::from_handle(handle)` or
 `TokioExecutor::try_from_current()`.

@@ -81,12 +81,10 @@ let mut runner = Syzygy::builder::<Event, Effect>()
 ```
 
 The first async executor registered becomes the Shell's default. Additional executors can be
-targeted explicitly from effect handlers via `Task::async_owned::<YourExecutor, _, _>(|ctx, resources| async { ... })`.
+targeted explicitly from effect handlers via `Task::async_on::<YourExecutor, _>(async { ... })`.
 
-`syzygy::spawn::spawner()` remains available behind the `tokio` feature for ad-hoc spawning
-and now returns an error if no Tokio runtime is active. Prefer declarative `Task` plans inside
-effect handlers for most work, and remember to propagate the `Result` when you need the
-spawner directly.
+Prefer declarative `Task` plans inside effect handlers for most work. When you need to
+spawn ad-hoc tasks, use `tokio::runtime::Handle::try_current()` directly in Tokio contexts.
 
 ### Task Plans & Zero-Cost Spawning
 
@@ -99,7 +97,7 @@ use syzygy::executor::{Outcome, Task, TokioExecutor};
 
 fn effect_handler(effect: Effect, _ctx: EffectContext<Event>) -> Task<Event> {
     match effect {
-        Effect::Fetch => Task::async_owned::<TokioExecutor, _, _>(|_ctx, _resources| async move {
+        Effect::Fetch => Task::async_on::<TokioExecutor, _>(async move {
             let data = "payload".to_string();
             Outcome::Event(Event::Fetched(data))
         }),
@@ -225,7 +223,7 @@ Syzygy uses a specialized two-trait executor system for optimal performance:
 /// Shared lifecycle management for all executor types
 pub trait ExecutorLifecycle: Send + Sync + 'static {
     fn shutdown(&self);
-    fn join(&self) -> BoxFuture<'static, ()>;
+    fn wait(&self);
 }
 
 /// Executor specialized for async work (futures)
@@ -240,13 +238,19 @@ pub trait AsyncExecutor<E>: ExecutorLifecycle {
     fn sleep(&self, duration: Duration) -> BoxFuture<'static, ()>;
 }
 
-/// Executor specialized for blocking/synchronous work
-pub trait SyncExecutor<E>: ExecutorLifecycle {
-    type Resources: Send + Sync + 'static;
+/// Executor for blocking work without shared resources
+pub trait BlockingExecutor<E>: ExecutorLifecycle {
+    fn spawn_blocking(&self, job: Box<dyn FnOnce() + Send>) -> Result<(), ExecutorError>;
+}
 
-    fn spawn_sync<F>(&self, job: F) -> Result<(), ExecutorError>
-    where
-        F: FnOnce(&mut Self::Resources) + Send + 'static;
+/// Executor for blocking work with a dedicated mutable resource
+pub trait ResourceBlockingExecutor<E>: ExecutorLifecycle {
+    fn resource_type_id(&self) -> TypeId;
+
+    fn spawn_blocking_with_resource(
+        &self,
+        job: Box<dyn FnOnce(&mut dyn Any) + Send>,
+    ) -> Result<(), ExecutorError>;
 }
 ```
 
@@ -256,8 +260,9 @@ The `ExecutorRegistry<E>` maintains separate registries for async and sync execu
 
 ```rust
 pub struct ExecutorRegistry<E> {
-    async_map: FxHashMap<TypeId, Arc<dyn DynAsyncExecutor<E>>>,
-    sync_map: FxHashMap<TypeId, Arc<dyn DynSyncExecutor<E>>>,
+    async_map: FxHashMap<TypeId, Arc<dyn AsyncExecutor<E>>>,
+    blocking_map: FxHashMap<TypeId, Arc<dyn BlockingExecutor<E>>>,
+    resource_blocking_map: FxHashMap<TypeId, Arc<dyn ResourceBlockingExecutor<E>>>,
 }
 ```
 
@@ -271,9 +276,9 @@ pub struct ExecutorRegistry<E> {
 ### Available Executors
 
 - **`TokioExecutor`**: Implements `AsyncExecutor<E>` - dedicated Tokio runtime on own thread
-- **`RayonSyncExecutor`**: Implements `SyncExecutor<E>` - Rayon thread pool for CPU work
-- **`SingleThreadExecutor`**: Implements both traits - single thread with `block_on`/`spawn`
-- **`ThreadPerCoreTokioExecutor`**: Implements `AsyncExecutor<E>` - thread-per-core Tokio
+- **`RayonExecutor`**: Implements `BlockingExecutor<E>` - Rayon thread pool for CPU work
+- **`SingleThreadExecutor`**: Implements `ResourceBlockingExecutor<E>` - single thread with shared state
+- **`TokioExecutor`**: Implements `AsyncExecutor<E>` - dedicated Tokio runtime
 
 ## High-Performance EffectContext
 
@@ -357,7 +362,7 @@ async fn test_complete_flow() {
 
     // Send events and test results
     runner.core().send_event(MyEvent::UserClicked)?;
-    runner.tick(syzygy::spawn::spawner()?).await?;
+    runner.tick().await?;
 
     assert_eq!(runner.core().model().count, 1);
 }
@@ -427,9 +432,6 @@ Current implementation files:
 - `src/runner.rs` - Application orchestration
 - `src/event_context.rs` - Context for synchronous update functions
 - `src/effect_handler.rs` - Effect handlers with async function traits
-- `src/spawn.rs` - Runtime-neutral spawn functions
-
-- `src/timer.rs` - Runtime-neutral timer operations
 - `src/storage/` - UnsafeCell-based storage chains
 - `src/executor/` - **Specialized executor architecture**:
   - `mod.rs` - `AsyncExecutor<E>`, `SyncExecutor<E>`, `ExecutorLifecycle` traits
@@ -460,7 +462,7 @@ Current implementation files:
 ✅ **Memory Safety**: All spawned tasks cancelled on context drop
 ✅ **Documentation Updated**: README and examples reflect current API
 ✅ **No App Trait**: Simplified API using direct function handlers
-✅ **Specialized Executors**: Two-trait architecture with `AsyncExecutor<E>` and `SyncExecutor<E>`
+✅ **Specialized Executors**: Focused traits `AsyncExecutor<E>`, `BlockingExecutor<E>`, and `ResourceBlockingExecutor<E>`
 ✅ **Proper Feature Gating**: Runtime-specific types only available when features are enabled
 
 ### ✅ **Architecture Questions - ANSWERED**

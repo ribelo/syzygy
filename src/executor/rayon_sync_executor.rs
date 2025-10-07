@@ -1,5 +1,4 @@
-use crate::executor::{ExecutorError, ExecutorLifecycle, SyncOwnedExecutor};
-use futures_util::future::{BoxFuture, FutureExt, ready};
+use crate::executor::{BlockingExecutor, ExecutorError, ExecutorLifecycle};
 use rayon::ThreadPoolBuilder;
 use std::marker::PhantomData;
 
@@ -57,19 +56,13 @@ where
     }
 }
 
-impl<E, R> SyncOwnedExecutor<E> for RayonExecutor<E, R>
+impl<E, R> BlockingExecutor<E> for RayonExecutor<E, R>
 where
     E: Send + Sync + 'static,
-    R: Clone + Send + Sync + 'static,
+    R: Send + Sync + 'static,
 {
-    type Resources = R;
-
-    fn spawn_sync_owned<F>(&self, job: F) -> Result<(), ExecutorError>
-    where
-        F: FnOnce(Self::Resources) + Send + 'static,
-    {
-        let resources = self.resources.clone();
-        self.pool.spawn(move || job(resources));
+    fn spawn_blocking(&self, job: Box<dyn FnOnce() + Send>) -> Result<(), ExecutorError> {
+        self.pool.spawn(job);
         Ok(())
     }
 }
@@ -81,8 +74,8 @@ where
 {
     fn shutdown(&self) {}
 
-    fn join(&self) -> BoxFuture<'static, ()> {
-        ready(()).boxed()
+    fn wait(&self) {
+        // rayon pool does not need explicit waiting; it drains outstanding jobs
     }
 }
 
@@ -121,14 +114,14 @@ where
             threads,
             thread_name_prefix,
             resources: _,
-            _marker,
+            _marker: marker,
         } = self;
 
         RayonExecutorBuilder {
             threads,
             thread_name_prefix,
             resources,
-            _marker,
+            _marker: marker,
         }
     }
 
@@ -154,11 +147,11 @@ where
 fn resolve_threads(explicit: Option<usize>) -> usize {
     explicit
         .filter(|&n| n > 0)
-        .unwrap_or_else(|| default_thread_count())
+        .unwrap_or_else(default_thread_count)
 }
 
 fn default_thread_count() -> usize {
     std::thread::available_parallelism()
-        .map(|n| n.get())
+        .map(std::num::NonZero::get)
         .unwrap_or(1)
 }

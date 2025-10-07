@@ -15,8 +15,6 @@ use std::time::Duration;
 use syzygy::executor::TokioExecutor;
 use syzygy::prelude::*;
 
-// Outcome removed; tasks now return Command
-
 #[derive(Debug, Default)]
 struct TimeoutModel {
     is_loading: bool,
@@ -87,8 +85,8 @@ fn timeout_aware_effect_handler(
 ) -> syzygy::executor::Task<TimeoutEvent, TimeoutEffect> {
     match effect {
         TimeoutEffect::SlowOperation { delay_ms } => {
-            syzygy::executor::Task::<TimeoutEvent, TimeoutEffect>::async_owned::<TokioExecutor, _, _>(
-                move |_resources| async move {
+            syzygy::executor::Task::<TimeoutEvent, TimeoutEffect>::async_on::<TokioExecutor, _>(
+                async move {
                     let operation_future = async move {
                         tokio::time::sleep(Duration::from_millis(delay_ms)).await;
                         format!("Operation completed after {delay_ms}ms")
@@ -112,7 +110,7 @@ fn timeout_aware_effect_handler(
 #[cfg(feature = "tokio")]
 #[tokio::test(flavor = "multi_thread")]
 async fn test_timeout_event_pattern() {
-    let runner = Syzygy::builder::<TimeoutEvent, TimeoutEffect>()
+    let mut runner = Syzygy::builder::<TimeoutEvent, TimeoutEffect>()
         .model(TimeoutModel::default())
         .event_handler(timeout_update)
         .effect_handler(timeout_aware_effect_handler)
@@ -125,15 +123,9 @@ async fn test_timeout_event_pattern() {
     event_sender.send(TimeoutEvent::StartSlowOperation).unwrap();
 
     // Run until operation completes or times out
-    let runner = tokio::task::spawn_blocking(move || {
-        let mut runner = runner;
-        runner
-            .run_until(|core, _shell| !core.model().is_loading)
-            .unwrap();
-        runner
-    })
-    .await
-    .expect("spawn_blocking failed");
+    runner
+        .run_until(|core, _shell| !core.model().is_loading)
+        .unwrap();
 
     let model = runner.core().model();
 

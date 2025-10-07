@@ -1,9 +1,8 @@
-#![cfg(feature = "tokio")]
-
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use syzygy::executor::{AsyncOwnedExecutor, ExecutorError, ExecutorLifecycle, TokioExecutor};
+use futures_util::FutureExt;
+use syzygy::executor::{AsyncExecutor, ExecutorError, ExecutorLifecycle, TokioExecutor};
 use tokio::sync::{Barrier, oneshot};
 
 type TestEvent = ();
@@ -20,11 +19,12 @@ async fn spawn_owned_executes_job() {
     );
     let (tx, rx) = oneshot::channel();
 
-    <TokioExecutor as AsyncOwnedExecutor<TestEvent>>::spawn_owned(
+    <TokioExecutor as AsyncExecutor<TestEvent>>::spawn_async(
         &*executor,
-        move |_| async move {
+        async move {
             let _ = tx.send(123u32);
-        },
+        }
+        .boxed(),
     )
     .expect("spawn should succeed");
 
@@ -35,7 +35,7 @@ async fn spawn_owned_executes_job() {
     assert_eq!(value, 123);
 
     executor.shutdown();
-    executor.join().await;
+    executor.wait();
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -48,13 +48,17 @@ async fn spawn_owned_runs_jobs_concurrently() {
     for id in 0..4 {
         let barrier_cl = Arc::clone(&barrier);
         let completion_cl = Arc::clone(&completion);
-        <TokioExecutor as AsyncOwnedExecutor<TestEvent>>::spawn_owned(
+        <TokioExecutor as AsyncExecutor<TestEvent>>::spawn_async(
             &executor,
-            move |_| async move {
+            async move {
                 barrier_cl.wait().await;
-                tokio::time::sleep(Duration::from_millis(40 - (id * 5) as u64)).await;
+                tokio::time::sleep(Duration::from_millis(
+                    40 - u64::try_from(id * 5).unwrap_or(0),
+                ))
+                .await;
                 completion_cl.lock().unwrap().push(id);
-            },
+            }
+            .boxed(),
         )
         .expect("spawn should succeed");
     }
@@ -71,7 +75,7 @@ async fn spawn_owned_runs_jobs_concurrently() {
     .expect("all jobs should finish");
 
     executor.shutdown();
-    executor.join().await;
+    executor.wait();
 
     let elapsed = start.elapsed();
     assert!(
@@ -89,11 +93,13 @@ async fn spawn_after_shutdown_returns_error() {
     let executor = TokioExecutor::current_thread_io("tokio-shutdown");
     executor.shutdown();
 
-    let result =
-        <TokioExecutor as AsyncOwnedExecutor<TestEvent>>::spawn_owned(&executor, |_| async move {});
+    let result = <TokioExecutor as AsyncExecutor<TestEvent>>::spawn_async(
+        &executor,
+        (async move {}).boxed(),
+    );
     assert!(matches!(result, Err(ExecutorError::WorkerGone)));
 
-    executor.join().await;
+    executor.wait();
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -101,12 +107,11 @@ async fn sleep_delegates_to_runtime() {
     let executor = TokioExecutor::current_thread_io("tokio-sleep");
 
     let start = tokio::time::Instant::now();
-    <TokioExecutor as AsyncOwnedExecutor<TestEvent>>::sleep(&executor, Duration::from_millis(20))
-        .await;
+    <TokioExecutor as AsyncExecutor<TestEvent>>::sleep(&executor, Duration::from_millis(20)).await;
     assert!(start.elapsed() >= Duration::from_millis(20));
 
     executor.shutdown();
-    executor.join().await;
+    executor.wait();
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -114,9 +119,13 @@ async fn try_from_current_creates_executor() {
     let executor = TokioExecutor::try_from_current().expect("tokio runtime should be available");
     let (tx, rx) = oneshot::channel();
 
-    <TokioExecutor as AsyncOwnedExecutor<TestEvent>>::spawn_owned(&executor, move |_| async move {
-        let _ = tx.send(());
-    })
+    <TokioExecutor as AsyncExecutor<TestEvent>>::spawn_async(
+        &executor,
+        async move {
+            let _ = tx.send(());
+        }
+        .boxed(),
+    )
     .expect("spawn should succeed");
 
     tokio::time::timeout(Duration::from_secs(1), rx)
@@ -125,5 +134,5 @@ async fn try_from_current_creates_executor() {
         .expect("channel should deliver value");
 
     executor.shutdown();
-    executor.join().await;
+    executor.wait();
 }

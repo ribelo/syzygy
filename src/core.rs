@@ -249,7 +249,6 @@ mod tests {
         event: TestEvent,
         model: &mut CounterModel,
     ) -> Command<TestEvent, TestEffect> {
-
         match event {
             TestEvent::Increment => {
                 model.count += 1;

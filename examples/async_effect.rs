@@ -7,7 +7,7 @@
 
 use std::time::Duration;
 
-use syzygy::executor::{Outcome, Task, TokioExecutor};
+use syzygy::executor::{Task, TokioExecutor};
 use syzygy::prelude::*;
 
 #[derive(Debug, Default)]
@@ -29,11 +29,11 @@ enum DownloadEffect {
 
 fn event_handler(
     event: DownloadEvent,
-    ctx: &mut EventContext<DownloadEvent, DownloadEffect, DownloadModel>,
+    model: &mut DownloadModel,
 ) -> Command<DownloadEvent, DownloadEffect> {
     match event {
-        DownloadEvent::Start => on_start(ctx.model_mut()),
-        DownloadEvent::Completed(message) => on_completed(ctx.model_mut(), message),
+        DownloadEvent::Start => on_start(model),
+        DownloadEvent::Completed(message) => on_completed(model, message),
     }
 }
 
@@ -51,19 +51,16 @@ fn on_completed(
     Command::none()
 }
 
-fn effect_handler(
-    effect: DownloadEffect,
-    _ctx: EffectContext<DownloadEvent>,
-) -> Task<DownloadEvent> {
+fn effect_handler(effect: DownloadEffect, _resources: ()) -> Task<DownloadEvent, DownloadEffect> {
     match effect {
         DownloadEffect::FetchGreeting => fetch_greeting_task(),
     }
 }
 
-fn fetch_greeting_task() -> Task<DownloadEvent> {
-    Task::async_owned::<TokioExecutor, _, _>(move |_ctx, _resources| async move {
+fn fetch_greeting_task() -> Task<DownloadEvent, DownloadEffect> {
+    Task::async_on::<TokioExecutor, _>(async move {
         tokio::time::sleep(Duration::from_millis(50)).await;
-        Outcome::Event(DownloadEvent::Completed(
+        Command::event(DownloadEvent::Completed(
             "hello from async effect".to_string(),
         ))
     })

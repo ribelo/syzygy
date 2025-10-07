@@ -1,16 +1,24 @@
+use std::any::{Any, TypeId};
+use std::marker::PhantomData;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use crossbeam_channel::{Receiver, Sender, unbounded};
 use futures::channel::oneshot;
+use futures::executor::block_on;
 use futures_util::future::{BoxFuture, FutureExt, Shared};
 
-use crate::executor::{ExecutorError, ExecutorLifecycle, SyncBorrowedExecutor, panic_message};
+use crate::executor::{ExecutorError, ExecutorLifecycle, ResourceBlockingExecutor, panic_message};
+
+/// Type alias for the complex job function type used by SingleThreadExecutor
+type JobFn = Box<dyn FnOnce(&mut dyn Any) + Send>;
 
 /// Single-threaded executor that runs blocking jobs on a dedicated worker thread,
 /// providing mutable access to executor-owned resources.
-pub struct SingleThreadExecutor<S = ()> {
-    state: Arc<State<S>>,
+pub struct SingleThreadExecutor<R = ()> {
+    state: Arc<State>,
+    resource_type_id: TypeId,
+    _marker: PhantomData<R>,
 }
 
 impl Default for SingleThreadExecutor<()> {
@@ -32,7 +40,7 @@ where
 {
     #[must_use]
     pub fn with_resources(resources: R) -> Self {
-        let (tx, rx) = unbounded::<Job<R>>();
+        let (tx, rx) = unbounded::<Job>();
         let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
 
         let thread = std::thread::Builder::new()
@@ -55,23 +63,53 @@ where
 
         Self {
             state: Arc::new(state),
+            resource_type_id: TypeId::of::<R>(),
+            _marker: PhantomData,
         }
     }
 }
 
-impl<E, R> SyncBorrowedExecutor<E> for SingleThreadExecutor<R>
+impl<R> SingleThreadExecutor<R>
+where
+    R: Send + Sync + 'static,
+{
+    /// Convenience helper for submitting typed jobs.
+    pub fn spawn<F>(&self, job: F) -> Result<(), ExecutorError>
+    where
+        F: FnOnce(&mut R) + Send + 'static,
+    {
+        let wrapped = Box::new(move |resource: &mut dyn Any| {
+            let typed = resource
+                .downcast_mut::<R>()
+                .expect("single thread executor resource type mismatch");
+            job(typed);
+        });
+
+        if self.state.shutdown_requested.load(Ordering::Acquire)
+            || self.state.tx.send(Job::Work(wrapped)).is_err()
+        {
+            return Err(ExecutorError::WorkerGone);
+        }
+
+        Ok(())
+    }
+}
+
+impl<E, R> ResourceBlockingExecutor<E> for SingleThreadExecutor<R>
 where
     E: Send + Sync + 'static,
     R: Send + Sync + 'static,
 {
-    type Resources = R;
+    fn resource_type_id(&self) -> std::any::TypeId {
+        self.resource_type_id
+    }
 
-    fn spawn_sync<F>(&self, job: F) -> Result<(), ExecutorError>
-    where
-        F: FnOnce(&mut Self::Resources) + Send + 'static,
-    {
+    fn spawn_blocking_with_resource(
+        &self,
+        job: Box<dyn FnOnce(&mut dyn Any) + Send>,
+    ) -> Result<(), ExecutorError> {
         if self.state.shutdown_requested.load(Ordering::Acquire)
-            || self.state.tx.send(Job::Sync(Box::new(job))).is_err()
+            || self.state.tx.send(Job::Work(job)).is_err()
         {
             return Err(ExecutorError::WorkerGone);
         }
@@ -90,24 +128,23 @@ where
         }
     }
 
-    fn join(&self) -> BoxFuture<'static, ()> {
+    fn wait(&self) {
         self.shutdown();
         let fut = self.state.completed_shutdown.clone();
-        async move {
+        block_on(async {
             let () = fut.await;
-        }
-        .boxed()
+        });
     }
 }
 
-struct State<R> {
-    tx: Sender<Job<R>>,
+struct State {
+    tx: Sender<Job>,
     shutdown_requested: AtomicBool,
     completed_shutdown: Shared<BoxFuture<'static, ()>>,
     thread: Mutex<Option<std::thread::JoinHandle<()>>>,
 }
 
-impl<R> Drop for State<R> {
+impl Drop for State {
     fn drop(&mut self) {
         if !self.shutdown_requested.swap(true, Ordering::AcqRel) {
             let _ = self.tx.send(Job::Shutdown);
@@ -123,20 +160,20 @@ impl<R> Drop for State<R> {
     }
 }
 
-enum Job<R> {
-    Sync(Box<dyn FnOnce(&mut R) + Send>),
+enum Job {
+    Work(JobFn),
     Shutdown,
 }
 
-fn worker_loop<R>(rx: Receiver<Job<R>>, shutdown_tx: oneshot::Sender<()>, mut resources: R)
+fn worker_loop<R>(rx: Receiver<Job>, shutdown_tx: oneshot::Sender<()>, mut resources: R)
 where
     R: Send + Sync + 'static,
 {
     while let Ok(job) = rx.recv() {
         match job {
-            Job::Sync(job) => {
+            Job::Work(job) => {
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    job(&mut resources);
+                    job(&mut resources as &mut dyn Any);
                 }));
 
                 if let Err(panic) = result {

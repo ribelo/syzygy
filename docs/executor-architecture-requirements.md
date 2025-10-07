@@ -98,8 +98,8 @@ The architecture has evolved from a unified executor approach to a **two-trait s
 ### REQ-014: Resource Injection
 **WHEN** a handler function requires resources,
 **THE SYSTEM SHALL** automatically inject resources from the executor's own resource storage based on the handler's parameter types,
-**USING** the magic handler system for both sync and async handlers,
-**WHERE** magic handlers are executor-agnostic and only require that needed resources are available in the executor's storage.
+**USING** the magic handler system for both sync and async handlers. Handlers run on the
+executor they target, and require the appropriate executor to be registered.
 
 ### REQ-015: Event Sending
 **WHEN** a handler function needs to send events back to the Core,

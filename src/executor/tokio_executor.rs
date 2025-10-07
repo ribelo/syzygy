@@ -1,7 +1,8 @@
-use crate::executor::{AsyncOwnedExecutor, ExecutorError, ExecutorLifecycle};
+use crate::executor::{AsyncExecutor, ExecutorError, ExecutorLifecycle};
+use futures::executor::block_on;
 use futures_util::{
-    future::{BoxFuture, FutureExt, ready},
     TryFutureExt,
+    future::{BoxFuture, FutureExt},
 };
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
@@ -146,17 +147,11 @@ impl TokioExecutor {
     }
 }
 
-impl<E> AsyncOwnedExecutor<E> for TokioExecutor
+impl<E> AsyncExecutor<E> for TokioExecutor
 where
     E: Send + Sync + 'static,
 {
-    type Resources = ();
-
-    fn spawn_owned<F, Fut>(&self, job: F) -> Result<(), ExecutorError>
-    where
-        F: FnOnce(Self::Resources) -> Fut + Send + 'static,
-        Fut: futures_util::Future<Output = ()> + Send + 'static,
-    {
+    fn spawn_async(&self, job: BoxFuture<'static, ()>) -> Result<(), ExecutorError> {
         match &self.driver {
             Driver::Owned(state) => {
                 let handle = {
@@ -168,11 +163,11 @@ where
                     return Err(ExecutorError::WorkerGone);
                 };
 
-                handle.spawn(job(()));
+                handle.spawn(job);
                 Ok(())
             }
             Driver::Attached(handle) => {
-                handle.spawn(job(()));
+                handle.spawn(job);
                 Ok(())
             }
         }
@@ -193,7 +188,7 @@ impl ExecutorLifecycle for TokioExecutor {
         }
     }
 
-    fn join(&self) -> BoxFuture<'static, ()> {
+    fn wait(&self) {
         match &self.driver {
             Driver::Owned(state) => {
                 self.shutdown();
@@ -201,12 +196,13 @@ impl ExecutorLifecycle for TokioExecutor {
                     let guard = state.read().expect("executor state poisoned");
                     guard.completed_shutdown.clone()
                 };
-                async move {
+                block_on(async {
                     let _ = fut.await;
-                }
-                .boxed()
+                });
             }
-            Driver::Attached(_) => ready(()).boxed(),
+            Driver::Attached(_) => {
+                // nothing to wait for on attached runtime
+            }
         }
     }
 }

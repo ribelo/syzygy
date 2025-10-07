@@ -9,9 +9,7 @@ use std::marker::PhantomData;
 use std::time::Duration;
 
 use futures_util::future::BoxFuture;
-use syzygy::executor::{
-    AsyncOwnedExecutor, ExecutorError, ExecutorLifecycle, Outcome, Task, TokioExecutor,
-};
+use syzygy::executor::{AsyncExecutor, ExecutorError, ExecutorLifecycle, Task, TokioExecutor};
 use syzygy::prelude::*;
 
 #[derive(Debug, Default)]
@@ -33,14 +31,11 @@ enum DemoEffect {
     CrunchNumber(u64),
 }
 
-fn event_handler(
-    event: DemoEvent,
-    ctx: &mut EventContext<DemoEvent, DemoEffect, DemoModel>,
-) -> Command<DemoEvent, DemoEffect> {
+fn event_handler(event: DemoEvent, model: &mut DemoModel) -> Command<DemoEvent, DemoEffect> {
     match event {
         DemoEvent::Start => on_start(),
-        DemoEvent::IoFinished(message) => on_io_finished(ctx.model_mut(), message),
-        DemoEvent::CpuFinished(value) => on_cpu_finished(ctx.model_mut(), value),
+        DemoEvent::IoFinished(message) => on_io_finished(model, message),
+        DemoEvent::CpuFinished(value) => on_cpu_finished(model, value),
     }
 }
 
@@ -102,52 +97,46 @@ where
         self.inner.shutdown();
     }
 
-    fn join(&self) -> BoxFuture<'static, ()> {
-        self.inner.join()
+    fn wait(&self) {
+        self.inner.wait();
     }
 }
 
-impl<E, Tag> AsyncOwnedExecutor<E> for TaggedTokioExecutor<Tag>
+impl<E, Tag> AsyncExecutor<E> for TaggedTokioExecutor<Tag>
 where
     E: Send + Sync + 'static,
     Tag: Send + Sync + 'static,
 {
-    type Resources = ();
-
-    fn spawn_owned<F, Fut>(&self, job: F) -> Result<(), ExecutorError>
-    where
-        F: FnOnce(Self::Resources) -> Fut + Send + 'static,
-        Fut: std::future::Future<Output = ()> + Send + 'static,
-    {
-        <TokioExecutor as AsyncOwnedExecutor<E>>::spawn_owned::<F, Fut>(&self.inner, job)
+    fn spawn_async(&self, job: BoxFuture<'static, ()>) -> Result<(), ExecutorError> {
+        <TokioExecutor as AsyncExecutor<E>>::spawn_async(&self.inner, job)
     }
 
     fn sleep(&self, duration: Duration) -> BoxFuture<'static, ()> {
-        <TokioExecutor as AsyncOwnedExecutor<E>>::sleep(&self.inner, duration)
+        <TokioExecutor as AsyncExecutor<E>>::sleep(&self.inner, duration)
     }
 }
 
-fn effect_handler(effect: DemoEffect, _ctx: EffectContext<DemoEvent>) -> Task<DemoEvent> {
+fn effect_handler(effect: DemoEffect, _resources: ()) -> Task<DemoEvent, DemoEffect> {
     match effect {
         DemoEffect::FetchGreeting => fetch_greeting(),
         DemoEffect::CrunchNumber(n) => crunch_number(n),
     }
 }
 
-fn fetch_greeting() -> Task<DemoEvent> {
-    Task::async_owned::<IoRuntime, _, _>(move |_ctx, _resources| async move {
+fn fetch_greeting() -> Task<DemoEvent, DemoEffect> {
+    Task::async_on::<IoRuntime, _>(async move {
         tokio::time::sleep(Duration::from_millis(40)).await;
-        Outcome::Event(DemoEvent::IoFinished(format!(
+        Command::event(DemoEvent::IoFinished(format!(
             "hello from thread {:?}",
             std::thread::current().id()
         )))
     })
 }
 
-fn crunch_number(n: u64) -> Task<DemoEvent> {
-    Task::async_owned::<CpuRuntime, _, _>(move |_ctx, _resources| async move {
+fn crunch_number(n: u64) -> Task<DemoEvent, DemoEffect> {
+    Task::async_on::<CpuRuntime, _>(async move {
         let result = fibonacci(n);
-        Outcome::Event(DemoEvent::CpuFinished(result))
+        Command::event(DemoEvent::CpuFinished(result))
     })
 }
 
