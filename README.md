@@ -12,17 +12,16 @@ Most software isn't web servers - it's desktop apps, games, CLI tools, IoT devic
 - **Testable architecture** - separate pure logic from side effects
 - **Resource management** - proper cleanup of files, connections, background tasks
 
-## Features
+## Features (verified)
 
 - The Elm Architecture — Unidirectional data flow (Event → Model → Command)
 - Core/Shell Separation — Pure sync Core + async Shell for effects
-
-- Predictable Event Processing — FIFO ordering, deterministic behavior
-- Explicit Effects — You decide what runs and when
-- Zero-overhead Commands — Simple data structures, no complex execution
-- User-defined effects — Library provides no effects, users define their own
-- Executor Abstraction — Pick async/blocking executors; parallelism lives in executors
-- Error-as-events — All errors flow through the same event pipeline
+- Predictable Event Processing — FIFO ordering via queue + channel
+- Explicit Effects — Event handlers return Commands; Shell executes effects
+- User-defined effects — No built-in effects; your types, your logic
+- Executor Abstraction — Async, blocking, and resource-blocking executors
+- Batch and Parallel Effect Steps — Parallelism depends on your executor
+- Error-as-events — Recommended pattern; modeled in your `Event` type
 
 ## Quick Start
 
@@ -115,7 +114,7 @@ fn effect_handler(effect: AppEffect, resources: AppResources) -> Task<AppEvent, 
 
 fn fetch_data(url: String) -> Task<AppEvent, AppEffect> {
     Task::async_on::<TokioExecutor, _>(async move {
-        println!("Fetching: Fetching: {url}");
+        println!("Fetching: {url}");
         tokio::time::sleep(Duration::from_millis(100)).await;
         Command::event(AppEvent::DataLoaded {
             data: "Hello from API!".to_string(),
