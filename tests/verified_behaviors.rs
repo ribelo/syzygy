@@ -1,0 +1,138 @@
+#![allow(clippy::needless_pass_by_value)]
+use std::sync::{Arc, atomic::{AtomicUsize, Ordering}};
+use std::time::Duration;
+
+use syzygy::prelude::*;
+use syzygy::executor::{Task, SingleThreadExecutor};
+
+// --- Predictable Event Processing (FIFO) ---
+
+#[derive(Debug, Default)]
+struct OrderModel { seq: Vec<i32> }
+
+#[derive(Debug, Clone)]
+enum OrderEvent { Push(i32) }
+
+#[derive(Debug, Clone)]
+enum OrderEffect { None }
+
+fn fifo_update(e: OrderEvent, m: &mut OrderModel) -> Command<OrderEvent, OrderEffect> {
+    match e { OrderEvent::Push(n) => { m.seq.push(n); Command::none() } }
+}
+
+#[test]
+fn fifo_event_order_is_preserved() {
+    let (mut core, _tx) = syzygy::core::Core::new(fifo_update, OrderModel::default());
+    // Enqueue a known order
+    for n in 0..5 { core.send_event(OrderEvent::Push(n)); }
+    let _ = core.process_events();
+    assert_eq!(core.model().seq, vec![0,1,2,3,4]);
+}
+
+// --- Resources are cloned per effect invocation ---
+
+#[derive(Debug)]
+struct CountedResources { clones: Arc<AtomicUsize> }
+
+impl Clone for CountedResources {
+    fn clone(&self) -> Self {
+        self.clones.fetch_add(1, Ordering::SeqCst);
+        Self { clones: Arc::clone(&self.clones) }
+    }
+}
+
+#[derive(Debug, Default)]
+struct CloneModel { hits: usize }
+
+#[derive(Debug, Clone)]
+enum CloneEvent { Trigger, Done }
+
+#[derive(Debug, Clone)]
+enum CloneEffect { DoOne }
+
+fn clone_update(e: CloneEvent, m: &mut CloneModel) -> Command<CloneEvent, CloneEffect> {
+    match e {
+        CloneEvent::Trigger => Command::effects(vec![CloneEffect::DoOne, CloneEffect::DoOne]),
+        CloneEvent::Done => { m.hits += 1; Command::none() }
+    }
+}
+
+fn clone_effects(_x: CloneEffect, _r: CountedResources) -> Task<CloneEvent, CloneEffect> {
+    // No executors needed; run on current runtime if present, else block inline
+    Task::blocking_with_resource_on::<SingleThreadExecutor<()>, (), _>(|_| {
+        Command::event(CloneEvent::Done)
+    })
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn resources_cloned_per_effect() {
+    let counter = Arc::new(AtomicUsize::new(0));
+    let resources = CountedResources { clones: Arc::clone(&counter) };
+
+    let mut app = Syzygy::builder::<CloneEvent, CloneEffect>()
+        .model(CloneModel::default())
+        .with_resources(resources)
+        .event_handler(clone_update)
+        .effect_handler(clone_effects)
+        .with_resource_blocking_executor(SingleThreadExecutor::new())
+        .build();
+
+    // Baseline clone count before any effects
+    let before = counter.load(Ordering::SeqCst);
+
+    app.core().send_event(CloneEvent::Trigger);
+    // Drain until both DoOne effects complete and emit two Done events
+    app.drain_until(|m: &CloneModel| m.hits == 2, Duration::from_secs(1)).unwrap();
+
+    let after = counter.load(Ordering::SeqCst);
+    // Expect exactly two resource clones for two effect invocations
+    assert_eq!(after - before, 2);
+}
+
+// --- async_current works with and without a registered executor ---
+
+#[derive(Debug, Default)]
+struct CurrentModel { n: usize }
+
+#[derive(Debug, Clone)]
+enum CurrentEvent { Go, Done }
+
+#[derive(Debug, Clone)]
+enum CurrentEffect { Work }
+
+fn current_update(e: CurrentEvent, m: &mut CurrentModel) -> Command<CurrentEvent, CurrentEffect> {
+    match e {
+        CurrentEvent::Go => Command::effect(CurrentEffect::Work),
+        CurrentEvent::Done => { m.n += 1; Command::none() }
+    }
+}
+
+fn current_effects(_x: CurrentEffect, _r: ()) -> Task<CurrentEvent, CurrentEffect> {
+    Task::async_current(async move { Command::event(CurrentEvent::Done) })
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn async_current_under_tokio_runtime() {
+    let mut app = Syzygy::builder::<CurrentEvent, CurrentEffect>()
+        .model(CurrentModel::default())
+        .event_handler(current_update)
+        .effect_handler(current_effects)
+        .build();
+
+    app.core().send_event(CurrentEvent::Go);
+    app.drain_until(|m: &CurrentModel| m.n == 1, Duration::from_secs(1)).unwrap();
+}
+
+#[test]
+fn async_current_without_runtime_blocks_inline() {
+    let mut app = Syzygy::builder::<CurrentEvent, CurrentEffect>()
+        .model(CurrentModel::default())
+        .event_handler(current_update)
+        .effect_handler(current_effects)
+        .build();
+
+    app.core().send_event(CurrentEvent::Go);
+    // Without a runtime, async_current completes inline; a single drain step should finish
+    app.drain_until(|m: &CurrentModel| m.n == 1, Duration::from_secs(1)).unwrap();
+}
+
