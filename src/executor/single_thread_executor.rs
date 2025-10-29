@@ -3,12 +3,12 @@ use std::marker::PhantomData;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
-use crossbeam_channel::{Receiver, Sender, unbounded};
+use crossbeam_channel::{unbounded, Receiver, Sender};
 use futures::channel::oneshot;
 use futures::executor::block_on;
 use futures_util::future::{BoxFuture, FutureExt, Shared};
 
-use crate::executor::{ExecutorError, ExecutorLifecycle, ResourceBlockingExecutor, panic_message};
+use crate::executor::{panic_message, ExecutorError, ExecutorLifecycle, ResourceBlockingExecutor};
 
 /// Type alias for the complex job function type used by SingleThreadExecutor
 type JobFn = Box<dyn FnOnce(&mut dyn Any) + Send>;

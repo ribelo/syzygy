@@ -32,12 +32,12 @@
 //! let model_ref: &CounterModel = core.model();
 //! assert_eq!(model_ref.count, 1);
 //! ```
-use crossbeam_channel::{Receiver, RecvTimeoutError, Sender, unbounded};
+use crossbeam_channel::{unbounded, Receiver, RecvTimeoutError, Sender};
 use std::collections::VecDeque;
 use std::time::Duration;
 
 #[cfg(feature = "tracing")]
-use tracing::{Level, debug, span};
+use tracing::{debug, span, Level};
 
 use crate::command::Command;
 
@@ -51,8 +51,8 @@ pub type EventHandler<E, X, M> = fn(event: E, model: &mut M) -> Command<E, X>;
 /// updates the model, and returns Commands describing effects to execute.
 pub struct Core<E, X, M>
 where
-    E: Send + 'static,
-    X: Send + 'static,
+    E: Send + Sync + 'static,
+    X: Send + Sync + 'static,
 {
     /// The update function that processes events
     event_handler: EventHandler<E, X, M>,
@@ -75,8 +75,8 @@ where
 
 impl<E, X, M> Core<E, X, M>
 where
-    E: Send + 'static,
-    X: Send + 'static,
+    E: Send + Sync + 'static,
+    X: Send + Sync + 'static,
 {
     /// Create a new Core with update function and storage
     pub fn new(event_handler: EventHandler<E, X, M>, models: M) -> (Self, Sender<E>) {
@@ -138,16 +138,23 @@ where
             debug!(events_processed = self.command_buffer.len());
         }
 
-        std::mem::take(&mut self.command_buffer)
+        let mut out = Vec::with_capacity(self.command_buffer.capacity().max(16));
+        std::mem::swap(&mut self.command_buffer, &mut out);
+        self.command_buffer.clear();
+        out
     }
 
     /// Send an event to be processed in the next tick.
-    ///
-    /// This expects the Core is alive and will panic if the event channel is closed.
+    #[deprecated(note = "use try_send_event() which returns Result")]
     pub fn send_event(&self, event: E) {
+        let _ = self.try_send_event(event);
+    }
+
+    /// Attempt to send an event, returning an error if the channel is closed.
+    pub fn try_send_event(&self, event: E) -> Result<(), crate::error::CoreError> {
         self.event_tx
             .send(event)
-            .expect("event channel is closed; Runner/Core should own the receiver while running");
+            .map_err(|_| crate::error::CoreError::ChannelClosed)
     }
 
     /// Get a sender for external events
@@ -213,8 +220,8 @@ where
 
 impl<E, X, M> std::fmt::Debug for Core<E, X, M>
 where
-    E: Send + 'static,
-    X: Send + 'static,
+    E: Send + Sync + 'static,
+    X: Send + Sync + 'static,
     M: std::fmt::Debug,
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -434,5 +441,17 @@ mod tests {
         // Verify mutation worked
         let model_after: &CounterModel = core.model();
         assert_eq!(model_after.count, 123);
+    }
+
+    #[test]
+    fn try_send_event_enqueues_event() {
+        let (mut core, _) = Core::new(counter_update, CounterModel::default());
+
+        let result = core.try_send_event(TestEvent::Increment);
+        assert!(result.is_ok());
+
+        let commands = core.process_events();
+        assert_eq!(commands.len(), 1);
+        assert_eq!(core.model().count, 1);
     }
 }

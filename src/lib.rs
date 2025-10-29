@@ -1,18 +1,28 @@
-#![feature(downcast_unchecked)]
 //! # Syzygy - Zero-Overhead TEA for Rust
 //!
 //! A high-performance implementation of The Elm Architecture (TEA) with Core/Shell separation,
-//! providing deterministic state management with async side effects and multi-model composition.
+//! providing deterministic state management with async side effects and a single root model.
 //!
 //! ## Quick Start
 //!
 //! ```rust
-//! use syzygy::executor::{InlineAsync, Task};
+//! use syzygy::executor::{Task, TokioExecutor};
 //! use syzygy::prelude::*;
 //!
 //! #[derive(Default)]
-//! struct CounterModel {
-//!     count: i32,
+//! struct User {
+//!     name: String,
+//! }
+//!
+//! #[derive(Default)]
+//! struct Counter {
+//!     value: i32,
+//! }
+//!
+//! #[derive(Default)]
+//! struct App {
+//!     user: User,
+//!     counter: Counter,
 //! }
 //!
 //! #[derive(Clone)]
@@ -26,35 +36,27 @@
 //!     Log(String),
 //! }
 //!
-//! #[derive(Clone)]
-//! struct AppResources {
-//!     prefix: &'static str,
-//! }
-//!
 //! fn event_handler(
 //!     event: CounterEvent,
-//!     model: &mut CounterModel,
+//!     model: &mut App,
 //! ) -> Command<CounterEvent, CounterEffect> {
 //!     match event {
 //!         CounterEvent::Increment => {
-//!             model.count += 1;
-//!             Command::effect(CounterEffect::Log(format!("{}", model.count)))
+//!             model.counter.value += 1;
+//!             Command::effect(CounterEffect::Log(format!("{}", model.counter.value)))
 //!         }
 //!         CounterEvent::Decrement => {
-//!             model.count -= 1;
-//!             Command::effect(CounterEffect::Log(format!("{}", model.count)))
+//!             model.counter.value -= 1;
+//!             Command::effect(CounterEffect::Log(format!("{}", model.counter.value)))
 //!         }
 //!     }
 //! }
 //!
-//! fn effect_handler(
-//!     effect: CounterEffect,
-//!     resources: AppResources,
-//! ) -> Task<CounterEvent, CounterEffect> {
+//! fn effect_handler(effect: CounterEffect, resources: &'static str) -> Task<CounterEvent, CounterEffect> {
 //!     match effect {
-//!         CounterEffect::Log(message) => Task::async_on::<InlineAsync<CounterEvent>, _>(
+//!         CounterEffect::Log(message) => Task::async_on::<TokioExecutor, _>(
 //!             async move {
-//!                 println!("{} {message}", resources.prefix);
+//!                 println!("{resources} {message}");
 //!                 Command::none()
 //!             },
 //!         ),
@@ -63,15 +65,15 @@
 //!
 //! # fn main() -> Result<(), Box<dyn std::error::Error>> {
 //! let mut runner = Syzygy::builder::<CounterEvent, CounterEffect>()
-//!     .model(CounterModel::default())
-//!     .with_resources(AppResources { prefix: "LOG" })
+//!     .model(App::default())
+//!     .with_resources("LOG")
 //!     .event_handler(event_handler)
 //!     .effect_handler(effect_handler)
 //!     .with_async_executor(TokioExecutor::current_thread_cpu("syzygy-docs"))
 //!     .build();
 //!
-//! runner.core().send_event(CounterEvent::Increment)?;
-//! runner.run_until(|core, _shell| core.model().count == 1)?;
+//! runner.core().try_send_event(CounterEvent::Increment)?;
+//! runner.run_until(|core, _shell| core.model().counter.value == 1)?;
 //! # Ok(())
 //! # }
 //! ```
@@ -83,21 +85,27 @@
 //! - Compile-time type safety with zero-cost abstractions
 //! - Task spawning 24x faster than alternatives (~4ns per task)
 //!
-//! ### Multi-Model Architecture
+//! ### Single Root Model
+//! Compose your own application state and register it once on the builder:
 //! ```rust
+//! # use syzygy::executor::Task;
 //! # use syzygy::prelude::*;
-//! # #[derive(Debug, Default)] struct UserModel { name: String }
-//! # #[derive(Debug, Default)] struct ConfigModel { theme: String }
-//! # #[derive(Debug, Clone)] enum Event { Test }
-//! # #[derive(Debug, Clone)] enum Effect { Test }
-//! # fn update(e: Event, model: &mut (ConfigModel, UserModel)) -> Command<Event, Effect> { Command::none() }
-//! # fn effects(_e: Effect, _resources: ()) -> Task<Event, Effect> { Task::none() }
-//! let (core, shell) = Syzygy::builder()
-//!     .model(UserModel::default())     // Add multiple models
-//!     .model(ConfigModel::default())   // Type-safe composition
+//! #[derive(Default)]
+//! struct UserModel { name: String }
+//! #[derive(Default)]
+//! struct ConfigModel { theme: String }
+//! #[derive(Default)]
+//! struct AppModel { user: UserModel, config: ConfigModel }
+//! # #[derive(Clone)] enum Event { Test }
+//! # #[derive(Clone)] enum Effect { Test }
+//! # fn update(_event: Event, _model: &mut AppModel) -> Command<Event, Effect> { Command::none() }
+//! # fn effects(_effect: Effect, _resources: ()) -> Task<Event, Effect> { Task::none() }
+//! let runner = Syzygy::builder::<Event, Effect>()
+//!     .model(AppModel::default())
 //!     .event_handler(update)
 //!     .effect_handler(effects)
 //!     .build();
+//! # let _ = runner;
 //! ```
 //!
 //! ### Async Effects with Resources
@@ -140,7 +148,7 @@
 //! - `SingleThreadExecutor` – sequential, borrowing access to a worker resource
 //! - `RayonExecutor` (optional feature) – CPU-heavy parallel work
 //!
-//! Bring additional runtimes by implementing the `AsyncOwnedExecutor` trait.
+//! Bring additional runtimes by implementing the `AsyncExecutor` trait.
 //!
 //! Don’t want to register executors? Use `Task::async_current`/`Task::stream_current`
 //! in your effect handler. They run on the current Tokio runtime if available,
@@ -227,10 +235,7 @@
 //!                 Command::effect(Effect::SaveData)
 //!             }
 //!         }
-//!         AppEvent::ValidationError { message } => {
-//!             eprintln!("Validation error: {}", message);
-//!             Command::none()
-//!         }
+//!         AppEvent::ValidationError { message } => Command::none(),
 //!         AppEvent::DataSaved => {
 //!             println!("Data saved successfully!");
 //!             Command::none()
@@ -351,7 +356,7 @@ pub mod prelude {
     // No public contexts in the new API; handlers receive plain args
 
     // Command system
-    pub use crate::command::{Command, CommandStep, IntoCommand};
+    pub use crate::command::{Command, CommandStep};
 
     // Core/Shell architecture
     pub use crate::core::{Core, EventHandler};

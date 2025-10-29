@@ -71,9 +71,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_async_executor(InlineAsync::<CounterEvent>::new())
         .build();
 
-    runner.core().send_event(CounterEvent::Increment);
-    runner.core().send_event(CounterEvent::Increment);
-    runner.core().send_event(CounterEvent::Decrement);
+    runner
+        .core()
+        .try_send_event(CounterEvent::Increment)
+        .expect("event channel should be open");
+    runner
+        .core()
+        .try_send_event(CounterEvent::Increment)
+        .expect("event channel should be open");
+    runner
+        .core()
+        .try_send_event(CounterEvent::Decrement)
+        .expect("event channel should be open");
 
     while runner.step()? {}
 

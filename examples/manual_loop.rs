@@ -63,7 +63,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .build()
         .split();
 
-    core.send_event(AppEvent::Start);
+    core.try_send_event(AppEvent::Start)
+        .expect("event channel should be open");
 
     while syzygy::syzygy::step_core_shell(&mut core, &mut shell)? {}
 

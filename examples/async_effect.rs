@@ -75,7 +75,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_async_executor(TokioExecutor::multi_thread_io("async-example", 2))
         .build();
 
-    runner.core().send_event(DownloadEvent::Start);
+    runner
+        .core()
+        .try_send_event(DownloadEvent::Start)
+        .expect("event channel should be open");
 
     runner.run_until(|core, _shell| core.model().finished)?;
 

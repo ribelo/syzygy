@@ -15,7 +15,7 @@ use crate::executor::task::drive_task;
 use crate::executor::{ExecutorRegistry, Task};
 
 #[cfg(feature = "tracing")]
-use tracing::{Level, debug, span};
+use tracing::{debug, span, Level};
 
 /// Effect handler accepting closures that produce declarative tasks.
 pub type EffectHandler<E, X, R> = Box<dyn FnMut(X, R) -> Task<E, X> + Send + 'static>;
@@ -62,6 +62,13 @@ where
     R: Clone + Send + Sync + 'static,
 {
     fn push_effect_step(&mut self, step: CommandStep<E, X>) -> Result<(), ShellError> {
+        if let Some(capacity) = self.effect_channel_capacity {
+            let occupancy = self.effect_rx.len() + self.prefetched_effects.len();
+            if occupancy >= capacity {
+                return Err(ShellError::EffectQueueFull { capacity });
+            }
+        }
+
         match self.effect_tx.try_send(step) {
             Ok(()) => Ok(()),
             Err(TrySendError::Full(step)) => {
@@ -73,7 +80,8 @@ where
                     Ok(()) => Ok(()),
                     Err(TrySendError::Full(step)) => {
                         let limit = self.effect_channel_capacity.unwrap_or(usize::MAX);
-                        if self.prefetched_effects.len() < limit {
+                        let occupancy = self.effect_rx.len() + self.prefetched_effects.len();
+                        if occupancy < limit {
                             self.prefetched_effects.push_back(step);
                             Ok(())
                         } else {

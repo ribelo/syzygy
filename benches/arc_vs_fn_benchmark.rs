@@ -19,7 +19,7 @@
 //! This benchmark measures the specific performance impact of using Arc<dyn Fn>
 //! vs function pointers for effect handlers in Syzygy's Shell implementation.
 
-use criterion::{Criterion, black_box, criterion_group, criterion_main};
+use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use futures_util::future::BoxFuture;
 use std::sync::Arc;
 

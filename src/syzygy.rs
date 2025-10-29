@@ -178,11 +178,11 @@ where
                 return Ok(());
             }
 
-        if let Some(deadline) = deadline {
-            if Instant::now() >= deadline {
-                return Err(ShellError::Timeout { duration: timeout });
+            if let Some(deadline) = deadline {
+                if Instant::now() >= deadline {
+                    return Err(ShellError::Timeout { duration: timeout });
+                }
             }
-        }
 
             let did_work = self.step()?;
 
@@ -368,7 +368,7 @@ where
     ///     .event_handler(|_event: Event, _model| Command::none())
     ///     .effect_handler(|_effect: Effect, _resources| Task::none())
     ///     .build();
-    /// runner.core().send_event(Event::Test)?;
+    /// runner.core().try_send_event(Event::Test)?;
     ///
     /// // Process the event synchronously
     /// let did_work = runner.step()?;
@@ -447,8 +447,8 @@ where
 impl Syzygy<(), (), ()> {
     /// Create a new builder for Syzygy systems
     #[must_use]
-    pub fn builder<NewEvent, NewEffect>()
-    -> crate::builder::SyzygyBuilder<NewEvent, NewEffect, (), ()>
+    pub fn builder<NewEvent, NewEffect>(
+    ) -> crate::builder::SyzygyBuilder<NewEvent, NewEffect, (), ()>
     where
         NewEvent: Send + Sync + 'static,
         NewEffect: Send + Sync + 'static,

@@ -26,7 +26,7 @@ use std::sync::Arc;
 pub struct SyzygyBuilder<E, X, M, R = ()>
 where
     E: Send + Sync + 'static,
-    X: Send + 'static,
+    X: Send + Sync + 'static,
     R: Clone + Send + Sync + 'static,
 {
     model: M,
@@ -37,7 +37,7 @@ where
 impl<E, X> Default for SyzygyBuilder<E, X, (), ()>
 where
     E: Send + Sync + 'static,
-    X: Send + 'static,
+    X: Send + Sync + 'static,
 {
     fn default() -> Self {
         Self::new()
@@ -47,7 +47,7 @@ where
 impl<E, X> SyzygyBuilder<E, X, (), ()>
 where
     E: Send + Sync + 'static,
-    X: Send + 'static,
+    X: Send + Sync + 'static,
 {
     #[must_use]
     pub fn new() -> Self {
@@ -69,6 +69,9 @@ where
     /// Replace the current model with a new one.
     ///
     /// Models are owned by `Core` and mutated only by your event handler.
+    /// Calling `.model(..)` more than once replaces the previous value—compose
+    /// your application state inside a single struct or tuple if you need
+    /// multiple parts of state.
     #[must_use]
     pub fn model<M: 'static>(self, model: M) -> SyzygyBuilder<Event, Effect, M, Resources> {
         SyzygyBuilder {
@@ -240,7 +243,7 @@ where
         fn default_effect_handler<E, X, R>(_: X, _: R) -> Task<E, X>
         where
             E: Send + Sync + 'static,
-            X: Send + 'static,
+            X: Send + Sync + 'static,
             R: Clone + Send + Sync + 'static,
         {
             Task::none()
@@ -343,7 +346,10 @@ mod tests {
 
         // With no executors registered, processing events still works as long as
         // the effect handler does not schedule work onto an executor.
-        runner.core().send_event(TestEvent::Increment);
+        runner
+            .core()
+            .try_send_event(TestEvent::Increment)
+            .expect("event channel should be open");
         runner.step().unwrap();
         assert_eq!(runner.core().model().count, 1);
     }

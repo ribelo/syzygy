@@ -109,7 +109,10 @@ async fn e2e_nonblocking_io_with_syzygy() {
         .with_async_executor(TokioExecutor::multi_thread_io("e2e-io", 2))
         .build();
 
-    runner.core().send_event(IoEvent::Start);
+    runner
+        .core()
+        .try_send_event(IoEvent::Start)
+        .expect("event channel should be open");
 
     // First phase: short task should finish quickly while IO runs in background
     let start = Instant::now();

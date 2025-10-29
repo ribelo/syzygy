@@ -1,13 +1,13 @@
 use crate::executor::{AsyncExecutor, ExecutorError, ExecutorLifecycle};
 use futures::executor::block_on;
 use futures_util::{
-    TryFutureExt,
     future::{BoxFuture, FutureExt},
+    TryFutureExt,
 };
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 use tokio::runtime::{self, Handle};
-use tokio::sync::{Notify, oneshot::error::RecvError};
+use tokio::sync::{oneshot::error::RecvError, Notify};
 
 /// Executor backed by a dedicated tokio runtime on its own thread.
 #[derive(Debug)]

@@ -4,15 +4,15 @@ use smallvec::SmallVec;
 ///
 /// This is what actually happens when your event handler returns a Command.
 /// Events go back to Core for immediate processing. Effects get queued for
-/// async execution. Batch effects run sequentially; use the `Parallel` variant
-/// when you explicitly want concurrent execution.
+/// async execution. Both `Batch` and `Parallel` dispatch effects immediately;
+/// actual concurrency depends on the registered executors.
 #[derive(Clone)]
 pub enum CommandStep<Event, Effect> {
     Event(Event),
     Effect(Effect),
-    /// Sequential effects; Shell runs them in order
+    /// Effects dispatched in order; executors determine actual execution order
     Batch(Vec<Effect>),
-    /// Concurrent effects; Shell schedules them without waiting between each one
+    /// Effects dispatched without waiting between each submission
     Parallel(Vec<Effect>),
 }
 
@@ -123,9 +123,9 @@ impl<Event, Effect> Command<Event, Effect> {
     /// Creates a command that immediately triggers another event.
     ///
     /// The event gets processed synchronously in the same tick. No async
-    /// boundary, no delay, no opportunity for the universe to fuck with your
-    /// state between events. Use this for event chaining when you need to
-    /// break complex logic into smaller, testable pieces.
+    /// boundary, no delay, and no chance for external interference between
+    /// the chained events. Use this for breaking complex flows into smaller,
+    /// testable pieces.
     ///
     /// # Example
     /// ```
@@ -181,11 +181,11 @@ impl<Event, Effect> Command<Event, Effect> {
         Self { outputs }
     }
 
-    /// Creates a command that runs multiple effects sequentially as a single Batch step.
+    /// Creates a command that runs multiple effects as a single Batch step.
     ///
-    /// The Shell executes the effects in order, with no parallelism. This is equivalent
-    /// to constructing `CommandStep::Batch` manually. Use [`Command::parallel`] when you
-    /// explicitly want the Shell to schedule effects concurrently.
+    /// The Shell dispatches the effects in order. Whether they end up running
+    /// sequentially or concurrently depends on what each effect returns and
+    /// how the registered executors schedule that work.
     pub fn effects(effects: impl IntoIterator<Item = Effect>) -> Self {
         Self::sequential(effects)
     }
@@ -196,7 +196,7 @@ impl<Event, Effect> Command<Event, Effect> {
         Self::from_step(CommandStep::Batch(batch))
     }
 
-    /// Creates a command that runs multiple effects in parallel.
+    /// Creates a command that runs multiple effects with no submission gaps.
     ///
     /// Each effect is dispatched without waiting for the previous one to complete. When
     /// using an executor that supports overlap, the effects can run concurrently. On
@@ -344,73 +344,32 @@ impl<Event, Effect> From<()> for Command<Event, Effect> {
     }
 }
 
-/// Extension trait for ergonomic command creation.
+/// ## Implementing `From<T>` for ergonomic conversions
 ///
-/// Provides the `.cmd()` method that converts any value into a Command.
-/// The context determines whether it becomes an event or effect command.
-///
-/// # Examples
+/// Applications can add their own `From<T>` impls to convert domain types into
+/// commands that target specific `Event`/`Effect` pairs:
 ///
 /// ```rust
-/// use syzygy::prelude::*;
+/// # use syzygy::command::{Command, CommandStep};
+/// #[derive(Clone)] enum Event { KickOff }
+/// #[derive(Clone)] enum Effect { Notify(String) }
 ///
-/// #[derive(Clone)]
-/// enum Event { Click, DataReceived(String) }
+/// impl From<Event> for Command<Event, Effect> {
+///     fn from(event: Event) -> Self {
+///         Command::event(event)
+///     }
+/// }
 ///
-/// #[derive(Clone)]
-/// enum Effect { HttpGet(String), Log(String) }
-///
-/// // In event handlers - context makes it clear what type we want
-/// fn handle_click(event: Event, model: &mut Model) -> Command<Event, Effect> {
-///     match event {
-///         Event::Click => {
-///             // Convert event to command
-///             Event::DataReceived("clicked".to_string()).cmd()
-///         }
-///         Event::DataReceived(data) => {
-///             // Convert effect to command
-///             Effect::Log(format!("Received: {}", data)).cmd()
-///         }
+/// impl From<Effect> for Command<Event, Effect> {
+///     fn from(effect: Effect) -> Self {
+///         Command::effect(effect)
 ///     }
 /// }
 /// ```
 ///
-/// Note: Due to Rust's coherence rules, blanket implementations conflict when
-/// Event and Effect types could be the same. Instead, implement this trait
-/// for your specific event and effect types:
-///
-/// ```rust
-/// impl IntoCommand<Event, Effect> for Event {
-///     fn cmd(self) -> Command<Event, Effect> {
-///         Command::event(self)
-///     }
-/// }
-///
-/// impl IntoCommand<Event, Effect> for Effect {
-///     fn cmd(self) -> Command<Event, Effect> {
-///         Command::effect(self)
-///     }
-/// }
-/// ```
-pub trait IntoCommand<Event, Effect> {
-    /// Convert this value into a Command.
-    ///
-    /// The type context determines whether this becomes an event or effect command.
-    /// Use in event handlers where the return type makes the intent clear.
-    fn cmd(self) -> Command<Event, Effect>;
-}
-
-// Note: Additional From implementations would be nice for ergonomics, but they
-// conflict with Rust's coherence rules when Event and Effect types are the same.
-// The existing API already provides good ergonomics:
-//
-// - `Command::event(value)` - accepts any `impl Into<Event>`
-// - `Command::effect(value)` - accepts any `impl Into<Effect>`
-// - `Command::events(vec![...])` - for multiple events
-// - `Command::effects(vec![...])` - for multiple effects
-// - `Command::batch(vec![...])` - for combining commands
-//
-// These cover the most common ergonomic needs without conflicts.
+/// If `Event` and `Effect` are the same type you cannot implement both traits
+/// due to Rust's coherence rules. In that case call `Command::event` and
+/// `Command::effect` directly at the call site.
 
 #[cfg(test)]
 mod tests {
@@ -430,16 +389,15 @@ mod tests {
         Load,
     }
 
-    // Test implementations for IntoCommand trait
-    impl IntoCommand<TestEvent, TestEffect> for TestEvent {
-        fn cmd(self) -> Command<TestEvent, TestEffect> {
-            Command::event(self)
+    impl From<TestEvent> for Command<TestEvent, TestEffect> {
+        fn from(event: TestEvent) -> Self {
+            Command::event(event)
         }
     }
 
-    impl IntoCommand<TestEvent, TestEffect> for TestEffect {
-        fn cmd(self) -> Command<TestEvent, TestEffect> {
-            Command::effect(self)
+    impl From<TestEffect> for Command<TestEvent, TestEffect> {
+        fn from(effect: TestEffect) -> Self {
+            Command::effect(effect)
         }
     }
 
@@ -562,19 +520,14 @@ mod tests {
     }
 
     #[test]
-    fn test_into_command_trait() {
-        // Test that users can implement IntoCommand for their types
-        // This demonstrates the ergonomic extension trait pattern
+    fn test_from_impls_enable_into() {
+        // With From implementations in place, the standard Into conversions work.
+        let event_cmd: Command<TestEvent, TestEffect> = TestEvent::Start.into();
+        let effect_cmd: Command<TestEvent, TestEffect> = TestEffect::Load.into();
 
-        // Now we can use .cmd() method ergonomically
-        let event_cmd: Command<TestEvent, TestEffect> = TestEvent::Start.cmd();
-        let effect_cmd: Command<TestEvent, TestEffect> = TestEffect::Load.cmd();
-
-        // Verify the commands work as expected
         assert_eq!(event_cmd.len(), 1);
         assert_eq!(effect_cmd.len(), 1);
 
-        // Check the actual command steps
         let event_steps: Vec<_> = event_cmd.into_iter().collect();
         let effect_steps: Vec<_> = effect_cmd.into_iter().collect();
 

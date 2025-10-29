@@ -14,7 +14,7 @@
     clippy::type_complexity,
     clippy::duplicated_attributes
 )]
-use criterion::{Criterion, black_box, criterion_group, criterion_main};
+use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use syzygy::command::CommandStep;
 use syzygy::prelude::*;
 

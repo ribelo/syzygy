@@ -27,9 +27,6 @@ fn missing_executor(kind: &'static str, exec: TypeId) -> ShellError {
         "Missing executor; effect could not be scheduled"
     );
 
-    #[cfg(not(feature = "tracing"))]
-    eprintln!("Missing {kind} executor for type {exec:?}; effect could not be scheduled");
-
     ShellError::TaskSpawnFailed(format!("Missing {kind} executor for type {exec:?}"))
 }
 
@@ -37,7 +34,7 @@ fn missing_executor(kind: &'static str, exec: TypeId) -> ShellError {
 pub enum Task<E, X>
 where
     E: Send + Sync + 'static,
-    X: Send + 'static,
+    X: Send + Sync + 'static,
 {
     Event(E),
     Events(Vec<E>),
@@ -75,7 +72,7 @@ where
 impl<E, X> Task<E, X>
 where
     E: Send + Sync + 'static,
-    X: Send + 'static,
+    X: Send + Sync + 'static,
 {
     /// Emit multiple events back to Core.
     pub fn events<I>(events: I) -> Self
@@ -188,7 +185,7 @@ where
 impl<E, X> From<BoxFuture<'static, Command<E, X>>> for Task<E, X>
 where
     E: Send + Sync + 'static,
-    X: Send + 'static,
+    X: Send + Sync + 'static,
 {
     fn from(future: BoxFuture<'static, Command<E, X>>) -> Self {
         Task::AsyncCurrent { future }
@@ -199,7 +196,7 @@ where
 impl<E, X> From<BoxStream<'static, E>> for Task<E, X>
 where
     E: Send + Sync + 'static,
-    X: Send + 'static,
+    X: Send + Sync + 'static,
 {
     fn from(stream: BoxStream<'static, E>) -> Self {
         Task::StreamCurrent { stream }
@@ -212,7 +209,7 @@ fn route_command<E, X>(
     command: Command<E, X>,
 ) where
     E: Send + Sync + 'static,
-    X: Send + 'static,
+    X: Send + Sync + 'static,
 {
     for step in command {
         match step {

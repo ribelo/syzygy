@@ -1,59 +1,90 @@
 #![allow(clippy::needless_pass_by_value)]
-use std::sync::{Arc, atomic::{AtomicUsize, Ordering}};
+use std::sync::{
+    atomic::{AtomicUsize, Ordering},
+    Arc,
+};
 use std::time::Duration;
 
+use syzygy::executor::{SingleThreadExecutor, Task};
 use syzygy::prelude::*;
-use syzygy::executor::{Task, SingleThreadExecutor};
 
 // --- Predictable Event Processing (FIFO) ---
 
 #[derive(Debug, Default)]
-struct OrderModel { seq: Vec<i32> }
+struct OrderModel {
+    seq: Vec<i32>,
+}
 
 #[derive(Debug, Clone)]
-enum OrderEvent { Push(i32) }
+enum OrderEvent {
+    Push(i32),
+}
 
 #[derive(Debug, Clone)]
-enum OrderEffect { None }
+enum OrderEffect {
+    None,
+}
 
 fn fifo_update(e: OrderEvent, m: &mut OrderModel) -> Command<OrderEvent, OrderEffect> {
-    match e { OrderEvent::Push(n) => { m.seq.push(n); Command::none() } }
+    match e {
+        OrderEvent::Push(n) => {
+            m.seq.push(n);
+            Command::none()
+        }
+    }
 }
 
 #[test]
 fn fifo_event_order_is_preserved() {
     let (mut core, _tx) = syzygy::core::Core::new(fifo_update, OrderModel::default());
     // Enqueue a known order
-    for n in 0..5 { core.send_event(OrderEvent::Push(n)); }
+    for n in 0..5 {
+        core.try_send_event(OrderEvent::Push(n))
+            .expect("event channel should be open");
+    }
     let _ = core.process_events();
-    assert_eq!(core.model().seq, vec![0,1,2,3,4]);
+    assert_eq!(core.model().seq, vec![0, 1, 2, 3, 4]);
 }
 
 // --- Resources are cloned per effect invocation ---
 
 #[derive(Debug)]
-struct CountedResources { clones: Arc<AtomicUsize> }
+struct CountedResources {
+    clones: Arc<AtomicUsize>,
+}
 
 impl Clone for CountedResources {
     fn clone(&self) -> Self {
         self.clones.fetch_add(1, Ordering::SeqCst);
-        Self { clones: Arc::clone(&self.clones) }
+        Self {
+            clones: Arc::clone(&self.clones),
+        }
     }
 }
 
 #[derive(Debug, Default)]
-struct CloneModel { hits: usize }
+struct CloneModel {
+    hits: usize,
+}
 
 #[derive(Debug, Clone)]
-enum CloneEvent { Trigger, Done }
+enum CloneEvent {
+    Trigger,
+    Done,
+}
 
 #[derive(Debug, Clone)]
-enum CloneEffect { DoOne }
+enum CloneEffect {
+    DoOne,
+}
 
 fn clone_update(e: CloneEvent, m: &mut CloneModel) -> Command<CloneEvent, CloneEffect> {
     match e {
         CloneEvent::Trigger => Command::effects(vec![CloneEffect::DoOne, CloneEffect::DoOne]),
-        CloneEvent::Done => { m.hits += 1; Command::none() }
+        CloneEvent::Done => {
+            m.hits += 1;
+            Command::none()
+        }
     }
 }
 
@@ -67,7 +98,9 @@ fn clone_effects(_x: CloneEffect, _r: CountedResources) -> Task<CloneEvent, Clon
 #[tokio::test(flavor = "current_thread")]
 async fn resources_cloned_per_effect() {
     let counter = Arc::new(AtomicUsize::new(0));
-    let resources = CountedResources { clones: Arc::clone(&counter) };
+    let resources = CountedResources {
+        clones: Arc::clone(&counter),
+    };
 
     let mut app = Syzygy::builder::<CloneEvent, CloneEffect>()
         .model(CloneModel::default())
@@ -80,9 +113,12 @@ async fn resources_cloned_per_effect() {
     // Baseline clone count before any effects
     let before = counter.load(Ordering::SeqCst);
 
-    app.core().send_event(CloneEvent::Trigger);
+    app.core()
+        .try_send_event(CloneEvent::Trigger)
+        .expect("event channel should be open");
     // Drain until both DoOne effects complete and emit two Done events
-    app.drain_until(|m: &CloneModel| m.hits == 2, Duration::from_secs(1)).unwrap();
+    app.drain_until(|m: &CloneModel| m.hits == 2, Duration::from_secs(1))
+        .unwrap();
 
     let after = counter.load(Ordering::SeqCst);
     // Expect exactly two resource clones for two effect invocations
@@ -92,18 +128,28 @@ async fn resources_cloned_per_effect() {
 // --- async_current works with and without a registered executor ---
 
 #[derive(Debug, Default)]
-struct CurrentModel { n: usize }
+struct CurrentModel {
+    n: usize,
+}
 
 #[derive(Debug, Clone)]
-enum CurrentEvent { Go, Done }
+enum CurrentEvent {
+    Go,
+    Done,
+}
 
 #[derive(Debug, Clone)]
-enum CurrentEffect { Work }
+enum CurrentEffect {
+    Work,
+}
 
 fn current_update(e: CurrentEvent, m: &mut CurrentModel) -> Command<CurrentEvent, CurrentEffect> {
     match e {
         CurrentEvent::Go => Command::effect(CurrentEffect::Work),
-        CurrentEvent::Done => { m.n += 1; Command::none() }
+        CurrentEvent::Done => {
+            m.n += 1;
+            Command::none()
+        }
     }
 }
 
@@ -119,8 +165,11 @@ async fn async_current_under_tokio_runtime() {
         .effect_handler(current_effects)
         .build();
 
-    app.core().send_event(CurrentEvent::Go);
-    app.drain_until(|m: &CurrentModel| m.n == 1, Duration::from_secs(1)).unwrap();
+    app.core()
+        .try_send_event(CurrentEvent::Go)
+        .expect("event channel should be open");
+    app.drain_until(|m: &CurrentModel| m.n == 1, Duration::from_secs(1))
+        .unwrap();
 }
 
 #[test]
@@ -131,8 +180,10 @@ fn async_current_without_runtime_blocks_inline() {
         .effect_handler(current_effects)
         .build();
 
-    app.core().send_event(CurrentEvent::Go);
+    app.core()
+        .try_send_event(CurrentEvent::Go)
+        .expect("event channel should be open");
     // Without a runtime, async_current completes inline; a single drain step should finish
-    app.drain_until(|m: &CurrentModel| m.n == 1, Duration::from_secs(1)).unwrap();
+    app.drain_until(|m: &CurrentModel| m.n == 1, Duration::from_secs(1))
+        .unwrap();
 }
-

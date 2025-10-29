@@ -148,8 +148,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_async_executor(io_executor)
         .build();
 
-    app.core().send_event(AppEvent::Increment)?;
-    app.core().send_event(AppEvent::LoadData)?;
+    app.core().try_send_event(AppEvent::Increment)?;
+    app.core().try_send_event(AppEvent::LoadData)?;
 
     app.run_until(|core, _| !core.model().is_loading)?;
 
@@ -593,7 +593,7 @@ Syzygy exists because most state management solutions for Rust are either:
 1. **Web-focused** (axum, warp, actix-web) - overkill for desktop apps
 2. **Too complex** (full FRP systems) - learning curve steeper than Everest
 3. **Too simple** (basic state machines) - no async handling, no resource management
-4. **Poorly tested** - race conditions at 3 AM when your app shits itself in production
+4. **Poorly tested** - race conditions at 3 AM when your app crashes in production
 
 We needed something that gives us:
 - Predictable state evolution (events in order, deterministic outcomes)

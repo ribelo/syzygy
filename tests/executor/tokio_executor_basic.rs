@@ -3,7 +3,7 @@ use std::time::{Duration, Instant};
 
 use futures_util::FutureExt;
 use syzygy::executor::{AsyncExecutor, ExecutorError, ExecutorLifecycle, TokioExecutor};
-use tokio::sync::{Barrier, oneshot};
+use tokio::sync::{oneshot, Barrier};
 
 type TestEvent = ();
 

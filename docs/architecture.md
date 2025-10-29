@@ -20,8 +20,8 @@ This is the map. No marketing. Just how it works and where it will bite you if y
 - Steps:
   - `Event(E)` – route back to Core immediately
   - `Effect(X)` – queue for the Shell
-  - `Batch(Vec<X>)` – sequential effects
-  - `Parallel(Vec<X>)` – schedule effects without waiting between them
+  - `Batch(Vec<X>)` – effects dispatched in order (executors decide actual overlap)
+  - `Parallel(Vec<X>)` – dispatch effects without waiting between submissions; real parallelism depends on executors
 
 ### Shell (Impure, Async)
 - Reads `Command` steps and executes effects via the effect handler.
@@ -96,7 +96,7 @@ What actually happens
 
 ## Patterns That Scale
 - Chain complex logic via `Command::events([..])` rather than mutating all at once.
-- Use `Batch` for “must be ordered”; use `Parallel` when ordering doesn’t matter.
+- Use `Batch` when you need deterministic submission order; use `Parallel` when the work items are independent and your executors can overlap them.
 - Use `SingleThreadExecutor<R>` when a resource explodes under concurrency.
 - Use `async_current` to avoid wiring executors when you already run under `#[tokio::main]`.
 

@@ -52,6 +52,31 @@ mod tokio_tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
+    async fn effect_queue_respects_capacity_limits() {
+        let mut runner = Syzygy::builder::<TestEvent, TestEffect>()
+            .model(TestModel::default())
+            .event_handler(test_update)
+            .effect_handler(|_effect: TestEffect, _resources| Task::<TestEvent, TestEffect>::none())
+            .with_async_executor(InlineAsync::<TestEvent>::new())
+            .with_effect_channel_capacity(Some(1))
+            .build();
+
+        let shell = runner.shell_mut();
+        shell
+            .dispatch_command(Command::effect(TestEffect::Log))
+            .expect("first effect should fit in queue");
+
+        let error = shell
+            .dispatch_command(Command::effect(TestEffect::Log))
+            .expect_err("second effect should exceed capacity");
+
+        match error {
+            ShellError::EffectQueueFull { capacity } => assert_eq!(capacity, 1),
+            other => panic!("expected EffectQueueFull, got {other:?}"),
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
     async fn shell_pending_effects_starts_at_zero() {
         let runner = create_test_runner();
         let shell = runner.shell();
@@ -87,7 +112,10 @@ mod tokio_tests {
         let mut runner = create_test_runner();
 
         // Send an event that will generate another event and an effect
-        runner.core_mut().send_event(TestEvent::Ping);
+        runner
+            .core_mut()
+            .try_send_event(TestEvent::Ping)
+            .expect("event channel should be open");
 
         // First step: process Ping -> generates Pong event (which is routed back to Core)
         let did_work1 = runner.step().expect("First step should succeed");
@@ -111,7 +139,10 @@ mod tokio_tests {
 
         // Send multiple events
         for _ in 0..3 {
-            runner.core_mut().send_event(TestEvent::Ping);
+            runner
+                .core_mut()
+                .try_send_event(TestEvent::Ping)
+                .expect("event channel should be open");
         }
 
         // Process all events and effects
@@ -148,7 +179,10 @@ mod tokio_tests {
             .with_async_executor(InlineAsync::<TestEvent>::new())
             .build();
 
-        runner.core_mut().send_event(TestEvent::Ping);
+        runner
+            .core_mut()
+            .try_send_event(TestEvent::Ping)
+            .expect("event channel should be open");
 
         let err = runner
             .step()
@@ -169,7 +203,10 @@ mod tokio_tests {
     async fn drain_max_limits_iterations() {
         let mut runner = create_test_runner();
         for _ in 0..3 {
-            runner.core_mut().send_event(TestEvent::Ping);
+            runner
+                .core_mut()
+                .try_send_event(TestEvent::Ping)
+                .expect("event channel should be open");
         }
 
         let steps = runner.drain_max(1).expect("drain_max should succeed");
@@ -183,7 +220,10 @@ mod tokio_tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn drain_until_completes_or_times_out() {
         let mut runner = create_test_runner();
-        runner.core_mut().send_event(TestEvent::Ping);
+        runner
+            .core_mut()
+            .try_send_event(TestEvent::Ping)
+            .expect("event channel should be open");
 
         runner
             .drain_until(|model| model.count >= 2, Duration::from_secs(1))
@@ -247,7 +287,10 @@ mod tokio_tests {
             .with_async_executor(InlineAsync::<TestEvent>::new())
             .build();
 
-        runner.core_mut().send_event(TestEvent::Ping);
+        runner
+            .core_mut()
+            .try_send_event(TestEvent::Ping)
+            .expect("event channel should be open");
 
         while runner.step().expect("step should succeed") {
             tokio::task::yield_now().await;
@@ -341,7 +384,10 @@ mod tokio_tests {
             .with_async_executor(TokioExecutor::current_thread_io("parallel-overlap"))
             .build();
 
-        runner.core_mut().send_event(TestEvent::Ping);
+        runner
+            .core_mut()
+            .try_send_event(TestEvent::Ping)
+            .expect("event channel should be open");
 
         while runner.step().expect("step should succeed") {
             tokio::task::yield_now().await;
@@ -439,7 +485,10 @@ mod tokio_tests {
             .with_async_executor(InlineAsync::<TestEvent>::new())
             .build();
 
-        runner.core_mut().send_event(TestEvent::Ping);
+        runner
+            .core_mut()
+            .try_send_event(TestEvent::Ping)
+            .expect("event channel should be open");
         while runner.step().expect("step should succeed") {
             tokio::task::yield_now().await;
         }
@@ -486,7 +535,10 @@ mod tokio_tests {
         runner.set_config(config);
 
         // Send an event so there's work available
-        runner.core_mut().send_event(TestEvent::Ping);
+        runner
+            .core_mut()
+            .try_send_event(TestEvent::Ping)
+            .expect("event channel should be open");
 
         // Verify work is pending before wait_for_work
         assert!(

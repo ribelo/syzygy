@@ -166,7 +166,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_async_executor(CpuRuntime::new(2))
         .build();
 
-    runner.core().send_event(DemoEvent::Start);
+    runner
+        .core()
+        .try_send_event(DemoEvent::Start)
+        .expect("event channel should be open");
 
     runner.run_until(|core, _| {
         let model = core.model();
