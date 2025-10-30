@@ -491,7 +491,7 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "tokio")]
+    #[cfg(all(feature = "tokio", feature = "rt-inline"))]
     #[tokio::test]
     async fn test_runner_basic() {
         let mut runner = Syzygy::builder::<TestEvent, TestEffect>()
@@ -515,7 +515,7 @@ mod tests {
         // Skipped model access check in refactor
     }
 
-    #[cfg(feature = "tokio")]
+    #[cfg(all(feature = "tokio", feature = "rt-inline"))]
     #[tokio::test]
     async fn test_runner_until_condition() {
         let mut runner = Syzygy::builder::<TestEvent, TestEffect>()
@@ -544,7 +544,7 @@ mod tests {
         // Skipped model access check in refactor
     }
 
-    #[cfg(feature = "tokio")]
+    #[cfg(all(feature = "tokio", feature = "rt-inline"))]
     #[tokio::test]
     async fn test_step_returns_true_when_work_was_done() {
         let mut runner = Syzygy::builder::<TestEvent, TestEffect>()
@@ -566,7 +566,7 @@ mod tests {
         assert!(did_work, "Step should return true when work was done");
     }
 
-    #[cfg(feature = "tokio")]
+    #[cfg(all(feature = "tokio", feature = "rt-inline"))]
     #[tokio::test]
     async fn test_step_returns_false_when_no_work_to_do() {
         let mut runner = Syzygy::builder::<TestEvent, TestEffect>()
@@ -583,7 +583,7 @@ mod tests {
         assert!(!did_work, "Step should return false when no work to do");
     }
 
-    #[cfg(feature = "tokio")]
+    #[cfg(all(feature = "tokio", feature = "rt-inline"))]
     #[tokio::test]
     async fn test_step_with_custom_executor() {
         let mut runner = Syzygy::builder::<TestEvent, TestEffect>()
@@ -607,7 +607,7 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "tokio")]
+    #[cfg(all(feature = "tokio", feature = "rt-inline"))]
     #[tokio::test]
     async fn test_step_processes_exactly_one_event() {
         let mut runner = Syzygy::builder::<TestEvent, TestEffect>()
@@ -645,7 +645,7 @@ mod tests {
         assert!(!did_work3, "Third step should return false (no more work)");
     }
 
-    #[cfg(feature = "tokio")]
+    #[cfg(all(feature = "tokio", feature = "rt-inline"))]
     #[tokio::test]
     async fn test_step_handles_multiple_events_and_effects_in_sequence() {
         let mut runner = Syzygy::builder::<TestEvent, TestEffect>()
