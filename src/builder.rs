@@ -303,6 +303,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "rt-inline")]
     #[test]
     fn test_builder_basics() {
         let runner = Syzygy::builder::<TestEvent, TestEffect>()
@@ -319,6 +320,7 @@ mod tests {
         assert_eq!(core.model().count, 1);
     }
 
+    #[cfg(feature = "rt-inline")]
     #[test]
     fn test_shell_type() {
         let runner = Syzygy::builder::<TestEvent, TestEffect>()
@@ -354,6 +356,7 @@ mod tests {
         assert_eq!(runner.core().model().count, 1);
     }
 
+    #[cfg(feature = "rt-inline")]
     #[test]
     fn test_multi_model() {
         #[derive(Debug, Default)]
