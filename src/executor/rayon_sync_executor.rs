@@ -56,7 +56,7 @@ where
     }
 }
 
-impl<E, R> BlockingExecutor<E> for RayonExecutor<E, R>
+impl<E, R> BlockingExecutor for RayonExecutor<E, R>
 where
     E: Send + Sync + 'static,
     R: Send + Sync + 'static,

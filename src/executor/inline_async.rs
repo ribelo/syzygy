@@ -1,4 +1,3 @@
-use std::marker::PhantomData;
 use std::time::Duration;
 
 use futures::executor::block_on;
@@ -10,35 +9,28 @@ use super::{AsyncExecutor, ExecutorError, ExecutorLifecycle};
 ///
 /// Great for tests and CLIs where determinism beats concurrency. `sleep()`
 /// blocks the current thread.
-pub struct InlineAsync<E> {
-    _marker: PhantomData<E>,
-}
+pub struct InlineAsync;
 
-impl<E> Default for InlineAsync<E> {
+impl Default for InlineAsync {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<E> InlineAsync<E> {
+impl InlineAsync {
     #[must_use]
     pub fn new() -> Self {
-        Self {
-            _marker: PhantomData,
-        }
+        Self
     }
 }
 
-impl<E> std::fmt::Debug for InlineAsync<E> {
+impl std::fmt::Debug for InlineAsync {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("InlineAsync").finish()
     }
 }
 
-impl<E> AsyncExecutor<E> for InlineAsync<E>
-where
-    E: Send + Sync + 'static,
-{
+impl AsyncExecutor for InlineAsync {
     fn spawn_async(&self, job: BoxFuture<'static, ()>) -> Result<(), ExecutorError> {
         block_on(job);
         Ok(())
@@ -49,10 +41,7 @@ where
     }
 }
 
-impl<E> ExecutorLifecycle for InlineAsync<E>
-where
-    E: Send + Sync + 'static,
-{
+impl ExecutorLifecycle for InlineAsync {
     fn shutdown(&self) {}
 
     fn wait(&self) {

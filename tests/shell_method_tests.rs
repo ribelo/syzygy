@@ -1,3 +1,4 @@
+#![cfg(all(feature = "shell", feature = "rt-inline", feature = "tokio"))]
 //! Tests for Shell synchronous methods: `drain_with`, `dispatch_command`, etc.
 //! These tests use the Runner API for convenience.
 
@@ -47,7 +48,7 @@ mod tokio_tests {
             .model(TestModel::default())
             .event_handler(test_update)
             .effect_handler(|_effect: TestEffect, _resources| Task::<TestEvent, TestEffect>::none())
-            .with_async_executor(InlineAsync::<TestEvent>::new())
+            .with_async_executor(InlineAsync::new())
             .build()
     }
 
@@ -57,7 +58,7 @@ mod tokio_tests {
             .model(TestModel::default())
             .event_handler(test_update)
             .effect_handler(|_effect: TestEffect, _resources| Task::<TestEvent, TestEffect>::none())
-            .with_async_executor(InlineAsync::<TestEvent>::new())
+            .with_async_executor(InlineAsync::new())
             .with_effect_channel_capacity(Some(1))
             .build();
 
@@ -176,7 +177,7 @@ mod tokio_tests {
                 }
                 TestEffect::Log => Task::<TestEvent, TestEffect>::none(),
             })
-            .with_async_executor(InlineAsync::<TestEvent>::new())
+            .with_async_executor(InlineAsync::new())
             .build();
 
         runner
@@ -261,7 +262,7 @@ mod tokio_tests {
                 let in_flight = Arc::clone(&in_flight_for_handler);
                 let max_in_flight = Arc::clone(&max_in_flight_for_handler);
 
-                Task::<TestEvent, TestEffect>::async_on::<InlineAsync<TestEvent>, _>(async move {
+                Task::<TestEvent, TestEffect>::async_on::<InlineAsync, _>(async move {
                     if let TestEffect::Work(id) = effect {
                         let active = in_flight.fetch_add(1, Ordering::SeqCst) + 1;
                         max_in_flight.fetch_max(active, Ordering::SeqCst);
@@ -284,7 +285,7 @@ mod tokio_tests {
                     Command::none()
                 })
             })
-            .with_async_executor(InlineAsync::<TestEvent>::new())
+            .with_async_executor(InlineAsync::new())
             .build();
 
         runner
@@ -459,7 +460,7 @@ mod tokio_tests {
                 let in_flight = Arc::clone(&in_flight_for_handler);
                 let max_in_flight = Arc::clone(&max_in_flight_for_handler);
 
-                Task::<TestEvent, TestEffect>::async_on::<InlineAsync<TestEvent>, _>(async move {
+                Task::<TestEvent, TestEffect>::async_on::<InlineAsync, _>(async move {
                     if let TestEffect::Work(id) = effect {
                         let active = in_flight.fetch_add(1, Ordering::SeqCst) + 1;
                         max_in_flight.fetch_max(active, Ordering::SeqCst);
@@ -482,7 +483,7 @@ mod tokio_tests {
                     Command::none()
                 })
             })
-            .with_async_executor(InlineAsync::<TestEvent>::new())
+            .with_async_executor(InlineAsync::new())
             .build();
 
         runner
@@ -525,7 +526,7 @@ mod tokio_tests {
             .model(TestModel::default())
             .event_handler(test_update)
             .effect_handler(|_effect: TestEffect, _resources| Task::<TestEvent, TestEffect>::none())
-            .with_async_executor(InlineAsync::<TestEvent>::new())
+            .with_async_executor(InlineAsync::new())
             .build();
 
         // Set idle sleep to a long duration
@@ -565,7 +566,7 @@ mod tokio_tests {
             .model(TestModel::default())
             .event_handler(test_update)
             .effect_handler(|_effect: TestEffect, _resources| Task::none())
-            .with_async_executor(InlineAsync::<TestEvent>::new())
+            .with_async_executor(InlineAsync::new())
             .build();
 
         // Set idle sleep to zero

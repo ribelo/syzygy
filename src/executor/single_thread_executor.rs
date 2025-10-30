@@ -22,7 +22,7 @@ type JobFn = Box<dyn FnOnce(&mut dyn Any) + Send>;
 pub struct SingleThreadExecutor<R = ()> {
     state: Arc<State>,
     resource_type_id: TypeId,
-    _marker: PhantomData<R>,
+    _marker: PhantomData<fn() -> R>,
 }
 
 impl Default for SingleThreadExecutor<()> {
@@ -40,7 +40,7 @@ impl SingleThreadExecutor<()> {
 
 impl<R> SingleThreadExecutor<R>
 where
-    R: Send + Sync + 'static,
+    R: Send + 'static,
 {
     #[must_use]
     pub fn with_resources(resources: R) -> Self {
@@ -75,7 +75,7 @@ where
 
 impl<R> SingleThreadExecutor<R>
 where
-    R: Send + Sync + 'static,
+    R: Send + 'static,
 {
     /// Convenience helper for submitting typed jobs.
     pub fn spawn<F>(&self, job: F) -> Result<(), ExecutorError>
@@ -99,10 +99,9 @@ where
     }
 }
 
-impl<E, R> ResourceBlockingExecutor<E> for SingleThreadExecutor<R>
+impl<R> ResourceBlockingExecutor for SingleThreadExecutor<R>
 where
-    E: Send + Sync + 'static,
-    R: Send + Sync + 'static,
+    R: Send + 'static,
 {
     fn resource_type_id(&self) -> std::any::TypeId {
         self.resource_type_id
@@ -124,7 +123,7 @@ where
 
 impl<R> ExecutorLifecycle for SingleThreadExecutor<R>
 where
-    R: Send + Sync + 'static,
+    R: Send + 'static,
 {
     fn shutdown(&self) {
         if !self.state.shutdown_requested.swap(true, Ordering::AcqRel) {
@@ -171,7 +170,7 @@ enum Job {
 
 fn worker_loop<R>(rx: Receiver<Job>, shutdown_tx: oneshot::Sender<()>, mut resources: R)
 where
-    R: Send + Sync + 'static,
+    R: Send + 'static,
 {
     while let Ok(job) = rx.recv() {
         match job {

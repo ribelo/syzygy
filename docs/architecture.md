@@ -123,7 +123,7 @@ fn update(e: E, m: &mut M) -> Command<E, X> {
 
 fn effects(x: X, _r: ()) -> Task<E, X> {
     match x {
-        X::Save => Task::async_on::<InlineAsync<E>, _>(async move {
+        X::Save => Task::async_on::<InlineAsync, _>(async move {
             // pretend to save; then notify core
             Command::event(E::Saved)
         })

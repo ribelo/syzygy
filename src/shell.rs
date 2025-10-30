@@ -10,6 +10,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::command::{Command, CommandStep};
+use crate::core::EventSender;
 use crate::error::ShellError;
 use crate::executor::task::drive_task;
 use crate::executor::{ExecutorRegistry, Task};
@@ -24,15 +25,15 @@ pub type EffectHandler<E, X, R> = Box<dyn FnMut(X, R) -> Task<E, X> + Send + 'st
 pub struct Shell<E, X, R = ()>
 where
     E: Send + Sync + 'static,
-    X: Send + Sync + 'static,
-    R: Clone + Send + Sync + 'static,
+    X: Send + 'static,
+    R: Clone + Send + 'static,
 {
     /// Channel for receiving command outputs (effects)
     pub(crate) effect_rx: Receiver<CommandStep<E, X>>,
     pub(crate) effect_tx: Sender<CommandStep<E, X>>,
 
     /// Channel for sending events back to Core
-    pub(crate) event_tx: Sender<E>,
+    pub(crate) event_tx: EventSender<E>,
 
     /// Registry of pluggable executors
     pub(crate) executors: Arc<ExecutorRegistry<E>>,
@@ -58,8 +59,8 @@ where
 impl<E, X, R> Shell<E, X, R>
 where
     E: Send + Sync + 'static,
-    X: Send + Sync + 'static,
-    R: Clone + Send + Sync + 'static,
+    X: Send + 'static,
+    R: Clone + Send + 'static,
 {
     fn push_effect_step(&mut self, step: CommandStep<E, X>) -> Result<(), ShellError> {
         if let Some(capacity) = self.effect_channel_capacity {
@@ -295,8 +296,8 @@ where
 impl<E, X, R> std::fmt::Debug for Shell<E, X, R>
 where
     E: Send + Sync + 'static,
-    X: Send + Sync + 'static,
-    R: Clone + Send + Sync + 'static,
+    X: Send + 'static,
+    R: Clone + Send + 'static,
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Shell")

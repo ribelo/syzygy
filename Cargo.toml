@@ -17,26 +17,33 @@ path = "src/lib.rs"
 doctest = false
 
 [features]
-default = ["tokio"]
-tokio = ["dep:tokio", "dep:tokio-util"]
+default = ["shell", "rt-inline"]
+shell = [
+    "dep:crossbeam-channel",
+    "dep:futures",
+    "dep:futures-util",
+    "dep:rustc-hash",
+]
+rt-inline = ["shell"]
+rt-single-thread = ["shell"]
+tokio = ["shell", "dep:tokio", "dep:tokio-util"]
 view-model = []
 multi-model = []
 tracing = ["dep:tracing"]
 magic-compilation-test = []
 manual-compilation-test = []
-rayon = ["dep:rayon"]
-examples = []
-legacy_tests = []
+rayon = ["shell", "dep:rayon"]
+examples = ["shell", "rt-inline", "tokio"]
+legacy_tests = ["shell"]
 
 [dependencies]
 # Core dependencies
 thiserror = "2.0"
-crossbeam-channel = "0.5"
-futures = "0.3"
-futures-util = "0.3"
-futures-concurrency = "7.6"
+crossbeam-channel = { version = "0.5", optional = true }
+futures = { version = "0.3", optional = true }
+futures-util = { version = "0.3", optional = true }
 smallvec = "1.13"
-rustc-hash = "2.0"
+rustc-hash = { version = "2.0", optional = true }
 rayon = { version = "1.9", optional = true }
 
 # Runtime dependency

@@ -1,3 +1,4 @@
+#![cfg(all(feature = "shell", feature = "rt-single-thread"))]
 #![allow(clippy::needless_pass_by_value)]
 use std::sync::{
     atomic::{AtomicUsize, Ordering},

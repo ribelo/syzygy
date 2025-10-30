@@ -12,17 +12,8 @@ pub enum CoreError {
     ChannelFull,
 }
 
-impl<T> From<crossbeam_channel::SendError<T>> for CoreError {
-    fn from(_: crossbeam_channel::SendError<T>) -> Self {
+impl<T> From<std::sync::mpsc::SendError<T>> for CoreError {
+    fn from(_: std::sync::mpsc::SendError<T>) -> Self {
         CoreError::ChannelClosed
-    }
-}
-
-impl<T> From<crossbeam_channel::TrySendError<T>> for CoreError {
-    fn from(err: crossbeam_channel::TrySendError<T>) -> Self {
-        match err {
-            crossbeam_channel::TrySendError::Full(_) => CoreError::ChannelFull,
-            crossbeam_channel::TrySendError::Disconnected(_) => CoreError::ChannelClosed,
-        }
     }
 }

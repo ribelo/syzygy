@@ -147,10 +147,7 @@ impl TokioExecutor {
     }
 }
 
-impl<E> AsyncExecutor<E> for TokioExecutor
-where
-    E: Send + Sync + 'static,
-{
+impl AsyncExecutor for TokioExecutor {
     fn spawn_async(&self, job: BoxFuture<'static, ()>) -> Result<(), ExecutorError> {
         match &self.driver {
             Driver::Owned(state) => {

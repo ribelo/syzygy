@@ -102,17 +102,16 @@ where
     }
 }
 
-impl<E, Tag> AsyncExecutor<E> for TaggedTokioExecutor<Tag>
+impl<Tag> AsyncExecutor for TaggedTokioExecutor<Tag>
 where
-    E: Send + Sync + 'static,
     Tag: Send + Sync + 'static,
 {
     fn spawn_async(&self, job: BoxFuture<'static, ()>) -> Result<(), ExecutorError> {
-        <TokioExecutor as AsyncExecutor<E>>::spawn_async(&self.inner, job)
+        <TokioExecutor as AsyncExecutor>::spawn_async(&self.inner, job)
     }
 
     fn sleep(&self, duration: Duration) -> BoxFuture<'static, ()> {
-        <TokioExecutor as AsyncExecutor<E>>::sleep(&self.inner, duration)
+        <TokioExecutor as AsyncExecutor>::sleep(&self.inner, duration)
     }
 }
 

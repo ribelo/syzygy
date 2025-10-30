@@ -6,7 +6,7 @@
 //!
 //! This module intentionally avoids traits and lifetimes in the public surface
 //! so usage stays straightforward in real apps and tests.
-use crate::core::{Core, EventHandler};
+use crate::core::{Core, EventHandler, EventSender};
 use crate::executor::{
     AsyncExecutor, BlockingExecutor, ExecutorRegistry, ResourceBlockingExecutor, Task,
 };
@@ -26,8 +26,8 @@ use std::sync::Arc;
 pub struct SyzygyBuilder<E, X, M, R = ()>
 where
     E: Send + Sync + 'static,
-    X: Send + Sync + 'static,
-    R: Clone + Send + Sync + 'static,
+    X: Send + 'static,
+    R: Clone + Send + 'static,
 {
     model: M,
     resources: R,
@@ -37,7 +37,7 @@ where
 impl<E, X> Default for SyzygyBuilder<E, X, (), ()>
 where
     E: Send + Sync + 'static,
-    X: Send + Sync + 'static,
+    X: Send + 'static,
 {
     fn default() -> Self {
         Self::new()
@@ -47,7 +47,7 @@ where
 impl<E, X> SyzygyBuilder<E, X, (), ()>
 where
     E: Send + Sync + 'static,
-    X: Send + Sync + 'static,
+    X: Send + 'static,
 {
     #[must_use]
     pub fn new() -> Self {
@@ -62,9 +62,9 @@ where
 impl<Event, Effect, Model, Resources> SyzygyBuilder<Event, Effect, Model, Resources>
 where
     Event: Send + Sync + 'static,
-    Effect: Send + Sync + 'static,
+    Effect: Send + 'static,
     Model: 'static,
-    Resources: Clone + Send + Sync + 'static,
+    Resources: Clone + Send + 'static,
 {
     /// Replace the current model with a new one.
     ///
@@ -88,7 +88,7 @@ where
     #[must_use]
     pub fn with_resources<R2>(self, resources: R2) -> SyzygyBuilder<Event, Effect, Model, R2>
     where
-        R2: Clone + Send + Sync + 'static,
+        R2: Clone + Send + 'static,
     {
         SyzygyBuilder {
             model: self.model,
@@ -111,7 +111,7 @@ where
             effect_handler: None,
             model: self.model,
             resources: self.resources,
-            exec_registry: ExecutorRegistry::default(),
+            exec_registry: ExecutorRegistry::<Event>::default(),
             effect_channel_capacity: None,
             _marker: PhantomData,
         }
@@ -128,8 +128,8 @@ where
 pub struct ConfiguredBuilder<Event, Effect, Model, Resources>
 where
     Event: Send + Sync + 'static,
-    Effect: Send + Sync + 'static,
-    Resources: Clone + Send + Sync + 'static,
+    Effect: Send + 'static,
+    Resources: Clone + Send + 'static,
 {
     event_handler: EventHandler<Event, Effect, Model>,
     effect_handler: Option<EffectHandler<Event, Effect, Resources>>,
@@ -143,9 +143,9 @@ where
 impl<Event, Effect, Model, Resources> ConfiguredBuilder<Event, Effect, Model, Resources>
 where
     Event: Send + Sync + 'static,
-    Effect: Send + Sync + 'static,
+    Effect: Send + 'static,
     Model: 'static,
-    Resources: Clone + Send + Sync + 'static,
+    Resources: Clone + Send + 'static,
 {
     /// Install the effect handler.
     ///
@@ -174,7 +174,7 @@ where
     #[must_use]
     pub fn with_async_executor<T>(mut self, exec: T) -> Self
     where
-        T: AsyncExecutor<Event> + Send + Sync + 'static,
+        T: AsyncExecutor + Send + Sync + 'static,
     {
         self.exec_registry.insert_async(exec);
         self
@@ -187,7 +187,7 @@ where
     #[must_use]
     pub fn with_blocking_executor<T>(mut self, exec: T) -> Self
     where
-        T: BlockingExecutor<Event> + Send + Sync + 'static,
+        T: BlockingExecutor + Send + Sync + 'static,
     {
         self.exec_registry.insert_blocking(exec);
         self
@@ -200,7 +200,7 @@ where
     #[must_use]
     pub fn with_resource_blocking_executor<T>(mut self, exec: T) -> Self
     where
-        T: ResourceBlockingExecutor<Event> + Send + Sync + 'static,
+        T: ResourceBlockingExecutor + Send + Sync + 'static,
     {
         self.exec_registry.insert_resource_blocking(exec);
         self
@@ -235,7 +235,7 @@ where
         exec_registry: Arc<ExecutorRegistry<Event>>,
         effect_handler: Option<EffectHandler<Event, Effect, Resources>>,
         resources: Resources,
-        event_tx: crossbeam_channel::Sender<Event>,
+        event_tx: EventSender<Event>,
         effect_channel_capacity: Option<usize>,
     ) -> Shell<Event, Effect, Resources> {
         use crossbeam_channel::{bounded, unbounded};
@@ -243,8 +243,8 @@ where
         fn default_effect_handler<E, X, R>(_: X, _: R) -> Task<E, X>
         where
             E: Send + Sync + 'static,
-            X: Send + Sync + 'static,
-            R: Clone + Send + Sync + 'static,
+            X: Send + 'static,
+            R: Clone + Send + 'static,
         {
             Task::none()
         }
@@ -311,7 +311,7 @@ mod tests {
             .effect_handler(|_e: TestEffect, _resources| {
                 crate::executor::Task::<TestEvent, TestEffect>::events(Vec::new())
             })
-            .with_async_executor(crate::executor::InlineAsync::<TestEvent>::new())
+            .with_async_executor(crate::executor::InlineAsync::new())
             .build();
 
         let (mut core, _shell) = runner.split();
@@ -327,7 +327,7 @@ mod tests {
             .effect_handler(|_e: TestEffect, _resources| {
                 crate::executor::Task::<TestEvent, TestEffect>::events(Vec::new())
             })
-            .with_async_executor(crate::executor::InlineAsync::<TestEvent>::new())
+            .with_async_executor(crate::executor::InlineAsync::new())
             .build();
 
         let (_core, shell) = runner.split();
@@ -393,7 +393,7 @@ mod tests {
             .effect_handler(|_e: TestEffect, _resources| {
                 crate::executor::Task::<TestEvent, TestEffect>::events(Vec::new())
             })
-            .with_async_executor(crate::executor::InlineAsync::<TestEvent>::new())
+            .with_async_executor(crate::executor::InlineAsync::new())
             .build();
 
         let (mut core, _shell) = runner.split();

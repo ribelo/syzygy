@@ -481,34 +481,25 @@ Syzygy uses a specialized two-trait executor system for optimal performance:
 ### Executor Types
 ```rust
 /// Shared lifecycle management for all executor types
-pub trait ExecutorLifecycle: Send + Sync + 'static {
+pub trait ExecutorLifecycle: Send + 'static {
     fn shutdown(&self);
     fn wait(&self);
 }
 
 /// Executor specialized for async work (futures)
-pub trait AsyncExecutor<E>: ExecutorLifecycle
-where
-    E: Send + Sync + 'static,
-{
+pub trait AsyncExecutor: ExecutorLifecycle + Sync {
     fn spawn_async(&self, job: BoxFuture<'static, ()>) -> Result<(), ExecutorError>;
 
     fn sleep(&self, duration: Duration) -> BoxFuture<'static, ()>;
 }
 
 /// Executor for blocking work without shared resources
-pub trait BlockingExecutor<E>: ExecutorLifecycle
-where
-    E: Send + Sync + 'static,
-{
+pub trait BlockingExecutor: ExecutorLifecycle + Sync {
     fn spawn_blocking(&self, job: Box<dyn FnOnce() + Send>) -> Result<(), ExecutorError>;
 }
 
 /// Executor for blocking work with a dedicated mutable resource
-pub trait ResourceBlockingExecutor<E>: ExecutorLifecycle
-where
-    E: Send + Sync + 'static,
-{
+pub trait ResourceBlockingExecutor: ExecutorLifecycle + Sync {
     fn resource_type_id(&self) -> TypeId;
 
     fn spawn_blocking_with_resource(
@@ -523,9 +514,9 @@ The `ExecutorRegistry<E>` maintains separate registries for async and sync execu
 
 ```rust
 pub struct ExecutorRegistry<E> {
-    async_map: FxHashMap<TypeId, Arc<dyn AsyncExecutor<E>>>,
-    blocking_map: FxHashMap<TypeId, Arc<dyn BlockingExecutor<E>>>,
-    resource_blocking_map: FxHashMap<TypeId, Arc<dyn ResourceBlockingExecutor<E>>>,
+    async_map: FxHashMap<TypeId, Arc<dyn AsyncExecutor>>,
+    blocking_map: FxHashMap<TypeId, Arc<dyn BlockingExecutor>>,
+    resource_blocking_map: FxHashMap<TypeId, Arc<dyn ResourceBlockingExecutor>>,
 }
 ```
 

@@ -9,19 +9,23 @@ use thiserror::Error;
 /// Type alias for the complex job function type used by ResourceBlockingExecutor
 type ResourceJobFn = Box<dyn FnOnce(&mut dyn Any) + Send>;
 
+#[cfg(feature = "rt-inline")]
 pub mod inline_async;
 #[cfg(feature = "rayon")]
 pub mod rayon_sync_executor;
 pub mod registry;
+#[cfg(feature = "rt-single-thread")]
 pub mod single_thread_executor;
 pub mod task;
 #[cfg(feature = "tokio")]
 pub mod tokio_executor;
 
+#[cfg(feature = "rt-inline")]
 pub use inline_async::InlineAsync;
 #[cfg(feature = "rayon")]
 pub use rayon_sync_executor::{RayonExecutor, RayonExecutorBuilder};
 pub use registry::ExecutorRegistry;
+#[cfg(feature = "rt-single-thread")]
 pub use single_thread_executor::SingleThreadExecutor;
 pub use task::Task;
 #[cfg(feature = "tokio")]
@@ -58,28 +62,19 @@ pub trait ExecutorLifecycle: Send + 'static {
 }
 
 /// Executor specialized for async work (futures).
-pub trait AsyncExecutor<E>: ExecutorLifecycle + Sync
-where
-    E: Send + Sync + 'static,
-{
+pub trait AsyncExecutor: ExecutorLifecycle + Sync {
     fn spawn_async(&self, job: BoxFuture<'static, ()>) -> Result<(), ExecutorError>;
 
     fn sleep(&self, duration: Duration) -> BoxFuture<'static, ()>;
 }
 
 /// Executor for blocking work without shared resources.
-pub trait BlockingExecutor<E>: ExecutorLifecycle + Sync
-where
-    E: Send + Sync + 'static,
-{
+pub trait BlockingExecutor: ExecutorLifecycle + Sync {
     fn spawn_blocking(&self, job: Box<dyn FnOnce() + Send>) -> Result<(), ExecutorError>;
 }
 
 /// Executor for blocking work with a dedicated, mutable resource.
-pub trait ResourceBlockingExecutor<E>: ExecutorLifecycle + Sync
-where
-    E: Send + Sync + 'static,
-{
+pub trait ResourceBlockingExecutor: ExecutorLifecycle + Sync {
     fn resource_type_id(&self) -> TypeId;
 
     fn spawn_blocking_with_resource(&self, job: ResourceJobFn) -> Result<(), ExecutorError>;

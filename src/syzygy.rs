@@ -24,7 +24,7 @@
 //!     .model(Model::default())
 //!     .event_handler(update)
 //!     .effect_handler(handle_effects)
-//!     .with_async_executor(InlineAsync::<TestEvent>::new())
+//!     .with_async_executor(InlineAsync::new())
 //!     .build();
 //!
 //! // Run the application indefinitely
@@ -71,8 +71,8 @@ impl SyzygyConfig {
 pub struct Syzygy<Event, Effect, Storage, Resources = ()>
 where
     Event: Send + Sync + 'static,
-    Effect: Send + Sync + 'static,
-    Resources: Clone + Send + Sync + 'static,
+    Effect: Send + 'static,
+    Resources: Clone + Send + 'static,
 {
     core: Core<Event, Effect, Storage>,
     shell: Shell<Event, Effect, Resources>,
@@ -82,8 +82,8 @@ where
 impl<Event, Effect, Storage, Resources> Syzygy<Event, Effect, Storage, Resources>
 where
     Event: Send + Sync + 'static,
-    Effect: Send + Sync + 'static,
-    Resources: Clone + Send + Sync + 'static,
+    Effect: Send + 'static,
+    Resources: Clone + Send + 'static,
 {
     /// Create a new Syzygy with Core and Shell
     ///
@@ -396,8 +396,8 @@ pub fn step_core_shell<Event, Effect, Storage, Resources>(
 ) -> Result<bool, ShellError>
 where
     Event: Send + Sync + 'static,
-    Effect: Send + Sync + 'static,
-    Resources: Clone + Send + Sync + 'static,
+    Effect: Send + 'static,
+    Resources: Clone + Send + 'static,
 {
     let commands = core.process_events();
     let core_work = !commands.is_empty();
@@ -417,8 +417,8 @@ impl<Event, Effect, Storage, Resources>
     )> for Syzygy<Event, Effect, Storage, Resources>
 where
     Event: Send + Sync + 'static,
-    Effect: Send + Sync + 'static,
-    Resources: Clone + Send + Sync + 'static,
+    Effect: Send + 'static,
+    Resources: Clone + Send + 'static,
 {
     fn from(
         parts: (
@@ -434,8 +434,8 @@ impl<Event, Effect, Storage, Resources> std::fmt::Debug
     for Syzygy<Event, Effect, Storage, Resources>
 where
     Event: Send + Sync + 'static,
-    Effect: Send + Sync + 'static,
-    Resources: Clone + Send + Sync + 'static,
+    Effect: Send + 'static,
+    Resources: Clone + Send + 'static,
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Syzygy")
@@ -451,7 +451,7 @@ impl Syzygy<(), (), ()> {
     ) -> crate::builder::SyzygyBuilder<NewEvent, NewEffect, (), ()>
     where
         NewEvent: Send + Sync + 'static,
-        NewEffect: Send + Sync + 'static,
+        NewEffect: Send + 'static,
     {
         crate::builder::SyzygyBuilder::new()
     }
@@ -497,7 +497,7 @@ mod tests {
         let mut runner = Syzygy::builder::<TestEvent, TestEffect>()
             .model(TestModel { count: 0 })
             .event_handler(test_update)
-            .with_async_executor(crate::executor::InlineAsync::<TestEvent>::new())
+            .with_async_executor(crate::executor::InlineAsync::new())
             .effect_handler(|_e: TestEffect, _resources| {
                 crate::executor::Task::<TestEvent, TestEffect>::events(Vec::new())
             })
@@ -521,7 +521,7 @@ mod tests {
         let mut runner = Syzygy::builder::<TestEvent, TestEffect>()
             .model(TestModel { count: 0 })
             .event_handler(test_update)
-            .with_async_executor(crate::executor::InlineAsync::<TestEvent>::new())
+            .with_async_executor(crate::executor::InlineAsync::new())
             .effect_handler(|_e: TestEffect, _resources| {
                 crate::executor::Task::<TestEvent, TestEffect>::events(Vec::new())
             })
@@ -550,7 +550,7 @@ mod tests {
         let mut runner = Syzygy::builder::<TestEvent, TestEffect>()
             .model(TestModel { count: 0 })
             .event_handler(test_update)
-            .with_async_executor(crate::executor::InlineAsync::<TestEvent>::new())
+            .with_async_executor(crate::executor::InlineAsync::new())
             .effect_handler(|_e: TestEffect, _resources| {
                 crate::executor::Task::<TestEvent, TestEffect>::events(Vec::new())
             })
@@ -572,7 +572,7 @@ mod tests {
         let mut runner = Syzygy::builder::<TestEvent, TestEffect>()
             .model(TestModel { count: 0 })
             .event_handler(test_update)
-            .with_async_executor(crate::executor::InlineAsync::<TestEvent>::new())
+            .with_async_executor(crate::executor::InlineAsync::new())
             .effect_handler(|_e: TestEffect, _resources| {
                 crate::executor::Task::<TestEvent, TestEffect>::events(Vec::new())
             })
@@ -589,7 +589,7 @@ mod tests {
         let mut runner = Syzygy::builder::<TestEvent, TestEffect>()
             .model(TestModel { count: 0 })
             .event_handler(test_update)
-            .with_async_executor(crate::executor::InlineAsync::<TestEvent>::new())
+            .with_async_executor(crate::executor::InlineAsync::new())
             .effect_handler(|_e: TestEffect, _resources| {
                 crate::executor::Task::<TestEvent, TestEffect>::events(Vec::new())
             })
@@ -613,7 +613,7 @@ mod tests {
         let mut runner = Syzygy::builder::<TestEvent, TestEffect>()
             .model(TestModel { count: 0 })
             .event_handler(test_update)
-            .with_async_executor(crate::executor::InlineAsync::<TestEvent>::new())
+            .with_async_executor(crate::executor::InlineAsync::new())
             .effect_handler(|_e: TestEffect, _resources| {
                 crate::executor::Task::<TestEvent, TestEffect>::events(Vec::new())
             })
@@ -651,7 +651,7 @@ mod tests {
         let mut runner = Syzygy::builder::<TestEvent, TestEffect>()
             .model(TestModel { count: 0 })
             .event_handler(test_update)
-            .with_async_executor(crate::executor::InlineAsync::<TestEvent>::new())
+            .with_async_executor(crate::executor::InlineAsync::new())
             .effect_handler(|_e: TestEffect, _resources| {
                 crate::executor::Task::<TestEvent, TestEffect>::events(Vec::new())
             })

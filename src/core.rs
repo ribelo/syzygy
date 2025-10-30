@@ -32,8 +32,10 @@
 //! let model_ref: &CounterModel = core.model();
 //! assert_eq!(model_ref.count, 1);
 //! ```
-use crossbeam_channel::{unbounded, Receiver, RecvTimeoutError, Sender};
 use std::collections::VecDeque;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::mpsc::{self, RecvTimeoutError, TryRecvError};
+use std::sync::Arc;
 use std::time::Duration;
 
 #[cfg(feature = "tracing")]
@@ -44,6 +46,89 @@ use crate::command::Command;
 /// Update function type that takes an event and a mutable reference to the model.
 pub type EventHandler<E, X, M> = fn(event: E, model: &mut M) -> Command<E, X>;
 
+/// Multi-producer sender returned by [`Core::new`].
+///
+/// Wraps `std::sync::mpsc::Sender` to keep track of queued items so the core can
+/// report pending counts without depending on external crates.
+pub struct EventSender<E> {
+    inner: mpsc::Sender<E>,
+    pending: Arc<AtomicUsize>,
+}
+
+impl<E> Clone for EventSender<E> {
+    fn clone(&self) -> Self {
+        Self {
+            inner: self.inner.clone(),
+            pending: Arc::clone(&self.pending),
+        }
+    }
+}
+
+impl<E> EventSender<E> {
+    fn new(inner: mpsc::Sender<E>, pending: Arc<AtomicUsize>) -> Self {
+        Self { inner, pending }
+    }
+
+    fn on_send_success(&self) {
+        self.pending.fetch_add(1, Ordering::Release);
+    }
+
+    /// Send an event to the core.
+    pub fn send(&self, event: E) -> Result<(), mpsc::SendError<E>> {
+        match self.inner.send(event) {
+            Ok(()) => {
+                self.on_send_success();
+                Ok(())
+            }
+            Err(err) => Err(err),
+        }
+    }
+
+    /// `std::sync::mpsc` does not block for unbounded channels, so this aliases [`send`].
+    pub fn try_send(&self, event: E) -> Result<(), mpsc::SendError<E>> {
+        self.send(event)
+    }
+}
+
+struct EventReceiver<E> {
+    inner: mpsc::Receiver<E>,
+    pending: Arc<AtomicUsize>,
+}
+
+impl<E> EventReceiver<E> {
+    fn new(inner: mpsc::Receiver<E>, pending: Arc<AtomicUsize>) -> Self {
+        Self { inner, pending }
+    }
+
+    fn try_recv(&self) -> Result<E, TryRecvError> {
+        match self.inner.try_recv() {
+            Ok(event) => {
+                self.pending.fetch_sub(1, Ordering::AcqRel);
+                Ok(event)
+            }
+            Err(err) => Err(err),
+        }
+    }
+
+    fn recv_timeout(&self, timeout: Duration) -> Result<E, RecvTimeoutError> {
+        match self.inner.recv_timeout(timeout) {
+            Ok(event) => {
+                self.pending.fetch_sub(1, Ordering::AcqRel);
+                Ok(event)
+            }
+            Err(err) => Err(err),
+        }
+    }
+
+    fn len(&self) -> usize {
+        self.pending.load(Ordering::Relaxed)
+    }
+
+    fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+}
+
 /// Core handles synchronous event processing and owns the model.
 ///
 /// Core is designed to be used on any thread, including UI threads, as it
@@ -52,7 +137,7 @@ pub type EventHandler<E, X, M> = fn(event: E, model: &mut M) -> Command<E, X>;
 pub struct Core<E, X, M>
 where
     E: Send + Sync + 'static,
-    X: Send + Sync + 'static,
+    X: Send + 'static,
 {
     /// The update function that processes events
     event_handler: EventHandler<E, X, M>,
@@ -67,20 +152,23 @@ where
     command_buffer: Vec<Command<E, X>>,
 
     /// Channel for receiving external events
-    event_rx: Receiver<E>,
+    event_rx: EventReceiver<E>,
 
     /// Channel for sending events (kept for cloning)
-    event_tx: Sender<E>,
+    event_tx: EventSender<E>,
 }
 
 impl<E, X, M> Core<E, X, M>
 where
     E: Send + Sync + 'static,
-    X: Send + Sync + 'static,
+    X: Send + 'static,
 {
     /// Create a new Core with update function and storage
-    pub fn new(event_handler: EventHandler<E, X, M>, models: M) -> (Self, Sender<E>) {
-        let (event_tx, event_rx) = unbounded();
+    pub fn new(event_handler: EventHandler<E, X, M>, models: M) -> (Self, EventSender<E>) {
+        let (raw_tx, raw_rx) = mpsc::channel();
+        let pending = Arc::new(AtomicUsize::new(0));
+        let event_tx = EventSender::new(raw_tx, Arc::clone(&pending));
+        let event_rx = EventReceiver::new(raw_rx, pending);
 
         let core = Self {
             event_handler,
@@ -159,7 +247,7 @@ where
 
     /// Get a sender for external events
     #[must_use]
-    pub fn event_sender(&self) -> Sender<E> {
+    pub fn event_sender(&self) -> EventSender<E> {
         self.event_tx.clone()
     }
 
@@ -221,7 +309,7 @@ where
 impl<E, X, M> std::fmt::Debug for Core<E, X, M>
 where
     E: Send + Sync + 'static,
-    X: Send + Sync + 'static,
+    X: Send + 'static,
     M: std::fmt::Debug,
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

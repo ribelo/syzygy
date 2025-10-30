@@ -19,7 +19,7 @@ async fn spawn_owned_executes_job() {
     );
     let (tx, rx) = oneshot::channel();
 
-    <TokioExecutor as AsyncExecutor<TestEvent>>::spawn_async(
+    <TokioExecutor as AsyncExecutor>::spawn_async(
         &*executor,
         async move {
             let _ = tx.send(123u32);
@@ -48,7 +48,7 @@ async fn spawn_owned_runs_jobs_concurrently() {
     for id in 0..4 {
         let barrier_cl = Arc::clone(&barrier);
         let completion_cl = Arc::clone(&completion);
-        <TokioExecutor as AsyncExecutor<TestEvent>>::spawn_async(
+        <TokioExecutor as AsyncExecutor>::spawn_async(
             &executor,
             async move {
                 barrier_cl.wait().await;
@@ -93,10 +93,7 @@ async fn spawn_after_shutdown_returns_error() {
     let executor = TokioExecutor::current_thread_io("tokio-shutdown");
     executor.shutdown();
 
-    let result = <TokioExecutor as AsyncExecutor<TestEvent>>::spawn_async(
-        &executor,
-        (async move {}).boxed(),
-    );
+    let result = <TokioExecutor as AsyncExecutor>::spawn_async(&executor, (async move {}).boxed());
     assert!(matches!(result, Err(ExecutorError::WorkerGone)));
 
     executor.wait();
@@ -107,7 +104,7 @@ async fn sleep_delegates_to_runtime() {
     let executor = TokioExecutor::current_thread_io("tokio-sleep");
 
     let start = tokio::time::Instant::now();
-    <TokioExecutor as AsyncExecutor<TestEvent>>::sleep(&executor, Duration::from_millis(20)).await;
+    <TokioExecutor as AsyncExecutor>::sleep(&executor, Duration::from_millis(20)).await;
     assert!(start.elapsed() >= Duration::from_millis(20));
 
     executor.shutdown();
@@ -119,7 +116,7 @@ async fn try_from_current_creates_executor() {
     let executor = TokioExecutor::try_from_current().expect("tokio runtime should be available");
     let (tx, rx) = oneshot::channel();
 
-    <TokioExecutor as AsyncExecutor<TestEvent>>::spawn_async(
+    <TokioExecutor as AsyncExecutor>::spawn_async(
         &executor,
         async move {
             let _ = tx.send(());

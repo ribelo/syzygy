@@ -7,13 +7,14 @@ use std::any::{Any, TypeId};
 use std::future::Future;
 use std::sync::Arc;
 
-use crossbeam_channel::Sender;
+use crossbeam_channel::Sender as EffectSender;
 #[cfg(feature = "tokio")]
 use futures::executor::block_on;
 use futures_util::future::{BoxFuture, FutureExt};
 use futures_util::stream::{BoxStream, StreamExt};
 
 use crate::command::{Command, CommandStep};
+use crate::core::EventSender;
 use crate::error::ShellError;
 use crate::executor::{
     AsyncExecutor, BlockingExecutor, ExecutorRegistry, ResourceBlockingExecutor,
@@ -34,7 +35,7 @@ fn missing_executor(kind: &'static str, exec: TypeId) -> ShellError {
 pub enum Task<E, X>
 where
     E: Send + Sync + 'static,
-    X: Send + Sync + 'static,
+    X: Send + 'static,
 {
     Event(E),
     Events(Vec<E>),
@@ -72,7 +73,7 @@ where
 impl<E, X> Task<E, X>
 where
     E: Send + Sync + 'static,
-    X: Send + Sync + 'static,
+    X: Send + 'static,
 {
     /// Emit multiple events back to Core.
     pub fn events<I>(events: I) -> Self
@@ -100,7 +101,7 @@ where
     /// back through the system.
     pub fn async_on<Exec, Fut>(future: Fut) -> Self
     where
-        Exec: AsyncExecutor<E> + 'static,
+        Exec: AsyncExecutor + 'static,
         Fut: Future<Output = Command<E, X>> + Send + 'static,
     {
         let exec_type_id = TypeId::of::<Exec>();
@@ -136,7 +137,7 @@ where
     /// Forward a stream’s items as events on a specific async executor.
     pub fn stream_on<Exec, S>(stream: S) -> Self
     where
-        Exec: AsyncExecutor<E> + 'static,
+        Exec: AsyncExecutor + 'static,
         S: futures_util::stream::Stream<Item = E> + Send + 'static,
     {
         let exec_type_id = TypeId::of::<Exec>();
@@ -150,7 +151,7 @@ where
     /// Run a blocking job on a blocking executor (no shared mutable resource).
     pub fn blocking_on<Exec, F>(job: F) -> Self
     where
-        Exec: BlockingExecutor<E> + 'static,
+        Exec: BlockingExecutor + 'static,
         F: FnOnce() -> Command<E, X> + Send + 'static,
     {
         let exec_type_id = TypeId::of::<Exec>();
@@ -161,7 +162,7 @@ where
     /// Run a blocking job that requires mutable access to an executor-owned resource.
     pub fn blocking_with_resource_on<Exec, R, F>(job: F) -> Self
     where
-        Exec: ResourceBlockingExecutor<E> + 'static,
+        Exec: ResourceBlockingExecutor + 'static,
         R: 'static,
         F: FnOnce(&mut R) -> Command<E, X> + Send + 'static,
     {
@@ -185,7 +186,7 @@ where
 impl<E, X> From<BoxFuture<'static, Command<E, X>>> for Task<E, X>
 where
     E: Send + Sync + 'static,
-    X: Send + Sync + 'static,
+    X: Send + 'static,
 {
     fn from(future: BoxFuture<'static, Command<E, X>>) -> Self {
         Task::AsyncCurrent { future }
@@ -196,7 +197,7 @@ where
 impl<E, X> From<BoxStream<'static, E>> for Task<E, X>
 where
     E: Send + Sync + 'static,
-    X: Send + Sync + 'static,
+    X: Send + 'static,
 {
     fn from(stream: BoxStream<'static, E>) -> Self {
         Task::StreamCurrent { stream }
@@ -204,12 +205,12 @@ where
 }
 
 fn route_command<E, X>(
-    event_tx: &Sender<E>,
-    effect_tx: &Sender<CommandStep<E, X>>,
+    event_tx: &EventSender<E>,
+    effect_tx: &EffectSender<CommandStep<E, X>>,
     command: Command<E, X>,
 ) where
     E: Send + Sync + 'static,
-    X: Send + Sync + 'static,
+    X: Send + 'static,
 {
     for step in command {
         match step {
@@ -232,12 +233,12 @@ fn route_command<E, X>(
 pub(crate) fn drive_task<E, X>(
     executors: &Arc<ExecutorRegistry<E>>,
     task: Task<E, X>,
-    event_tx: Sender<E>,
-    effect_tx: Sender<CommandStep<E, X>>,
+    event_tx: EventSender<E>,
+    effect_tx: EffectSender<CommandStep<E, X>>,
 ) -> Result<(), ShellError>
 where
     E: Send + Sync + 'static,
-    X: Send + Sync + 'static,
+    X: Send + 'static,
 {
     match task {
         Task::Event(event) => {

@@ -288,7 +288,7 @@
 //! # #[derive(Debug, Clone)] enum MyEffect { DoWork }
 //! fn handle_effect(effect: MyEffect, _res: ()) -> Task<Event, MyEffect> {
 //!     match effect {
-//!         MyEffect::DoWork => Task::async_on::<InlineAsync<Event>, _>(async move {
+//!         MyEffect::DoWork => Task::async_on::<InlineAsync, _>(async move {
 //!             // Do async work and return events/effects via Command
 //!             // tokio timers require a runtime; InlineAsync uses thread sleep
 //!             Command::event(Event::TaskComplete)
@@ -334,11 +334,14 @@ pub mod core;
 // EffectContext/EventContext were removed from public API; handlers receive
 // plain arguments: event handlers get `&mut model`, effect handlers get
 // `(effect, resources)` and return `Task`.
+#[cfg(feature = "shell")]
 pub mod shell;
+#[cfg(feature = "shell")]
 pub mod syzygy;
 
 // Shared runtime facade powering scheduling, spawning, and timers
 // Builder pattern
+#[cfg(feature = "shell")]
 pub mod builder;
 
 // EventContext removed from public API; event handlers receive &mut model directly
@@ -349,6 +352,7 @@ pub mod error;
 // Resources are provided by user code and cloned per-effect; no internal storage module.
 
 // Executor system for specialized effect handling
+#[cfg(feature = "shell")]
 pub mod executor;
 pub mod resource_cell;
 
@@ -359,8 +363,10 @@ pub mod prelude {
     pub use crate::command::{Command, CommandStep};
 
     // Core/Shell architecture
-    pub use crate::core::{Core, EventHandler};
+    pub use crate::core::{Core, EventHandler, EventSender};
+    #[cfg(feature = "shell")]
     pub use crate::shell::Shell;
+    #[cfg(feature = "shell")]
     pub use crate::syzygy::{Syzygy, SyzygyConfig};
 
     // Type aliases for common use cases
@@ -389,21 +395,30 @@ pub mod prelude {
     /// }
     /// ```
     // Effect handlers with AFIT
+    #[cfg(feature = "shell")]
     pub use crate::shell::EffectHandler;
 
     // Executor system
-    #[cfg(feature = "rayon")]
+    #[cfg(all(feature = "shell", feature = "rayon"))]
     pub use crate::executor::RayonExecutor;
 
-    #[cfg(feature = "tokio")]
+    #[cfg(all(feature = "shell", feature = "rt-inline"))]
+    pub use crate::executor::InlineAsync;
+    #[cfg(all(feature = "shell", feature = "rt-single-thread"))]
+    pub use crate::executor::SingleThreadExecutor;
+    #[cfg(all(feature = "shell", feature = "tokio"))]
     pub use crate::executor::TokioExecutor;
-    pub use crate::executor::{ExecutorRegistry, InlineAsync, SingleThreadExecutor, Task};
+    #[cfg(feature = "shell")]
+    pub use crate::executor::{ExecutorRegistry, Task};
 
     // Builder
+    #[cfg(feature = "shell")]
     pub use crate::builder::SyzygyBuilder;
 
     // Errors
-    pub use crate::error::{CommandError, CoreError, EffectError, ShellError};
+    #[cfg(feature = "shell")]
+    pub use crate::error::ShellError;
+    pub use crate::error::{CommandError, CoreError, EffectError};
 
     // Effect output types
 

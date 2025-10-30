@@ -49,7 +49,7 @@ fn effect_handler(effect: AppEffect, _resources: ()) -> Task<AppEvent, AppEffect
 }
 
 fn produce_message() -> Task<AppEvent, AppEffect> {
-    Task::async_on::<InlineAsync<AppEvent>, _>(async move {
+    Task::async_on::<InlineAsync, _>(async move {
         Command::event(AppEvent::Completed("effect finished".to_string()))
     })
 }
@@ -59,7 +59,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .model(AppModel::default())
         .event_handler(event_handler)
         .effect_handler(effect_handler)
-        .with_async_executor(InlineAsync::<AppEvent>::new())
+        .with_async_executor(InlineAsync::new())
         .build()
         .split();
 

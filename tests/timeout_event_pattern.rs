@@ -6,6 +6,7 @@
     clippy::let_and_return,
     clippy::format_in_format_args
 )]
+#![cfg(feature = "tokio")]
 //! Tests demonstrating proper timeout event patterns
 //!
 //! These tests show how to handle timeouts as events rather than

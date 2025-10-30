@@ -57,7 +57,7 @@ fn effect_handler(effect: CounterEffect, _resources: ()) -> Task<CounterEvent, C
 }
 
 fn log_message(message: String) -> Task<CounterEvent, CounterEffect> {
-    Task::async_on::<InlineAsync<CounterEvent>, _>(async move {
+    Task::async_on::<InlineAsync, _>(async move {
         println!("{message}");
         Command::none()
     })
@@ -68,7 +68,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .model(CounterModel::default())
         .event_handler(event_handler)
         .effect_handler(effect_handler)
-        .with_async_executor(InlineAsync::<CounterEvent>::new())
+        .with_async_executor(InlineAsync::new())
         .build();
 
     runner
