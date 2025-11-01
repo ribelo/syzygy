@@ -39,7 +39,7 @@ fn event_handler(
 
 fn on_start(model: &mut DownloadModel) -> Command<DownloadEvent, DownloadEffect> {
     model.status = "requesting...".to_string();
-    Command::effect(DownloadEffect::FetchGreeting)
+    cmd::effect(DownloadEffect::FetchGreeting)
 }
 
 fn on_completed(
@@ -48,7 +48,7 @@ fn on_completed(
 ) -> Command<DownloadEvent, DownloadEffect> {
     model.status = format!("response: {message}");
     model.finished = true;
-    Command::none()
+    cmd::none()
 }
 
 fn effect_handler(effect: DownloadEffect, _resources: ()) -> Task<DownloadEvent, DownloadEffect> {
@@ -60,7 +60,7 @@ fn effect_handler(effect: DownloadEffect, _resources: ()) -> Task<DownloadEvent,
 fn fetch_greeting_task() -> Task<DownloadEvent, DownloadEffect> {
     Task::async_on::<TokioExecutor, _>(async move {
         tokio::time::sleep(Duration::from_millis(50)).await;
-        Command::event(DownloadEvent::Completed(
+        cmd::event(DownloadEvent::Completed(
             "hello from async effect".to_string(),
         ))
     })
@@ -72,6 +72,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .model(DownloadModel::default())
         .event_handler(event_handler)
         .effect_handler(effect_handler)
+        .profile_interactive()
         .with_async_executor(TokioExecutor::multi_thread_io("async-example", 2))
         .build();
 

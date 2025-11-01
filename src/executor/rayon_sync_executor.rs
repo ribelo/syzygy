@@ -4,7 +4,7 @@ use std::marker::PhantomData;
 
 pub struct RayonExecutor<E, R = ()>
 where
-    E: Send + Sync + 'static,
+    E: Send + 'static,
     R: Send + Sync + 'static,
 {
     pool: rayon::ThreadPool,
@@ -14,7 +14,7 @@ where
 
 pub struct RayonExecutorBuilder<E, R>
 where
-    E: Send + Sync + 'static,
+    E: Send + 'static,
     R: Send + Sync + 'static,
 {
     threads: Option<usize>,
@@ -27,7 +27,7 @@ const DEFAULT_THREAD_PREFIX: &str = "syzygy-rayon";
 
 impl<E> RayonExecutor<E, ()>
 where
-    E: Send + Sync + 'static,
+    E: Send + 'static,
 {
     #[must_use]
     pub fn builder() -> RayonExecutorBuilder<E, ()> {
@@ -37,7 +37,7 @@ where
 
 impl<E, R> RayonExecutor<E, R>
 where
-    E: Send + Sync + 'static,
+    E: Send + 'static,
     R: Send + Sync + 'static,
 {
     #[must_use]
@@ -48,7 +48,7 @@ where
 
 impl<E, R> Default for RayonExecutor<E, R>
 where
-    E: Send + Sync + 'static,
+    E: Send + 'static,
     R: Default + Send + Sync + 'static,
 {
     fn default() -> Self {
@@ -58,7 +58,7 @@ where
 
 impl<E, R> BlockingExecutor for RayonExecutor<E, R>
 where
-    E: Send + Sync + 'static,
+    E: Send + 'static,
     R: Send + Sync + 'static,
 {
     fn spawn_blocking(&self, job: Box<dyn FnOnce() + Send>) -> Result<(), ExecutorError> {
@@ -69,7 +69,7 @@ where
 
 impl<E, R> ExecutorLifecycle for RayonExecutor<E, R>
 where
-    E: Send + Sync + 'static,
+    E: Send + 'static,
     R: Send + Sync + 'static,
 {
     fn shutdown(&self) {}
@@ -81,7 +81,7 @@ where
 
 impl<E, R> RayonExecutorBuilder<E, R>
 where
-    E: Send + Sync + 'static,
+    E: Send + 'static,
     R: Send + Sync + 'static,
 {
     fn new(resources: R) -> Self {

@@ -160,12 +160,14 @@
 //!
 //! - **[basic_counter.rs]** – the smallest possible Syzygy app
 //! - **[async_effect.rs]** – scheduling work onto Tokio executors
+//! - **[timeout_pattern.rs]** – modeling timeouts as explicit events with retries
 //! - **[manual_loop.rs]** – driving `Core`/`Shell` without the runner helper
 //! - **[two_executors.rs]** – mixing IO and CPU executors under Tokio
 //!
 //! [basic_counter.rs]: https://github.com/ribelo/syzygy/blob/main/examples/basic_counter.rs
 //! [async_effect.rs]: https://github.com/ribelo/syzygy/blob/main/examples/async_effect.rs
 //! [manual_loop.rs]: https://github.com/ribelo/syzygy/blob/main/examples/manual_loop.rs
+//! [timeout_pattern.rs]: https://github.com/ribelo/syzygy/blob/main/examples/timeout_pattern.rs
 //! [two_executors.rs]: https://github.com/ribelo/syzygy/blob/main/examples/two_executors.rs
 //!
 //! ## Performance Benchmarks
@@ -329,6 +331,9 @@
 //! ```
 
 // Core modules
+pub mod activity;
+#[cfg(feature = "cli")]
+pub mod cli;
 pub mod command;
 pub mod core;
 // EffectContext/EventContext were removed from public API; handlers receive
@@ -360,14 +365,22 @@ pub mod prelude {
     // No public contexts in the new API; handlers receive plain args
 
     // Command system
+    pub use crate::command::builders as command;
+    pub use crate::command::builders as cmd;
+    pub use crate::command::builders::{
+        batch, effect, effects, event, events, none, parallel, sequential,
+    };
     pub use crate::command::{Command, CommandStep};
 
     // Core/Shell architecture
+    pub use crate::activity::Activity;
+    #[cfg(feature = "cli")]
+    pub use crate::cli::{install_ctrlc, spawn_stdin_listener};
     pub use crate::core::{Core, EventHandler, EventSender};
     #[cfg(feature = "shell")]
-    pub use crate::shell::Shell;
+    pub use crate::shell::{Shell, ShellStats, ShellStatsSnapshot};
     #[cfg(feature = "shell")]
-    pub use crate::syzygy::{Syzygy, SyzygyConfig};
+    pub use crate::syzygy::{Runner, Syzygy, SyzygyConfig, SyzygyProfile, SyzygyProfileSettings};
 
     // Type aliases for common use cases
     /// A simple Shell for applications that only need models (no resources or executors).
@@ -378,19 +391,31 @@ pub mod prelude {
     /// use syzygy::prelude::*;
     ///
     /// #[derive(Debug, Clone)]
-    /// enum Event { Increment }
+    /// enum Event {
+    ///     Increment,
+    /// }
     /// #[derive(Debug, Clone)]
-    /// enum Effect { Log }
+    /// enum Effect {
+    ///     LogTick,
+    /// }
     ///
-    /// type MyModel = ();
+    /// type MyModel = u32;
     /// type MyCore = Core<Event, Effect, MyModel>;
     /// type MyShell = Shell<Event, Effect>;
     ///
     /// fn build() -> (MyCore, MyShell) {
-    ///     Syzygy::builder()
-    ///         .model(())  // Some model
-    ///         .event_handler(|_event, _ctx| Command::none())
-    ///         .effect_handler(|_effect, _ctx| Task::none())
+    ///     Syzygy::builder::<Event, Effect>()
+    ///         .model(0u32)
+    ///         .event_handler(|event, model| match event {
+    ///             Event::Increment => {
+    ///                 *model += 1;
+    ///                 cmd::effect(Effect::LogTick)
+    ///             }
+    ///         })
+    ///         .effect_handler(|effect, _| match effect {
+    ///             Effect::LogTick => Command::none(),
+    ///         })
+    ///         .profile_interactive()
     ///         .build()
     /// }
     /// ```
@@ -409,7 +434,9 @@ pub mod prelude {
     #[cfg(all(feature = "shell", feature = "tokio"))]
     pub use crate::executor::TokioExecutor;
     #[cfg(feature = "shell")]
-    pub use crate::executor::{ExecutorRegistry, Task};
+    pub use crate::executor::{
+        ExecutorRegistry, PanicDetails, PanicHook, PanicTaskKind, Plan, Task,
+    };
 
     // Builder
     #[cfg(feature = "shell")]

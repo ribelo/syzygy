@@ -21,10 +21,13 @@ jobs:
           - nightly
         features:
           - default
-          - smol
-          - async-std
-          - view-model
+          - tokio
+          - rt-inline
+          - rayon
           - tracing
+          - examples
+          - preset-interactive
+          - preset-server
     steps:
     - uses: actions/checkout@v4
     
@@ -56,42 +59,66 @@ jobs:
       if: matrix.features == 'default'
     
     
-    - name: Build (smol feature)
-      run: cargo build --no-default-features --features smol --verbose
-      if: matrix.features == 'smol'
+    - name: Build (tokio feature)
+      run: cargo build --no-default-features --features tokio --verbose
+      if: matrix.features == 'tokio'
     
-    - name: Build (async-std feature)
-      run: cargo build --no-default-features --features async-std --verbose
-      if: matrix.features == 'async-std'
+    - name: Build (rt-inline feature)
+      run: cargo build --no-default-features --features rt-inline --verbose
+      if: matrix.features == 'rt-inline'
     
-    - name: Build (view-model feature)
-      run: cargo build --features view-model --verbose
-      if: matrix.features == 'view-model'
-    
+    - name: Build (rayon feature)
+      run: cargo build --no-default-features --features rayon --verbose
+      if: matrix.features == 'rayon'
+
     - name: Build (tracing feature)
       run: cargo build --features tracing --verbose
       if: matrix.features == 'tracing'
+
+    - name: Build (examples feature)
+      run: cargo build --features examples --verbose
+      if: matrix.features == 'examples'
+
+    - name: Build (preset-interactive)
+      run: cargo build --no-default-features --features preset-interactive --verbose
+      if: matrix.features == 'preset-interactive'
+
+    - name: Build (preset-server)
+      run: cargo build --no-default-features --features preset-server --verbose
+      if: matrix.features == 'preset-server'
     
     - name: Run tests (default features)
       run: cargo test --verbose
       if: matrix.features == 'default'
     
     
-    - name: Run tests (smol feature)
-      run: cargo test --no-default-features --features smol --verbose
-      if: matrix.features == 'smol'
+    - name: Run tests (tokio feature)
+      run: cargo test --no-default-features --features tokio --verbose
+      if: matrix.features == 'tokio'
     
-    - name: Run tests (async-std feature)
-      run: cargo test --no-default-features --features async-std --verbose
-      if: matrix.features == 'async-std'
+    - name: Run tests (rt-inline feature)
+      run: cargo test --no-default-features --features rt-inline --verbose
+      if: matrix.features == 'rt-inline'
     
-    - name: Run tests (view-model feature)
-      run: cargo test --features view-model --verbose
-      if: matrix.features == 'view-model'
-    
+    - name: Run tests (rayon feature)
+      run: cargo test --no-default-features --features rayon --verbose
+      if: matrix.features == 'rayon'
+
     - name: Run tests (tracing feature)
       run: cargo test --features tracing --verbose
       if: matrix.features == 'tracing'
+
+    - name: Run tests (examples feature)
+      run: cargo test --features examples --verbose
+      if: matrix.features == 'examples'
+
+    - name: Run tests (preset-interactive)
+      run: cargo test --no-default-features --features preset-interactive --verbose
+      if: matrix.features == 'preset-interactive'
+
+    - name: Run tests (preset-server)
+      run: cargo test --no-default-features --features preset-server --verbose
+      if: matrix.features == 'preset-server'
     
 
   benchmark:

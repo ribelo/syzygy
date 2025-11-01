@@ -40,17 +40,17 @@ fn event_handler(event: DemoEvent, model: &mut DemoModel) -> Command<DemoEvent, 
 }
 
 fn on_start() -> Command<DemoEvent, DemoEffect> {
-    Command::parallel([DemoEffect::FetchGreeting, DemoEffect::CrunchNumber(38)])
+    cmd::parallel([DemoEffect::FetchGreeting, DemoEffect::CrunchNumber(38)])
 }
 
 fn on_io_finished(model: &mut DemoModel, message: String) -> Command<DemoEvent, DemoEffect> {
     model.io_message = Some(message);
-    Command::none()
+    cmd::none()
 }
 
 fn on_cpu_finished(model: &mut DemoModel, value: u128) -> Command<DemoEvent, DemoEffect> {
     model.cpu_result = Some(value);
-    Command::none()
+    cmd::none()
 }
 
 #[derive(Debug, Default)]
@@ -125,7 +125,7 @@ fn effect_handler(effect: DemoEffect, _resources: ()) -> Task<DemoEvent, DemoEff
 fn fetch_greeting() -> Task<DemoEvent, DemoEffect> {
     Task::async_on::<IoRuntime, _>(async move {
         tokio::time::sleep(Duration::from_millis(40)).await;
-        Command::event(DemoEvent::IoFinished(format!(
+        cmd::event(DemoEvent::IoFinished(format!(
             "hello from thread {:?}",
             std::thread::current().id()
         )))
@@ -135,7 +135,7 @@ fn fetch_greeting() -> Task<DemoEvent, DemoEffect> {
 fn crunch_number(n: u64) -> Task<DemoEvent, DemoEffect> {
     Task::async_on::<CpuRuntime, _>(async move {
         let result = fibonacci(n);
-        Command::event(DemoEvent::CpuFinished(result))
+        cmd::event(DemoEvent::CpuFinished(result))
     })
 }
 
@@ -161,6 +161,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .model(DemoModel::default())
         .event_handler(event_handler)
         .effect_handler(effect_handler)
+        .profile_server()
         .with_async_executor(IoRuntime::new(2))
         .with_async_executor(CpuRuntime::new(2))
         .build();

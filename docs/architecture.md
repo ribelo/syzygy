@@ -33,10 +33,12 @@ This is the map. No marketing. Just how it works and where it will bite you if y
 - Variants:
   - `Event(E)` / `Events(Vec<E>)`
   - `async_on::<Exec, _>(future)` – run future on registered async executor
+  - `async_on_with_cancel::<Exec, _>(future, cancel, on_cancel)` – race a cancellation future and emit a fallback `Command`
   - `stream_on::<Exec, _>(stream)` – forward stream items as events
   - `blocking_on::<Exec, _>(|| Command)` – blocking job (no shared resource)
   - `blocking_with_resource_on::<Exec, R, _>(|&mut R| Command)` – FIFO single-resource lane
   - `async_current(...)` / `stream_current(...)` – use current Tokio runtime if present, else block inline (no executor registration required)
+  - `async_current_with_cancel(...)` – cancellation-aware version of `async_current`
 
 ### Executors (Policy)
 - Register zero or more:
@@ -91,8 +93,26 @@ What actually happens
 - Missing executor -> `ShellError::TaskSpawnFailed` when scheduling the `Task`.
 
 ## Backpressure & Queues
-- Core event channel: unbounded (default). `Core::pending_count()` for snapshots.
+- Core event channel: unbounded `crossbeam-channel` by default; enable backpressure with `SyzygyBuilder::with_event_channel_capacity`. `Core::pending_count()` gives snapshot metrics and bounded queues surface `CoreError::ChannelFull` to senders.
 - Shell effect channel: configurable (bounded/unbounded). `Shell::pending_effects()` for snapshots.
+
+### Ordering & Tick Semantics
+- Each call to `Shell::dispatch_command` completes synchronously; events that fall out of the command travel straight back into Core for the *next* tick.
+- Effect steps (`Effect`, `Batch`, `Parallel`) always enqueue in FIFO order. When the bounded effect channel is full, the Shell prefetches one item into a local buffer so the oldest step still executes first.
+- Effect-generated events re-enter Core solely through the channel, preserving determinism—there is no mid-batch re-entry into the current tick.
+- When the effect channel is closed, the Shell now tracks a dropped-step counter so production builds can surface the loss via `Shell::stats()` or tracing.
+
+### Resource Ergonomics
+- Clone-cheap handles (`Arc<_>`, `Arc<Mutex<T>>`) keep per-effect cloning predictable; expensive resources should never be owned by `Resources` directly.
+- Reach for `ResourceCell<T>` when you need lazy initialisation but still want cheap clones for each effect invocation.
+- Use `SingleThreadExecutor` for resources that cannot tolerate concurrent mutation instead of locking everything.
+- `Syzygy::shutdown()` and the `Shell` drop implementation both shut down executors, wait for completion, and emit tracing warnings if anything was dropped while draining queues.
+
+### Observability Hooks
+- `Shell::stats()` returns a snapshot with dropped events/effect steps.
+- `Shell::stats_handle()` gives you a clonable handle for async metric reporters.
+- Counters increment whenever event/effect sends fail—typically during shutdown ordering or when backpressure policies reject new work.
+- `SyzygyBuilder::with_panic_handler` converts executor panics into deterministic `Command`s (usually error events) so Core can keep the failure in-band.
 
 ## Patterns That Scale
 - Chain complex logic via `Command::events([..])` rather than mutating all at once.

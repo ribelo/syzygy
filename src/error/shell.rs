@@ -34,10 +34,12 @@ pub enum ShellError {
     CommandExecutionFailed(String),
 
     /// Effect queue reached its configured capacity
-    #[error("Effect queue is full (capacity {capacity})")]
+    #[error(
+        "Effect queue is full (capacity {capacity}). Consider increasing the capacity or awaiting idle before queuing more effects"
+    )]
     EffectQueueFull { capacity: usize },
 
     /// Timed out while waiting for work to complete
-    #[error("Timed out after {duration:?} while draining work")]
+    #[error("Timed out after {duration:?} while draining work; use larger timeouts or inspect backpressure metrics")]
     Timeout { duration: Duration },
 }

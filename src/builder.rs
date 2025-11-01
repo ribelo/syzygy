@@ -6,37 +6,44 @@
 //!
 //! This module intentionally avoids traits and lifetimes in the public surface
 //! so usage stays straightforward in real apps and tests.
+use crate::activity::Activity;
+use crate::command::Command;
 use crate::core::{Core, EventHandler, EventSender};
 use crate::executor::{
-    AsyncExecutor, BlockingExecutor, ExecutorRegistry, ResourceBlockingExecutor, Task,
+    AsyncExecutor, BlockingExecutor, ExecutorRegistry, PanicDetails, PanicHook,
+    ResourceBlockingExecutor, Task,
 };
-use crate::shell::{EffectHandler, Shell};
-use crate::syzygy::Syzygy;
+use crate::shell::{EffectHandler, Shell, ShellStats};
+use crate::syzygy::{Syzygy, SyzygyConfig, SyzygyProfile};
 use std::collections::VecDeque;
 use std::marker::PhantomData;
 use std::sync::Arc;
+#[cfg(all(debug_assertions, feature = "flair"))]
+use std::sync::OnceLock;
 
 /// Entry point for building a `Syzygy`.
 ///
 /// Typical flow:
 /// - set `.model(..)` and optional `.with_resources(..)`
 /// - install `.event_handler(..)` and `.effect_handler(..)`
+/// - pick a preset via `.profile_interactive()` / `.profile_server()` (optional but recommended)
 /// - register executors via `.with_*_executor(..)`
 /// - call `.build()`
 pub struct SyzygyBuilder<E, X, M, R = ()>
 where
-    E: Send + Sync + 'static,
+    E: Send + 'static,
     X: Send + 'static,
     R: Clone + Send + 'static,
 {
     model: M,
     resources: R,
+    pending_profile: Option<SyzygyProfile>,
     _marker: PhantomData<(E, X)>,
 }
 
 impl<E, X> Default for SyzygyBuilder<E, X, (), ()>
 where
-    E: Send + Sync + 'static,
+    E: Send + 'static,
     X: Send + 'static,
 {
     fn default() -> Self {
@@ -46,7 +53,7 @@ where
 
 impl<E, X> SyzygyBuilder<E, X, (), ()>
 where
-    E: Send + Sync + 'static,
+    E: Send + 'static,
     X: Send + 'static,
 {
     #[must_use]
@@ -54,6 +61,7 @@ where
         Self {
             model: (),
             resources: (),
+            pending_profile: None,
             _marker: PhantomData,
         }
     }
@@ -61,7 +69,7 @@ where
 
 impl<Event, Effect, Model, Resources> SyzygyBuilder<Event, Effect, Model, Resources>
 where
-    Event: Send + Sync + 'static,
+    Event: Send + 'static,
     Effect: Send + 'static,
     Model: 'static,
     Resources: Clone + Send + 'static,
@@ -77,6 +85,7 @@ where
         SyzygyBuilder {
             model,
             resources: self.resources,
+            pending_profile: self.pending_profile,
             _marker: PhantomData,
         }
     }
@@ -93,8 +102,16 @@ where
         SyzygyBuilder {
             model: self.model,
             resources,
+            pending_profile: self.pending_profile,
             _marker: PhantomData,
         }
+    }
+
+    /// Remember a profile to be applied once handlers are installed.
+    #[must_use]
+    pub fn preset_profile(mut self, profile: SyzygyProfile) -> Self {
+        self.pending_profile = Some(profile);
+        self
     }
 
     /// Finalize model configuration and set the event handler.
@@ -106,15 +123,24 @@ where
         self,
         event_handler: EventHandler<Event, Effect, Model>,
     ) -> ConfiguredBuilder<Event, Effect, Model, Resources> {
-        ConfiguredBuilder {
+        let mut builder = ConfiguredBuilder {
             event_handler,
             effect_handler: None,
             model: self.model,
             resources: self.resources,
             exec_registry: ExecutorRegistry::<Event>::default(),
             effect_channel_capacity: None,
+            event_channel_capacity: None,
+            syzygy_config: SyzygyConfig::default(),
+            panic_handler: None,
             _marker: PhantomData,
+        };
+
+        if let Some(profile) = self.pending_profile {
+            builder = builder.with_profile(profile);
         }
+
+        builder
     }
 }
 
@@ -127,7 +153,7 @@ where
 /// runtime if available; otherwise completes inline by blocking the thread).
 pub struct ConfiguredBuilder<Event, Effect, Model, Resources>
 where
-    Event: Send + Sync + 'static,
+    Event: Send + 'static,
     Effect: Send + 'static,
     Resources: Clone + Send + 'static,
 {
@@ -137,12 +163,15 @@ where
     resources: Resources,
     exec_registry: ExecutorRegistry<Event>,
     effect_channel_capacity: Option<usize>,
+    event_channel_capacity: Option<usize>,
+    syzygy_config: SyzygyConfig,
+    panic_handler: Option<Arc<PanicHook<Event, Effect>>>,
     _marker: PhantomData<Effect>,
 }
 
 impl<Event, Effect, Model, Resources> ConfiguredBuilder<Event, Effect, Model, Resources>
 where
-    Event: Send + Sync + 'static,
+    Event: Send + 'static,
     Effect: Send + 'static,
     Model: 'static,
     Resources: Clone + Send + 'static,
@@ -159,6 +188,65 @@ where
     {
         self.effect_handler = Some(Box::new(handler));
         self
+    }
+
+    /// Apply a prebuilt runner configuration.
+    #[must_use]
+    pub fn with_syzygy_config(mut self, config: SyzygyConfig) -> Self {
+        self.syzygy_config = config;
+        self
+    }
+
+    /// Apply a preset profile for idle cadence and effect buffering.
+    #[must_use]
+    pub fn with_profile(mut self, profile: SyzygyProfile) -> Self {
+        let settings = profile.settings();
+        self.syzygy_config = self.syzygy_config.clone().idle_sleep(settings.idle_sleep);
+        if self.effect_channel_capacity.is_none() {
+            self.effect_channel_capacity = settings.effect_channel_capacity;
+        }
+        if self.event_channel_capacity.is_none() {
+            self.event_channel_capacity = settings.event_channel_capacity;
+        }
+        self
+    }
+
+    /// Install a handler invoked whenever a task panics.
+    ///
+    /// The handler receives [`PanicDetails`] describing the task context and a message captured
+    /// from the panic payload. Return a `Command` (typically an error event) to surface the
+    /// failure to your Core.
+    #[must_use]
+    pub fn with_panic_handler<H>(mut self, handler: H) -> Self
+    where
+        H: Fn(PanicDetails, String) -> Command<Event, Effect> + Send + Sync + 'static,
+    {
+        self.panic_handler = Some(Arc::new(handler));
+        self
+    }
+
+    /// Apply the [`SyzygyProfile::Interactive`] preset.
+    #[must_use]
+    pub fn profile_interactive(self) -> Self {
+        self.with_profile(SyzygyProfile::Interactive)
+    }
+
+    /// Apply the [`SyzygyProfile::Server`] preset.
+    #[must_use]
+    pub fn profile_server(self) -> Self {
+        self.with_profile(SyzygyProfile::Server)
+    }
+
+    /// Apply the [`SyzygyProfile::Ci`] preset.
+    #[must_use]
+    pub fn profile_ci(self) -> Self {
+        self.with_profile(SyzygyProfile::Ci)
+    }
+
+    /// Apply the [`SyzygyProfile::Batch`] preset.
+    #[must_use]
+    pub fn profile_batch(self) -> Self {
+        self.with_profile(SyzygyProfile::Batch)
     }
 
     /// Replace the executor registry with a pre-built one.
@@ -206,19 +294,75 @@ where
         self
     }
 
-    /// Override the shell effect channel capacity.
+    /// Override the Shell effect channel capacity.
     ///
     /// `None` means unbounded. Bounded channels apply backpressure to the
-    /// caller when the effect queue is saturated.
+    /// caller when the effect queue is saturated by returning
+    /// [`ShellError::EffectQueueFull`](crate::error::ShellError::EffectQueueFull).
+    /// Combine with [`SyzygyProfile`] presets for sensible defaults.
+    ///
+    /// # Example
+    /// ```rust
+    /// # use syzygy::prelude::*;
+    /// # fn update(_: Event, _: &mut Model) -> Command<Event, Effect> { Command::none() }
+    /// # fn effects(_: Effect, _: ()) -> Task<Event, Effect> { Task::none() }
+    /// # #[derive(Default)] struct Model;
+    /// # #[derive(Clone)] enum Event { Ping }
+    /// # #[derive(Clone)] enum Effect { DoPing }
+    /// let runner = Syzygy::builder::<Event, Effect>()
+    ///     .model(Model::default())
+    ///     .event_handler(update)
+    ///     .effect_handler(effects)
+    ///     .with_effect_channel_capacity(Some(256))
+    ///     .build();
+    /// # let _ = runner;
+    /// ```
     #[must_use]
     pub fn with_effect_channel_capacity(mut self, capacity: Option<usize>) -> Self {
         self.effect_channel_capacity = capacity;
         self
     }
 
+    /// Override the core event channel capacity.
+    ///
+    /// `None` keeps the default unbounded channel. Bounded channels apply backpressure
+    /// to event producers by returning [`CoreError::ChannelFull`](crate::error::CoreError::ChannelFull).
+    ///
+    /// # Example
+    /// ```rust
+    /// # use syzygy::prelude::*;
+    /// # fn update(_: Event, _: &mut Model) -> Command<Event, Effect> { Command::none() }
+    /// # fn effects(_: Effect, _: ()) -> Task<Event, Effect> { Task::none() }
+    /// # #[derive(Default)] struct Model;
+    /// # #[derive(Clone)] enum Event { Ping }
+    /// # #[derive(Clone)] enum Effect { DoPing }
+    /// let runner = Syzygy::builder::<Event, Effect>()
+    ///     .model(Model::default())
+    ///     .event_handler(update)
+    ///     .effect_handler(effects)
+    ///     .with_event_channel_capacity(Some(64))
+    ///     .build();
+    /// # let _ = runner;
+    /// ```
+    #[must_use]
+    pub fn with_event_channel_capacity(mut self, capacity: Option<usize>) -> Self {
+        self.event_channel_capacity = capacity;
+        self
+    }
+
     /// Build the system and return a `Syzygy`.
     pub fn build(self) -> Syzygy<Event, Effect, Model, Resources> {
-        let (core, event_tx) = Core::new(self.event_handler, self.model);
+        #[cfg(all(debug_assertions, feature = "flair"))]
+        let flair_banner = (
+            self.effect_channel_capacity,
+            self.event_channel_capacity,
+            self.syzygy_config.idle_sleep,
+        );
+        let (core, event_tx) = Core::with_event_channel_capacity(
+            self.event_handler,
+            self.model,
+            self.event_channel_capacity,
+        );
         let registry = Arc::new(self.exec_registry);
 
         let shell = Self::build_shell(
@@ -227,8 +371,29 @@ where
             self.resources,
             event_tx,
             self.effect_channel_capacity,
+            self.panic_handler,
         );
-        Syzygy::new(core, shell)
+        let runner = Syzygy::with_config(core, shell, self.syzygy_config);
+
+        #[cfg(all(debug_assertions, feature = "flair"))]
+        {
+            static BANNER: OnceLock<()> = OnceLock::new();
+            BANNER.get_or_init(|| {
+                let (effect_cap, event_cap, idle_sleep) = flair_banner;
+                let effect_msg = effect_cap
+                    .map(|cap| cap.to_string())
+                    .unwrap_or_else(|| "unbounded".to_string());
+                let event_msg = event_cap
+                    .map(|cap| cap.to_string())
+                    .unwrap_or_else(|| "unbounded".to_string());
+                let idle_ms = idle_sleep.as_millis();
+                eprintln!(
+                    "✨ Syzygy ready — idle: {idle_ms}ms, effect cap: {effect_msg}, event cap: {event_msg}"
+                );
+            });
+        }
+
+        runner
     }
 
     fn build_shell(
@@ -237,12 +402,13 @@ where
         resources: Resources,
         event_tx: EventSender<Event>,
         effect_channel_capacity: Option<usize>,
+        panic_handler: Option<Arc<PanicHook<Event, Effect>>>,
     ) -> Shell<Event, Effect, Resources> {
         use crossbeam_channel::{bounded, unbounded};
 
         fn default_effect_handler<E, X, R>(_: X, _: R) -> Task<E, X>
         where
-            E: Send + Sync + 'static,
+            E: Send + 'static,
             X: Send + 'static,
             R: Clone + Send + 'static,
         {
@@ -266,10 +432,14 @@ where
             event_tx,
             effect_handler,
             resources,
+            activity: Activity::new(),
             effect_channel_capacity,
             executors: exec_registry,
             closed: false,
             prefetched_effects: VecDeque::new(),
+            stats: ShellStats::default(),
+            executors_shutdown: false,
+            panic_handler,
         }
     }
 }
@@ -278,6 +448,7 @@ where
 mod tests {
     use super::*;
     use crate::command::Command;
+    use crate::syzygy::SyzygyProfile;
 
     #[derive(Debug, Clone)]
     enum TestEvent {
@@ -318,6 +489,63 @@ mod tests {
         let (mut core, _shell) = runner.split();
         let _command = core.handle_event(TestEvent::Increment);
         assert_eq!(core.model().count, 1);
+    }
+
+    #[test]
+    fn test_profile_interactive_sets_defaults() {
+        let runner = Syzygy::builder::<TestEvent, TestEffect>()
+            .model(TestModel::default())
+            .event_handler(test_update)
+            .effect_handler(|_e: TestEffect, _resources| {
+                crate::executor::Task::<TestEvent, TestEffect>::events(Vec::new())
+            })
+            .with_profile(SyzygyProfile::Interactive)
+            .build();
+
+        assert_eq!(runner.shell().effect_channel_capacity(), Some(256));
+        assert_eq!(runner.core().event_channel_capacity(), None);
+        assert_eq!(
+            runner.config().idle_sleep,
+            std::time::Duration::from_millis(1)
+        );
+    }
+
+    #[test]
+    fn test_profile_server_sets_capacities() {
+        let runner = Syzygy::builder::<TestEvent, TestEffect>()
+            .model(TestModel::default())
+            .event_handler(test_update)
+            .effect_handler(|_e: TestEffect, _resources| {
+                crate::executor::Task::<TestEvent, TestEffect>::events(Vec::new())
+            })
+            .with_profile(SyzygyProfile::Server)
+            .build();
+
+        assert_eq!(runner.shell().effect_channel_capacity(), Some(1024));
+        assert_eq!(runner.core().event_channel_capacity(), Some(1024));
+        assert_eq!(
+            runner.config().idle_sleep,
+            std::time::Duration::from_millis(0)
+        );
+    }
+
+    #[test]
+    fn test_profile_ci_sets_capacities() {
+        let runner = Syzygy::builder::<TestEvent, TestEffect>()
+            .model(TestModel::default())
+            .event_handler(test_update)
+            .effect_handler(|_e: TestEffect, _resources| {
+                crate::executor::Task::<TestEvent, TestEffect>::events(Vec::new())
+            })
+            .with_profile(SyzygyProfile::Ci)
+            .build();
+
+        assert_eq!(runner.shell().effect_channel_capacity(), Some(64));
+        assert_eq!(runner.core().event_channel_capacity(), Some(64));
+        assert_eq!(
+            runner.config().idle_sleep,
+            std::time::Duration::from_millis(0)
+        );
     }
 
     #[cfg(feature = "rt-inline")]

@@ -6,13 +6,15 @@
 
 use crossbeam_channel::{Receiver, RecvTimeoutError, Sender, TrySendError};
 use std::collections::VecDeque;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::activity::Activity;
 use crate::command::{Command, CommandStep};
 use crate::core::EventSender;
 use crate::error::ShellError;
-use crate::executor::task::drive_task;
+use crate::executor::task::{drive_task_with_activity, PanicHook};
 use crate::executor::{ExecutorRegistry, Task};
 
 #[cfg(feature = "tracing")]
@@ -21,10 +23,55 @@ use tracing::{debug, span, Level};
 /// Effect handler accepting closures that produce declarative tasks.
 pub type EffectHandler<E, X, R> = Box<dyn FnMut(X, R) -> Task<E, X> + Send + 'static>;
 
+#[derive(Clone, Default)]
+pub struct ShellStats {
+    inner: Arc<ShellStatsInner>,
+}
+
+struct ShellStatsInner {
+    dropped_events: AtomicUsize,
+    dropped_effect_steps: AtomicUsize,
+}
+
+impl Default for ShellStatsInner {
+    fn default() -> Self {
+        Self {
+            dropped_events: AtomicUsize::new(0),
+            dropped_effect_steps: AtomicUsize::new(0),
+        }
+    }
+}
+
+impl ShellStats {
+    pub fn inc_dropped_event(&self) {
+        self.inner.dropped_events.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn inc_dropped_effect_step(&self) {
+        self.inner
+            .dropped_effect_steps
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    #[must_use]
+    pub fn snapshot(&self) -> ShellStatsSnapshot {
+        ShellStatsSnapshot {
+            dropped_events: self.inner.dropped_events.load(Ordering::Relaxed),
+            dropped_effect_steps: self.inner.dropped_effect_steps.load(Ordering::Relaxed),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ShellStatsSnapshot {
+    pub dropped_events: usize,
+    pub dropped_effect_steps: usize,
+}
+
 /// The Shell orchestrates async effect execution independently of Core
 pub struct Shell<E, X, R = ()>
 where
-    E: Send + Sync + 'static,
+    E: Send + 'static,
     X: Send + 'static,
     R: Clone + Send + 'static,
 {
@@ -44,6 +91,9 @@ where
     /// Shared application resources cloned per effect invocation
     pub(crate) resources: R,
 
+    /// Activity tracker for in-flight async work
+    pub(crate) activity: Activity,
+
     /// Optional capacity for the effect queue (None => unbounded)
     pub(crate) effect_channel_capacity: Option<usize>,
 
@@ -52,24 +102,26 @@ where
 
     /// Prefetched effects waiting to be processed (local overflow buffer)
     pub(crate) prefetched_effects: VecDeque<CommandStep<E, X>>,
+
+    /// Observability stats for dropped work
+    pub(crate) stats: ShellStats,
+
+    /// Tracks whether executor shutdown has been requested
+    pub(crate) executors_shutdown: bool,
+
+    /// Optional panic handler invoked when tasks panic.
+    pub(crate) panic_handler: Option<Arc<PanicHook<E, X>>>,
 }
 
 // No public constructors. Shell instances are created exclusively by the builder.
 
 impl<E, X, R> Shell<E, X, R>
 where
-    E: Send + Sync + 'static,
+    E: Send + 'static,
     X: Send + 'static,
     R: Clone + Send + 'static,
 {
     fn push_effect_step(&mut self, step: CommandStep<E, X>) -> Result<(), ShellError> {
-        if let Some(capacity) = self.effect_channel_capacity {
-            let occupancy = self.effect_rx.len() + self.prefetched_effects.len();
-            if occupancy >= capacity {
-                return Err(ShellError::EffectQueueFull { capacity });
-            }
-        }
-
         match self.effect_tx.try_send(step) {
             Ok(()) => Ok(()),
             Err(TrySendError::Full(step)) => {
@@ -89,14 +141,20 @@ where
                             Err(ShellError::EffectQueueFull { capacity: limit })
                         }
                     }
-                    Err(TrySendError::Disconnected(_)) => Err(ShellError::CommandExecutionFailed(
-                        "Effect channel closed".to_string(),
-                    )),
+                    Err(TrySendError::Disconnected(_)) => {
+                        self.stats.inc_dropped_effect_step();
+                        Err(ShellError::CommandExecutionFailed(
+                            "Effect channel closed".to_string(),
+                        ))
+                    }
                 }
             }
-            Err(TrySendError::Disconnected(_)) => Err(ShellError::CommandExecutionFailed(
-                "Effect channel closed".to_string(),
-            )),
+            Err(TrySendError::Disconnected(_)) => {
+                self.stats.inc_dropped_effect_step();
+                Err(ShellError::CommandExecutionFailed(
+                    "Effect channel closed".to_string(),
+                ))
+            }
         }
     }
 
@@ -106,11 +164,14 @@ where
             let handler = &mut self.effect_handler;
             handler(effect, resources)
         };
-        drive_task(
+        drive_task_with_activity(
             &self.executors,
             task,
             self.event_tx.clone(),
             self.effect_tx.clone(),
+            Some(&self.activity),
+            Some(&self.stats),
+            self.panic_handler.as_ref(),
         )
     }
 
@@ -139,6 +200,7 @@ where
                     debug!("Routing event to Core");
 
                     self.event_tx.send(event).map_err(|_| {
+                        self.stats.inc_dropped_event();
                         ShellError::CommandExecutionFailed("Event channel closed".to_string())
                     })?;
                 }
@@ -264,10 +326,29 @@ where
     /// Get the number of pending effects in the queue
     ///
     /// This can be used to check if there are effects waiting to be processed
-    /// without actually processing them.
+    /// without actually processing them. Value is a snapshot and may become
+    /// stale immediately due to concurrent producers.
     #[must_use]
     pub fn pending_effects(&self) -> usize {
         self.effect_rx.len() + self.prefetched_effects.len()
+    }
+
+    /// Get the number of currently in-flight async jobs
+    ///
+    /// This includes async futures, streams, and blocking jobs that have been
+    /// spawned but not yet completed.
+    #[must_use]
+    pub fn inflight_jobs(&self) -> usize {
+        self.activity.load()
+    }
+
+    /// Check if the shell is completely idle
+    ///
+    /// Returns true if there are no pending effects and no in-flight jobs.
+    /// This is the authoritative check for determining if all async work has completed.
+    #[must_use]
+    pub fn is_idle(&self) -> bool {
+        self.pending_effects() == 0 && self.inflight_jobs() == 0
     }
 
     /// Check if the shell is closed
@@ -287,15 +368,77 @@ where
         self.effect_channel_capacity = capacity;
     }
 
-    /// Signal shutdown to higher-level Runner logic
+    /// Signal shutdown to higher-level Runner logic and request executor shutdown.
     pub fn shutdown(&mut self) {
         self.closed = true;
+        if !self.executors_shutdown {
+            self.executors.shutdown_all();
+            self.executors_shutdown = true;
+        }
+    }
+
+    /// Wait for all registered executors to finish outstanding work.
+    pub fn wait_for_executors(&self) {
+        self.executors.wait_all();
+    }
+
+    #[must_use]
+    pub fn stats(&self) -> ShellStatsSnapshot {
+        self.stats.snapshot()
+    }
+
+    #[must_use]
+    pub fn stats_handle(&self) -> ShellStats {
+        self.stats.clone()
+    }
+
+    #[must_use]
+    pub fn panic_handler(&self) -> Option<&Arc<PanicHook<E, X>>> {
+        self.panic_handler.as_ref()
+    }
+}
+
+impl<E, X, R> Drop for Shell<E, X, R>
+where
+    E: Send + 'static,
+    X: Send + 'static,
+    R: Clone + Send + 'static,
+{
+    fn drop(&mut self) {
+        self.shutdown();
+        self.wait_for_executors();
+
+        #[cfg(feature = "tracing")]
+        {
+            let snapshot = self.stats();
+            if snapshot.dropped_events > 0 || snapshot.dropped_effect_steps > 0 {
+                let message = if cfg!(feature = "flair") {
+                    "🟡 Shell dropped work during shutdown — events were still in flight. Consider calling `await_idle`, draining the runner, or increasing queue capacities."
+                } else {
+                    "Shell dropped work during shutdown — events were still in flight. Consider calling `await_idle`, draining the runner, or increasing queue capacities."
+                };
+                tracing::warn!(
+                    stage = "shell_drop",
+                    dropped_events = snapshot.dropped_events,
+                    dropped_effect_steps = snapshot.dropped_effect_steps,
+                    "{message}",
+                    message = message
+                );
+            } else {
+                let message = if cfg!(feature = "flair") {
+                    "🟢 Shell shutdown complete"
+                } else {
+                    "Shell shutdown cleanly"
+                };
+                tracing::debug!(stage = "shell_drop", "{message}", message = message);
+            }
+        }
     }
 }
 
 impl<E, X, R> std::fmt::Debug for Shell<E, X, R>
 where
-    E: Send + Sync + 'static,
+    E: Send + 'static,
     X: Send + 'static,
     R: Clone + Send + 'static,
 {

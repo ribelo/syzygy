@@ -15,7 +15,7 @@ pub struct ExecutorRegistry<E> {
 
 impl<E> Default for ExecutorRegistry<E>
 where
-    E: Send + Sync + 'static,
+    E: Send + 'static,
 {
     fn default() -> Self {
         Self::new()
@@ -24,7 +24,7 @@ where
 
 impl<E> ExecutorRegistry<E>
 where
-    E: Send + Sync + 'static,
+    E: Send + 'static,
 {
     #[must_use]
     pub fn new() -> Self {

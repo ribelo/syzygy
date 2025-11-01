@@ -27,7 +27,9 @@ pub use rayon_sync_executor::{RayonExecutor, RayonExecutorBuilder};
 pub use registry::ExecutorRegistry;
 #[cfg(feature = "rt-single-thread")]
 pub use single_thread_executor::SingleThreadExecutor;
-pub use task::Task;
+pub use task::{PanicDetails, PanicHook, PanicTaskKind, Task};
+/// Friendly alias for `Task` used in docs to highlight declarative plans.
+pub type Plan<E, X> = Task<E, X>;
 #[cfg(feature = "tokio")]
 pub use tokio_executor::{TokioExecutor, TokioExecutorBuilder};
 

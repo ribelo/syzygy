@@ -33,10 +33,14 @@
 //! assert_eq!(model_ref.count, 1);
 //! ```
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::mpsc::{self, RecvTimeoutError, TryRecvError};
-use std::sync::Arc;
 use std::time::Duration;
+
+use crossbeam_channel::{
+    bounded, unbounded, Receiver as CoreReceiver, RecvTimeoutError as CoreRecvTimeoutError,
+    Sender as CoreSender, TryRecvError as CoreTryRecvError,
+};
+
+type CoreSendError<E> = crossbeam_channel::SendError<E>;
 
 #[cfg(feature = "tracing")]
 use tracing::{debug, span, Level};
@@ -48,84 +52,80 @@ pub type EventHandler<E, X, M> = fn(event: E, model: &mut M) -> Command<E, X>;
 
 /// Multi-producer sender returned by [`Core::new`].
 ///
-/// Wraps `std::sync::mpsc::Sender` to keep track of queued items so the core can
-/// report pending counts without depending on external crates.
+/// Wraps the underlying channel sender used by the Core.
 pub struct EventSender<E> {
-    inner: mpsc::Sender<E>,
-    pending: Arc<AtomicUsize>,
+    inner: CoreSender<E>,
 }
 
 impl<E> Clone for EventSender<E> {
     fn clone(&self) -> Self {
         Self {
             inner: self.inner.clone(),
-            pending: Arc::clone(&self.pending),
         }
     }
 }
 
 impl<E> EventSender<E> {
-    fn new(inner: mpsc::Sender<E>, pending: Arc<AtomicUsize>) -> Self {
-        Self { inner, pending }
-    }
-
-    fn on_send_success(&self) {
-        self.pending.fetch_add(1, Ordering::Release);
+    fn new(inner: CoreSender<E>) -> Self {
+        Self { inner }
     }
 
     /// Send an event to the core.
-    pub fn send(&self, event: E) -> Result<(), mpsc::SendError<E>> {
-        match self.inner.send(event) {
-            Ok(()) => {
-                self.on_send_success();
-                Ok(())
-            }
-            Err(err) => Err(err),
-        }
+    pub fn send(&self, event: E) -> Result<(), CoreSendError<E>> {
+        self.inner.send(event)
     }
 
-    /// `std::sync::mpsc` does not block for unbounded channels, so this aliases [`send`].
-    pub fn try_send(&self, event: E) -> Result<(), mpsc::SendError<E>> {
+    /// Alias for [`send`]. Kept for backward compatibility; on bounded channels this will
+    /// still block when the queue is full.
+    pub fn try_send(&self, event: E) -> Result<(), CoreSendError<E>> {
         self.send(event)
+    }
+
+    /// Attempt to send an event without blocking.
+    ///
+    /// Returns a [`CoreError::ChannelFull`](crate::error::CoreError::ChannelFull) when the queue
+    /// is at capacity, allowing callers to implement backpressure strategies.
+    pub fn try_send_event(&self, event: E) -> Result<(), crate::error::CoreError> {
+        self.inner.try_send(event).map_err(Into::into)
     }
 }
 
 struct EventReceiver<E> {
-    inner: mpsc::Receiver<E>,
-    pending: Arc<AtomicUsize>,
+    inner: CoreReceiver<E>,
 }
 
 impl<E> EventReceiver<E> {
-    fn new(inner: mpsc::Receiver<E>, pending: Arc<AtomicUsize>) -> Self {
-        Self { inner, pending }
+    fn new(inner: CoreReceiver<E>) -> Self {
+        Self { inner }
     }
 
-    fn try_recv(&self) -> Result<E, TryRecvError> {
+    fn try_recv(&self) -> Result<E, CoreTryRecvError> {
         match self.inner.try_recv() {
-            Ok(event) => {
-                self.pending.fetch_sub(1, Ordering::AcqRel);
-                Ok(event)
-            }
+            Ok(event) => Ok(event),
             Err(err) => Err(err),
         }
     }
 
-    fn recv_timeout(&self, timeout: Duration) -> Result<E, RecvTimeoutError> {
+    fn recv_timeout(&self, timeout: Duration) -> Result<E, CoreRecvTimeoutError> {
         match self.inner.recv_timeout(timeout) {
-            Ok(event) => {
-                self.pending.fetch_sub(1, Ordering::AcqRel);
-                Ok(event)
-            }
+            Ok(event) => Ok(event),
             Err(err) => Err(err),
         }
     }
 
     fn len(&self) -> usize {
-        self.pending.load(Ordering::Relaxed)
+        self.inner.len()
     }
 
     fn is_empty(&self) -> bool {
-        self.len() == 0
+        self.inner.is_empty()
+    }
+}
+
+fn event_channel<E>(capacity: Option<usize>) -> (CoreSender<E>, CoreReceiver<E>) {
+    match capacity {
+        Some(capacity) => bounded(capacity),
+        None => unbounded(),
     }
 }
 
@@ -136,7 +136,7 @@ impl<E> EventReceiver<E> {
 /// updates the model, and returns Commands describing effects to execute.
 pub struct Core<E, X, M>
 where
-    E: Send + Sync + 'static,
+    E: Send + 'static,
     X: Send + 'static,
 {
     /// The update function that processes events
@@ -156,19 +156,33 @@ where
 
     /// Channel for sending events (kept for cloning)
     event_tx: EventSender<E>,
+
+    /// Configured inbound event capacity (None => unbounded)
+    event_channel_capacity: Option<usize>,
 }
 
 impl<E, X, M> Core<E, X, M>
 where
-    E: Send + Sync + 'static,
+    E: Send + 'static,
     X: Send + 'static,
 {
     /// Create a new Core with update function and storage
     pub fn new(event_handler: EventHandler<E, X, M>, models: M) -> (Self, EventSender<E>) {
-        let (raw_tx, raw_rx) = mpsc::channel();
-        let pending = Arc::new(AtomicUsize::new(0));
-        let event_tx = EventSender::new(raw_tx, Arc::clone(&pending));
-        let event_rx = EventReceiver::new(raw_rx, pending);
+        Self::with_event_channel_capacity(event_handler, models, None)
+    }
+
+    /// Create a new Core with a specific inbound event channel capacity.
+    ///
+    /// `None` keeps the default unbounded channel. Any `Some(capacity)` value sets an upper bound
+    /// on queued events; senders will receive a `CoreError::ChannelFull` until progress is made.
+    pub fn with_event_channel_capacity(
+        event_handler: EventHandler<E, X, M>,
+        models: M,
+        capacity: Option<usize>,
+    ) -> (Self, EventSender<E>) {
+        let (raw_tx, raw_rx) = event_channel::<E>(capacity);
+        let event_tx = EventSender::new(raw_tx);
+        let event_rx = EventReceiver::new(raw_rx);
 
         let core = Self {
             event_handler,
@@ -177,6 +191,7 @@ where
             command_buffer: Vec::with_capacity(16),   // Pre-allocated command buffer
             event_rx,
             event_tx: event_tx.clone(),
+            event_channel_capacity: capacity,
         };
 
         (core, event_tx)
@@ -240,15 +255,19 @@ where
 
     /// Attempt to send an event, returning an error if the channel is closed.
     pub fn try_send_event(&self, event: E) -> Result<(), crate::error::CoreError> {
-        self.event_tx
-            .send(event)
-            .map_err(|_| crate::error::CoreError::ChannelClosed)
+        self.event_tx.inner.try_send(event).map_err(Into::into)
     }
 
     /// Get a sender for external events
     #[must_use]
     pub fn event_sender(&self) -> EventSender<E> {
         self.event_tx.clone()
+    }
+
+    /// Get the configured inbound event channel capacity (None => unbounded).
+    #[must_use]
+    pub fn event_channel_capacity(&self) -> Option<usize> {
+        self.event_channel_capacity
     }
 
     /// Get immutable reference to the model
@@ -301,14 +320,14 @@ where
                 self.event_queue.push_back(event);
                 true
             }
-            Err(RecvTimeoutError::Timeout | RecvTimeoutError::Disconnected) => false,
+            Err(CoreRecvTimeoutError::Timeout | CoreRecvTimeoutError::Disconnected) => false,
         }
     }
 }
 
 impl<E, X, M> std::fmt::Debug for Core<E, X, M>
 where
-    E: Send + Sync + 'static,
+    E: Send + 'static,
     X: Send + 'static,
     M: std::fmt::Debug,
 {
@@ -323,6 +342,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::error::CoreError;
 
     #[derive(Debug, Clone)]
     enum TestEvent {
@@ -368,6 +388,22 @@ mod tests {
         // Verify model was updated
         let model_ref: &CounterModel = core.model();
         assert_eq!(model_ref.count, 1);
+    }
+
+    #[test]
+    fn try_send_event_respects_capacity() {
+        let model = CounterModel { count: 0 };
+
+        let (mut core, _) = Core::with_event_channel_capacity(counter_update, model, Some(1));
+        assert_eq!(core.event_channel_capacity(), Some(1));
+
+        assert!(core.try_send_event(TestEvent::Increment).is_ok());
+        let second = core.try_send_event(TestEvent::Increment);
+        assert!(matches!(second, Err(CoreError::ChannelFull)));
+
+        // Process queued work to make space
+        assert_eq!(core.process_events().len(), 1);
+        assert!(core.try_send_event(TestEvent::Increment).is_ok());
     }
 
     #[test]

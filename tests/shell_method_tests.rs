@@ -2,7 +2,7 @@
 //! Tests for Shell synchronous methods: `drain_with`, `dispatch_command`, etc.
 //! These tests use the Runner API for convenience.
 
-use syzygy::executor::{InlineAsync, Task, TokioExecutor};
+use syzygy::executor::{InlineAsync, PanicTaskKind, Task, TokioExecutor};
 use syzygy::prelude::*;
 
 #[derive(Debug, Clone)]
@@ -26,11 +26,11 @@ fn test_update(event: TestEvent, model: &mut TestModel) -> Command<TestEvent, Te
     match event {
         TestEvent::Ping => {
             model.count += 1;
-            Command::event(TestEvent::Pong)
+            cmd::event(TestEvent::Pong)
         }
         TestEvent::Pong => {
             model.count += 1;
-            Command::effect(TestEffect::Log)
+            cmd::effect(TestEffect::Log)
         }
     }
 }
@@ -42,12 +42,14 @@ mod tokio_tests {
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
     use syzygy::error::ShellError;
+    use tokio_util::sync::CancellationToken;
 
-    fn create_test_runner() -> Syzygy<TestEvent, TestEffect, TestModel> {
+    fn create_test_runner() -> Runner<TestEvent, TestEffect, TestModel> {
         Syzygy::builder::<TestEvent, TestEffect>()
             .model(TestModel::default())
             .event_handler(test_update)
             .effect_handler(|_effect: TestEffect, _resources| Task::<TestEvent, TestEffect>::none())
+            .profile_interactive()
             .with_async_executor(InlineAsync::new())
             .build()
     }
@@ -58,6 +60,7 @@ mod tokio_tests {
             .model(TestModel::default())
             .event_handler(test_update)
             .effect_handler(|_effect: TestEffect, _resources| Task::<TestEvent, TestEffect>::none())
+            .profile_interactive()
             .with_async_executor(InlineAsync::new())
             .with_effect_channel_capacity(Some(1))
             .build();
@@ -195,9 +198,118 @@ mod tokio_tests {
                     message.contains("Missing async executor"),
                     "error should mention missing async executor, got: {message:?}"
                 );
+                assert!(
+                    message.contains("TokioExecutor"),
+                    "error should include executor type name, got: {message:?}"
+                );
             }
             other => panic!("Expected TaskSpawnFailed, got {other:?}"),
         }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn await_idle_waits_for_async_work() {
+        #[derive(Debug, Clone)]
+        enum CliEvent {
+            Start,
+            Done,
+        }
+
+        #[derive(Debug, Default)]
+        struct CliModel {
+            completed: usize,
+        }
+
+        #[derive(Debug, Clone)]
+        enum CliEffect {
+            Work,
+        }
+
+        fn cli_update(event: CliEvent, model: &mut CliModel) -> Command<CliEvent, CliEffect> {
+            match event {
+                CliEvent::Start => Command::effect(CliEffect::Work),
+                CliEvent::Done => {
+                    model.completed += 1;
+                    Command::none()
+                }
+            }
+        }
+
+        fn cli_effects(effect: CliEffect, _: ()) -> Task<CliEvent, CliEffect> {
+            match effect {
+                CliEffect::Work => Task::async_current(async move {
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                    Command::event(CliEvent::Done)
+                }),
+            }
+        }
+
+        let mut runner = Syzygy::builder::<CliEvent, CliEffect>()
+            .model(CliModel::default())
+            .event_handler(cli_update)
+            .effect_handler(cli_effects)
+            .build();
+
+        runner
+            .core_mut()
+            .try_send_event(CliEvent::Start)
+            .expect("event channel should be open");
+
+        runner
+            .await_idle(Duration::from_secs(1))
+            .expect("await_idle should return once work completes");
+
+        assert_eq!(runner.core().model().completed, 1);
+        assert!(runner.shell().is_idle());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn dispatch_and_await_processes_command() {
+        #[derive(Debug, Clone)]
+        enum CliEvent {
+            Done,
+        }
+
+        #[derive(Debug, Default)]
+        struct CliModel {
+            hits: usize,
+        }
+
+        #[derive(Debug, Clone)]
+        enum CliEffect {
+            Work,
+        }
+
+        fn cli_update(event: CliEvent, model: &mut CliModel) -> Command<CliEvent, CliEffect> {
+            match event {
+                CliEvent::Done => {
+                    model.hits += 1;
+                    Command::none()
+                }
+            }
+        }
+
+        fn cli_effects(effect: CliEffect, _: ()) -> Task<CliEvent, CliEffect> {
+            match effect {
+                CliEffect::Work => Task::async_current(async move {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                    Command::event(CliEvent::Done)
+                }),
+            }
+        }
+
+        let mut runner = Syzygy::builder::<CliEvent, CliEffect>()
+            .model(CliModel::default())
+            .event_handler(cli_update)
+            .effect_handler(cli_effects)
+            .build();
+
+        runner
+            .dispatch_and_await(Command::effect(CliEffect::Work), Duration::from_secs(1))
+            .expect("dispatch_and_await should process command");
+
+        assert_eq!(runner.core().model().hits, 1);
+        assert!(runner.shell().is_idle());
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -235,6 +347,176 @@ mod tokio_tests {
             .drain_until(|model| model.count > 100, Duration::from_millis(10))
             .expect_err("expected timeout");
         assert!(matches!(timeout, ShellError::Timeout { .. }));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn drain_until_idle_waits_for_shell() {
+        let mut runner = Syzygy::builder::<TestEvent, TestEffect>()
+            .model(TestModel::default())
+            .event_handler(test_update)
+            .effect_handler(|effect: TestEffect, _| match effect {
+                TestEffect::Log => {
+                    Task::<TestEvent, TestEffect>::async_on::<InlineAsync, _>(async move {
+                        tokio::time::sleep(Duration::from_millis(20)).await;
+                        cmd::none()
+                    })
+                }
+                TestEffect::Work(_) => Task::none(),
+            })
+            .profile_interactive()
+            .with_async_executor(InlineAsync::new())
+            .build();
+
+        runner
+            .core_mut()
+            .try_send_event(TestEvent::Ping)
+            .expect("event channel should be open");
+
+        runner
+            .drain_until_idle(Duration::from_millis(500))
+            .expect("drain_until_idle should observe idle");
+
+        runner
+            .core_mut()
+            .try_send_event(TestEvent::Ping)
+            .expect("event channel should be open");
+
+        let err = runner
+            .drain_until_idle(Duration::from_millis(1))
+            .expect_err("expected timeout when idle not reached in time");
+        assert!(matches!(err, ShellError::Timeout { .. }));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn async_current_with_cancel_dispatches_cancel_command() {
+        #[derive(Debug, Default)]
+        struct CancelModel {
+            cancelled: usize,
+        }
+
+        #[derive(Debug, Clone)]
+        enum CancelEvent {
+            Start,
+            Cancelled,
+        }
+
+        #[derive(Debug, Clone)]
+        enum CancelEffect {
+            Run,
+        }
+
+        let token = CancellationToken::new();
+        let token_for_runner = token.clone();
+
+        let mut runner = Syzygy::builder::<CancelEvent, CancelEffect>()
+            .model(CancelModel::default())
+            .with_resources(token_for_runner)
+            .event_handler(|event, model| match event {
+                CancelEvent::Start => cmd::effect(CancelEffect::Run),
+                CancelEvent::Cancelled => {
+                    model.cancelled += 1;
+                    cmd::none()
+                }
+            })
+            .effect_handler(
+                |effect: CancelEffect, token: CancellationToken| match effect {
+                    CancelEffect::Run => {
+                        Task::<CancelEvent, CancelEffect>::async_current_with_cancel(
+                            async move {
+                                tokio::time::sleep(Duration::from_millis(100)).await;
+                                cmd::event(CancelEvent::Cancelled)
+                            },
+                            token.cancelled(),
+                            cmd::event(CancelEvent::Cancelled),
+                        )
+                    }
+                },
+            )
+            .profile_interactive()
+            .with_async_executor(InlineAsync::new())
+            .build();
+
+        runner
+            .core_mut()
+            .try_send_event(CancelEvent::Start)
+            .expect("event channel should be open");
+
+        token.cancel();
+
+        runner
+            .drain_until_idle(Duration::from_secs(1))
+            .expect("should observe idle after cancellation");
+
+        assert_eq!(runner.core().model().cancelled, 1);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn panic_handler_turns_panics_into_events() {
+        #[derive(Debug, Default)]
+        struct PanicModel {
+            messages: Vec<String>,
+        }
+
+        #[derive(Debug, Clone)]
+        enum PanicEvent {
+            Trigger,
+            Notified(String),
+        }
+
+        #[derive(Debug, Clone)]
+        enum PanicEffect {
+            Explode,
+        }
+
+        let observed_details = Arc::new(Mutex::new(None));
+        let observed_for_handler = Arc::clone(&observed_details);
+
+        let mut runner = Syzygy::builder::<PanicEvent, PanicEffect>()
+            .model(PanicModel::default())
+            .event_handler(|event, model| match event {
+                PanicEvent::Trigger => cmd::effect(PanicEffect::Explode),
+                PanicEvent::Notified(message) => {
+                    model.messages.push(message);
+                    cmd::none()
+                }
+            })
+            .effect_handler(|effect: PanicEffect, _| match effect {
+                PanicEffect::Explode => {
+                    Task::<PanicEvent, PanicEffect>::async_current(async move {
+                        panic!("boom!");
+                        #[allow(unreachable_code)]
+                        {
+                            cmd::none()
+                        }
+                    })
+                }
+            })
+            .with_panic_handler(move |details, message| {
+                *observed_for_handler.lock().unwrap() = Some(details);
+                cmd::event(PanicEvent::Notified(message))
+            })
+            .profile_interactive()
+            .with_async_executor(InlineAsync::new())
+            .build();
+
+        runner
+            .core_mut()
+            .try_send_event(PanicEvent::Trigger)
+            .expect("event channel should be open");
+
+        runner
+            .drain_until_idle(Duration::from_secs(1))
+            .expect("panic handler should drain to idle");
+
+        let model = runner.core().model();
+        assert_eq!(model.messages.len(), 1);
+        assert!(model.messages[0].contains("boom"));
+
+        let details = observed_details
+            .lock()
+            .unwrap()
+            .expect("panic details should be recorded");
+        assert_eq!(details.kind, PanicTaskKind::AsyncCurrent);
     }
 
     #[tokio::test(flavor = "multi_thread")]

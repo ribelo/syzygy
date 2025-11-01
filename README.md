@@ -22,6 +22,70 @@ Most software isn't web servers - it's desktop apps, games, CLI tools, IoT devic
 - Executor Abstraction — Async, blocking, and resource-blocking executors
 - Batch and Parallel Effect Steps — Parallelism depends on your executor
 - Error-as-events — Recommended pattern; modeled in your `Event` type
+- Events only need `Send` — `Rc`-backed events are welcome; `Sync` is no longer required
+- Panic hooks — wire executor panics back into your event graph with `with_panic_handler`
+- Cancellation helpers — compose abortable futures via `Task::async_*_with_cancel`
+
+## 5-Minute Tour
+
+1. Import `syzygy::prelude::*` to grab the curated surface (`Command`, `Task`, `Plan`, `cmd::`, `Runner`).
+2. Write a pure update function that mutates the model and returns declarative commands via `cmd::` helpers.
+3. Model async work with `Task` (aka `Plan`) on your executors of choice.
+4. Pick a profile (`profile_interactive`, `profile_server`, …), build the runner, queue an event, and drain until idle.
+
+```rust
+use std::time::Duration;
+
+use syzygy::executor::{InlineAsync, Task};
+use syzygy::prelude::*;
+
+#[derive(Default)]
+struct CounterModel {
+    ticks: u32,
+}
+
+#[derive(Clone)]
+enum CounterEvent {
+    Tick,
+}
+
+#[derive(Clone)]
+enum CounterEffect {
+    Log(u32),
+}
+
+fn update(event: CounterEvent, model: &mut CounterModel) -> Command<CounterEvent, CounterEffect> {
+    match event {
+        CounterEvent::Tick => {
+            model.ticks += 1;
+            cmd::effect(CounterEffect::Log(model.ticks))
+        }
+    }
+}
+
+fn effects(effect: CounterEffect, _resources: ()) -> Plan<CounterEvent, CounterEffect> {
+    match effect {
+        CounterEffect::Log(value) => Task::async_on::<InlineAsync, _>(async move {
+            println!("tick #{value}");
+            cmd::none()
+        }),
+    }
+}
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let mut runner = Syzygy::builder::<CounterEvent, CounterEffect>()
+        .model(CounterModel::default())
+        .event_handler(update)
+        .effect_handler(effects)
+        .profile_interactive()
+        .with_async_executor(InlineAsync::new())
+        .build();
+
+    runner.core().try_send_event(CounterEvent::Tick)?;
+    runner.drain_until_idle(Duration::from_millis(250))?;
+    Ok(())
+}
+```
 
 ## Quick Start
 
@@ -70,14 +134,14 @@ fn event_handler(
 
 fn on_increment(model: &mut AppModel) -> Command<AppEvent, AppEffect> {
     model.counter += 1;
-    Command::effect(AppEffect::Log {
+    cmd::effect(AppEffect::Log {
         message: format!("Counter: {}", model.counter),
     })
 }
 
 fn on_load_data(model: &mut AppModel) -> Command<AppEvent, AppEffect> {
     model.is_loading = true;
-    Command::parallel([
+    cmd::parallel([
         AppEffect::HttpRequest {
             url: "https://api.example.com/data".to_string(),
         },
@@ -90,14 +154,14 @@ fn on_load_data(model: &mut AppModel) -> Command<AppEvent, AppEffect> {
 fn on_data_loaded(model: &mut AppModel, data: String) -> Command<AppEvent, AppEffect> {
     model.data = Some(data);
     model.is_loading = false;
-    Command::effect(AppEffect::Log {
+    cmd::effect(AppEffect::Log {
         message: "Loaded data successfully".to_string(),
     })
 }
 
 fn on_error(model: &mut AppModel, message: String) -> Command<AppEvent, AppEffect> {
     model.is_loading = false;
-    Command::effect(AppEffect::Log { message })
+    cmd::effect(AppEffect::Log { message })
 }
 
 #[derive(Clone)]
@@ -116,7 +180,7 @@ fn fetch_data(url: String) -> Task<AppEvent, AppEffect> {
     Task::async_on::<TokioExecutor, _>(async move {
         println!("Fetching: {url}");
         tokio::time::sleep(Duration::from_millis(100)).await;
-        Command::event(AppEvent::DataLoaded {
+        cmd::event(AppEvent::DataLoaded {
             data: "Hello from API!".to_string(),
         })
     })
@@ -126,7 +190,7 @@ fn log_message(resources: &AppResources, message: String) -> Task<AppEvent, AppE
     let prefix = resources.log_prefix;
     Task::async_current(async move {
         println!("{prefix} {message}");
-        Command::none()
+        cmd::none()
     })
 }
 
@@ -144,6 +208,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_resources(AppResources { log_prefix: "LOG" })
         .event_handler(event_handler)
         .effect_handler(effect_handler)
+        .profile_interactive()
         // You can also skip executor registration entirely via Task::async_current
         .with_async_executor(io_executor)
         .build();
@@ -153,12 +218,91 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     app.run_until(|core, _| !core.model().is_loading)?;
 
-    println!("Final state: {:?}", app.core().model());
-    Ok(())
+println!("Final state: {:?}", app.core().model());
+Ok(())
 }
 ```
 
+### Timeout pattern (retry once, celebrate success)
+
+```rust
+fn on_timeout(model: &mut AppModel, duration: Duration) -> Command<AppEvent, AppEffect> {
+    model.is_loading = false;
+    model.retries += 1;
+    model.error = Some(format!("⏱️ took {:?}", duration));
+
+    if model.retries < 2 {
+        cmd::event(AppEvent::Retry)
+    } else {
+        cmd::none()
+    }
+}
+
+fn retry_effect(delay_ms: u64) -> Plan<AppEvent, AppEffect> {
+    Task::async_on::<TokioExecutor, _>(async move {
+        tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+        println!("✅ retry finished");
+        cmd::event(AppEvent::Completed)
+    })
+}
+```
+
+Full example: [`examples/timeout_pattern.rs`](examples/timeout_pattern.rs).
+
+### Panic hooks & cancellation
+
+- `with_panic_handler(|details, message| ...)` lets you surface executor panics as explicit events.
+- `Task::async_on_with_cancel` / `Task::async_current_with_cancel` compose futures that react to cancellation tokens.
+
+```rust
+use std::sync::{Arc, Mutex};
+use tokio_util::sync::CancellationToken;
+
+let panic_log = Arc::new(Mutex::new(Vec::new()));
+let handler_log = Arc::clone(&panic_log);
+
+let mut runner = Syzygy::builder::<Event, Effect>()
+    .with_panic_handler(move |details, message| {
+        handler_log.lock().unwrap().push((details.kind, message.clone()));
+        cmd::event(Event::PanicLogged(message))
+    })
+    .effect_handler(|effect, token: CancellationToken| match effect {
+        Effect::Work => Task::async_current_with_cancel(
+            async move { cmd::event(Event::Finished) },
+            token.cancelled(),
+            cmd::event(Event::Cancelled),
+        ),
+    })
+    .build();
+```
+
+## Queue & Backpressure Cheatsheet
+
+| Setting | Default | When to tweak |
+| ------- | ------- | ------------- |
+| `with_effect_channel_capacity(None)` | Unbounded (profile overrides) | Bound it (e.g., `Some(256)`) to push back on effect storms and surface `ShellError::EffectQueueFull`. |
+| `with_event_channel_capacity(None)` | Unbounded | Enable for server workloads to surface `CoreError::ChannelFull` and coordinate producers. |
+| `profile_interactive()` | Idle sleep 1 ms, effect cap 256 | Great default for CLIs, desktop apps, tests. |
+| `profile_server()` | Idle sleep 0 ms, caps 1024 | Favor throughput, bounded queues; pairs well with multi-executor setups. |
+| `drain_until_idle(timeout)` | — | Await “all quiet” at shutdown or in tests; errors with `ShellError::Timeout` when outstanding work lingers. |
+
+## Developer Delight
+
+- Enable the optional `flair` feature to sprinkle emoji into startup/shutdown logs and banner output (debug builds only).
+- Command helpers live in both `command::` and the shorter `cmd::` namespaces—use whichever reads best.
+- `with_panic_handler` transforms executor panics into explicit events so Core stays informed.
+- `Task::async_*_with_cancel` helpers pair perfectly with `CancellationToken` or custom futures for graceful aborts.
+
+> Tip: add `use syzygy::prelude::command;` to import lightweight helpers like `command::event(...)` and `command::parallel([...])` when you prefer DSL-style builders over associated functions.
+
 > **Resources are cloned per effect** – use `Arc` (or other cheap-to-clone handles) for expensive dependencies like HTTP clients and DB pools. If you require interior mutability, wrap fields inside your resource struct (e.g. `Arc<Mutex<T>>`).
+
+### Resource Ergonomics
+
+- Keep the `Resources` type cheap to clone; prefer `Arc<_>` handles for database pools, HTTP clients, or other heavyweight fixtures.
+- Initialise one-off dependencies lazily with `ResourceCell<T>` (re-exported via `syzygy::resource_cell`) and hand out clones to effects without rebuilding the underlying service.
+- Only wrap the fields that need interior mutability—`Arc<Mutex<T>>` or `Arc<RwLock<T>>` scoped to a single field keeps cloning predictable and avoids coarse-grained locks.
+- Effects execute according to your executor mix; leverage `SingleThreadExecutor` when mutable resources must remain single-writer.
 
 ## Perfect For
 
@@ -393,6 +537,29 @@ let (core, shell) = Syzygy::builder::<MyEvent, MyEffect>()
     .build();
 ```
 
+### Builder Profiles
+
+Use `with_profile` when you want sensible defaults for effect buffering and idle cadence:
+
+```rust
+use syzygy::prelude::{SyzygyProfile, Syzygy};
+
+let mut runner = Syzygy::builder::<Event, Effect>()
+    .model(Model::default())
+    .event_handler(update)
+    .effect_handler(effects)
+    .with_profile(SyzygyProfile::Interactive) // 1ms idle sleep, bounded effect queue
+    .build();
+```
+
+- `SyzygyProfile::Interactive` → low-latency loops (`idle_sleep = 1ms`, bounded effect queue of 256)
+- `SyzygyProfile::Server` → long-running services (`idle_sleep = 0ms`, effect & event queues bounded at 1024)
+- `SyzygyProfile::Ci` → deterministic CI/test runs (`idle_sleep = 0ms`, effect & event queues bounded at 64)
+- `SyzygyProfile::Batch` → throughput-focused loops (`idle_sleep = 25ms`, unbounded effect queue)
+- Call `.with_effect_channel_capacity(..)` or `.with_event_channel_capacity(..)` (plus `.set_config(..)` as needed) to override any defaults.
+
+**Event backpressure**: call `.with_event_channel_capacity(Some(cap))` to bound inbound events. Senders receive `CoreError::ChannelFull` when the queue is full, letting you coordinate retries without losing determinism. Inspect the configured capacity with `core.event_channel_capacity()`.
+
 ## Performance
 
 Syzygy is designed for high-performance event processing with deterministic behavior.
@@ -473,6 +640,25 @@ Syzygy::builder::<Event, Effect>()
 ```
 
 Need something custom? Implement the unified `AsyncExecutor` trait, register it with `with_async_executor`, and Syzygy will drive it alongside the built-ins.
+
+## Observability
+
+Syzygy exposes Shell-level counters so you can wire them into metrics or tracing:
+
+```rust
+let stats = runner.shell_stats();
+println!("dropped events: {}", stats.dropped_events);
+
+let stats_handle = runner.shell_stats_handle();
+metrics::counter!("syzygy_dropped_events").increment_by(stats_handle.snapshot().dropped_events as u64);
+```
+
+Counters increment whenever the shell cannot deliver events or effect steps (e.g. a consumer dropped the channel during shutdown). `Syzygy::shutdown()` now shuts down all registered executors, waits for them to finish, and emits a tracing warning if anything was dropped during teardown.
+
+## Optional Features
+
+- `shell` *(default)* – enable the Shell, executors, and async integration layers.
+- `rt-inline`, `rt-single-thread`, `tokio`, `rayon`, `cli`, `examples`, `tracing` – opt into additional runtimes, executor flavours, CLI helpers, or instrumentation.
 
 ## Executor Architecture
 

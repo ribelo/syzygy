@@ -371,6 +371,80 @@ impl<Event, Effect> From<()> for Command<Event, Effect> {
 /// due to Rust's coherence rules. In that case call `Command::event` and
 /// `Command::effect` directly at the call site.
 
+/// Free-function helpers for building [`Command`] values.
+///
+/// These functions mirror the inherent constructors on [`Command`] but live in a module that can
+/// be glob-imported from the prelude (`use syzygy::prelude::command::*;`) for quick prototyping.
+pub mod builders {
+    use super::Command;
+
+    /// Construct a no-op command.
+    #[inline]
+    #[must_use]
+    pub fn none<Event, Effect>() -> Command<Event, Effect> {
+        Command::none()
+    }
+
+    /// Emit an immediate event back into Core.
+    #[inline]
+    #[must_use]
+    pub fn event<Event, Effect>(event: impl Into<Event>) -> Command<Event, Effect> {
+        Command::event(event)
+    }
+
+    /// Emit a sequence of events.
+    #[inline]
+    #[must_use]
+    pub fn events<Event, Effect>(
+        events: impl IntoIterator<Item = Event>,
+    ) -> Command<Event, Effect> {
+        Command::events(events)
+    }
+
+    /// Schedule a single effect.
+    #[inline]
+    #[must_use]
+    pub fn effect<Event, Effect>(effect: impl Into<Effect>) -> Command<Event, Effect> {
+        Command::effect(effect)
+    }
+
+    /// Schedule a batch of effects sequentially.
+    #[inline]
+    #[must_use]
+    pub fn effects<Event, Effect>(
+        effects: impl IntoIterator<Item = Effect>,
+    ) -> Command<Event, Effect> {
+        Command::effects(effects)
+    }
+
+    /// Alias for [`effects`] when you want to spell out intent explicitly.
+    #[inline]
+    #[must_use]
+    pub fn sequential<Event, Effect>(
+        effects: impl IntoIterator<Item = Effect>,
+    ) -> Command<Event, Effect> {
+        Command::sequential(effects)
+    }
+
+    /// Run effects without submission gaps (executor dependent concurrency).
+    #[inline]
+    #[must_use]
+    pub fn parallel<Event, Effect>(
+        effects: impl IntoIterator<Item = Effect>,
+    ) -> Command<Event, Effect> {
+        Command::parallel(effects)
+    }
+
+    /// Flatten multiple commands into one.
+    #[inline]
+    #[must_use]
+    pub fn batch<Event, Effect>(
+        commands: impl IntoIterator<Item = Command<Event, Effect>>,
+    ) -> Command<Event, Effect> {
+        Command::batch(commands)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

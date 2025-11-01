@@ -35,9 +35,10 @@
 use std::thread;
 use std::time::{Duration, Instant};
 
+use crate::command::Command;
 use crate::core::Core;
 use crate::error::ShellError;
-use crate::shell::Shell;
+use crate::shell::{Shell, ShellStats, ShellStatsSnapshot};
 
 /// Configuration for the Syzygy
 #[derive(Clone, Debug)]
@@ -63,25 +64,79 @@ impl SyzygyConfig {
     }
 }
 
+/// Preset profiles configuring runner cadence and shell buffering strategies.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SyzygyProfile {
+    /// Responsive UI-style workloads: low latency, bounded effect queue.
+    Interactive,
+    /// Long-running services prioritizing throughput with bounded channels.
+    Server,
+    /// Deterministic CI/test runs that should never spin while idle.
+    Ci,
+    /// Background or batch workloads: trade latency for throughput, unbounded queue.
+    Batch,
+}
+
+impl SyzygyProfile {
+    /// Resolve the profile into concrete configuration values.
+    #[must_use]
+    pub fn settings(self) -> SyzygyProfileSettings {
+        match self {
+            SyzygyProfile::Interactive => SyzygyProfileSettings {
+                idle_sleep: Duration::from_millis(1),
+                effect_channel_capacity: Some(256),
+                event_channel_capacity: None,
+            },
+            SyzygyProfile::Server => SyzygyProfileSettings {
+                idle_sleep: Duration::from_millis(0),
+                effect_channel_capacity: Some(1024),
+                event_channel_capacity: Some(1024),
+            },
+            SyzygyProfile::Ci => SyzygyProfileSettings {
+                idle_sleep: Duration::from_millis(0),
+                effect_channel_capacity: Some(64),
+                event_channel_capacity: Some(64),
+            },
+            SyzygyProfile::Batch => SyzygyProfileSettings {
+                idle_sleep: Duration::from_millis(25),
+                effect_channel_capacity: None,
+                event_channel_capacity: None,
+            },
+        }
+    }
+}
+
+/// Concrete configuration derived from a [`SyzygyProfile`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SyzygyProfileSettings {
+    pub idle_sleep: Duration,
+    pub effect_channel_capacity: Option<usize>,
+    /// Bounded inbound event capacity (None => unbounded).
+    pub event_channel_capacity: Option<usize>,
+}
+
 /// Syzygy automatically orchestrates Core/Shell interaction
 ///
 /// This solves Grug's complaint about manual event loop orchestration.
 /// Instead of users manually calling `poll_events` → process → execute → step,
 /// Syzygy handles the proper sequencing automatically.
-pub struct Syzygy<Event, Effect, Storage, Resources = ()>
+pub struct Syzygy<Event, Effect, Model, Resources = ()>
 where
-    Event: Send + Sync + 'static,
+    Event: Send + 'static,
     Effect: Send + 'static,
     Resources: Clone + Send + 'static,
 {
-    core: Core<Event, Effect, Storage>,
+    core: Core<Event, Effect, Model>,
     shell: Shell<Event, Effect, Resources>,
     config: SyzygyConfig,
 }
 
-impl<Event, Effect, Storage, Resources> Syzygy<Event, Effect, Storage, Resources>
+/// Terminology-friendly alias for [`Syzygy`], emphasizing its role as the runtime runner.
+pub type Runner<Event, Effect, Model, Resources = ()> = Syzygy<Event, Effect, Model, Resources>;
+
+impl<Event, Effect, Model, Resources> Syzygy<Event, Effect, Model, Resources>
 where
-    Event: Send + Sync + 'static,
+    Event: Send + 'static,
     Effect: Send + 'static,
     Resources: Clone + Send + 'static,
 {
@@ -102,7 +157,7 @@ where
     ///
     /// let syzygy = Syzygy::new(core, shell);
     /// ```
-    pub fn new(core: Core<Event, Effect, Storage>, shell: Shell<Event, Effect, Resources>) -> Self {
+    pub fn new(core: Core<Event, Effect, Model>, shell: Shell<Event, Effect, Resources>) -> Self {
         Self {
             core,
             shell,
@@ -112,7 +167,7 @@ where
 
     /// Create a new Syzygy with custom configuration
     pub fn with_config(
-        core: Core<Event, Effect, Storage>,
+        core: Core<Event, Effect, Model>,
         shell: Shell<Event, Effect, Resources>,
         config: SyzygyConfig,
     ) -> Self {
@@ -135,7 +190,7 @@ where
     /// Useful for testing or conditional execution.
     pub fn run_until<F>(&mut self, mut condition: F) -> Result<(), ShellError>
     where
-        F: FnMut(&Core<Event, Effect, Storage>, &Shell<Event, Effect, Resources>) -> bool,
+        F: FnMut(&Core<Event, Effect, Model>, &Shell<Event, Effect, Resources>) -> bool,
     {
         self.run_loop(Syzygy::step, move |syzygy| {
             condition(&syzygy.core, &syzygy.shell)
@@ -160,7 +215,7 @@ where
     /// Drain until the predicate returns true or `timeout` elapses.
     pub fn drain_until<F>(&mut self, mut predicate: F, timeout: Duration) -> Result<(), ShellError>
     where
-        F: FnMut(&Storage) -> bool,
+        F: FnMut(&Model) -> bool,
     {
         if predicate(self.core.model()) {
             return Ok(());
@@ -220,9 +275,59 @@ where
         }
     }
 
+    /// Drain the system until both Core and Shell report no outstanding work.
+    pub fn drain_until_idle(&mut self, timeout: Duration) -> Result<(), ShellError> {
+        if self.is_fully_idle() {
+            return Ok(());
+        }
+
+        if timeout.is_zero() {
+            return Err(ShellError::Timeout { duration: timeout });
+        }
+
+        let start = Instant::now();
+        let deadline = start.checked_add(timeout);
+
+        loop {
+            let did_work = self.step()?;
+
+            if self.is_fully_idle() {
+                return Ok(());
+            }
+
+            if let Some(deadline) = deadline {
+                let now = Instant::now();
+                if now >= deadline {
+                    return Err(ShellError::Timeout { duration: timeout });
+                }
+
+                if !did_work {
+                    let remaining = deadline
+                        .checked_duration_since(now)
+                        .unwrap_or(Duration::ZERO);
+                    if remaining.is_zero() {
+                        return Err(ShellError::Timeout { duration: timeout });
+                    }
+
+                    let had_work = self.wait_for_idle(remaining);
+
+                    if self.is_fully_idle() {
+                        return Ok(());
+                    }
+
+                    if !had_work && Instant::now() >= deadline {
+                        return Err(ShellError::Timeout { duration: timeout });
+                    }
+                }
+            } else if !did_work {
+                self.wait_for_work();
+            }
+        }
+    }
+
     /// Get an immutable reference to the model
     #[must_use]
-    pub fn model(&self) -> &Storage {
+    pub fn model(&self) -> &Model {
         self.core.model()
     }
 
@@ -230,17 +335,17 @@ where
     ///
     /// This should be used carefully as it bypasses event processing.
     /// Prefer sending events for state changes.
-    pub fn model_mut(&mut self) -> &mut Storage {
+    pub fn model_mut(&mut self) -> &mut Model {
         self.core.model_mut()
     }
 
     /// Get a reference to the Core
-    pub fn core(&self) -> &Core<Event, Effect, Storage> {
+    pub fn core(&self) -> &Core<Event, Effect, Model> {
         &self.core
     }
 
     /// Get a mutable reference to the Core
-    pub fn core_mut(&mut self) -> &mut Core<Event, Effect, Storage> {
+    pub fn core_mut(&mut self) -> &mut Core<Event, Effect, Model> {
         &mut self.core
     }
 
@@ -264,9 +369,110 @@ where
         self.config = config;
     }
 
+    fn is_fully_idle(&self) -> bool {
+        !self.core.has_pending_events() && self.shell.is_idle()
+    }
+
     /// Request that the shell stop scheduling further work.
     pub fn shutdown(&mut self) {
         self.shell.shutdown();
+        self.shell.wait_for_executors();
+
+        #[cfg(feature = "tracing")]
+        {
+            let snapshot = self.shell.stats();
+            if snapshot.dropped_events > 0 || snapshot.dropped_effect_steps > 0 {
+                tracing::warn!(
+                    stage = "syzygy_shutdown",
+                    dropped_events = snapshot.dropped_events,
+                    dropped_effect_steps = snapshot.dropped_effect_steps,
+                    "Syzygy shutdown completed with dropped work"
+                );
+            } else {
+                tracing::debug!(stage = "syzygy_shutdown", "Syzygy shutdown cleanly");
+            }
+        }
+    }
+
+    /// Wait until the system is completely idle or timeout expires
+    ///
+    /// System is considered idle when:
+    /// - No pending events in core
+    /// - No pending effects in shell
+    /// - No in-flight async jobs
+    ///
+    /// Returns Err(ShellError::Timeout) if timeout expires before reaching idle.
+    pub fn await_idle(&mut self, timeout: Duration) -> Result<(), ShellError> {
+        if timeout.is_zero() {
+            return Err(ShellError::Timeout { duration: timeout });
+        }
+
+        let start = Instant::now();
+        let deadline = start.checked_add(timeout);
+
+        loop {
+            // Check if system is idle
+            if self.core.pending_count() == 0
+                && self.shell.pending_effects() == 0
+                && self.shell.inflight_jobs() == 0
+            {
+                return Ok(());
+            }
+
+            // Check timeout
+            if let Some(deadline) = deadline {
+                if Instant::now() >= deadline {
+                    return Err(ShellError::Timeout { duration: timeout });
+                }
+            }
+
+            // Process any available work
+            let did_work = self.step()?;
+
+            // If no work was done, wait for work to arrive
+            if !did_work {
+                let remaining = if let Some(deadline) = deadline {
+                    let now = Instant::now();
+                    if now >= deadline {
+                        return Err(ShellError::Timeout { duration: timeout });
+                    }
+                    deadline
+                        .checked_duration_since(now)
+                        .unwrap_or(Duration::ZERO)
+                } else {
+                    self.config.idle_sleep
+                };
+
+                // Wait for activity to reach zero or for new work to arrive
+                if self.shell.inflight_jobs() > 0 {
+                    if !self.shell.activity.wait_until_zero(remaining) {
+                        // Timeout waiting for activity, but we might still have work
+                        continue;
+                    }
+                } else {
+                    let _ = self.wait_for_idle(remaining);
+                }
+            }
+        }
+    }
+
+    /// Run until the system is completely idle (no timeout)
+    ///
+    /// This is a convenience method that calls `await_idle` with an infinite timeout.
+    pub fn run_to_idle(&mut self) -> Result<(), ShellError> {
+        self.await_idle(Duration::MAX)
+    }
+
+    /// Dispatch a command and then wait until the system is idle
+    ///
+    /// This is a convenience method that combines command dispatch with idle waiting.
+    pub fn dispatch_and_await(
+        &mut self,
+        command: Command<Event, Effect>,
+        timeout: Duration,
+    ) -> Result<(), ShellError> {
+        self.shell.dispatch_command(command)?;
+        self.await_idle(timeout)
     }
 
     /// Wait for work to arrive, trying core first then shell
@@ -378,24 +584,31 @@ where
         step_core_shell(&mut self.core, &mut self.shell)
     }
 
+    /// Snapshot Shell-level counters (dropped events/effects).
+    #[must_use]
+    pub fn shell_stats(&self) -> ShellStatsSnapshot {
+        self.shell.stats()
+    }
+
+    /// Clone a shared stats handle for integration with metrics or tracing.
+    #[must_use]
+    pub fn shell_stats_handle(&self) -> ShellStats {
+        self.shell.stats_handle()
+    }
+
     /// Consume the runner and return ownership of the Core and Shell.
-    pub fn split(
-        self,
-    ) -> (
-        Core<Event, Effect, Storage>,
-        Shell<Event, Effect, Resources>,
-    ) {
+    pub fn split(self) -> (Core<Event, Effect, Model>, Shell<Event, Effect, Resources>) {
         (self.core, self.shell)
     }
 }
 
 /// Process pending events and effects once using the same logic as `Syzygy::step`.
-pub fn step_core_shell<Event, Effect, Storage, Resources>(
-    core: &mut Core<Event, Effect, Storage>,
+pub fn step_core_shell<Event, Effect, Model, Resources>(
+    core: &mut Core<Event, Effect, Model>,
     shell: &mut Shell<Event, Effect, Resources>,
 ) -> Result<bool, ShellError>
 where
-    Event: Send + Sync + 'static,
+    Event: Send + 'static,
     Effect: Send + 'static,
     Resources: Clone + Send + 'static,
 {
@@ -410,30 +623,22 @@ where
     Ok(core_work || shell_work > 0)
 }
 
-impl<Event, Effect, Storage, Resources>
-    From<(
-        Core<Event, Effect, Storage>,
-        Shell<Event, Effect, Resources>,
-    )> for Syzygy<Event, Effect, Storage, Resources>
+impl<Event, Effect, Model, Resources>
+    From<(Core<Event, Effect, Model>, Shell<Event, Effect, Resources>)>
+    for Syzygy<Event, Effect, Model, Resources>
 where
-    Event: Send + Sync + 'static,
+    Event: Send + 'static,
     Effect: Send + 'static,
     Resources: Clone + Send + 'static,
 {
-    fn from(
-        parts: (
-            Core<Event, Effect, Storage>,
-            Shell<Event, Effect, Resources>,
-        ),
-    ) -> Self {
+    fn from(parts: (Core<Event, Effect, Model>, Shell<Event, Effect, Resources>)) -> Self {
         Self::new(parts.0, parts.1)
     }
 }
 
-impl<Event, Effect, Storage, Resources> std::fmt::Debug
-    for Syzygy<Event, Effect, Storage, Resources>
+impl<Event, Effect, Model, Resources> std::fmt::Debug for Syzygy<Event, Effect, Model, Resources>
 where
-    Event: Send + Sync + 'static,
+    Event: Send + 'static,
     Effect: Send + 'static,
     Resources: Clone + Send + 'static,
 {
@@ -450,17 +655,61 @@ impl Syzygy<(), (), ()> {
     pub fn builder<NewEvent, NewEffect>(
     ) -> crate::builder::SyzygyBuilder<NewEvent, NewEffect, (), ()>
     where
-        NewEvent: Send + Sync + 'static,
+        NewEvent: Send + 'static,
         NewEffect: Send + 'static,
     {
         crate::builder::SyzygyBuilder::new()
+    }
+
+    /// Start a builder preloaded with the [`SyzygyProfile::Interactive`] preset.
+    #[must_use]
+    pub fn interactive_builder<NewEvent, NewEffect>(
+    ) -> crate::builder::SyzygyBuilder<NewEvent, NewEffect, (), ()>
+    where
+        NewEvent: Send + 'static,
+        NewEffect: Send + 'static,
+    {
+        crate::builder::SyzygyBuilder::new().preset_profile(SyzygyProfile::Interactive)
+    }
+
+    /// Start a builder preloaded with the [`SyzygyProfile::Server`] preset.
+    #[must_use]
+    pub fn server_builder<NewEvent, NewEffect>(
+    ) -> crate::builder::SyzygyBuilder<NewEvent, NewEffect, (), ()>
+    where
+        NewEvent: Send + 'static,
+        NewEffect: Send + 'static,
+    {
+        crate::builder::SyzygyBuilder::new().preset_profile(SyzygyProfile::Server)
+    }
+
+    /// Start a builder preloaded with the [`SyzygyProfile::Ci`] preset.
+    #[must_use]
+    pub fn ci_builder<NewEvent, NewEffect>(
+    ) -> crate::builder::SyzygyBuilder<NewEvent, NewEffect, (), ()>
+    where
+        NewEvent: Send + 'static,
+        NewEffect: Send + 'static,
+    {
+        crate::builder::SyzygyBuilder::new().preset_profile(SyzygyProfile::Ci)
+    }
+
+    /// Start a builder preloaded with the [`SyzygyProfile::Batch`] preset.
+    #[must_use]
+    pub fn batch_builder<NewEvent, NewEffect>(
+    ) -> crate::builder::SyzygyBuilder<NewEvent, NewEffect, (), ()>
+    where
+        NewEvent: Send + 'static,
+        NewEffect: Send + 'static,
+    {
+        crate::builder::SyzygyBuilder::new().preset_profile(SyzygyProfile::Batch)
     }
 }
 
 #[cfg(all(test, feature = "legacy_tests"))]
 mod tests {
     use super::*;
-    use crate::prelude::*;
+    use crate::command::Command;
 
     #[derive(Debug, Clone)]
     enum TestEvent {

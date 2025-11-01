@@ -33,13 +33,13 @@ fn event_handler(event: AppEvent, model: &mut AppModel) -> Command<AppEvent, App
 }
 
 fn on_start() -> Command<AppEvent, AppEffect> {
-    Command::effect(AppEffect::ProduceMessage)
+    cmd::effect(AppEffect::ProduceMessage)
 }
 
 fn on_completed(model: &mut AppModel, message: String) -> Command<AppEvent, AppEffect> {
     model.logs.push(message);
     model.completed = true;
-    Command::none()
+    cmd::none()
 }
 
 fn effect_handler(effect: AppEffect, _resources: ()) -> Task<AppEvent, AppEffect> {
@@ -50,7 +50,7 @@ fn effect_handler(effect: AppEffect, _resources: ()) -> Task<AppEvent, AppEffect
 
 fn produce_message() -> Task<AppEvent, AppEffect> {
     Task::async_on::<InlineAsync, _>(async move {
-        Command::event(AppEvent::Completed("effect finished".to_string()))
+        cmd::event(AppEvent::Completed("effect finished".to_string()))
     })
 }
 
@@ -59,6 +59,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .model(AppModel::default())
         .event_handler(event_handler)
         .effect_handler(effect_handler)
+        .profile_interactive()
         .with_async_executor(InlineAsync::new())
         .build()
         .split();

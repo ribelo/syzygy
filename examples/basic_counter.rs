@@ -36,7 +36,7 @@ fn event_handler(
 
 fn on_increment(model: &mut CounterModel) -> Command<CounterEvent, CounterEffect> {
     model.value += 1;
-    Command::effect(CounterEffect::Log(format!(
+    cmd::effect(CounterEffect::Log(format!(
         "Count incremented to {}",
         model.value
     )))
@@ -44,7 +44,7 @@ fn on_increment(model: &mut CounterModel) -> Command<CounterEvent, CounterEffect
 
 fn on_decrement(model: &mut CounterModel) -> Command<CounterEvent, CounterEffect> {
     model.value -= 1;
-    Command::effect(CounterEffect::Log(format!(
+    cmd::effect(CounterEffect::Log(format!(
         "Count decremented to {}",
         model.value
     )))
@@ -59,7 +59,7 @@ fn effect_handler(effect: CounterEffect, _resources: ()) -> Task<CounterEvent, C
 fn log_message(message: String) -> Task<CounterEvent, CounterEffect> {
     Task::async_on::<InlineAsync, _>(async move {
         println!("{message}");
-        Command::none()
+        cmd::none()
     })
 }
 
@@ -68,6 +68,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .model(CounterModel::default())
         .event_handler(event_handler)
         .effect_handler(effect_handler)
+        .profile_interactive()
         .with_async_executor(InlineAsync::new())
         .build();
 
