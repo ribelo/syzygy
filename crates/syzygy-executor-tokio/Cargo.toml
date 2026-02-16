@@ -1,0 +1,13 @@
+[package]
+name = "syzygy-executor-tokio"
+version = "0.1.0"
+edition = "2021"
+license = "Unlicense"
+description = "Tokio executor integration for Syzygy."
+repository = "https://github.com/ribelo/syzygy"
+
+[dependencies]
+futures = "0.3"
+futures-util = "0.3"
+syzygy = { path = "../..", package = "syzygy" }
+tokio = { version = "1.40", features = ["rt", "rt-multi-thread", "sync", "time"] }

@@ -1,9 +1,11 @@
-#![cfg(all(feature = "shell", feature = "rt-inline", feature = "tokio"))]
+#![cfg(feature = "shell")]
 //! Tests for Shell synchronous methods: `drain_with`, `dispatch_command`, etc.
 //! These tests use the Runner API for convenience.
 
-use syzygy::executor::{InlineAsync, PanicTaskKind, Task, TokioExecutor};
+use syzygy::executor::{InlineAsync, PanicTaskKind, Task};
 use syzygy::prelude::*;
+use syzygy_executor_single::SingleThreadExecutor;
+use syzygy_executor_tokio::TokioExecutor;
 
 #[derive(Debug, Clone)]
 enum TestEvent {
@@ -35,13 +37,14 @@ fn test_update(event: TestEvent, model: &mut TestModel) -> Command<TestEvent, Te
     }
 }
 
-#[cfg(feature = "tokio")]
+#[cfg(feature = "shell")]
 mod tokio_tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
     use syzygy::error::ShellError;
+    use syzygy::syzygy::SyzygyConfig;
     use tokio_util::sync::CancellationToken;
 
     fn create_test_runner() -> Runner<TestEvent, TestEffect, TestModel> {
@@ -49,7 +52,6 @@ mod tokio_tests {
             .model(TestModel::default())
             .event_handler(test_update)
             .effect_handler(|_effect: TestEffect, _resources| Task::<TestEvent, TestEffect>::none())
-            .profile_interactive()
             .with_async_executor(InlineAsync::new())
             .build()
     }
@@ -60,12 +62,12 @@ mod tokio_tests {
             .model(TestModel::default())
             .event_handler(test_update)
             .effect_handler(|_effect: TestEffect, _resources| Task::<TestEvent, TestEffect>::none())
-            .profile_interactive()
-            .with_async_executor(InlineAsync::new())
             .with_effect_channel_capacity(Some(1))
+            .with_syzygy_config(SyzygyConfig::default().idle_sleep(Duration::from_millis(1)))
             .build();
 
         let shell = runner.shell_mut();
+        assert_eq!(shell.effect_channel_capacity(), Some(1));
         shell
             .dispatch_command(Command::effect(TestEffect::Log))
             .expect("first effect should fit in queue");
@@ -180,7 +182,6 @@ mod tokio_tests {
                 }
                 TestEffect::Log => Task::<TestEvent, TestEffect>::none(),
             })
-            .with_async_executor(InlineAsync::new())
             .build();
 
         runner
@@ -237,7 +238,7 @@ mod tokio_tests {
 
         fn cli_effects(effect: CliEffect, _: ()) -> Task<CliEvent, CliEffect> {
             match effect {
-                CliEffect::Work => Task::async_current(async move {
+                CliEffect::Work => Task::async_on::<TokioExecutor, _>(async move {
                     tokio::time::sleep(Duration::from_millis(20)).await;
                     Command::event(CliEvent::Done)
                 }),
@@ -248,6 +249,7 @@ mod tokio_tests {
             .model(CliModel::default())
             .event_handler(cli_update)
             .effect_handler(cli_effects)
+            .with_async_executor(TokioExecutor::current_thread_io("shell-cli"))
             .build();
 
         runner
@@ -291,7 +293,7 @@ mod tokio_tests {
 
         fn cli_effects(effect: CliEffect, _: ()) -> Task<CliEvent, CliEffect> {
             match effect {
-                CliEffect::Work => Task::async_current(async move {
+                CliEffect::Work => Task::async_on::<TokioExecutor, _>(async move {
                     tokio::time::sleep(Duration::from_millis(10)).await;
                     Command::event(CliEvent::Done)
                 }),
@@ -302,6 +304,7 @@ mod tokio_tests {
             .model(CliModel::default())
             .event_handler(cli_update)
             .effect_handler(cli_effects)
+            .with_async_executor(TokioExecutor::current_thread_io("shell-cli-dispatch"))
             .build();
 
         runner
@@ -356,15 +359,14 @@ mod tokio_tests {
             .event_handler(test_update)
             .effect_handler(|effect: TestEffect, _| match effect {
                 TestEffect::Log => {
-                    Task::<TestEvent, TestEffect>::async_on::<InlineAsync, _>(async move {
+                    Task::<TestEvent, TestEffect>::async_on::<TokioExecutor, _>(async move {
                         tokio::time::sleep(Duration::from_millis(20)).await;
                         cmd::none()
                     })
                 }
                 TestEffect::Work(_) => Task::none(),
             })
-            .profile_interactive()
-            .with_async_executor(InlineAsync::new())
+            .with_async_executor(TokioExecutor::current_thread_io("drain-idle"))
             .build();
 
         runner
@@ -408,33 +410,39 @@ mod tokio_tests {
         let token = CancellationToken::new();
         let token_for_runner = token.clone();
 
-        let mut runner = Syzygy::builder::<CancelEvent, CancelEffect>()
-            .model(CancelModel::default())
-            .with_resources(token_for_runner)
-            .event_handler(|event, model| match event {
-                CancelEvent::Start => cmd::effect(CancelEffect::Run),
-                CancelEvent::Cancelled => {
-                    model.cancelled += 1;
-                    cmd::none()
-                }
-            })
-            .effect_handler(
-                |effect: CancelEffect, token: CancellationToken| match effect {
-                    CancelEffect::Run => {
-                        Task::<CancelEvent, CancelEffect>::async_current_with_cancel(
-                            async move {
-                                tokio::time::sleep(Duration::from_millis(100)).await;
-                                cmd::event(CancelEvent::Cancelled)
-                            },
-                            token.cancelled(),
-                            cmd::event(CancelEvent::Cancelled),
-                        )
+        let mut runner =
+            Syzygy::builder::<CancelEvent, CancelEffect>()
+                .model(CancelModel::default())
+                .with_resources(token_for_runner)
+                .event_handler(|event, model| match event {
+                    CancelEvent::Start => cmd::effect(CancelEffect::Run),
+                    CancelEvent::Cancelled => {
+                        model.cancelled += 1;
+                        cmd::none()
                     }
-                },
-            )
-            .profile_interactive()
-            .with_async_executor(InlineAsync::new())
-            .build();
+                })
+                .effect_handler(
+                    |effect: CancelEffect, token: CancellationToken| match effect {
+                        CancelEffect::Run => {
+                            let cancel_future = token.cancelled_owned();
+                            Task::<CancelEvent, CancelEffect>::async_on_with_cancel::<
+                                TokioExecutor,
+                                _,
+                                _,
+                            >(
+                                async move {
+                                    tokio::time::sleep(Duration::from_millis(100)).await;
+                                    cmd::event(CancelEvent::Cancelled)
+                                },
+                                cancel_future,
+                                cmd::event(CancelEvent::Cancelled),
+                            )
+                        }
+                    },
+                )
+                .with_async_executor(TokioExecutor::current_thread_io("cancel-runner"))
+                .with_async_executor(InlineAsync::new())
+                .build();
 
         runner
             .core_mut()
@@ -482,7 +490,7 @@ mod tokio_tests {
             })
             .effect_handler(|effect: PanicEffect, _| match effect {
                 PanicEffect::Explode => {
-                    Task::<PanicEvent, PanicEffect>::async_current(async move {
+                    Task::<PanicEvent, PanicEffect>::async_on::<TokioExecutor, _>(async move {
                         panic!("boom!");
                         #[allow(unreachable_code)]
                         {
@@ -495,7 +503,7 @@ mod tokio_tests {
                 *observed_for_handler.lock().unwrap() = Some(details);
                 cmd::event(PanicEvent::Notified(message))
             })
-            .profile_interactive()
+            .with_async_executor(TokioExecutor::current_thread_io("panic-hook"))
             .with_async_executor(InlineAsync::new())
             .build();
 
@@ -516,7 +524,7 @@ mod tokio_tests {
             .lock()
             .unwrap()
             .expect("panic details should be recorded");
-        assert_eq!(details.kind, PanicTaskKind::AsyncCurrent);
+        assert_eq!(details.kind, PanicTaskKind::Async);
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -544,7 +552,7 @@ mod tokio_tests {
                 let in_flight = Arc::clone(&in_flight_for_handler);
                 let max_in_flight = Arc::clone(&max_in_flight_for_handler);
 
-                Task::<TestEvent, TestEffect>::async_on::<InlineAsync, _>(async move {
+                Task::<TestEvent, TestEffect>::async_on::<TokioExecutor, _>(async move {
                     if let TestEffect::Work(id) = effect {
                         let active = in_flight.fetch_add(1, Ordering::SeqCst) + 1;
                         max_in_flight.fetch_max(active, Ordering::SeqCst);
@@ -567,6 +575,7 @@ mod tokio_tests {
                     Command::none()
                 })
             })
+            .with_async_executor(TokioExecutor::current_thread_io("batch-sequential"))
             .with_async_executor(InlineAsync::new())
             .build();
 
@@ -664,7 +673,7 @@ mod tokio_tests {
                     Command::none()
                 })
             })
-            .with_async_executor(TokioExecutor::current_thread_io("parallel-overlap"))
+            .with_async_executor(TokioExecutor::multi_thread_io("parallel-overlap", 2))
             .build();
 
         runner
@@ -742,7 +751,11 @@ mod tokio_tests {
                 let in_flight = Arc::clone(&in_flight_for_handler);
                 let max_in_flight = Arc::clone(&max_in_flight_for_handler);
 
-                Task::<TestEvent, TestEffect>::async_on::<InlineAsync, _>(async move {
+                Task::<TestEvent, TestEffect>::blocking_with_resource_on::<
+                    SingleThreadExecutor<()>,
+                    (),
+                    _,
+                >(move |_| {
                     if let TestEffect::Work(id) = effect {
                         let active = in_flight.fetch_add(1, Ordering::SeqCst) + 1;
                         max_in_flight.fetch_max(active, Ordering::SeqCst);
@@ -752,7 +765,7 @@ mod tokio_tests {
                             log.push(format!("start-{id}"));
                         }
 
-                        tokio::time::sleep(Duration::from_millis(5)).await;
+                        std::thread::sleep(Duration::from_millis(5));
 
                         {
                             let mut log = order.lock().unwrap();
@@ -765,6 +778,7 @@ mod tokio_tests {
                     Command::none()
                 })
             })
+            .with_resource_blocking_executor(SingleThreadExecutor::new())
             .with_async_executor(InlineAsync::new())
             .build();
 

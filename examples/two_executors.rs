@@ -9,8 +9,10 @@ use std::marker::PhantomData;
 use std::time::Duration;
 
 use futures_util::future::BoxFuture;
-use syzygy::executor::{AsyncExecutor, ExecutorError, ExecutorLifecycle, Task, TokioExecutor};
+use syzygy::executor::{AsyncExecutor, ExecutorError, ExecutorLifecycle, Task};
 use syzygy::prelude::*;
+use syzygy::syzygy::SyzygyConfig;
+use syzygy_executor_tokio::TokioExecutor;
 
 #[derive(Debug, Default)]
 struct DemoModel {
@@ -161,7 +163,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .model(DemoModel::default())
         .event_handler(event_handler)
         .effect_handler(effect_handler)
-        .profile_server()
+        .with_effect_channel_capacity(Some(1024))
+        .with_event_channel_capacity(Some(1024))
+        .with_syzygy_config(SyzygyConfig::default().idle_sleep(Duration::from_millis(0)))
         .with_async_executor(IoRuntime::new(2))
         .with_async_executor(CpuRuntime::new(2))
         .build();

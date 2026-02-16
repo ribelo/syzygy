@@ -1,4 +1,4 @@
-#![cfg(all(feature = "shell", feature = "rt-single-thread"))]
+#![cfg(feature = "shell")]
 #![allow(clippy::needless_pass_by_value)]
 use std::sync::{
     atomic::{AtomicUsize, Ordering},
@@ -6,8 +6,9 @@ use std::sync::{
 };
 use std::time::Duration;
 
-use syzygy::executor::{SingleThreadExecutor, Task};
+use syzygy::executor::Task;
 use syzygy::prelude::*;
+use syzygy_executor_single::SingleThreadExecutor;
 
 // --- Predictable Event Processing (FIFO) ---
 
@@ -22,6 +23,7 @@ enum OrderEvent {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 enum OrderEffect {
     None,
 }
@@ -124,67 +126,4 @@ async fn resources_cloned_per_effect() {
     let after = counter.load(Ordering::SeqCst);
     // Expect exactly two resource clones for two effect invocations
     assert_eq!(after - before, 2);
-}
-
-// --- async_current works with and without a registered executor ---
-
-#[derive(Debug, Default)]
-struct CurrentModel {
-    n: usize,
-}
-
-#[derive(Debug, Clone)]
-enum CurrentEvent {
-    Go,
-    Done,
-}
-
-#[derive(Debug, Clone)]
-enum CurrentEffect {
-    Work,
-}
-
-fn current_update(e: CurrentEvent, m: &mut CurrentModel) -> Command<CurrentEvent, CurrentEffect> {
-    match e {
-        CurrentEvent::Go => Command::effect(CurrentEffect::Work),
-        CurrentEvent::Done => {
-            m.n += 1;
-            Command::none()
-        }
-    }
-}
-
-fn current_effects(_x: CurrentEffect, _r: ()) -> Task<CurrentEvent, CurrentEffect> {
-    Task::async_current(async move { Command::event(CurrentEvent::Done) })
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn async_current_under_tokio_runtime() {
-    let mut app = Syzygy::builder::<CurrentEvent, CurrentEffect>()
-        .model(CurrentModel::default())
-        .event_handler(current_update)
-        .effect_handler(current_effects)
-        .build();
-
-    app.core()
-        .try_send_event(CurrentEvent::Go)
-        .expect("event channel should be open");
-    app.drain_until(|m: &CurrentModel| m.n == 1, Duration::from_secs(1))
-        .unwrap();
-}
-
-#[test]
-fn async_current_without_runtime_blocks_inline() {
-    let mut app = Syzygy::builder::<CurrentEvent, CurrentEffect>()
-        .model(CurrentModel::default())
-        .event_handler(current_update)
-        .effect_handler(current_effects)
-        .build();
-
-    app.core()
-        .try_send_event(CurrentEvent::Go)
-        .expect("event channel should be open");
-    // Without a runtime, async_current completes inline; a single drain step should finish
-    app.drain_until(|m: &CurrentModel| m.n == 1, Duration::from_secs(1))
-        .unwrap();
 }

@@ -9,8 +9,6 @@ use std::panic::{self, AssertUnwindSafe};
 use std::sync::Arc;
 
 use crossbeam_channel::Sender as EffectSender;
-#[cfg(feature = "tokio")]
-use futures::executor::block_on;
 use futures_util::future::{BoxFuture, Either, FutureExt};
 use futures_util::stream::{BoxStream, StreamExt};
 
@@ -40,7 +38,6 @@ fn missing_executor(kind: &'static str, exec: TypeId, exec_name: &'static str) -
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PanicTaskKind {
     Async,
-    AsyncCurrent,
     Blocking,
     BlockingWithResource,
 }
@@ -100,18 +97,6 @@ where
     Stream {
         exec_type_id: TypeId,
         exec_type_name: &'static str,
-        stream: BoxStream<'static, E>,
-    },
-    #[cfg(feature = "tokio")]
-    /// Run on the current async runtime if available (e.g. inside #[tokio::main]).
-    /// Falls back to blocking execution on the current thread if no runtime.
-    AsyncCurrent {
-        future: BoxFuture<'static, Command<E, X>>,
-    },
-    #[cfg(feature = "tokio")]
-    /// Forward a stream on the current async runtime if available.
-    /// Falls back to draining the stream on the current thread if no runtime.
-    StreamCurrent {
         stream: BoxStream<'static, E>,
     },
     Blocking {
@@ -197,53 +182,6 @@ where
         Self::async_on::<Exec, _>(fut)
     }
 
-    #[cfg(feature = "tokio")]
-    /// Create an async task that runs on the current runtime if present,
-    /// otherwise completes inline by blocking the current thread.
-    pub fn async_current<Fut>(future: Fut) -> Self
-    where
-        Fut: Future<Output = Command<E, X>> + Send + 'static,
-    {
-        let future: BoxFuture<'static, Command<E, X>> = future.boxed();
-        Self::AsyncCurrent { future }
-    }
-
-    #[cfg(feature = "tokio")]
-    /// Create an async task on the current runtime with cancellation support.
-    pub fn async_current_with_cancel<Fut, Cancel>(
-        future: Fut,
-        cancel: Cancel,
-        cancel_command: Command<E, X>,
-    ) -> Self
-    where
-        Fut: Future<Output = Command<E, X>> + Send + 'static,
-        Cancel: Future<Output = ()> + Send + 'static,
-    {
-        let fut = async move {
-            futures_util::pin_mut!(future);
-            futures_util::pin_mut!(cancel);
-            match futures_util::future::select(cancel, future).await {
-                Either::Left((_, pending_future)) => {
-                    drop(pending_future);
-                    cancel_command
-                }
-                Either::Right((command, _)) => command,
-            }
-        };
-        Self::async_current(fut)
-    }
-
-    #[cfg(feature = "tokio")]
-    /// Create a stream task that runs on the current runtime if present,
-    /// otherwise drains inline by blocking the current thread.
-    pub fn stream_current<S>(stream: S) -> Self
-    where
-        S: futures_util::stream::Stream<Item = E> + Send + 'static,
-    {
-        let stream: BoxStream<'static, E> = stream.boxed();
-        Self::StreamCurrent { stream }
-    }
-
     /// Forward a stream’s items as events on a specific async executor.
     pub fn stream_on<Exec, S>(stream: S) -> Self
     where
@@ -304,28 +242,6 @@ where
             resource_type_name,
             job,
         }
-    }
-}
-
-#[cfg(feature = "tokio")]
-impl<E, X> From<BoxFuture<'static, Command<E, X>>> for Task<E, X>
-where
-    E: Send + 'static,
-    X: Send + 'static,
-{
-    fn from(future: BoxFuture<'static, Command<E, X>>) -> Self {
-        Task::AsyncCurrent { future }
-    }
-}
-
-#[cfg(feature = "tokio")]
-impl<E, X> From<BoxStream<'static, E>> for Task<E, X>
-where
-    E: Send + 'static,
-    X: Send + 'static,
-{
-    fn from(stream: BoxStream<'static, E>) -> Self {
-        Task::StreamCurrent { stream }
     }
 }
 
@@ -438,57 +354,6 @@ where
                 }
             }
         }
-        #[cfg(feature = "tokio")]
-        Task::AsyncCurrent { future } => {
-            // Increment activity counter for async work
-            if let Some(activity) = activity {
-                activity.inc();
-            }
-
-            // Try to spawn on the current Tokio runtime; if unavailable, run inline.
-            if let Ok(handle) = tokio::runtime::Handle::try_current() {
-                let event_tx_cl = event_tx.clone();
-                let effect_tx_cl = effect_tx.clone();
-                let activity_cl = activity.cloned();
-                let stats_cl = stats.cloned();
-                let panic_handler_cl = panic_handler.cloned();
-                let fut = async move {
-                    let details = PanicDetails::new(
-                        PanicTaskKind::AsyncCurrent,
-                        "current_runtime",
-                        TypeId::of::<()>(),
-                    );
-                    let result = AssertUnwindSafe(future).catch_unwind().await;
-                    let command = match result {
-                        Ok(command) => command,
-                        Err(payload) => {
-                            command_from_panic(panic_handler_cl.as_ref(), details, payload)
-                        }
-                    };
-                    let stats_ref = stats_cl.as_ref();
-                    route_command(&event_tx_cl, &effect_tx_cl, command, stats_ref);
-                    // Decrement activity counter when async work completes
-                    if let Some(activity) = activity_cl {
-                        activity.dec();
-                    }
-                };
-                handle.spawn(fut);
-            } else {
-                let details = PanicDetails::new(
-                    PanicTaskKind::AsyncCurrent,
-                    "inline_current",
-                    TypeId::of::<()>(),
-                );
-                let command = panic::catch_unwind(AssertUnwindSafe(|| block_on(future)))
-                    .map_err(|payload| command_from_panic(panic_handler, details, payload))
-                    .unwrap_or_else(|command| command);
-                route_command(&event_tx, &effect_tx, command, stats);
-                // Decrement activity counter for inline completion
-                if let Some(activity) = activity {
-                    activity.dec();
-                }
-            }
-        }
         Task::Async {
             exec_type_id,
             exec_type_name,
@@ -529,56 +394,6 @@ where
                 return Err(ShellError::TaskSpawnFailed(format!(
                     "async executor {exec_type_name} (TypeId={exec_type_id:?}): {err}"
                 )));
-            }
-        }
-        #[cfg(feature = "tokio")]
-        Task::StreamCurrent { stream } => {
-            // Increment activity counter for stream work
-            if let Some(activity) = activity {
-                activity.inc();
-            }
-
-            if let Ok(handle) = tokio::runtime::Handle::try_current() {
-                let event_tx_cl = event_tx.clone();
-                let activity_cl = activity.cloned();
-                let stats_cl = stats.cloned();
-                let fut = async move {
-                    futures_util::pin_mut!(stream);
-                    while let Some(event) = stream.next().await {
-                        if event_tx_cl.send(event).is_err() {
-                            if let Some(stats) = stats_cl.as_ref() {
-                                stats.inc_dropped_event();
-                            }
-                            #[cfg(feature = "tracing")]
-                            tracing::debug!("event channel closed while forwarding stream item");
-                            break;
-                        }
-                    }
-                    // Decrement activity counter when stream ends
-                    if let Some(activity) = activity_cl {
-                        activity.dec();
-                    }
-                };
-                handle.spawn(fut);
-            } else {
-                let stats_cl = stats.cloned();
-                block_on(async move {
-                    futures_util::pin_mut!(stream);
-                    while let Some(event) = stream.next().await {
-                        if event_tx.send(event).is_err() {
-                            if let Some(stats) = stats_cl.as_ref() {
-                                stats.inc_dropped_event();
-                            }
-                            #[cfg(feature = "tracing")]
-                            tracing::debug!("event channel closed while forwarding stream item");
-                            break;
-                        }
-                    }
-                    // Decrement activity counter for inline completion
-                    if let Some(activity) = activity {
-                        activity.dec();
-                    }
-                });
             }
         }
         Task::Stream {

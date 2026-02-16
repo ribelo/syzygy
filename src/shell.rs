@@ -129,10 +129,15 @@ where
                     self.prefetched_effects.push_back(queued_step);
                 }
 
+                let limit = self.effect_channel_capacity.unwrap_or(usize::MAX);
+                let occupancy = self.effect_rx.len() + self.prefetched_effects.len();
+                if occupancy >= limit {
+                    return Err(ShellError::EffectQueueFull { capacity: limit });
+                }
+
                 match self.effect_tx.try_send(step) {
                     Ok(()) => Ok(()),
                     Err(TrySendError::Full(step)) => {
-                        let limit = self.effect_channel_capacity.unwrap_or(usize::MAX);
                         let occupancy = self.effect_rx.len() + self.prefetched_effects.len();
                         if occupancy < limit {
                             self.prefetched_effects.push_back(step);
@@ -412,25 +417,14 @@ where
         {
             let snapshot = self.stats();
             if snapshot.dropped_events > 0 || snapshot.dropped_effect_steps > 0 {
-                let message = if cfg!(feature = "flair") {
-                    "🟡 Shell dropped work during shutdown — events were still in flight. Consider calling `await_idle`, draining the runner, or increasing queue capacities."
-                } else {
-                    "Shell dropped work during shutdown — events were still in flight. Consider calling `await_idle`, draining the runner, or increasing queue capacities."
-                };
                 tracing::warn!(
                     stage = "shell_drop",
                     dropped_events = snapshot.dropped_events,
                     dropped_effect_steps = snapshot.dropped_effect_steps,
-                    "{message}",
-                    message = message
+                    "Shell dropped work during shutdown — events were still in flight. Consider calling `await_idle`, draining the runner, or increasing queue capacities."
                 );
             } else {
-                let message = if cfg!(feature = "flair") {
-                    "🟢 Shell shutdown complete"
-                } else {
-                    "Shell shutdown cleanly"
-                };
-                tracing::debug!(stage = "shell_drop", "{message}", message = message);
+                tracing::debug!(stage = "shell_drop", "Shell shutdown cleanly");
             }
         }
     }
@@ -447,20 +441,5 @@ where
             .field("pending_effects", &"<pending>")
             .field("closed", &self.closed)
             .finish_non_exhaustive()
-    }
-}
-#[cfg(all(test, feature = "legacy_tests"))]
-mod tests {
-
-    #[derive(Debug, Clone)]
-    #[allow(dead_code)]
-    enum TestEvent {
-        Dummy,
-    }
-
-    #[derive(Debug, Clone)]
-    #[allow(dead_code)]
-    enum TestEffect {
-        Log,
     }
 }

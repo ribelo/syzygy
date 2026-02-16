@@ -1,0 +1,13 @@
+[package]
+name = "syzygy-executor-single"
+version = "0.1.0"
+edition = "2021"
+license = "Unlicense"
+description = "Single-threaded resource executor for Syzygy."
+repository = "https://github.com/ribelo/syzygy"
+
+[dependencies]
+crossbeam-channel = "0.5"
+futures = "0.3"
+futures-util = "0.3"
+syzygy = { path = "../..", package = "syzygy" }

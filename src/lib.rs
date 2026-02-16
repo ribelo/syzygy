@@ -6,7 +6,7 @@
 //! ## Quick Start
 //!
 //! ```rust
-//! use syzygy::executor::{Task, TokioExecutor};
+//! use syzygy::executor::{InlineAsync, Task};
 //! use syzygy::prelude::*;
 //!
 //! #[derive(Default)]
@@ -54,12 +54,10 @@
 //!
 //! fn effect_handler(effect: CounterEffect, resources: &'static str) -> Task<CounterEvent, CounterEffect> {
 //!     match effect {
-//!         CounterEffect::Log(message) => Task::async_on::<TokioExecutor, _>(
-//!             async move {
-//!                 println!("{resources} {message}");
-//!                 Command::none()
-//!             },
-//!         ),
+//!         CounterEffect::Log(message) => Task::async_on::<InlineAsync, _>(async move {
+//!             println!("{resources} {message}");
+//!             Command::none()
+//!         }),
 //!     }
 //! }
 //!
@@ -69,7 +67,7 @@
 //!     .with_resources("LOG")
 //!     .event_handler(event_handler)
 //!     .effect_handler(effect_handler)
-//!     .with_async_executor(TokioExecutor::current_thread_cpu("syzygy-docs"))
+//!     .with_async_executor(InlineAsync::new())
 //!     .build();
 //!
 //! runner.core().try_send_event(CounterEvent::Increment)?;
@@ -111,7 +109,7 @@
 //! ### Async Effects with Resources
 //! ```rust
 //! # use std::sync::Arc;
-//! # use syzygy::executor::{Task, TokioExecutor};
+//! # use syzygy::executor::{InlineAsync, Task};
 //! # use syzygy::prelude::*;
 //! # struct Database;
 //! # impl Database {
@@ -126,12 +124,12 @@
 //!     match effect {
 //!         Effect::SaveUser => {
 //!             let db = Arc::clone(&services.db);
-//!             Task::async_on::<TokioExecutor, _>(async move {
+//!             Task::async_on::<InlineAsync, _>(async move {
 //!                 db.save().await;
 //!                 Command::event(Event::UserSaved)
 //!             })
 //!         }
-//!         Effect::Log(msg) => Task::async_current(async move {
+//!         Effect::Log(msg) => Task::async_on::<InlineAsync, _>(async move {
 //!             println!("LOG {msg}");
 //!             Command::none()
 //!         }),
@@ -141,18 +139,14 @@
 //!
 //! ## Runtime Support
 //!
-//! Syzygy ships with dedicated executors:
+//! Syzygy ships with a minimal inline executor out of the box.
 //!
-//! - `TokioExecutor` – spawn async work onto a Tokio runtime you control
-//! - Custom inline executors exist for tests/CLIs when needed (niche)
-//! - `SingleThreadExecutor` – sequential, borrowing access to a worker resource
-//! - `RayonExecutor` (optional feature) – CPU-heavy parallel work
+//! - `InlineAsync` – deterministic inline executor for tests and CLIs
+//! - Additional executors live in companion crates such as `syzygy-executor-tokio`,
+//!   `syzygy-executor-single`, and `syzygy-executor-rayon`
 //!
-//! Bring additional runtimes by implementing the `AsyncExecutor` trait.
-//!
-//! Don’t want to register executors? Use `Task::async_current`/`Task::stream_current`
-//! in your effect handler. They run on the current Tokio runtime if available,
-//! or complete inline by blocking the current thread when no runtime is active.
+//! Bring additional runtimes by implementing the `AsyncExecutor` trait or by
+//! depending on the companion crates listed above.
 //!
 //! ## Examples
 //!
@@ -332,8 +326,6 @@
 
 // Core modules
 pub mod activity;
-#[cfg(feature = "cli")]
-pub mod cli;
 pub mod command;
 pub mod core;
 // EffectContext/EventContext were removed from public API; handlers receive
@@ -374,13 +366,11 @@ pub mod prelude {
 
     // Core/Shell architecture
     pub use crate::activity::Activity;
-    #[cfg(feature = "cli")]
-    pub use crate::cli::{install_ctrlc, spawn_stdin_listener};
     pub use crate::core::{Core, EventHandler, EventSender};
     #[cfg(feature = "shell")]
     pub use crate::shell::{Shell, ShellStats, ShellStatsSnapshot};
     #[cfg(feature = "shell")]
-    pub use crate::syzygy::{Runner, Syzygy, SyzygyConfig, SyzygyProfile, SyzygyProfileSettings};
+    pub use crate::syzygy::{Runner, Syzygy, SyzygyConfig};
 
     // Type aliases for common use cases
     /// A simple Shell for applications that only need models (no resources or executors).
@@ -415,7 +405,6 @@ pub mod prelude {
     ///         .effect_handler(|effect, _| match effect {
     ///             Effect::LogTick => Command::none(),
     ///         })
-    ///         .profile_interactive()
     ///         .build()
     /// }
     /// ```
@@ -427,15 +416,9 @@ pub mod prelude {
     #[cfg(all(feature = "shell", feature = "rayon"))]
     pub use crate::executor::RayonExecutor;
 
-    #[cfg(all(feature = "shell", feature = "rt-inline"))]
-    pub use crate::executor::InlineAsync;
-    #[cfg(all(feature = "shell", feature = "rt-single-thread"))]
-    pub use crate::executor::SingleThreadExecutor;
-    #[cfg(all(feature = "shell", feature = "tokio"))]
-    pub use crate::executor::TokioExecutor;
     #[cfg(feature = "shell")]
     pub use crate::executor::{
-        ExecutorRegistry, PanicDetails, PanicHook, PanicTaskKind, Plan, Task,
+        ExecutorRegistry, InlineAsync, PanicDetails, PanicHook, PanicTaskKind, Plan, Task,
     };
 
     // Builder

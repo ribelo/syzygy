@@ -1,10 +1,11 @@
-#![cfg(feature = "tokio")]
+#![cfg(feature = "shell")]
 
 use std::time::{Duration, Instant};
 
-use syzygy::executor::{Task, TokioExecutor};
+use syzygy::executor::Task;
 use syzygy::prelude::*;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use syzygy_executor_tokio::TokioExecutor;
+use tokio::io::{AsyncReadExt, AsyncWriteExt, DuplexStream};
 
 #[derive(Debug, Default)]
 struct IoModel {
@@ -62,8 +63,10 @@ fn run_short_task() -> Task<IoEvent, IoEffect> {
 
 fn run_long_io() -> Task<IoEvent, IoEffect> {
     Task::<IoEvent, IoEffect>::async_on::<TokioExecutor, _>(async move {
-        let (mut reader, mut writer) = tokio::io::duplex(64 * 1024);
+        let (reader_stream, writer_stream): (DuplexStream, DuplexStream) =
+            tokio::io::duplex(64 * 1024);
         let writer_fut = async move {
+            let mut writer = writer_stream;
             let chunks = 20usize;
             let chunk_size = 50_000usize;
             let payload = vec![1u8; chunk_size];
@@ -78,9 +81,10 @@ fn run_long_io() -> Task<IoEvent, IoEffect> {
         };
 
         let t0 = Instant::now();
-        let mut total = 0usize;
         let reader_fut = async move {
+            let mut reader = reader_stream;
             let mut buf = vec![0u8; 16 * 1024];
+            let mut total = 0usize;
             loop {
                 let n = reader.read(&mut buf).await.expect("read should succeed");
                 if n == 0 {
@@ -91,7 +95,7 @@ fn run_long_io() -> Task<IoEvent, IoEffect> {
             total
         };
 
-        let (_w, bytes) = tokio::join!(writer_fut, reader_fut);
+        let (_writer_done, bytes) = tokio::join!(writer_fut, reader_fut);
         let elapsed = t0.elapsed().as_millis();
         Command::event(IoEvent::LongIoDone {
             elapsed_ms: elapsed,

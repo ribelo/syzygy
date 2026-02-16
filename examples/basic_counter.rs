@@ -5,8 +5,11 @@
 //! cargo run --example basic_counter --features examples
 //! ```
 
+use std::time::Duration;
+
 use syzygy::executor::{InlineAsync, Task};
 use syzygy::prelude::*;
+use syzygy::syzygy::SyzygyConfig;
 
 #[derive(Debug, Default)]
 struct CounterModel {
@@ -68,7 +71,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .model(CounterModel::default())
         .event_handler(event_handler)
         .effect_handler(effect_handler)
-        .profile_interactive()
+        .with_effect_channel_capacity(Some(256))
+        .with_syzygy_config(SyzygyConfig::default().idle_sleep(Duration::from_millis(1)))
         .with_async_executor(InlineAsync::new())
         .build();
 

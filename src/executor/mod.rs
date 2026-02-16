@@ -11,27 +11,15 @@ type ResourceJobFn = Box<dyn FnOnce(&mut dyn Any) + Send>;
 
 #[cfg(feature = "rt-inline")]
 pub mod inline_async;
-#[cfg(feature = "rayon")]
-pub mod rayon_sync_executor;
 pub mod registry;
-#[cfg(feature = "rt-single-thread")]
-pub mod single_thread_executor;
 pub mod task;
-#[cfg(feature = "tokio")]
-pub mod tokio_executor;
 
 #[cfg(feature = "rt-inline")]
 pub use inline_async::InlineAsync;
-#[cfg(feature = "rayon")]
-pub use rayon_sync_executor::{RayonExecutor, RayonExecutorBuilder};
 pub use registry::ExecutorRegistry;
-#[cfg(feature = "rt-single-thread")]
-pub use single_thread_executor::SingleThreadExecutor;
 pub use task::{PanicDetails, PanicHook, PanicTaskKind, Task};
 /// Friendly alias for `Task` used in docs to highlight declarative plans.
 pub type Plan<E, X> = Task<E, X>;
-#[cfg(feature = "tokio")]
-pub use tokio_executor::{TokioExecutor, TokioExecutorBuilder};
 
 /// Error type returned when executors fail to schedule jobs.
 #[derive(Debug, Error)]

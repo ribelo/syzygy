@@ -2,7 +2,8 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use futures_util::FutureExt;
-use syzygy::executor::{AsyncExecutor, ExecutorError, ExecutorLifecycle, TokioExecutor};
+use syzygy::executor::{AsyncExecutor, ExecutorError, ExecutorLifecycle};
+use syzygy_executor_tokio::TokioExecutor;
 use tokio::sync::{oneshot, Barrier};
 
 type TestEvent = ();

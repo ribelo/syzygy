@@ -6,15 +6,15 @@
     clippy::let_and_return,
     clippy::format_in_format_args
 )]
-#![cfg(feature = "tokio")]
+#![cfg(feature = "shell")]
 //! Tests demonstrating proper timeout event patterns
 //!
 //! These tests show how to handle timeouts as events rather than
 //! relying on logging or system-level timeouts.
 
 use std::time::Duration;
-use syzygy::executor::TokioExecutor;
 use syzygy::prelude::*;
+use syzygy_executor_tokio::TokioExecutor;
 
 #[derive(Debug, Default)]
 struct TimeoutModel {
@@ -108,7 +108,7 @@ fn timeout_aware_effect_handler(
 }
 
 /// Test that timeout events are properly emitted and handled
-#[cfg(feature = "tokio")]
+#[cfg(feature = "shell")]
 #[tokio::test(flavor = "multi_thread")]
 async fn test_timeout_event_pattern() {
     let mut runner = Syzygy::builder::<TimeoutEvent, TimeoutEffect>()

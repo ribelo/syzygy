@@ -7,8 +7,10 @@
 
 use std::time::Duration;
 
-use syzygy::executor::{Task, TokioExecutor};
+use syzygy::executor::Task;
 use syzygy::prelude::*;
+use syzygy::syzygy::SyzygyConfig;
+use syzygy_executor_tokio::TokioExecutor;
 
 #[derive(Debug, Default)]
 struct DownloadModel {
@@ -72,7 +74,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .model(DownloadModel::default())
         .event_handler(event_handler)
         .effect_handler(effect_handler)
-        .profile_interactive()
+        .with_effect_channel_capacity(Some(256))
+        .with_syzygy_config(SyzygyConfig::default().idle_sleep(Duration::from_millis(1)))
         .with_async_executor(TokioExecutor::multi_thread_io("async-example", 2))
         .build();
 

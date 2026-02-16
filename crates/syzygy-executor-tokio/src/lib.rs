@@ -1,4 +1,3 @@
-use crate::executor::{AsyncExecutor, ExecutorError, ExecutorLifecycle};
 use futures::executor::block_on;
 use futures_util::{
     future::{BoxFuture, FutureExt},
@@ -6,6 +5,7 @@ use futures_util::{
 };
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
+use syzygy::executor::{AsyncExecutor, ExecutorError, ExecutorLifecycle};
 use tokio::runtime::{self, Handle};
 use tokio::sync::{oneshot::error::RecvError, Notify};
 

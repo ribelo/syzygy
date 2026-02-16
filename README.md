@@ -188,7 +188,7 @@ fn fetch_data(url: String) -> Task<AppEvent, AppEffect> {
 
 fn log_message(resources: &AppResources, message: String) -> Task<AppEvent, AppEffect> {
     let prefix = resources.log_prefix;
-    Task::async_current(async move {
+    Task::async_on::<InlineAsync, _>(async move {
         println!("{prefix} {message}");
         cmd::none()
     })
@@ -209,7 +209,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .event_handler(event_handler)
         .effect_handler(effect_handler)
         .profile_interactive()
-        // You can also skip executor registration entirely via Task::async_current
+        // You can also skip executor registration entirely via Task::async_on::<InlineAsync, _>
         .with_async_executor(io_executor)
         .build();
 
@@ -252,7 +252,7 @@ Full example: [`examples/timeout_pattern.rs`](examples/timeout_pattern.rs).
 ### Panic hooks & cancellation
 
 - `with_panic_handler(|details, message| ...)` lets you surface executor panics as explicit events.
-- `Task::async_on_with_cancel` / `Task::async_current_with_cancel` compose futures that react to cancellation tokens.
+- `Task::async_on_with_cancel` composes futures that react to cancellation tokens.
 
 ```rust
 use std::sync::{Arc, Mutex};
@@ -267,7 +267,7 @@ let mut runner = Syzygy::builder::<Event, Effect>()
         cmd::event(Event::PanicLogged(message))
     })
     .effect_handler(|effect, token: CancellationToken| match effect {
-        Effect::Work => Task::async_current_with_cancel(
+        Effect::Work => Task::async_on_with_cancel::<TokioExecutor, _>(
             async move { cmd::event(Event::Finished) },
             token.cancelled(),
             cmd::event(Event::Cancelled),
@@ -537,26 +537,30 @@ let (core, shell) = Syzygy::builder::<MyEvent, MyEffect>()
     .build();
 ```
 
-### Builder Profiles
+### Channel & Idle Configuration
 
-Use `with_profile` when you want sensible defaults for effect buffering and idle cadence:
+Tune buffers and idle cadence explicitly with builder knobs:
 
 ```rust
-use syzygy::prelude::{SyzygyProfile, Syzygy};
+use syzygy::prelude::Syzygy;
+use syzygy::syzygy::SyzygyConfig;
+use std::time::Duration;
 
 let mut runner = Syzygy::builder::<Event, Effect>()
     .model(Model::default())
     .event_handler(update)
     .effect_handler(effects)
-    .with_profile(SyzygyProfile::Interactive) // 1ms idle sleep, bounded effect queue
+    .with_effect_channel_capacity(Some(256))
+    .with_event_channel_capacity(Some(64))
+    .with_syzygy_config(SyzygyConfig::default().idle_sleep(Duration::from_millis(1)))
     .build();
 ```
 
-- `SyzygyProfile::Interactive` → low-latency loops (`idle_sleep = 1ms`, bounded effect queue of 256)
-- `SyzygyProfile::Server` → long-running services (`idle_sleep = 0ms`, effect & event queues bounded at 1024)
-- `SyzygyProfile::Ci` → deterministic CI/test runs (`idle_sleep = 0ms`, effect & event queues bounded at 64)
-- `SyzygyProfile::Batch` → throughput-focused loops (`idle_sleep = 25ms`, unbounded effect queue)
-- Call `.with_effect_channel_capacity(..)` or `.with_event_channel_capacity(..)` (plus `.set_config(..)` as needed) to override any defaults.
+Suggested baselines:
+- Interactive loops → idle sleep 1 ms, effect queue 256, unbounded events
+- Long-running services → idle sleep 0 ms, effect & event queues 1024
+- Deterministic CI runs → idle sleep 0 ms, effect & event queues 64
+- Batch workloads → idle sleep 25 ms, unbounded queues
 
 **Event backpressure**: call `.with_event_channel_capacity(Some(cap))` to bound inbound events. Senders receive `CoreError::ChannelFull` when the queue is full, letting you coordinate retries without losing determinism. Inspect the configured capacity with `core.event_channel_capacity()`.
 
@@ -600,7 +604,7 @@ Syzygy ships with production-ready executors so you can match every workload to 
 
 `TokioExecutor::builder()` lets you configure thread model and capabilities when creating dedicated runtimes. To reuse an existing Tokio runtime, use `TokioExecutor::from_handle(handle)` or `TokioExecutor::try_from_current()`.
 
-Don’t want to register any executors? Use `Task::async_current` or `Task::stream_current` in your effect handler. They run on the current Tokio runtime if one is present (e.g. inside `#[tokio::main]`), or they will finish inline by blocking the current thread when no runtime is available.
+Register the executor you plan to use and pair it with `Task::async_on::<YourExecutor, _>` (or `Task::async_on_with_cancel` for cancellation). Inline workflows can rely on `InlineAsync::new()` for deterministic execution.
 
 Register them directly on the builder:
 
@@ -628,10 +632,10 @@ Syzygy::builder::<Event, Effect>()
     // optionally register blocking or resource-blocking executors here
     .build();
 
-// Or, skip registry entirely using async_current from your effect handler:
+// Or, skip registry entirely using an explicit executor from your effect handler:
 // fn effects(effect: Effect, _res: ()) -> Task<Event, Effect> {
 //     match effect {
-//         Effect::Fetch => Task::async_current(async move {
+//         Effect::Fetch => Task::async_on::<InlineAsync, _>(async move {
 //             // uses current Tokio runtime if present, otherwise blocks
 //             Command::none()
 //         }),
@@ -658,7 +662,7 @@ Counters increment whenever the shell cannot deliver events or effect steps (e.g
 ## Optional Features
 
 - `shell` *(default)* – enable the Shell, executors, and async integration layers.
-- `rt-inline`, `rt-single-thread`, `tokio`, `rayon`, `cli`, `examples`, `tracing` – opt into additional runtimes, executor flavours, CLI helpers, or instrumentation.
+- Features: `shell` (core runtime), `rt-inline` (InlineAsync), `examples`, and `tracing`. Companion crates provide executors such as Tokio, single-thread resource pools, or Rayon integration.
 
 ## Executor Architecture
 
