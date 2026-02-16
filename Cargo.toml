@@ -1,10 +1,5 @@
 [workspace]
-members = [
-    ".",
-    "crates/syzygy-executor-tokio",
-    "crates/syzygy-executor-single",
-    "crates/syzygy-executor-rayon",
-]
+members = ["."]
 resolver = "2"
 
 [package]
@@ -53,37 +48,7 @@ tracing = { version = "0.1", optional = true }
 
 [dev-dependencies]
 tokio = { version = "1.40", features = ["rt", "rt-multi-thread", "sync", "time", "macros", "io-util"] }
-tokio-util = { version = "0.7", features = ["rt"] }
-syzygy-executor-tokio = { path = "crates/syzygy-executor-tokio" }
-syzygy-executor-single = { path = "crates/syzygy-executor-single" }
-syzygy-executor-rayon = { path = "crates/syzygy-executor-rayon" }
-cfg-if = "1.0.0"
-criterion = { version = "0.5", features = ["html_reports", "async_tokio"] }
 futures = "0.3"
-enum_dispatch = "0.3"
-ambassador = "0.4"
-frunk = "0.4"
-frunk_core = "0.4"
-cucumber = "0.21"
-heapless = "0.8"
-micromap = "0.1"
-enum-map = "2.7"
-indexmap = "2.0"
-ahash = "0.8"
-proptest = "1.4"
-tokio-test = "0.4"
-rand = "0.8"
-
-# BDD tests removed - were using outdated API incompatible with current architecture
-
-# Temporarily disabled - outdated benchmarks moved to outdated_code/
-# [[bench]]
-# name = "dispatch_benchmark"
-# harness = false
-
-# [[bench]]
-# name = "model_storage_benchmark"
-# harness = false
 
 
 [lints.clippy]
@@ -140,33 +105,4 @@ missing_panics_doc = "allow"
 multiple_bound_locations = "allow"
 
 
-[[bench]]
-name = "command_performance"
-harness = false
 
-[[bench]]
-name = "shell_throughput"
-harness = false
-
-# Removed broken benchmarks that tested outdated APIs
-
-# Only build examples when the `examples` feature is enabled
-[[example]]
-name = "basic_counter"
-required-features = ["examples"]
-
-[[example]]
-name = "async_effect"
-required-features = ["examples"]
-
-[[example]]
-name = "manual_loop"
-required-features = ["examples"]
-
-[[example]]
-name = "two_executors"
-required-features = ["examples"]
-
-[[example]]
-name = "timeout_pattern"
-required-features = ["examples"]

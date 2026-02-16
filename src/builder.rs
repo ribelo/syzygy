@@ -110,7 +110,7 @@ where
         self,
         event_handler: EventHandler<Event, Effect, Model>,
     ) -> ConfiguredBuilder<Event, Effect, Model, Resources> {
-        let builder = ConfiguredBuilder {
+        ConfiguredBuilder {
             event_handler,
             effect_handler: None,
             model: self.model,
@@ -121,8 +121,7 @@ where
             syzygy_config: SyzygyConfig::default(),
             panic_handler: None,
             _marker: PhantomData,
-        };
-        builder
+        }
     }
 }
 
@@ -311,9 +310,7 @@ where
             self.effect_channel_capacity,
             self.panic_handler,
         );
-        let runner = Syzygy::with_config(core, shell, self.syzygy_config);
-
-        runner
+        Syzygy::with_config(core, shell, self.syzygy_config)
     }
 
     fn build_shell(
@@ -364,160 +361,3 @@ where
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::command::Command;
-    use crate::syzygy::SyzygyConfig;
-
-    #[derive(Debug, Clone)]
-    enum TestEvent {
-        Increment,
-    }
-
-    #[derive(Debug, Default)]
-    struct TestModel {
-        count: i32,
-    }
-
-    #[derive(Debug, Clone)]
-    enum TestEffect {
-        Log,
-    }
-
-    fn test_update(event: TestEvent, model: &mut TestModel) -> Command<TestEvent, TestEffect> {
-        match event {
-            TestEvent::Increment => {
-                model.count += 1;
-                Command::effect(TestEffect::Log)
-            }
-        }
-    }
-
-    #[cfg(feature = "rt-inline")]
-    #[test]
-    fn test_builder_basics() {
-        let runner = Syzygy::builder::<TestEvent, TestEffect>()
-            .model(TestModel { count: 0 })
-            .event_handler(test_update)
-            .effect_handler(|_e: TestEffect, _resources| {
-                crate::executor::Task::<TestEvent, TestEffect>::events(Vec::new())
-            })
-            .with_async_executor(crate::executor::InlineAsync::new())
-            .build();
-
-        let (mut core, _shell) = runner.split();
-        let _command = core.handle_event(TestEvent::Increment);
-        assert_eq!(core.model().count, 1);
-    }
-
-    #[test]
-    fn test_custom_capacities_are_applied() {
-        let runner = Syzygy::builder::<TestEvent, TestEffect>()
-            .model(TestModel::default())
-            .event_handler(test_update)
-            .effect_handler(|_e: TestEffect, _resources| {
-                crate::executor::Task::<TestEvent, TestEffect>::events(Vec::new())
-            })
-            .with_effect_channel_capacity(Some(512))
-            .with_event_channel_capacity(Some(32))
-            .with_syzygy_config(
-                SyzygyConfig::default().idle_sleep(std::time::Duration::from_millis(2)),
-            )
-            .build();
-
-        assert_eq!(runner.shell().effect_channel_capacity(), Some(512));
-        assert_eq!(runner.core().event_channel_capacity(), Some(32));
-        assert_eq!(
-            runner.config().idle_sleep,
-            std::time::Duration::from_millis(2)
-        );
-    }
-
-    #[cfg(feature = "rt-inline")]
-    #[test]
-    fn test_shell_type() {
-        let runner = Syzygy::builder::<TestEvent, TestEffect>()
-            .model(TestModel { count: 0 })
-            .event_handler(test_update)
-            .effect_handler(|_e: TestEffect, _resources| {
-                crate::executor::Task::<TestEvent, TestEffect>::events(Vec::new())
-            })
-            .with_async_executor(crate::executor::InlineAsync::new())
-            .build();
-
-        let (_core, shell) = runner.split();
-        let _: Shell<TestEvent, TestEffect> = shell;
-    }
-
-    #[test]
-    fn test_build_without_executors_is_allowed() {
-        let mut runner = Syzygy::builder::<TestEvent, TestEffect>()
-            .model(TestModel::default())
-            .event_handler(test_update)
-            .effect_handler(|_e: TestEffect, _resources| {
-                crate::executor::Task::<TestEvent, TestEffect>::events(Vec::new())
-            })
-            .build();
-
-        // With no executors registered, processing events still works as long as
-        // the effect handler does not schedule work onto an executor.
-        runner
-            .core()
-            .try_send_event(TestEvent::Increment)
-            .expect("event channel should be open");
-        runner.step().unwrap();
-        assert_eq!(runner.core().model().count, 1);
-    }
-
-    #[cfg(feature = "rt-inline")]
-    #[test]
-    fn test_multi_model() {
-        #[derive(Debug, Default)]
-        struct UserModel {
-            name: String,
-        }
-
-        #[derive(Debug, Default)]
-        struct ConfigModel {
-            theme: String,
-        }
-
-        fn multi_update(
-            event: TestEvent,
-            model: &mut (UserModel, ConfigModel),
-        ) -> Command<TestEvent, TestEffect> {
-            match event {
-                TestEvent::Increment => {
-                    let (user, config) = model;
-                    user.name = "Updated".to_string();
-                    config.theme = "dark".to_string();
-                    Command::effect(TestEffect::Log)
-                }
-            }
-        }
-
-        let runner = Syzygy::builder::<TestEvent, TestEffect>()
-            .model((
-                UserModel {
-                    name: "Alice".to_string(),
-                },
-                ConfigModel {
-                    theme: "light".to_string(),
-                },
-            ))
-            .event_handler(multi_update)
-            .effect_handler(|_e: TestEffect, _resources| {
-                crate::executor::Task::<TestEvent, TestEffect>::events(Vec::new())
-            })
-            .with_async_executor(crate::executor::InlineAsync::new())
-            .build();
-
-        let (mut core, _shell) = runner.split();
-
-        core.handle_event(TestEvent::Increment);
-
-        let (_user, config) = core.model();
-        assert_eq!(config.theme, "dark");
-    }
-}

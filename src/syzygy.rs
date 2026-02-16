@@ -33,12 +33,11 @@
 //! # }
 //! ```
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
-use crate::command::Command;
 use crate::core::Core;
 use crate::error::ShellError;
-use crate::shell::{Shell, ShellStats, ShellStatsSnapshot};
+use crate::shell::Shell;
 
 /// Configuration for the Syzygy
 #[derive(Clone, Debug)]
@@ -146,133 +145,6 @@ where
         })
     }
 
-    /// Drain the system for at most `max_steps` iterations.
-    ///
-    /// Returns the number of steps that performed work. Stops early if no work
-    /// remains before hitting `max_steps`.
-    pub fn drain_max(&mut self, max_steps: usize) -> Result<usize, ShellError> {
-        let mut steps = 0;
-        for _ in 0..max_steps {
-            if !self.step()? {
-                break;
-            }
-            steps += 1;
-        }
-        Ok(steps)
-    }
-
-    /// Drain until the predicate returns true or `timeout` elapses.
-    pub fn drain_until<F>(&mut self, mut predicate: F, timeout: Duration) -> Result<(), ShellError>
-    where
-        F: FnMut(&Model) -> bool,
-    {
-        if predicate(self.core.model()) {
-            return Ok(());
-        }
-
-        if timeout.is_zero() {
-            return Err(ShellError::Timeout { duration: timeout });
-        }
-
-        let start = Instant::now();
-        let deadline = start.checked_add(timeout);
-
-        loop {
-            if predicate(self.core.model()) {
-                return Ok(());
-            }
-
-            if let Some(deadline) = deadline {
-                if Instant::now() >= deadline {
-                    return Err(ShellError::Timeout { duration: timeout });
-                }
-            }
-
-            let did_work = self.step()?;
-
-            if predicate(self.core.model()) {
-                return Ok(());
-            }
-
-            if let Some(deadline) = deadline {
-                let now = Instant::now();
-                if now >= deadline {
-                    return Err(ShellError::Timeout { duration: timeout });
-                }
-
-                if !did_work {
-                    let remaining = deadline
-                        .checked_duration_since(now)
-                        .unwrap_or(Duration::ZERO);
-                    if remaining.is_zero() {
-                        return Err(ShellError::Timeout { duration: timeout });
-                    }
-
-                    let had_work = self.wait_for_idle(remaining);
-
-                    if predicate(self.core.model()) {
-                        return Ok(());
-                    }
-
-                    if !had_work && Instant::now() >= deadline {
-                        return Err(ShellError::Timeout { duration: timeout });
-                    }
-                }
-            } else if !did_work {
-                self.wait_for_work();
-            }
-        }
-    }
-
-    /// Drain the system until both Core and Shell report no outstanding work.
-    pub fn drain_until_idle(&mut self, timeout: Duration) -> Result<(), ShellError> {
-        if self.is_fully_idle() {
-            return Ok(());
-        }
-
-        if timeout.is_zero() {
-            return Err(ShellError::Timeout { duration: timeout });
-        }
-
-        let start = Instant::now();
-        let deadline = start.checked_add(timeout);
-
-        loop {
-            let did_work = self.step()?;
-
-            if self.is_fully_idle() {
-                return Ok(());
-            }
-
-            if let Some(deadline) = deadline {
-                let now = Instant::now();
-                if now >= deadline {
-                    return Err(ShellError::Timeout { duration: timeout });
-                }
-
-                if !did_work {
-                    let remaining = deadline
-                        .checked_duration_since(now)
-                        .unwrap_or(Duration::ZERO);
-                    if remaining.is_zero() {
-                        return Err(ShellError::Timeout { duration: timeout });
-                    }
-
-                    let had_work = self.wait_for_idle(remaining);
-
-                    if self.is_fully_idle() {
-                        return Ok(());
-                    }
-
-                    if !had_work && Instant::now() >= deadline {
-                        return Err(ShellError::Timeout { duration: timeout });
-                    }
-                }
-            } else if !did_work {
-                self.wait_for_work();
-            }
-        }
-    }
 
     /// Get an immutable reference to the model
     #[must_use]
@@ -318,10 +190,6 @@ where
         self.config = config;
     }
 
-    fn is_fully_idle(&self) -> bool {
-        !self.core.has_pending_events() && self.shell.is_idle()
-    }
-
     /// Request that the shell stop scheduling further work.
     pub fn shutdown(&mut self) {
         self.shell.shutdown();
@@ -343,144 +211,12 @@ where
         }
     }
 
-    /// Wait until the system is completely idle or timeout expires
-    ///
-    /// System is considered idle when:
-    /// - No pending events in core
-    /// - No pending effects in shell
-    /// - No in-flight async jobs
-    ///
-    /// Returns Err(ShellError::Timeout) if timeout expires before reaching idle.
-    pub fn await_idle(&mut self, timeout: Duration) -> Result<(), ShellError> {
-        if timeout.is_zero() {
-            return Err(ShellError::Timeout { duration: timeout });
-        }
-
-        let start = Instant::now();
-        let deadline = start.checked_add(timeout);
-
-        loop {
-            // Check if system is idle
-            if self.core.pending_count() == 0
-                && self.shell.pending_effects() == 0
-                && self.shell.inflight_jobs() == 0
-            {
-                return Ok(());
-            }
-
-            // Check timeout
-            if let Some(deadline) = deadline {
-                if Instant::now() >= deadline {
-                    return Err(ShellError::Timeout { duration: timeout });
-                }
-            }
-
-            // Process any available work
-            let did_work = self.step()?;
-
-            // If no work was done, wait for work to arrive
-            if !did_work {
-                let remaining = if let Some(deadline) = deadline {
-                    let now = Instant::now();
-                    if now >= deadline {
-                        return Err(ShellError::Timeout { duration: timeout });
-                    }
-                    deadline
-                        .checked_duration_since(now)
-                        .unwrap_or(Duration::ZERO)
-                } else {
-                    self.config.idle_sleep
-                };
-
-                // Wait for activity to reach zero or for new work to arrive
-                if self.shell.inflight_jobs() > 0 {
-                    if !self.shell.activity.wait_until_zero(remaining) {
-                        // Timeout waiting for activity, but we might still have work
-                        continue;
-                    }
-                } else {
-                    let _ = self.wait_for_idle(remaining);
-                }
-            }
-        }
-    }
-
-    /// Run until the system is completely idle (no timeout)
-    ///
-    /// This is a convenience method that calls `await_idle` with an infinite timeout.
-    pub fn run_to_idle(&mut self) -> Result<(), ShellError> {
-        self.await_idle(Duration::MAX)
-    }
-
-    /// Dispatch a command and then wait until the system is idle
-    ///
-    /// This is a convenience method that combines command dispatch with idle waiting.
-    pub fn dispatch_and_await(
-        &mut self,
-        command: Command<Event, Effect>,
-        timeout: Duration,
-    ) -> Result<(), ShellError> {
-        self.shell.dispatch_command(command)?;
-        self.await_idle(timeout)
-    }
-
-    /// Wait for work to arrive, trying core first then shell
-    ///
-    /// Returns true if work arrived, false if we timed out
-    #[must_use = "ignoring work detection defeats the purpose of waiting"]
-    fn wait_for_idle(&mut self, duration: Duration) -> bool {
-        let start = Instant::now();
-
-        // Try core first - bail immediately if channel closed
-        if self.core.wait_for_event(duration) {
-            return true;
-        }
-
-        // If core didn't get work and shell is closed, bail
-        if self.shell.is_closed() {
-            return false;
-        }
-
-        // Calculate remaining time for shell
-        let elapsed = start.elapsed();
-        let remaining = match duration.checked_sub(elapsed) {
-            Some(remaining) if !remaining.is_zero() => remaining,
-            _ => return false, // No time left
-        };
-
-        // Try shell with remaining time and return its result
-        self.shell.wait_for_effect(remaining)
-    }
-
-    /// Wait for work to arrive, blocking the current thread until either:
-    /// - An event arrives in the core
-    /// - An effect arrives in the shell
-    /// - The idle sleep timeout expires
-    /// - The shell is closed
-    ///
-    /// This method is called automatically by `run()` and `run_until()` when no work
-    /// is available, but can also be called manually for fine-grained control.
     pub fn wait_for_work(&mut self) {
-        // Early returns for cases where we shouldn't wait
-        if self.shell.is_closed() {
-            return;
-        }
-
-        if self.config.idle_sleep.is_zero() {
+        if self.shell.is_closed() || self.config.idle_sleep.is_zero() {
             thread::yield_now();
             return;
         }
-
-        if self.core.has_pending_events() || self.shell.pending_effects() > 0 {
-            return;
-        }
-
-        // Wait for work to arrive - we ignore the result since the main loop
-        // will check for pending work on the next iteration anyway
-        #[allow(unused_must_use)]
-        {
-            self.wait_for_idle(self.config.idle_sleep);
-        }
+        thread::sleep(self.config.idle_sleep);
     }
 
     fn run_loop<Step, Exit>(
@@ -531,18 +267,6 @@ where
     /// ```
     pub fn step(&mut self) -> Result<bool, ShellError> {
         step_core_shell(&mut self.core, &mut self.shell)
-    }
-
-    /// Snapshot Shell-level counters (dropped events/effects).
-    #[must_use]
-    pub fn shell_stats(&self) -> ShellStatsSnapshot {
-        self.shell.stats()
-    }
-
-    /// Clone a shared stats handle for integration with metrics or tracing.
-    #[must_use]
-    pub fn shell_stats_handle(&self) -> ShellStats {
-        self.shell.stats_handle()
     }
 
     /// Consume the runner and return ownership of the Core and Shell.
