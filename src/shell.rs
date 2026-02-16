@@ -20,8 +20,10 @@ use crate::executor::{ExecutorRegistry, Task};
 #[cfg(feature = "tracing")]
 use tracing::{debug, span, Level};
 
-/// Effect handler accepting closures that produce declarative tasks.
-pub type EffectHandler<E, X, R> = Box<dyn FnMut(X, R) -> Task<E, X> + Send + 'static>;
+use crate::extract::EffectContext;
+
+pub(crate) type EffectHandlerFn<E, X, R> =
+    Box<dyn Fn(X, &EffectContext<R>) -> Task<E, X> + Send + 'static>;
 
 #[derive(Clone, Default)]
 pub struct ShellStats {
@@ -86,7 +88,7 @@ where
     pub(crate) executors: Arc<ExecutorRegistry<E>>,
 
     /// User-provided effect handler
-    pub(crate) effect_handler: EffectHandler<E, X, R>,
+    pub(crate) effect_handler: EffectHandlerFn<E, X, R>,
 
     /// Shared application resources cloned per effect invocation
     pub(crate) resources: R,
@@ -164,11 +166,8 @@ where
     }
 
     fn process_effect(&mut self, effect: X) -> Result<(), ShellError> {
-        let resources = self.resources.clone();
-        let task = {
-            let handler = &mut self.effect_handler;
-            handler(effect, resources)
-        };
+        let ctx = EffectContext::new(self.resources.clone());
+        let task = (self.effect_handler)(effect, &ctx);
         drive_task_with_activity(
             &self.executors,
             task,

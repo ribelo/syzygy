@@ -13,7 +13,8 @@ use crate::executor::{
     AsyncExecutor, BlockingExecutor, ExecutorRegistry, PanicDetails, PanicHook,
     ResourceBlockingExecutor, Task,
 };
-use crate::shell::{EffectHandler, Shell, ShellStats};
+use crate::extract::{EffectContext, EffectHandler};
+use crate::shell::{EffectHandlerFn, Shell, ShellStats};
 use crate::syzygy::{Syzygy, SyzygyConfig};
 use std::collections::VecDeque;
 use std::marker::PhantomData;
@@ -139,7 +140,7 @@ where
     Resources: Clone + Send + 'static,
 {
     event_handler: EventHandler<Event, Effect, Model>,
-    effect_handler: Option<EffectHandler<Event, Effect, Resources>>,
+    effect_handler: Option<EffectHandlerFn<Event, Effect, Resources>>,
     model: Model,
     resources: Resources,
     exec_registry: ExecutorRegistry<Event>,
@@ -157,17 +158,18 @@ where
     Model: 'static,
     Resources: Clone + Send + 'static,
 {
-    /// Install the effect handler.
+    /// Install the effect handler with automatic resource extraction.
     ///
-    /// The handler receives a single effect and the cloned `Resources` value
-    /// and returns a `Task` plan. The Shell drives the plan on the registered
-    /// executors.
+    /// The handler's first argument is the effect. Remaining arguments are
+    /// extracted from `Resources` via [`FromEffectContext`](crate::extract::FromEffectContext).
     #[must_use]
-    pub fn effect_handler<H>(mut self, handler: H) -> Self
+    pub fn effect_handler<H, Marker>(mut self, handler: H) -> Self
     where
-        H: FnMut(Effect, Resources) -> Task<Event, Effect> + Send + 'static,
+        H: EffectHandler<Event, Effect, Resources, Marker>,
     {
-        self.effect_handler = Some(Box::new(handler));
+        self.effect_handler = Some(Box::new(move |effect, ctx: &EffectContext<Resources>| {
+            handler.call(effect, ctx)
+        }));
         self
     }
 
@@ -315,7 +317,7 @@ where
 
     fn build_shell(
         exec_registry: Arc<ExecutorRegistry<Event>>,
-        effect_handler: Option<EffectHandler<Event, Effect, Resources>>,
+        effect_handler: Option<EffectHandlerFn<Event, Effect, Resources>>,
         resources: Resources,
         event_tx: EventSender<Event>,
         effect_channel_capacity: Option<usize>,
@@ -323,25 +325,15 @@ where
     ) -> Shell<Event, Effect, Resources> {
         use crossbeam_channel::{bounded, unbounded};
 
-        fn default_effect_handler<E, X, R>(_: X, _: R) -> Task<E, X>
-        where
-            E: Send + 'static,
-            X: Send + 'static,
-            R: Clone + Send + 'static,
-        {
-            Task::<E, X>::none()
-        }
-
         let (effect_tx, effect_rx) = match effect_channel_capacity {
             Some(capacity) => bounded(capacity),
             None => unbounded(),
         };
 
-        let effect_handler = effect_handler.unwrap_or_else(|| {
-            Box::new(move |effect, resources| {
-                default_effect_handler::<Event, Effect, _>(effect, resources)
-            })
-        });
+        let effect_handler: EffectHandlerFn<Event, Effect, Resources> =
+            effect_handler.unwrap_or_else(|| {
+                Box::new(|_effect, _ctx: &EffectContext<Resources>| Task::<Event, Effect>::none())
+            });
 
         Shell {
             effect_rx,
