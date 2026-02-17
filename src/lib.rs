@@ -17,9 +17,12 @@ pub mod prelude {
     pub use crate::command::builders as cmd;
     pub use crate::command::{Command, CommandStep};
 
-    pub use crate::core::{Core, EventHandler, EventSender};
+    pub use crate::core::{Core, EventSender};
 
-    pub use crate::extract::{EffectContext, EffectHandler, FromEffectContext};
+    pub use crate::extract::{
+        EffectContext, EffectHandler, EventContext, EventHandler, FromEffectContext,
+        FromEventContext,
+    };
 
     #[cfg(feature = "shell")]
     pub use crate::builder::SyzygyBuilder;

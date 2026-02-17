@@ -8,12 +8,12 @@
 //! so usage stays straightforward in real apps and tests.
 use crate::activity::Activity;
 use crate::command::Command;
-use crate::core::{Core, EventHandler, EventSender};
+use crate::core::{Core, EventHandlerFn, EventSender};
 use crate::executor::{
     AsyncExecutor, BlockingExecutor, ExecutorRegistry, PanicDetails, PanicHook,
     ResourceBlockingExecutor, Task,
 };
-use crate::extract::EffectContext;
+use crate::extract::{EffectContext, EventContext};
 use crate::shell::{EffectHandlerFn, Shell, ShellStats};
 use crate::syzygy::{Syzygy, SyzygyConfig};
 use std::collections::VecDeque;
@@ -102,17 +102,21 @@ where
         }
     }
 
-    /// Finalize model configuration and set the event handler.
+    /// Install the event dispatch function.
     ///
-    /// Your event handler is a pure function. It mutates the model and returns
-    /// a `Command` telling the Shell what effects to run.
+    /// Match on event variants and call `.handle(payload, ctx)` on individual
+    /// handlers. Each handler extracts model fields via
+    /// [`FromEventContext`](crate::extract::FromEventContext).
     #[must_use]
-    pub fn event_handler(
+    pub fn event_handler<H>(
         self,
-        event_handler: EventHandler<Event, Effect, Model>,
-    ) -> ConfiguredBuilder<Event, Effect, Model, Resources> {
+        handler: H,
+    ) -> ConfiguredBuilder<Event, Effect, Model, Resources>
+    where
+        H: Fn(Event, &EventContext<Model>) -> Command<Event, Effect> + Send + 'static,
+    {
         ConfiguredBuilder {
-            event_handler,
+            event_handler: Box::new(handler),
             effect_handler: None,
             model: self.model,
             resources: self.resources,
@@ -139,7 +143,7 @@ where
     Effect: Send + 'static,
     Resources: Clone + Send + 'static,
 {
-    event_handler: EventHandler<Event, Effect, Model>,
+    event_handler: EventHandlerFn<Event, Effect, Model>,
     effect_handler: Option<EffectHandlerFn<Event, Effect, Resources>>,
     model: Model,
     resources: Resources,

@@ -1,4 +1,9 @@
+use std::cell::Cell;
+
+use crate::command::Command;
 use crate::executor::Task;
+
+// ── Effect side ─────────────────────────────────────────────────────
 
 pub struct EffectContext<R> {
     resources: R,
@@ -22,7 +27,6 @@ pub trait EffectHandler<E: Send + 'static, X: Send + 'static, P, R, Marker>: Sen
     fn handle(&self, payload: P, ctx: &EffectContext<R>) -> Task<E, X>;
 }
 
-// 0 extractors: fn(P) -> Task
 impl<E, X, P, R, F> EffectHandler<E, X, P, R, ()> for F
 where
     F: Fn(P) -> Task<E, X> + Send + 'static,
@@ -59,20 +63,153 @@ impl_effect_handler!(T1, T2, T3, T4, T5);
 impl_effect_handler!(T1, T2, T3, T4, T5, T6);
 impl_effect_handler!(T1, T2, T3, T4, T5, T6, T7);
 impl_effect_handler!(T1, T2, T3, T4, T5, T6, T7, T8);
-impl_effect_handler!(T1, T2, T3, T4, T5, T6, T7, T8, T9);
-impl_effect_handler!(T1, T2, T3, T4, T5, T6, T7, T8, T9, T10);
-impl_effect_handler!(T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11);
-impl_effect_handler!(T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12);
+
+// ── Event side ──────────────────────────────────────────────────────
+
+pub struct EventContext<M> {
+    ptr: *mut M,
+    borrowed: Cell<u64>,
+}
+
+impl<M> EventContext<M> {
+    pub(crate) fn new(model: &mut M) -> Self {
+        Self {
+            ptr: model as *mut M,
+            borrowed: Cell::new(0),
+        }
+    }
+
+    pub fn track_borrow(&self, field_index: u32, field_name: &str) {
+        let mask = 1u64 << field_index;
+        let current = self.borrowed.get();
+        assert!(
+            current & mask == 0,
+            "field '{}' (index {}) already borrowed mutably in this handler",
+            field_name,
+            field_index
+        );
+        self.borrowed.set(current | mask);
+    }
+
+    /// # Safety
+    /// Caller must have called `track_borrow` for this field first, and the
+    /// field offset must be correct for type `T` within `M`.
+    pub unsafe fn field_ptr<T>(&self, offset: usize) -> *mut T {
+        (self.ptr as *mut u8).add(offset) as *mut T
+    }
+
+    pub fn model_ptr(&self) -> *mut M {
+        self.ptr
+    }
+}
+
+pub trait FromEventContext<M> {
+    fn from_context(ctx: &EventContext<M>) -> Self;
+}
+
+pub trait EventHandler<E: Send + 'static, X: Send + 'static, P, M, Marker>: Send + 'static {
+    fn handle(&self, payload: P, ctx: &EventContext<M>) -> Command<E, X>;
+}
+
+impl<E, X, P, M, F> EventHandler<E, X, P, M, ()> for F
+where
+    F: Fn(P) -> Command<E, X> + Send + 'static,
+    E: Send + 'static,
+    X: Send + 'static,
+{
+    fn handle(&self, payload: P, _ctx: &EventContext<M>) -> Command<E, X> {
+        (self)(payload)
+    }
+}
+
+macro_rules! impl_event_handler {
+    ($($T:ident),+) => {
+        #[allow(non_snake_case)]
+        impl<E, X, P, M, F, $($T),+> EventHandler<E, X, P, M, ($($T,)+)> for F
+        where
+            F: Fn(P, $($T),+) -> Command<E, X> + Send + 'static,
+            $($T: FromEventContext<M>,)+
+            E: Send + 'static,
+            X: Send + 'static,
+        {
+            fn handle(&self, payload: P, ctx: &EventContext<M>) -> Command<E, X> {
+                (self)(payload, $($T::from_context(ctx)),+)
+            }
+        }
+    }
+}
+
+impl_event_handler!(T1);
+impl_event_handler!(T1, T2);
+impl_event_handler!(T1, T2, T3);
+impl_event_handler!(T1, T2, T3, T4);
+impl_event_handler!(T1, T2, T3, T4, T5);
+impl_event_handler!(T1, T2, T3, T4, T5, T6);
+impl_event_handler!(T1, T2, T3, T4, T5, T6, T7);
+impl_event_handler!(T1, T2, T3, T4, T5, T6, T7, T8);
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::ops::{Deref, DerefMut};
+
+    // ── shared test types ───────────────────────────────────────────
+
+    #[derive(Debug, Clone)]
+    enum Event { Saved, Incremented }
+
+    #[derive(Debug, Clone)]
+    enum Effect { Log(String) }
+
+    // ── Model + hand-written "derive" output ────────────────────────
+
+    struct AppModel {
+        counter: i32,
+        name: String,
+    }
+
+    // -- Counter field wrapper (derive would generate this) --
+
+    pub struct Counter(*mut i32);
+
+    impl Deref for Counter {
+        type Target = i32;
+        fn deref(&self) -> &i32 { unsafe { &*self.0 } }
+    }
+    impl DerefMut for Counter {
+        fn deref_mut(&mut self) -> &mut i32 { unsafe { &mut *self.0 } }
+    }
+
+    impl FromEventContext<AppModel> for Counter {
+        fn from_context(ctx: &EventContext<AppModel>) -> Self {
+            ctx.track_borrow(0, "counter");
+            Counter(unsafe { &mut (*ctx.model_ptr()).counter })
+        }
+    }
+
+    // -- Name field wrapper (derive would generate this) --
+
+    pub struct Name(*mut String);
+
+    impl Deref for Name {
+        type Target = String;
+        fn deref(&self) -> &String { unsafe { &*self.0 } }
+    }
+    impl DerefMut for Name {
+        fn deref_mut(&mut self) -> &mut String { unsafe { &mut *self.0 } }
+    }
+
+    impl FromEventContext<AppModel> for Name {
+        fn from_context(ctx: &EventContext<AppModel>) -> Self {
+            ctx.track_borrow(1, "name");
+            Name(unsafe { &mut (*ctx.model_ptr()).name })
+        }
+    }
+
+    // ── Resources (for effect tests) ────────────────────────────────
 
     #[derive(Clone)]
-    struct Resources {
-        db_url: String,
-        retry_count: u32,
-    }
+    struct Resources { db_url: String }
 
     #[derive(Clone)]
     struct DbUrl(String);
@@ -83,137 +220,158 @@ mod tests {
         }
     }
 
-    #[derive(Clone)]
-    struct RetryCount(u32);
+    // ── Event handler tests ─────────────────────────────────────────
 
-    impl FromEffectContext<Resources> for RetryCount {
-        fn from_context(ctx: &EffectContext<Resources>) -> Self {
-            RetryCount(ctx.resources().retry_count)
+    #[test]
+    fn event_one_field() {
+        fn increment(amount: u32, mut counter: Counter) -> Command<Event, Effect> {
+            *counter += amount as i32;
+            Command::event(Event::Incremented)
         }
-    }
 
-    #[derive(Debug, Clone)]
-    enum Event {
-        Done,
-    }
-
-    #[derive(Debug, Clone)]
-    enum Effect {
-        Save(String),
-        Notify(String),
+        let mut model = AppModel { counter: 0, name: String::new() };
+        let ctx = EventContext::new(&mut model);
+        let _cmd = increment.handle(5, &ctx);
+        drop(ctx);
+        assert_eq!(model.counter, 5);
     }
 
     #[test]
-    fn zero_extractors() {
-        fn save(_data: String) -> Task<Event, Effect> {
-            Task::event(Event::Done)
+    fn event_two_fields() {
+        fn save(data: String, mut counter: Counter, mut name: Name) -> Command<Event, Effect> {
+            *counter += 1;
+            *name = data;
+            Command::event(Event::Saved)
         }
 
-        let ctx = EffectContext::new(Resources {
-            db_url: "pg://localhost".into(),
-            retry_count: 3,
-        });
-        let _task = save.handle("hello".into(), &ctx);
+        let mut model = AppModel { counter: 10, name: "old".into() };
+        let ctx = EventContext::new(&mut model);
+        let _cmd = save.handle("new".into(), &ctx);
+        drop(ctx);
+        assert_eq!(model.counter, 11);
+        assert_eq!(model.name, "new");
     }
 
     #[test]
-    fn one_extractor() {
-        fn save(data: String, db: DbUrl) -> Task<Event, Effect> {
-            assert_eq!(data, "hello");
-            assert_eq!(db.0, "pg://localhost");
-            Task::event(Event::Done)
+    fn event_no_model() {
+        fn pure(_: ()) -> Command<Event, Effect> {
+            Command::effect(Effect::Log("hello".into()))
         }
 
-        let ctx = EffectContext::new(Resources {
-            db_url: "pg://localhost".into(),
-            retry_count: 3,
-        });
-        let _task = save.handle("hello".into(), &ctx);
+        let mut model = AppModel { counter: 0, name: String::new() };
+        let ctx = EventContext::new(&mut model);
+        let _cmd = pure.handle((), &ctx);
     }
 
     #[test]
-    fn two_extractors() {
-        fn save(data: String, db: DbUrl, retries: RetryCount) -> Task<Event, Effect> {
-            assert_eq!(data, "hello");
-            assert_eq!(db.0, "pg://localhost");
-            assert_eq!(retries.0, 3);
-            Task::event(Event::Done)
+    #[should_panic(expected = "already borrowed mutably")]
+    fn double_borrow_panics() {
+        fn bad(_: (), _c1: Counter, _c2: Counter) -> Command<Event, Effect> {
+            unreachable!()
         }
 
-        let ctx = EffectContext::new(Resources {
-            db_url: "pg://localhost".into(),
-            retry_count: 3,
-        });
-        let _task = save.handle("hello".into(), &ctx);
+        let mut model = AppModel { counter: 0, name: String::new() };
+        let ctx = EventContext::new(&mut model);
+        let _ = bad.handle((), &ctx);
     }
 
     #[test]
-    fn dispatch_match() {
-        fn save(data: String, db: DbUrl) -> Task<Event, Effect> {
-            assert_eq!(data, "hello");
-            assert_eq!(db.0, "pg://localhost");
-            Task::event(Event::Done)
+    fn event_dispatch_match() {
+        fn increment(amount: u32, mut counter: Counter) -> Command<Event, Effect> {
+            *counter += amount as i32;
+            Command::none()
         }
 
-        fn notify(msg: String) -> Task<Event, Effect> {
-            assert_eq!(msg, "world");
-            Task::event(Event::Done)
+        fn rename(new_name: String, mut name: Name) -> Command<Event, Effect> {
+            *name = new_name;
+            Command::none()
         }
 
-        let ctx = EffectContext::new(Resources {
-            db_url: "pg://localhost".into(),
-            retry_count: 3,
-        });
+        #[derive(Debug, Clone)]
+        enum Ev { Increment(u32), Rename(String) }
 
-        let dispatch = |effect: Effect, ctx: &EffectContext<Resources>| match effect {
-            Effect::Save(data) => save.handle(data, ctx),
-            Effect::Notify(msg) => notify.handle(msg, ctx),
+        let dispatch = |event: Ev, ctx: &EventContext<AppModel>| match event {
+            Ev::Increment(n) => increment.handle(n, ctx),
+            Ev::Rename(s) => rename.handle(s, ctx),
         };
 
-        let _task = dispatch(Effect::Save("hello".into()), &ctx);
-        let _task = dispatch(Effect::Notify("world".into()), &ctx);
+        let mut model = AppModel { counter: 0, name: "old".into() };
+
+        let ctx = EventContext::new(&mut model);
+        dispatch(Ev::Increment(3), &ctx);
+        drop(ctx);
+        assert_eq!(model.counter, 3);
+
+        let ctx = EventContext::new(&mut model);
+        dispatch(Ev::Rename("new".into()), &ctx);
+        drop(ctx);
+        assert_eq!(model.name, "new");
     }
 
-    #[cfg(feature = "shell")]
+    // ── Effect handler tests ────────────────────────────────────────
+
     #[test]
-    fn end_to_end_with_builder() {
-        use crate::prelude::*;
-
-        #[derive(Default)]
-        struct Model {
-            saved: bool,
-        }
-
+    fn effect_dispatch() {
         fn save(data: String, db: DbUrl) -> Task<Event, Effect> {
-            assert_eq!(data, "test_data");
+            assert_eq!(data, "x");
             assert_eq!(db.0, "pg://test");
-            Task::event(Event::Done)
+            Task::event(Event::Saved)
         }
 
-        fn notify(msg: String) -> Task<Event, Effect> {
+        fn log(msg: String) -> Task<Event, Effect> {
             let _ = msg;
             Task::none()
         }
 
-        let mut runner = Syzygy::builder::<Event, Effect>()
-            .model(Model::default())
-            .with_resources(Resources {
-                db_url: "pg://test".into(),
-                retry_count: 5,
+        let ctx = EffectContext::new(Resources { db_url: "pg://test".into() });
+        let dispatch = |effect: Effect, ctx: &EffectContext<Resources>| match effect {
+            Effect::Log(msg) => log.handle(msg, ctx),
+        };
+        let _ = save.handle("x".into(), &ctx);
+        let _ = dispatch(Effect::Log("hi".into()), &ctx);
+    }
+
+    // ── End-to-end with builder ─────────────────────────────────────
+
+    #[cfg(feature = "shell")]
+    #[test]
+    fn end_to_end() {
+        use crate::prelude::*;
+
+        #[derive(Debug, Clone)]
+        enum Ev { Increment(u32), Rename(String) }
+
+        #[derive(Debug, Clone)]
+        enum Fx { Noop }
+
+        fn increment(amount: u32, mut counter: Counter) -> Command<Ev, Fx> {
+            *counter += amount as i32;
+            Command::none()
+        }
+
+        fn rename(new_name: String, mut name: Name) -> Command<Ev, Fx> {
+            *name = new_name;
+            Command::none()
+        }
+
+        let mut runner = Syzygy::builder::<Ev, Fx>()
+            .model(AppModel { counter: 0, name: "init".into() })
+            .event_handler(|event: Ev, ctx: &EventContext<AppModel>| match event {
+                Ev::Increment(n) => increment.handle(n, ctx),
+                Ev::Rename(s) => rename.handle(s, ctx),
             })
-            .event_handler(|_event: Event, model: &mut Model| -> Command<Event, Effect> {
-                model.saved = true;
-                Command::none()
-            })
-            .effect_handler(|effect: Effect, ctx: &EffectContext<Resources>| match effect {
-                Effect::Save(data) => save.handle(data, ctx),
-                Effect::Notify(msg) => notify.handle(msg, ctx),
+            .effect_handler(|_effect: Fx, _ctx: &EffectContext<()>| {
+                Task::<Ev, Fx>::none()
             })
             .with_async_executor(InlineAsync::new())
             .build();
 
-        runner.core().try_send_event(Event::Done).unwrap();
+        runner.core().try_send_event(Ev::Increment(7)).unwrap();
         runner.step().unwrap();
-        assert!(runner.model().saved);
+        assert_eq!(runner.model().counter, 7);
+
+        runner.core().try_send_event(Ev::Rename("hello".into())).unwrap();
+        runner.step().unwrap();
+        assert_eq!(runner.model().name, "hello");
     }
 }

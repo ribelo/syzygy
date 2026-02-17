@@ -46,9 +46,10 @@ type CoreSendError<E> = crossbeam_channel::SendError<E>;
 use tracing::{debug, span, Level};
 
 use crate::command::Command;
+use crate::extract::EventContext;
 
-/// Update function type that takes an event and a mutable reference to the model.
-pub type EventHandler<E, X, M> = fn(event: E, model: &mut M) -> Command<E, X>;
+pub(crate) type EventHandlerFn<E, X, M> =
+    Box<dyn Fn(E, &EventContext<M>) -> Command<E, X> + Send>;
 
 /// Multi-producer sender returned by [`Core::new`].
 ///
@@ -140,7 +141,7 @@ where
     X: Send + 'static,
 {
     /// The update function that processes events
-    event_handler: EventHandler<E, X, M>,
+    event_handler: EventHandlerFn<E, X, M>,
 
     /// The model - owned and mutable
     model: M,
@@ -167,16 +168,13 @@ where
     X: Send + 'static,
 {
     /// Create a new Core with update function and storage
-    pub fn new(event_handler: EventHandler<E, X, M>, models: M) -> (Self, EventSender<E>) {
+    pub fn new(event_handler: EventHandlerFn<E, X, M>, models: M) -> (Self, EventSender<E>) {
         Self::with_event_channel_capacity(event_handler, models, None)
     }
 
     /// Create a new Core with a specific inbound event channel capacity.
-    ///
-    /// `None` keeps the default unbounded channel. Any `Some(capacity)` value sets an upper bound
-    /// on queued events; senders will receive a `CoreError::ChannelFull` until progress is made.
     pub fn with_event_channel_capacity(
-        event_handler: EventHandler<E, X, M>,
+        event_handler: EventHandlerFn<E, X, M>,
         models: M,
         capacity: Option<usize>,
     ) -> (Self, EventSender<E>) {
@@ -208,7 +206,8 @@ where
         #[cfg(feature = "tracing")]
         debug!("Processing event");
 
-        let command = (self.event_handler)(event, &mut self.model);
+        let ctx = EventContext::new(&mut self.model);
+        let command = (self.event_handler)(event, &ctx);
 
         #[cfg(feature = "tracing")]
         debug!("Event processed, command created");
