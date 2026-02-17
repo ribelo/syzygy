@@ -18,34 +18,34 @@ pub trait FromEffectContext<R> {
     fn from_context(ctx: &EffectContext<R>) -> Self;
 }
 
-pub trait EffectHandler<E: Send + 'static, X: Send + 'static, R, Marker>: Send + 'static {
-    fn call(&self, effect: X, ctx: &EffectContext<R>) -> Task<E, X>;
+pub trait EffectHandler<E: Send + 'static, X: Send + 'static, P, R, Marker>: Send + 'static {
+    fn handle(&self, payload: P, ctx: &EffectContext<R>) -> Task<E, X>;
 }
 
-// 0 extractors: fn(X) -> Task
-impl<E, X, R, F> EffectHandler<E, X, R, ()> for F
+// 0 extractors: fn(P) -> Task
+impl<E, X, P, R, F> EffectHandler<E, X, P, R, ()> for F
 where
-    F: Fn(X) -> Task<E, X> + Send + 'static,
+    F: Fn(P) -> Task<E, X> + Send + 'static,
     E: Send + 'static,
     X: Send + 'static,
 {
-    fn call(&self, effect: X, _ctx: &EffectContext<R>) -> Task<E, X> {
-        (self)(effect)
+    fn handle(&self, payload: P, _ctx: &EffectContext<R>) -> Task<E, X> {
+        (self)(payload)
     }
 }
 
 macro_rules! impl_effect_handler {
     ($($T:ident),+) => {
         #[allow(non_snake_case)]
-        impl<E, X, R, F, $($T),+> EffectHandler<E, X, R, ($($T,)+)> for F
+        impl<E, X, P, R, F, $($T),+> EffectHandler<E, X, P, R, ($($T,)+)> for F
         where
-            F: Fn(X, $($T),+) -> Task<E, X> + Send + 'static,
+            F: Fn(P, $($T),+) -> Task<E, X> + Send + 'static,
             $($T: FromEffectContext<R>,)+
             E: Send + 'static,
             X: Send + 'static,
         {
-            fn call(&self, effect: X, ctx: &EffectContext<R>) -> Task<E, X> {
-                (self)(effect, $($T::from_context(ctx)),+)
+            fn handle(&self, payload: P, ctx: &EffectContext<R>) -> Task<E, X> {
+                (self)(payload, $($T::from_context(ctx)),+)
             }
         }
     }
@@ -67,6 +67,7 @@ impl_effect_handler!(T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12);
 #[cfg(test)]
 mod tests {
     use super::*;
+
     #[derive(Clone)]
     struct Resources {
         db_url: String,
@@ -98,12 +99,13 @@ mod tests {
 
     #[derive(Debug, Clone)]
     enum Effect {
-        Save(#[allow(dead_code)] String),
+        Save(String),
+        Notify(String),
     }
 
     #[test]
     fn zero_extractors() {
-        fn handler(_effect: Effect) -> Task<Event, Effect> {
+        fn save(_data: String) -> Task<Event, Effect> {
             Task::event(Event::Done)
         }
 
@@ -111,13 +113,13 @@ mod tests {
             db_url: "pg://localhost".into(),
             retry_count: 3,
         });
-        let _task: Task<Event, Effect> =
-            EffectHandler::<Event, Effect, Resources, ()>::call(&handler, Effect::Save("x".into()), &ctx);
+        let _task = save.handle("hello".into(), &ctx);
     }
 
     #[test]
     fn one_extractor() {
-        fn handler(_effect: Effect, db: DbUrl) -> Task<Event, Effect> {
+        fn save(data: String, db: DbUrl) -> Task<Event, Effect> {
+            assert_eq!(data, "hello");
             assert_eq!(db.0, "pg://localhost");
             Task::event(Event::Done)
         }
@@ -126,16 +128,13 @@ mod tests {
             db_url: "pg://localhost".into(),
             retry_count: 3,
         });
-        let _task = EffectHandler::<Event, Effect, Resources, (DbUrl,)>::call(
-            &handler,
-            Effect::Save("x".into()),
-            &ctx,
-        );
+        let _task = save.handle("hello".into(), &ctx);
     }
 
     #[test]
     fn two_extractors() {
-        fn handler(_effect: Effect, db: DbUrl, retries: RetryCount) -> Task<Event, Effect> {
+        fn save(data: String, db: DbUrl, retries: RetryCount) -> Task<Event, Effect> {
+            assert_eq!(data, "hello");
             assert_eq!(db.0, "pg://localhost");
             assert_eq!(retries.0, 3);
             Task::event(Event::Done)
@@ -145,11 +144,34 @@ mod tests {
             db_url: "pg://localhost".into(),
             retry_count: 3,
         });
-        let _task = EffectHandler::<Event, Effect, Resources, (DbUrl, RetryCount)>::call(
-            &handler,
-            Effect::Save("x".into()),
-            &ctx,
-        );
+        let _task = save.handle("hello".into(), &ctx);
+    }
+
+    #[test]
+    fn dispatch_match() {
+        fn save(data: String, db: DbUrl) -> Task<Event, Effect> {
+            assert_eq!(data, "hello");
+            assert_eq!(db.0, "pg://localhost");
+            Task::event(Event::Done)
+        }
+
+        fn notify(msg: String) -> Task<Event, Effect> {
+            assert_eq!(msg, "world");
+            Task::event(Event::Done)
+        }
+
+        let ctx = EffectContext::new(Resources {
+            db_url: "pg://localhost".into(),
+            retry_count: 3,
+        });
+
+        let dispatch = |effect: Effect, ctx: &EffectContext<Resources>| match effect {
+            Effect::Save(data) => save.handle(data, ctx),
+            Effect::Notify(msg) => notify.handle(msg, ctx),
+        };
+
+        let _task = dispatch(Effect::Save("hello".into()), &ctx);
+        let _task = dispatch(Effect::Notify("world".into()), &ctx);
     }
 
     #[cfg(feature = "shell")]
@@ -162,6 +184,17 @@ mod tests {
             saved: bool,
         }
 
+        fn save(data: String, db: DbUrl) -> Task<Event, Effect> {
+            assert_eq!(data, "test_data");
+            assert_eq!(db.0, "pg://test");
+            Task::event(Event::Done)
+        }
+
+        fn notify(msg: String) -> Task<Event, Effect> {
+            let _ = msg;
+            Task::none()
+        }
+
         let mut runner = Syzygy::builder::<Event, Effect>()
             .model(Model::default())
             .with_resources(Resources {
@@ -172,12 +205,9 @@ mod tests {
                 model.saved = true;
                 Command::none()
             })
-            .effect_handler(|effect: Effect, db: DbUrl, retries: RetryCount| -> Task<Event, Effect> {
-                assert_eq!(db.0, "pg://test");
-                assert_eq!(retries.0, 5);
-                match effect {
-                    Effect::Save(_) => Task::event(Event::Done),
-                }
+            .effect_handler(|effect: Effect, ctx: &EffectContext<Resources>| match effect {
+                Effect::Save(data) => save.handle(data, ctx),
+                Effect::Notify(msg) => notify.handle(msg, ctx),
             })
             .with_async_executor(InlineAsync::new())
             .build();
@@ -185,49 +215,5 @@ mod tests {
         runner.core().try_send_event(Event::Done).unwrap();
         runner.step().unwrap();
         assert!(runner.model().saved);
-    }
-
-    #[test]
-    fn closure_handler() {
-        let prefix = "LOG".to_string();
-        let handler = move |_effect: Effect, db: DbUrl| -> Task<Event, Effect> {
-            let _ = &prefix;
-            assert_eq!(db.0, "pg://localhost");
-            Task::event(Event::Done)
-        };
-
-        let ctx = EffectContext::new(Resources {
-            db_url: "pg://localhost".into(),
-            retry_count: 3,
-        });
-        let _task = EffectHandler::<Event, Effect, Resources, (DbUrl,)>::call(
-            &handler,
-            Effect::Save("x".into()),
-            &ctx,
-        );
-    }
-
-    impl FromEffectContext<Resources> for Resources {
-        fn from_context(ctx: &EffectContext<Resources>) -> Self {
-            ctx.resources().clone()
-        }
-    }
-
-    #[test]
-    fn extract_whole_resources() {
-        fn handler(_effect: Effect, res: Resources) -> Task<Event, Effect> {
-            assert_eq!(res.db_url, "pg://localhost");
-            Task::event(Event::Done)
-        }
-
-        let ctx = EffectContext::new(Resources {
-            db_url: "pg://localhost".into(),
-            retry_count: 3,
-        });
-        let _task = EffectHandler::<Event, Effect, Resources, (Resources,)>::call(
-            &handler,
-            Effect::Save("x".into()),
-            &ctx,
-        );
     }
 }

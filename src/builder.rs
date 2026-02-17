@@ -13,7 +13,7 @@ use crate::executor::{
     AsyncExecutor, BlockingExecutor, ExecutorRegistry, PanicDetails, PanicHook,
     ResourceBlockingExecutor, Task,
 };
-use crate::extract::{EffectContext, EffectHandler};
+use crate::extract::EffectContext;
 use crate::shell::{EffectHandlerFn, Shell, ShellStats};
 use crate::syzygy::{Syzygy, SyzygyConfig};
 use std::collections::VecDeque;
@@ -158,18 +158,24 @@ where
     Model: 'static,
     Resources: Clone + Send + 'static,
 {
-    /// Install the effect handler with automatic resource extraction.
+    /// Install the effect dispatch function.
     ///
-    /// The handler's first argument is the effect. Remaining arguments are
-    /// extracted from `Resources` via [`FromEffectContext`](crate::extract::FromEffectContext).
+    /// Match on effect variants and call `.handle(payload, ctx)` on individual
+    /// handlers. Each handler extracts its own resources via
+    /// [`FromEffectContext`](crate::extract::FromEffectContext).
+    ///
+    /// ```ignore
+    /// .effect_handler(|effect, ctx| match effect {
+    ///     Effect::Save(data) => save.handle(data, ctx),
+    ///     Effect::Notify(msg) => notify.handle(msg, ctx),
+    /// })
+    /// ```
     #[must_use]
-    pub fn effect_handler<H, Marker>(mut self, handler: H) -> Self
+    pub fn effect_handler<H>(mut self, handler: H) -> Self
     where
-        H: EffectHandler<Event, Effect, Resources, Marker>,
+        H: Fn(Effect, &EffectContext<Resources>) -> Task<Event, Effect> + Send + 'static,
     {
-        self.effect_handler = Some(Box::new(move |effect, ctx: &EffectContext<Resources>| {
-            handler.call(effect, ctx)
-        }));
+        self.effect_handler = Some(Box::new(handler));
         self
     }
 
