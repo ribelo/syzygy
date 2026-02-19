@@ -254,6 +254,45 @@ impl<Event, Effect> Command<Event, Effect> {
             .sum()
     }
 
+    /// Transform event and effect types.
+    ///
+    /// Useful when embedding child commands into parent commands.
+    #[must_use]
+    pub fn map<E2, X2>(
+        self,
+        fe: impl Fn(Event) -> E2,
+        fx: impl Fn(Effect) -> X2,
+    ) -> Command<E2, X2> {
+        let outputs = self
+            .outputs
+            .into_iter()
+            .map(|step| match step {
+                CommandStep::Event(event) => CommandStep::Event(fe(event)),
+                CommandStep::Effect(effect) => CommandStep::Effect(fx(effect)),
+                CommandStep::Batch(effects) => {
+                    CommandStep::Batch(effects.into_iter().map(&fx).collect())
+                }
+                CommandStep::Parallel(effects) => {
+                    CommandStep::Parallel(effects.into_iter().map(&fx).collect())
+                }
+            })
+            .collect();
+
+        Command { outputs }
+    }
+
+    /// Transform only the event type.
+    #[must_use]
+    pub fn map_event<E2>(self, f: impl Fn(Event) -> E2) -> Command<E2, Effect> {
+        self.map(f, std::convert::identity)
+    }
+
+    /// Transform only the effect type.
+    #[must_use]
+    pub fn map_effect<X2>(self, f: impl Fn(Effect) -> X2) -> Command<Event, X2> {
+        self.map(std::convert::identity, f)
+    }
+
     // ---------------------------
     // Builder-style chaining API
     // ---------------------------
@@ -441,5 +480,101 @@ pub mod builders {
         commands: impl IntoIterator<Item = Command<Event, Effect>>,
     ) -> Command<Event, Effect> {
         Command::batch(commands)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Command, CommandStep};
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    enum ChildEvent {
+        Ready,
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    enum ParentEvent {
+        Child(ChildEvent),
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    enum ChildEffect {
+        Load,
+        Save,
+        Sync,
+        Flush,
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    enum ParentEffect {
+        Child(ChildEffect),
+    }
+
+    #[test]
+    fn map_event_wraps_events() {
+        let mapped: Command<ParentEvent, ChildEffect> =
+            Command::event(ChildEvent::Ready).map_event(ParentEvent::Child);
+
+        assert_eq!(
+            mapped.into_iter().collect::<Vec<_>>(),
+            vec![CommandStep::Event(ParentEvent::Child(ChildEvent::Ready))]
+        );
+    }
+
+    #[test]
+    fn map_effect_wraps_effects() {
+        let mapped: Command<ChildEvent, ParentEffect> =
+            Command::effect(ChildEffect::Load).map_effect(ParentEffect::Child);
+
+        assert_eq!(
+            mapped.into_iter().collect::<Vec<_>>(),
+            vec![CommandStep::Effect(ParentEffect::Child(ChildEffect::Load))]
+        );
+    }
+
+    #[test]
+    fn map_transforms_events_and_effects() {
+        let mapped: Command<ParentEvent, ParentEffect> = Command::event(ChildEvent::Ready)
+            .and_effect(ChildEffect::Load)
+            .map(ParentEvent::Child, ParentEffect::Child);
+
+        assert_eq!(
+            mapped.into_iter().collect::<Vec<_>>(),
+            vec![
+                CommandStep::Event(ParentEvent::Child(ChildEvent::Ready)),
+                CommandStep::Effect(ParentEffect::Child(ChildEffect::Load)),
+            ]
+        );
+    }
+
+    #[test]
+    fn map_effect_transforms_batch_and_parallel_steps() {
+        let mapped: Command<ChildEvent, ParentEffect> =
+            Command::sequential([ChildEffect::Load, ChildEffect::Save])
+                .and(Command::parallel([ChildEffect::Sync, ChildEffect::Flush]))
+                .map_effect(ParentEffect::Child);
+
+        assert_eq!(
+            mapped.into_iter().collect::<Vec<_>>(),
+            vec![
+                CommandStep::Batch(vec![
+                    ParentEffect::Child(ChildEffect::Load),
+                    ParentEffect::Child(ChildEffect::Save),
+                ]),
+                CommandStep::Parallel(vec![
+                    ParentEffect::Child(ChildEffect::Sync),
+                    ParentEffect::Child(ChildEffect::Flush),
+                ]),
+            ]
+        );
+    }
+
+    #[test]
+    fn map_on_none_stays_none() {
+        let mapped: Command<ParentEvent, ParentEffect> =
+            Command::<ChildEvent, ChildEffect>::none().map(ParentEvent::Child, ParentEffect::Child);
+
+        assert!(mapped.is_empty());
+        assert_eq!(mapped.into_iter().count(), 0);
     }
 }

@@ -1,5 +1,5 @@
 [workspace]
-members = ["."]
+members = ["crates/syzygy-macros"]
 resolver = "2"
 
 [package]
@@ -19,6 +19,10 @@ rust-version = "1.75"
 [lib]
 path = "src/lib.rs"
 doctest = false
+
+[[example]]
+name = "counter_with_save"
+required-features = ["shell"]
 
 [features]
 default = ["shell", "rt-inline"]
@@ -44,7 +48,7 @@ rayon = { version = "1.9", optional = true }
 
 # Tracing dependencies
 tracing = { version = "0.1", optional = true }
-
+syzygy-macros = { path = "crates/syzygy-macros" }
 
 [dev-dependencies]
 tokio = { version = "1.40", features = ["rt", "rt-multi-thread", "sync", "time", "macros", "io-util"] }

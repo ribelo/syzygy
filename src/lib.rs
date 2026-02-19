@@ -5,6 +5,8 @@ pub mod error;
 pub mod extract;
 pub mod test_store;
 
+pub use syzygy_macros::{Model, Resources};
+
 #[cfg(feature = "shell")]
 pub mod builder;
 #[cfg(feature = "shell")]
@@ -25,6 +27,7 @@ pub mod prelude {
         FromEventContext,
     };
     pub use crate::test_store::{assert_panic, assert_panic_contains, TestStore};
+    pub use syzygy_macros::{Model, Resources};
 
     #[cfg(feature = "shell")]
     pub use crate::builder::SyzygyBuilder;

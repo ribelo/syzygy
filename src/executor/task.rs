@@ -239,6 +239,99 @@ where
             job,
         }
     }
+
+    /// Transform event and effect output types.
+    #[must_use]
+    pub fn map<E2, X2>(
+        self,
+        fe: impl Fn(E) -> E2 + Send + 'static,
+        fx: impl Fn(X) -> X2 + Send + 'static,
+    ) -> Task<E2, X2>
+    where
+        E2: Send + 'static,
+        X2: Send + 'static,
+    {
+        match self {
+            Self::Event(event) => Task::Event(fe(event)),
+            Self::Events(events) => Task::Events(events.into_iter().map(&fe).collect()),
+            Self::Async {
+                exec_type_id,
+                exec_type_name,
+                future,
+            } => {
+                let future = future.map(move |command| command.map(&fe, &fx)).boxed();
+                Task::Async {
+                    exec_type_id,
+                    exec_type_name,
+                    future,
+                }
+            }
+            Self::Stream {
+                exec_type_id,
+                exec_type_name,
+                stream,
+            } => {
+                let stream = stream.map(fe).boxed();
+                Task::Stream {
+                    exec_type_id,
+                    exec_type_name,
+                    stream,
+                }
+            }
+            Self::Blocking {
+                exec_type_id,
+                exec_type_name,
+                job,
+            } => {
+                let job = Box::new(move || {
+                    let command = job();
+                    command.map(&fe, &fx)
+                }) as Box<BlockingJob<E2, X2>>;
+                Task::Blocking {
+                    exec_type_id,
+                    exec_type_name,
+                    job,
+                }
+            }
+            Self::BlockingWithResource {
+                exec_type_id,
+                exec_type_name,
+                resource_type_id,
+                resource_type_name,
+                job,
+            } => {
+                let job = Box::new(move |resource: &mut dyn Any| {
+                    let command = job(resource);
+                    command.map(&fe, &fx)
+                }) as Box<ResourceBlockingJob<E2, X2>>;
+                Task::BlockingWithResource {
+                    exec_type_id,
+                    exec_type_name,
+                    resource_type_id,
+                    resource_type_name,
+                    job,
+                }
+            }
+        }
+    }
+
+    /// Transform only the event output type.
+    #[must_use]
+    pub fn map_event<E2>(self, f: impl Fn(E) -> E2 + Send + 'static) -> Task<E2, X>
+    where
+        E2: Send + 'static,
+    {
+        self.map(f, std::convert::identity)
+    }
+
+    /// Transform only the effect output type.
+    #[must_use]
+    pub fn map_effect<X2>(self, f: impl Fn(X) -> X2 + Send + 'static) -> Task<E, X2>
+    where
+        X2: Send + 'static,
+    {
+        self.map(std::convert::identity, f)
+    }
 }
 
 fn route_command<E, X>(

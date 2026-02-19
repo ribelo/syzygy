@@ -151,7 +151,6 @@ impl_event_handler!(T1, T2, T3, T4, T5, T6, T7, T8);
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::ops::{Deref, DerefMut};
 
     // ── shared test types ───────────────────────────────────────────
 
@@ -177,14 +176,14 @@ mod tests {
 
     pub struct Counter(*mut i32);
 
-    impl Deref for Counter {
+    impl std::ops::Deref for Counter {
         type Target = i32;
         fn deref(&self) -> &i32 {
             // SAFETY: Counter is only constructed from a valid `AppModel::counter` pointer.
             unsafe { &*self.0 }
         }
     }
-    impl DerefMut for Counter {
+    impl std::ops::DerefMut for Counter {
         fn deref_mut(&mut self) -> &mut i32 {
             // SAFETY: Counter provides unique mutable access tracked by `EventContext::track_borrow`.
             unsafe { &mut *self.0 }
@@ -203,14 +202,14 @@ mod tests {
 
     pub struct Name(*mut String);
 
-    impl Deref for Name {
+    impl std::ops::Deref for Name {
         type Target = String;
         fn deref(&self) -> &String {
             // SAFETY: Name is only constructed from a valid `AppModel::name` pointer.
             unsafe { &*self.0 }
         }
     }
-    impl DerefMut for Name {
+    impl std::ops::DerefMut for Name {
         fn deref_mut(&mut self) -> &mut String {
             // SAFETY: Name provides unique mutable access tracked by `EventContext::track_borrow`.
             unsafe { &mut *self.0 }

@@ -338,9 +338,19 @@ dependencies = [
  "rayon",
  "rustc-hash",
  "smallvec",
+ "syzygy-macros",
  "thiserror",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "syzygy-macros"
+version = "0.1.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
 ]
 
 [[package]]
