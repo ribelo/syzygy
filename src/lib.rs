@@ -3,6 +3,7 @@ pub mod command;
 pub mod core;
 pub mod error;
 pub mod extract;
+pub mod test_store;
 
 #[cfg(feature = "shell")]
 pub mod builder;
@@ -23,6 +24,7 @@ pub mod prelude {
         EffectContext, EffectHandler, EventContext, EventHandler, FromEffectContext,
         FromEventContext,
     };
+    pub use crate::test_store::{assert_panic, assert_panic_contains, TestStore};
 
     #[cfg(feature = "shell")]
     pub use crate::builder::SyzygyBuilder;
@@ -33,7 +35,7 @@ pub mod prelude {
     #[cfg(feature = "shell")]
     pub use crate::syzygy::{Runner, Syzygy, SyzygyConfig};
 
-    pub use crate::error::{CommandError, CoreError, EffectError};
     #[cfg(feature = "shell")]
     pub use crate::error::ShellError;
+    pub use crate::error::{CommandError, CoreError, EffectError};
 }
