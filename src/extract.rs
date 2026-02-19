@@ -17,6 +17,14 @@ impl<R> EffectContext<R> {
     pub fn resources(&self) -> &R {
         &self.resources
     }
+
+    /// Create a child context with resources derived from parent resources.
+    pub fn scope<R2, F>(&self, f: F) -> EffectContext<R2>
+    where
+        F: FnOnce(&R) -> R2,
+    {
+        EffectContext::new(f(&self.resources))
+    }
 }
 
 pub trait FromEffectContext<R> {
@@ -101,6 +109,29 @@ impl<M> EventContext<M> {
     pub fn model_ptr(&self) -> *mut M {
         self.ptr
     }
+
+    /// Create a child context pointing to a sub-field of the model.
+    ///
+    /// The child context gets independent borrow tracking so child field indexes
+    /// do not conflict with parent field indexes.
+    pub fn scope<C, F>(&self, f: F) -> EventContext<C>
+    where
+        F: FnOnce(&mut M) -> &mut C,
+    {
+        let model_ptr = self.model_ptr();
+        let child_ptr = {
+            // SAFETY: `self.ptr` was created from a live mutable model reference.
+            // `scope` is intended for short-lived child dispatch where parent and
+            // child borrows are coordinated by runtime tracking.
+            let model = unsafe { &mut *model_ptr };
+            f(model) as *mut C
+        };
+
+        EventContext {
+            ptr: child_ptr,
+            borrowed: Cell::new(0),
+        }
+    }
 }
 
 pub trait FromEventContext<M> {
@@ -151,6 +182,8 @@ impl_event_handler!(T1, T2, T3, T4, T5, T6, T7, T8);
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::command::CommandStep;
+    use crate::test_store::TestStore;
 
     // ── shared test types ───────────────────────────────────────────
 
@@ -375,6 +408,333 @@ mod tests {
         };
         let _ = save.handle("x".into(), &ctx);
         let _ = dispatch(Effect::Log("hi".into()), &ctx);
+    }
+
+    // ── Scope composition tests ─────────────────────────────────────
+
+    #[derive(Debug, Default)]
+    struct ScopedCounterModel {
+        count: i32,
+    }
+
+    struct ScopedCount(*mut i32);
+
+    impl std::ops::Deref for ScopedCount {
+        type Target = i32;
+
+        fn deref(&self) -> &Self::Target {
+            // SAFETY: ScopedCount points to `ScopedCounterModel::count`.
+            unsafe { &*self.0 }
+        }
+    }
+
+    impl std::ops::DerefMut for ScopedCount {
+        fn deref_mut(&mut self) -> &mut Self::Target {
+            // SAFETY: borrow tracking guarantees mutable exclusivity.
+            unsafe { &mut *self.0 }
+        }
+    }
+
+    impl FromEventContext<ScopedCounterModel> for ScopedCount {
+        fn from_context(ctx: &EventContext<ScopedCounterModel>) -> Self {
+            ctx.track_borrow(0, "count");
+            // SAFETY: field index 0 maps to `ScopedCounterModel::count`.
+            ScopedCount(unsafe { &mut (*ctx.model_ptr()).count })
+        }
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    enum ScopedCounterEvent {
+        Increment(i32),
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    enum ScopedCounterEffect {
+        Log(String),
+    }
+
+    fn scoped_counter_increment(
+        amount: i32,
+        mut count: ScopedCount,
+    ) -> Command<ScopedCounterEvent, ScopedCounterEffect> {
+        *count += amount;
+        Command::effect(ScopedCounterEffect::Log(format!("count={}", *count)))
+    }
+
+    fn scoped_counter_dispatch(
+        event: ScopedCounterEvent,
+        ctx: &EventContext<ScopedCounterModel>,
+    ) -> Command<ScopedCounterEvent, ScopedCounterEffect> {
+        match event {
+            ScopedCounterEvent::Increment(amount) => scoped_counter_increment.handle(amount, ctx),
+        }
+    }
+
+    #[derive(Debug, Default)]
+    struct ScopedToggleModel {
+        enabled: bool,
+    }
+
+    struct ScopedEnabled(*mut bool);
+
+    impl std::ops::Deref for ScopedEnabled {
+        type Target = bool;
+
+        fn deref(&self) -> &Self::Target {
+            // SAFETY: ScopedEnabled points to `ScopedToggleModel::enabled`.
+            unsafe { &*self.0 }
+        }
+    }
+
+    impl std::ops::DerefMut for ScopedEnabled {
+        fn deref_mut(&mut self) -> &mut Self::Target {
+            // SAFETY: borrow tracking guarantees mutable exclusivity.
+            unsafe { &mut *self.0 }
+        }
+    }
+
+    impl FromEventContext<ScopedToggleModel> for ScopedEnabled {
+        fn from_context(ctx: &EventContext<ScopedToggleModel>) -> Self {
+            ctx.track_borrow(0, "enabled");
+            // SAFETY: field index 0 maps to `ScopedToggleModel::enabled`.
+            ScopedEnabled(unsafe { &mut (*ctx.model_ptr()).enabled })
+        }
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    enum ScopedToggleEvent {
+        Set(bool),
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    enum ScopedToggleEffect {
+        Changed(bool),
+    }
+
+    fn scoped_toggle_set(
+        enabled: bool,
+        mut current: ScopedEnabled,
+    ) -> Command<ScopedToggleEvent, ScopedToggleEffect> {
+        *current = enabled;
+        Command::effect(ScopedToggleEffect::Changed(*current))
+    }
+
+    fn scoped_toggle_dispatch(
+        event: ScopedToggleEvent,
+        ctx: &EventContext<ScopedToggleModel>,
+    ) -> Command<ScopedToggleEvent, ScopedToggleEffect> {
+        match event {
+            ScopedToggleEvent::Set(enabled) => scoped_toggle_set.handle(enabled, ctx),
+        }
+    }
+
+    #[derive(Debug, Default)]
+    struct ScopedAppModel {
+        title: String,
+        counter: ScopedCounterModel,
+        toggle: ScopedToggleModel,
+    }
+
+    struct ScopedTitle(*mut String);
+
+    impl std::ops::Deref for ScopedTitle {
+        type Target = String;
+
+        fn deref(&self) -> &Self::Target {
+            // SAFETY: ScopedTitle points to `ScopedAppModel::title`.
+            unsafe { &*self.0 }
+        }
+    }
+
+    impl std::ops::DerefMut for ScopedTitle {
+        fn deref_mut(&mut self) -> &mut Self::Target {
+            // SAFETY: borrow tracking guarantees mutable exclusivity.
+            unsafe { &mut *self.0 }
+        }
+    }
+
+    impl FromEventContext<ScopedAppModel> for ScopedTitle {
+        fn from_context(ctx: &EventContext<ScopedAppModel>) -> Self {
+            ctx.track_borrow(0, "title");
+            // SAFETY: field index 0 maps to `ScopedAppModel::title`.
+            ScopedTitle(unsafe { &mut (*ctx.model_ptr()).title })
+        }
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    enum ScopedAppEvent {
+        Counter(ScopedCounterEvent),
+        Toggle(ScopedToggleEvent),
+        Rename(String),
+        CounterWithRename { amount: i32, title: String },
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    enum ScopedAppEffect {
+        Counter(ScopedCounterEffect),
+        Toggle(ScopedToggleEffect),
+    }
+
+    fn scoped_app_dispatch(
+        event: ScopedAppEvent,
+        ctx: &EventContext<ScopedAppModel>,
+    ) -> Command<ScopedAppEvent, ScopedAppEffect> {
+        match event {
+            ScopedAppEvent::Counter(child_event) => {
+                let child_ctx = ctx.scope(|model| &mut model.counter);
+                scoped_counter_dispatch(child_event, &child_ctx)
+                    .map_event(ScopedAppEvent::Counter)
+                    .map_effect(ScopedAppEffect::Counter)
+            }
+            ScopedAppEvent::Toggle(child_event) => {
+                let child_ctx = ctx.scope(|model| &mut model.toggle);
+                scoped_toggle_dispatch(child_event, &child_ctx)
+                    .map_event(ScopedAppEvent::Toggle)
+                    .map_effect(ScopedAppEffect::Toggle)
+            }
+            ScopedAppEvent::Rename(new_title) => {
+                let mut title = ScopedTitle::from_context(ctx);
+                *title = new_title;
+                Command::none()
+            }
+            ScopedAppEvent::CounterWithRename {
+                amount,
+                title: new_title,
+            } => {
+                let mut title = ScopedTitle::from_context(ctx);
+                *title = new_title;
+
+                let child_ctx = ctx.scope(|model| &mut model.counter);
+                scoped_counter_increment
+                    .handle(amount, &child_ctx)
+                    .map_event(ScopedAppEvent::Counter)
+                    .map_effect(ScopedAppEffect::Counter)
+            }
+        }
+    }
+
+    #[derive(Clone)]
+    struct ScopedResources {
+        db_url: String,
+    }
+
+    #[derive(Clone)]
+    struct ScopedCounterResources {
+        db_url: String,
+    }
+
+    #[derive(Clone)]
+    struct ScopedDbUrl(String);
+
+    impl FromEffectContext<ScopedCounterResources> for ScopedDbUrl {
+        fn from_context(ctx: &EffectContext<ScopedCounterResources>) -> Self {
+            Self(ctx.resources().db_url.clone())
+        }
+    }
+
+    fn scoped_save(_: (), db_url: ScopedDbUrl) -> Task<ScopedCounterEvent, ScopedCounterEffect> {
+        assert_eq!(db_url.0, "pg://scope");
+        Task::none()
+    }
+
+    #[test]
+    fn event_scope_updates_child_model() {
+        let mut model = ScopedAppModel::default();
+        let ctx = EventContext::new(&mut model);
+
+        let _ = scoped_app_dispatch(
+            ScopedAppEvent::Counter(ScopedCounterEvent::Increment(4)),
+            &ctx,
+        );
+
+        assert_eq!(model.counter.count, 4);
+    }
+
+    #[test]
+    fn scoped_command_mapping_wraps_child_effects() {
+        let mut model = ScopedAppModel::default();
+        let ctx = EventContext::new(&mut model);
+
+        let command = scoped_app_dispatch(
+            ScopedAppEvent::Counter(ScopedCounterEvent::Increment(2)),
+            &ctx,
+        );
+
+        assert_eq!(
+            command.into_iter().collect::<Vec<_>>(),
+            vec![CommandStep::Effect(ScopedAppEffect::Counter(
+                ScopedCounterEffect::Log("count=2".to_string())
+            ))]
+        );
+    }
+
+    #[test]
+    fn scoped_context_borrow_tracking_is_independent() {
+        let mut model = ScopedAppModel::default();
+        let ctx = EventContext::new(&mut model);
+
+        let _ = scoped_app_dispatch(
+            ScopedAppEvent::CounterWithRename {
+                amount: 3,
+                title: "scoped".to_string(),
+            },
+            &ctx,
+        );
+
+        assert_eq!(model.title, "scoped");
+        assert_eq!(model.counter.count, 3);
+    }
+
+    #[test]
+    fn parent_composes_multiple_children() {
+        let mut model = ScopedAppModel::default();
+
+        {
+            let ctx = EventContext::new(&mut model);
+            let _ = scoped_app_dispatch(
+                ScopedAppEvent::Counter(ScopedCounterEvent::Increment(5)),
+                &ctx,
+            );
+        }
+
+        {
+            let ctx = EventContext::new(&mut model);
+            let _ = scoped_app_dispatch(ScopedAppEvent::Toggle(ScopedToggleEvent::Set(true)), &ctx);
+        }
+
+        assert_eq!(model.counter.count, 5);
+        assert!(model.toggle.enabled);
+    }
+
+    #[test]
+    fn test_store_handles_scoped_parent_dispatch() {
+        let mut store = TestStore::new(ScopedAppModel::default(), scoped_app_dispatch);
+
+        store.send(ScopedAppEvent::Counter(ScopedCounterEvent::Increment(3)));
+        assert_eq!(store.state().counter.count, 3);
+        store.assert_effects([ScopedAppEffect::Counter(ScopedCounterEffect::Log(
+            "count=3".to_string(),
+        ))]);
+
+        store.send(ScopedAppEvent::Toggle(ScopedToggleEvent::Set(true)));
+        assert!(store.state().toggle.enabled);
+        store.assert_effects([ScopedAppEffect::Toggle(ScopedToggleEffect::Changed(true))]);
+
+        store.send(ScopedAppEvent::Rename("updated".to_string()));
+        assert_eq!(store.state().title, "updated");
+        store.assert_no_effects();
+    }
+
+    #[test]
+    fn effect_scope_derives_child_resources() {
+        let resources = EffectContext::new(ScopedResources {
+            db_url: "pg://scope".to_string(),
+        });
+        let child_ctx = resources.scope(|parent| ScopedCounterResources {
+            db_url: parent.db_url.clone(),
+        });
+
+        let _ = scoped_save.handle((), &child_ctx);
     }
 
     // ── End-to-end with builder ─────────────────────────────────────
