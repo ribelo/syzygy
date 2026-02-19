@@ -23,7 +23,9 @@ pub trait FromEffectContext<R> {
     fn from_context(ctx: &EffectContext<R>) -> Self;
 }
 
-pub trait EffectHandler<E: Send + 'static, X: Send + 'static, P, R, Marker>: Send + 'static {
+pub trait EffectHandler<E: Send + 'static, X: Send + 'static, P, R, Marker>:
+    Send + 'static
+{
     fn handle(&self, payload: P, ctx: &EffectContext<R>) -> Task<E, X>;
 }
 
@@ -84,9 +86,7 @@ impl<M> EventContext<M> {
         let current = self.borrowed.get();
         assert!(
             current & mask == 0,
-            "field '{}' (index {}) already borrowed mutably in this handler",
-            field_name,
-            field_index
+            "field '{field_name}' (index {field_index}) already borrowed mutably in this handler"
         );
         self.borrowed.set(current | mask);
     }
@@ -95,7 +95,7 @@ impl<M> EventContext<M> {
     /// Caller must have called `track_borrow` for this field first, and the
     /// field offset must be correct for type `T` within `M`.
     pub unsafe fn field_ptr<T>(&self, offset: usize) -> *mut T {
-        (self.ptr as *mut u8).add(offset) as *mut T
+        self.ptr.cast::<u8>().add(offset).cast::<T>()
     }
 
     pub fn model_ptr(&self) -> *mut M {
@@ -156,10 +156,15 @@ mod tests {
     // ── shared test types ───────────────────────────────────────────
 
     #[derive(Debug, Clone)]
-    enum Event { Saved, Incremented }
+    enum Event {
+        Saved,
+        Incremented,
+    }
 
     #[derive(Debug, Clone)]
-    enum Effect { Log(String) }
+    enum Effect {
+        Log(String),
+    }
 
     // ── Model + hand-written "derive" output ────────────────────────
 
@@ -174,15 +179,22 @@ mod tests {
 
     impl Deref for Counter {
         type Target = i32;
-        fn deref(&self) -> &i32 { unsafe { &*self.0 } }
+        fn deref(&self) -> &i32 {
+            // SAFETY: Counter is only constructed from a valid `AppModel::counter` pointer.
+            unsafe { &*self.0 }
+        }
     }
     impl DerefMut for Counter {
-        fn deref_mut(&mut self) -> &mut i32 { unsafe { &mut *self.0 } }
+        fn deref_mut(&mut self) -> &mut i32 {
+            // SAFETY: Counter provides unique mutable access tracked by `EventContext::track_borrow`.
+            unsafe { &mut *self.0 }
+        }
     }
 
     impl FromEventContext<AppModel> for Counter {
         fn from_context(ctx: &EventContext<AppModel>) -> Self {
             ctx.track_borrow(0, "counter");
+            // SAFETY: `track_borrow` enforces single mutable access to this field for the handler call.
             Counter(unsafe { &mut (*ctx.model_ptr()).counter })
         }
     }
@@ -193,15 +205,22 @@ mod tests {
 
     impl Deref for Name {
         type Target = String;
-        fn deref(&self) -> &String { unsafe { &*self.0 } }
+        fn deref(&self) -> &String {
+            // SAFETY: Name is only constructed from a valid `AppModel::name` pointer.
+            unsafe { &*self.0 }
+        }
     }
     impl DerefMut for Name {
-        fn deref_mut(&mut self) -> &mut String { unsafe { &mut *self.0 } }
+        fn deref_mut(&mut self) -> &mut String {
+            // SAFETY: Name provides unique mutable access tracked by `EventContext::track_borrow`.
+            unsafe { &mut *self.0 }
+        }
     }
 
     impl FromEventContext<AppModel> for Name {
         fn from_context(ctx: &EventContext<AppModel>) -> Self {
             ctx.track_borrow(1, "name");
+            // SAFETY: `track_borrow` enforces single mutable access to this field for the handler call.
             Name(unsafe { &mut (*ctx.model_ptr()).name })
         }
     }
@@ -209,7 +228,9 @@ mod tests {
     // ── Resources (for effect tests) ────────────────────────────────
 
     #[derive(Clone)]
-    struct Resources { db_url: String }
+    struct Resources {
+        db_url: String,
+    }
 
     #[derive(Clone)]
     struct DbUrl(String);
@@ -225,14 +246,19 @@ mod tests {
     #[test]
     fn event_one_field() {
         fn increment(amount: u32, mut counter: Counter) -> Command<Event, Effect> {
-            *counter += amount as i32;
+            let amount = i32::try_from(amount).expect("u32 amount must fit in i32");
+            *counter += amount;
             Command::event(Event::Incremented)
         }
 
-        let mut model = AppModel { counter: 0, name: String::new() };
-        let ctx = EventContext::new(&mut model);
-        let _cmd = increment.handle(5, &ctx);
-        drop(ctx);
+        let mut model = AppModel {
+            counter: 0,
+            name: String::new(),
+        };
+        {
+            let ctx = EventContext::new(&mut model);
+            let _cmd = increment.handle(5, &ctx);
+        }
         assert_eq!(model.counter, 5);
     }
 
@@ -244,10 +270,14 @@ mod tests {
             Command::event(Event::Saved)
         }
 
-        let mut model = AppModel { counter: 10, name: "old".into() };
-        let ctx = EventContext::new(&mut model);
-        let _cmd = save.handle("new".into(), &ctx);
-        drop(ctx);
+        let mut model = AppModel {
+            counter: 10,
+            name: "old".into(),
+        };
+        {
+            let ctx = EventContext::new(&mut model);
+            let _cmd = save.handle("new".into(), &ctx);
+        }
         assert_eq!(model.counter, 11);
         assert_eq!(model.name, "new");
     }
@@ -258,7 +288,10 @@ mod tests {
             Command::effect(Effect::Log("hello".into()))
         }
 
-        let mut model = AppModel { counter: 0, name: String::new() };
+        let mut model = AppModel {
+            counter: 0,
+            name: String::new(),
+        };
         let ctx = EventContext::new(&mut model);
         let _cmd = pure.handle((), &ctx);
     }
@@ -270,7 +303,10 @@ mod tests {
             unreachable!()
         }
 
-        let mut model = AppModel { counter: 0, name: String::new() };
+        let mut model = AppModel {
+            counter: 0,
+            name: String::new(),
+        };
         let ctx = EventContext::new(&mut model);
         let _ = bad.handle((), &ctx);
     }
@@ -278,7 +314,8 @@ mod tests {
     #[test]
     fn event_dispatch_match() {
         fn increment(amount: u32, mut counter: Counter) -> Command<Event, Effect> {
-            *counter += amount as i32;
+            let amount = i32::try_from(amount).expect("u32 amount must fit in i32");
+            *counter += amount;
             Command::none()
         }
 
@@ -288,23 +325,31 @@ mod tests {
         }
 
         #[derive(Debug, Clone)]
-        enum Ev { Increment(u32), Rename(String) }
+        enum Ev {
+            Increment(u32),
+            Rename(String),
+        }
 
         let dispatch = |event: Ev, ctx: &EventContext<AppModel>| match event {
             Ev::Increment(n) => increment.handle(n, ctx),
             Ev::Rename(s) => rename.handle(s, ctx),
         };
 
-        let mut model = AppModel { counter: 0, name: "old".into() };
+        let mut model = AppModel {
+            counter: 0,
+            name: "old".into(),
+        };
 
-        let ctx = EventContext::new(&mut model);
-        dispatch(Ev::Increment(3), &ctx);
-        drop(ctx);
+        {
+            let ctx = EventContext::new(&mut model);
+            dispatch(Ev::Increment(3), &ctx);
+        }
         assert_eq!(model.counter, 3);
 
-        let ctx = EventContext::new(&mut model);
-        dispatch(Ev::Rename("new".into()), &ctx);
-        drop(ctx);
+        {
+            let ctx = EventContext::new(&mut model);
+            dispatch(Ev::Rename("new".into()), &ctx);
+        }
         assert_eq!(model.name, "new");
     }
 
@@ -323,7 +368,9 @@ mod tests {
             Task::none()
         }
 
-        let ctx = EffectContext::new(Resources { db_url: "pg://test".into() });
+        let ctx = EffectContext::new(Resources {
+            db_url: "pg://test".into(),
+        });
         let dispatch = |effect: Effect, ctx: &EffectContext<Resources>| match effect {
             Effect::Log(msg) => log.handle(msg, ctx),
         };
@@ -339,13 +386,17 @@ mod tests {
         use crate::prelude::*;
 
         #[derive(Debug, Clone)]
-        enum Ev { Increment(u32), Rename(String) }
+        enum Ev {
+            Increment(u32),
+            Rename(String),
+        }
 
         #[derive(Debug, Clone)]
-        enum Fx { Noop }
+        struct Fx;
 
         fn increment(amount: u32, mut counter: Counter) -> Command<Ev, Fx> {
-            *counter += amount as i32;
+            let amount = i32::try_from(amount).expect("u32 amount must fit in i32");
+            *counter += amount;
             Command::none()
         }
 
@@ -355,14 +406,15 @@ mod tests {
         }
 
         let mut runner = Syzygy::builder::<Ev, Fx>()
-            .model(AppModel { counter: 0, name: "init".into() })
+            .model(AppModel {
+                counter: 0,
+                name: "init".into(),
+            })
             .event_handler(|event: Ev, ctx: &EventContext<AppModel>| match event {
                 Ev::Increment(n) => increment.handle(n, ctx),
                 Ev::Rename(s) => rename.handle(s, ctx),
             })
-            .effect_handler(|_effect: Fx, _ctx: &EffectContext<()>| {
-                Task::<Ev, Fx>::none()
-            })
+            .effect_handler(|_effect: Fx, _ctx: &EffectContext<()>| Task::<Ev, Fx>::none())
             .with_async_executor(InlineAsync::new())
             .build();
 
@@ -370,7 +422,10 @@ mod tests {
         runner.step().unwrap();
         assert_eq!(runner.model().counter, 7);
 
-        runner.core().try_send_event(Ev::Rename("hello".into())).unwrap();
+        runner
+            .core()
+            .try_send_event(Ev::Rename("hello".into()))
+            .unwrap();
         runner.step().unwrap();
         assert_eq!(runner.model().name, "hello");
     }

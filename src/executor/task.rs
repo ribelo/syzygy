@@ -65,6 +65,8 @@ impl PanicDetails {
 }
 
 pub type PanicHook<E, X> = dyn Fn(PanicDetails, String) -> Command<E, X> + Send + Sync;
+type BlockingJob<E, X> = dyn FnOnce() -> Command<E, X> + Send;
+type ResourceBlockingJob<E, X> = dyn FnOnce(&mut dyn Any) -> Command<E, X> + Send;
 
 fn command_from_panic<E, X>(
     panic_handler: Option<&Arc<PanicHook<E, X>>>,
@@ -102,14 +104,14 @@ where
     Blocking {
         exec_type_id: TypeId,
         exec_type_name: &'static str,
-        job: Box<dyn FnOnce() -> Command<E, X> + Send>,
+        job: Box<BlockingJob<E, X>>,
     },
     BlockingWithResource {
         exec_type_id: TypeId,
         exec_type_name: &'static str,
         resource_type_id: TypeId,
         resource_type_name: &'static str,
-        job: Box<dyn FnOnce(&mut dyn Any) -> Command<E, X> + Send>,
+        job: Box<ResourceBlockingJob<E, X>>,
     },
 }
 
@@ -172,10 +174,7 @@ where
             futures_util::pin_mut!(future);
             futures_util::pin_mut!(cancel);
             match futures_util::future::select(cancel, future).await {
-                Either::Left((_, pending_future)) => {
-                    drop(pending_future);
-                    cancel_command
-                }
+                Either::Left(((), _pending_future)) => cancel_command,
                 Either::Right((command, _)) => command,
             }
         };
@@ -206,7 +205,7 @@ where
     {
         let exec_type_id = TypeId::of::<Exec>();
         let exec_type_name = type_name::<Exec>();
-        let job: Box<dyn FnOnce() -> Command<E, X> + Send> = Box::new(job);
+        let job: Box<BlockingJob<E, X>> = Box::new(job);
         Self::Blocking {
             exec_type_id,
             exec_type_name,
@@ -228,13 +227,10 @@ where
         let user_job = job;
         let job = Box::new(move |resource: &mut dyn Any| {
             let resource = resource.downcast_mut::<R>().unwrap_or_else(|| {
-                panic!(
-                    "resource type mismatch for single-thread executor; expected {}",
-                    resource_type_name
-                )
+                panic!("resource type mismatch for single-thread executor; expected {resource_type_name}")
             });
             user_job(resource)
-        }) as Box<dyn FnOnce(&mut dyn Any) -> Command<E, X> + Send>;
+        }) as Box<ResourceBlockingJob<E, X>>;
         Self::BlockingWithResource {
             exec_type_id,
             exec_type_name,
@@ -459,7 +455,7 @@ where
             let job = Box::new(move || {
                 let details =
                     PanicDetails::new(PanicTaskKind::Blocking, exec_type_name, exec_type_id);
-                let command = match panic::catch_unwind(AssertUnwindSafe(|| job())) {
+                let command = match panic::catch_unwind(AssertUnwindSafe(job)) {
                     Ok(command) => command,
                     Err(payload) => command_from_panic(panic_handler_cl.as_ref(), details, payload),
                 };

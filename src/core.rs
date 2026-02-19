@@ -48,8 +48,7 @@ use tracing::{debug, span, Level};
 use crate::command::Command;
 use crate::extract::EventContext;
 
-pub(crate) type EventHandlerFn<E, X, M> =
-    Box<dyn Fn(E, &EventContext<M>) -> Command<E, X> + Send>;
+pub(crate) type EventHandlerFn<E, X, M> = Box<dyn Fn(E, &EventContext<M>) -> Command<E, X> + Send>;
 
 /// Multi-producer sender returned by [`Core::new`].
 ///

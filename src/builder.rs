@@ -108,10 +108,7 @@ where
     /// handlers. Each handler extracts model fields via
     /// [`FromEventContext`](crate::extract::FromEventContext).
     #[must_use]
-    pub fn event_handler<H>(
-        self,
-        handler: H,
-    ) -> ConfiguredBuilder<Event, Effect, Model, Resources>
+    pub fn event_handler<H>(self, handler: H) -> ConfiguredBuilder<Event, Effect, Model, Resources>
     where
         H: Fn(Event, &EventContext<Model>) -> Command<Event, Effect> + Send + 'static,
     {
@@ -340,8 +337,8 @@ where
             None => unbounded(),
         };
 
-        let effect_handler: EffectHandlerFn<Event, Effect, Resources> =
-            effect_handler.unwrap_or_else(|| {
+        let effect_handler: EffectHandlerFn<Event, Effect, Resources> = effect_handler
+            .unwrap_or_else(|| {
                 Box::new(|_effect, _ctx: &EffectContext<Resources>| Task::<Event, Effect>::none())
             });
 
@@ -362,4 +359,3 @@ where
         }
     }
 }
-

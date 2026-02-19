@@ -69,6 +69,7 @@ impl Activity {
     /// Wait until the in-flight count reaches zero or timeout expires
     ///
     /// Returns true if count reached zero, false if timeout occurred.
+    #[must_use]
     pub fn wait_until_zero(&self, timeout: Duration) -> bool {
         if self.load() == 0 {
             return true;

@@ -145,7 +145,6 @@ where
         })
     }
 
-
     /// Get an immutable reference to the model
     #[must_use]
     pub fn model(&self) -> &Model {
