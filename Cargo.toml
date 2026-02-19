@@ -24,6 +24,10 @@ doctest = false
 name = "counter_with_save"
 required-features = ["shell"]
 
+[[example]]
+name = "full_showcase"
+required-features = ["shell"]
+
 [features]
 default = ["shell", "rt-inline"]
 shell = [
