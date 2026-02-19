@@ -19,7 +19,7 @@ use crate::error::ShellError;
 use crate::executor::{
     panic_message, AsyncExecutor, BlockingExecutor, ExecutorRegistry, ResourceBlockingExecutor,
 };
-use crate::shell::ShellStats;
+use crate::shell::{prepare_effect_step_for_queue, CancelGenerationMap, CancelGuard, ShellStats};
 
 fn missing_executor(kind: &'static str, exec: TypeId, exec_name: &'static str) -> ShellError {
     #[cfg(feature = "tracing")]
@@ -67,6 +67,35 @@ impl PanicDetails {
 pub type PanicHook<E, X> = dyn Fn(PanicDetails, String) -> Command<E, X> + Send + Sync;
 type BlockingJob<E, X> = dyn FnOnce() -> Command<E, X> + Send;
 type ResourceBlockingJob<E, X> = dyn FnOnce(&mut dyn Any) -> Command<E, X> + Send;
+
+#[derive(Clone)]
+pub(crate) struct TaskRouting<E, X>
+where
+    E: Send + 'static,
+    X: Send + 'static,
+{
+    pub activity: Option<Activity>,
+    pub stats: Option<ShellStats>,
+    pub cancel_generations: Option<CancelGenerationMap>,
+    pub cancel_guard: Option<CancelGuard>,
+    pub panic_handler: Option<Arc<PanicHook<E, X>>>,
+}
+
+impl<E, X> Default for TaskRouting<E, X>
+where
+    E: Send + 'static,
+    X: Send + 'static,
+{
+    fn default() -> Self {
+        Self {
+            activity: None,
+            stats: None,
+            cancel_generations: None,
+            cancel_guard: None,
+            panic_handler: None,
+        }
+    }
+}
 
 fn command_from_panic<E, X>(
     panic_handler: Option<&Arc<PanicHook<E, X>>>,
@@ -334,16 +363,30 @@ where
     }
 }
 
+fn is_cancelled(cancel_guard: Option<&CancelGuard>) -> bool {
+    cancel_guard.is_some_and(|guard| guard())
+}
+
 fn route_command<E, X>(
     event_tx: &EventSender<E>,
     effect_tx: &EffectSender<CommandStep<E, X>>,
     command: Command<E, X>,
     stats: Option<&ShellStats>,
+    cancel_generations: Option<&CancelGenerationMap>,
+    cancel_guard: Option<&CancelGuard>,
 ) where
     E: Send + 'static,
     X: Send + 'static,
 {
+    if is_cancelled(cancel_guard) {
+        return;
+    }
+
     for step in command {
+        if is_cancelled(cancel_guard) {
+            break;
+        }
+
         match step {
             CommandStep::Event(event) => {
                 if event_tx.send(event).is_err() {
@@ -354,31 +397,14 @@ fn route_command<E, X>(
                     tracing::debug!("event channel closed while routing command output");
                 }
             }
-            CommandStep::Effect(x) => {
-                if effect_tx.send(CommandStep::Effect(x)).is_err() {
+            step => {
+                let step = prepare_effect_step_for_queue(step, cancel_generations);
+                if effect_tx.send(step).is_err() {
                     if let Some(stats) = stats {
                         stats.inc_dropped_effect_step();
                     }
                     #[cfg(feature = "tracing")]
                     tracing::debug!("effect channel closed while routing command output");
-                }
-            }
-            CommandStep::Batch(v) => {
-                if effect_tx.send(CommandStep::Batch(v)).is_err() {
-                    if let Some(stats) = stats {
-                        stats.inc_dropped_effect_step();
-                    }
-                    #[cfg(feature = "tracing")]
-                    tracing::debug!("effect channel closed while routing batch command output");
-                }
-            }
-            CommandStep::Parallel(v) => {
-                if effect_tx.send(CommandStep::Parallel(v)).is_err() {
-                    if let Some(stats) = stats {
-                        stats.inc_dropped_effect_step();
-                    }
-                    #[cfg(feature = "tracing")]
-                    tracing::debug!("effect channel closed while routing parallel command output");
                 }
             }
         }
@@ -402,9 +428,10 @@ where
         task,
         event_tx,
         effect_tx,
-        None,
-        None,
-        panic_handler,
+        TaskRouting {
+            panic_handler: panic_handler.cloned(),
+            ..TaskRouting::default()
+        },
     )
 }
 
@@ -413,18 +440,23 @@ pub(crate) fn drive_task_with_activity<E, X>(
     task: Task<E, X>,
     event_tx: EventSender<E>,
     effect_tx: EffectSender<CommandStep<E, X>>,
-    activity: Option<&Activity>,
-    stats: Option<&ShellStats>,
-    panic_handler: Option<&Arc<PanicHook<E, X>>>,
+    routing: TaskRouting<E, X>,
 ) -> Result<(), ShellError>
 where
     E: Send + 'static,
     X: Send + 'static,
 {
+    let TaskRouting {
+        activity,
+        stats,
+        cancel_generations,
+        cancel_guard,
+        panic_handler,
+    } = routing;
     match task {
         Task::Event(event) => {
-            if event_tx.send(event).is_err() {
-                if let Some(stats) = stats {
+            if !is_cancelled(cancel_guard.as_ref()) && event_tx.send(event).is_err() {
+                if let Some(stats) = stats.as_ref() {
                     stats.inc_dropped_event();
                 }
                 #[cfg(feature = "tracing")]
@@ -433,8 +465,12 @@ where
         }
         Task::Events(events) => {
             for e in events {
+                if is_cancelled(cancel_guard.as_ref()) {
+                    break;
+                }
+
                 if event_tx.send(e).is_err() {
-                    if let Some(stats) = stats {
+                    if let Some(stats) = stats.as_ref() {
                         stats.inc_dropped_event();
                     }
                     #[cfg(feature = "tracing")]
@@ -454,12 +490,14 @@ where
 
             let event_tx_cl = event_tx.clone();
             let effect_tx_cl = effect_tx.clone();
-            let activity_cl = activity.cloned();
-            let stats_cl = stats.cloned();
-            if let Some(activity) = activity {
+            let activity_cl = activity.clone();
+            let stats_cl = stats.clone();
+            let cancel_generations_cl = cancel_generations.clone();
+            let cancel_guard_cl = cancel_guard.clone();
+            if let Some(activity) = activity.as_ref() {
                 activity.inc();
             }
-            let panic_handler_cl = panic_handler.cloned();
+            let panic_handler_cl = panic_handler.clone();
             let fut = async move {
                 let details = PanicDetails::new(PanicTaskKind::Async, exec_type_name, exec_type_id);
                 let result = AssertUnwindSafe(future).catch_unwind().await;
@@ -468,8 +506,16 @@ where
                     Err(payload) => command_from_panic(panic_handler_cl.as_ref(), details, payload),
                 };
                 let stats_ref = stats_cl.as_ref();
-                route_command(&event_tx_cl, &effect_tx_cl, command, stats_ref);
-                // Decrement activity counter when async work completes
+                let cancel_generations_ref = cancel_generations_cl.as_ref();
+                let cancel_guard_ref = cancel_guard_cl.as_ref();
+                route_command(
+                    &event_tx_cl,
+                    &effect_tx_cl,
+                    command,
+                    stats_ref,
+                    cancel_generations_ref,
+                    cancel_guard_ref,
+                );
                 if let Some(activity) = activity_cl {
                     activity.dec();
                 }
@@ -477,7 +523,7 @@ where
             .boxed();
 
             if let Err(err) = exec.spawn_async(fut) {
-                if let Some(activity) = activity {
+                if let Some(activity) = activity.as_ref() {
                     activity.dec();
                 }
                 return Err(ShellError::TaskSpawnFailed(format!(
@@ -495,14 +541,19 @@ where
                 .ok_or_else(|| missing_executor("stream", exec_type_id, exec_type_name))?;
 
             let event_tx_cl = event_tx.clone();
-            let activity_cl = activity.cloned();
-            let stats_cl = stats.cloned();
-            if let Some(activity) = activity {
+            let activity_cl = activity.clone();
+            let stats_cl = stats.clone();
+            let cancel_guard_cl = cancel_guard.clone();
+            if let Some(activity) = activity.as_ref() {
                 activity.inc();
             }
             let fut = async move {
                 futures_util::pin_mut!(stream);
                 while let Some(event) = stream.next().await {
+                    if is_cancelled(cancel_guard_cl.as_ref()) {
+                        break;
+                    }
+
                     if event_tx_cl.send(event).is_err() {
                         if let Some(stats) = stats_cl.as_ref() {
                             stats.inc_dropped_event();
@@ -512,7 +563,6 @@ where
                         break;
                     }
                 }
-                // Decrement activity counter when stream ends
                 if let Some(activity) = activity_cl {
                     activity.dec();
                 }
@@ -520,7 +570,7 @@ where
             .boxed();
 
             if let Err(err) = exec.spawn_async(fut) {
-                if let Some(activity) = activity {
+                if let Some(activity) = activity.as_ref() {
                     activity.dec();
                 }
                 return Err(ShellError::TaskSpawnFailed(format!(
@@ -539,12 +589,14 @@ where
 
             let event_tx_cl = event_tx.clone();
             let effect_tx_cl = effect_tx.clone();
-            let activity_cl = activity.cloned();
-            let stats_cl = stats.cloned();
-            if let Some(activity) = activity {
+            let activity_cl = activity.clone();
+            let stats_cl = stats.clone();
+            let cancel_generations_cl = cancel_generations.clone();
+            let cancel_guard_cl = cancel_guard.clone();
+            if let Some(activity) = activity.as_ref() {
                 activity.inc();
             }
-            let panic_handler_cl = panic_handler.cloned();
+            let panic_handler_cl = panic_handler.clone();
             let job = Box::new(move || {
                 let details =
                     PanicDetails::new(PanicTaskKind::Blocking, exec_type_name, exec_type_id);
@@ -553,15 +605,23 @@ where
                     Err(payload) => command_from_panic(panic_handler_cl.as_ref(), details, payload),
                 };
                 let stats_ref = stats_cl.as_ref();
-                route_command(&event_tx_cl, &effect_tx_cl, command, stats_ref);
-                // Decrement activity counter when blocking job completes
+                let cancel_generations_ref = cancel_generations_cl.as_ref();
+                let cancel_guard_ref = cancel_guard_cl.as_ref();
+                route_command(
+                    &event_tx_cl,
+                    &effect_tx_cl,
+                    command,
+                    stats_ref,
+                    cancel_generations_ref,
+                    cancel_guard_ref,
+                );
                 if let Some(activity) = activity_cl {
                     activity.dec();
                 }
             }) as Box<dyn FnOnce() + Send>;
 
             if let Err(err) = exec.spawn_blocking(job) {
-                if let Some(activity) = activity {
+                if let Some(activity) = activity.as_ref() {
                     activity.dec();
                 }
                 return Err(ShellError::TaskSpawnFailed(format!(
@@ -591,12 +651,14 @@ where
 
             let event_tx_cl = event_tx.clone();
             let effect_tx_cl = effect_tx.clone();
-            let activity_cl = activity.cloned();
-            let stats_cl = stats.cloned();
-            if let Some(activity) = activity {
+            let activity_cl = activity.clone();
+            let stats_cl = stats.clone();
+            let cancel_generations_cl = cancel_generations.clone();
+            let cancel_guard_cl = cancel_guard.clone();
+            if let Some(activity) = activity.as_ref() {
                 activity.inc();
             }
-            let panic_handler_cl = panic_handler.cloned();
+            let panic_handler_cl = panic_handler.clone();
             let job = Box::new(move |resource: &mut dyn Any| {
                 let details = PanicDetails::new(
                     PanicTaskKind::BlockingWithResource,
@@ -608,15 +670,23 @@ where
                     Err(payload) => command_from_panic(panic_handler_cl.as_ref(), details, payload),
                 };
                 let stats_ref = stats_cl.as_ref();
-                route_command(&event_tx_cl, &effect_tx_cl, command, stats_ref);
-                // Decrement activity counter when blocking job completes
+                let cancel_generations_ref = cancel_generations_cl.as_ref();
+                let cancel_guard_ref = cancel_guard_cl.as_ref();
+                route_command(
+                    &event_tx_cl,
+                    &effect_tx_cl,
+                    command,
+                    stats_ref,
+                    cancel_generations_ref,
+                    cancel_guard_ref,
+                );
                 if let Some(activity) = activity_cl {
                     activity.dec();
                 }
             }) as Box<dyn FnOnce(&mut dyn Any) + Send>;
 
             if let Err(err) = exec.spawn_blocking_with_resource(job) {
-                if let Some(activity) = activity {
+                if let Some(activity) = activity.as_ref() {
                     activity.dec();
                 }
                 return Err(ShellError::TaskSpawnFailed(format!(

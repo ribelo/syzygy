@@ -3,6 +3,7 @@ pub mod command;
 pub mod core;
 pub mod error;
 pub mod extract;
+pub mod reducer;
 pub mod test_store;
 
 pub use syzygy_macros::{Model, Resources};
@@ -18,7 +19,7 @@ pub mod syzygy;
 
 pub mod prelude {
     pub use crate::command::builders as cmd;
-    pub use crate::command::{Command, CommandStep};
+    pub use crate::command::{CancelId, Command, CommandStep};
 
     pub use crate::core::{Core, EventSender};
 
@@ -26,6 +27,7 @@ pub mod prelude {
         EffectContext, EffectHandler, EventContext, EventHandler, FromEffectContext,
         FromEventContext,
     };
+    pub use crate::reducer::{combine, BoxedReducer, Combine, Reduce, Reducer, ReducerExt, Scope};
     pub use crate::test_store::{assert_panic, assert_panic_contains, TestStore};
     pub use syzygy_macros::{Model, Resources};
 

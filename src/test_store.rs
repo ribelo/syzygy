@@ -140,7 +140,7 @@ where
                 CommandStep::Event(event) => {
                     self.pending_events.push_back(event);
                 }
-                CommandStep::Effect(effect) => {
+                CommandStep::Effect(effect) | CommandStep::CancellableEffect { effect, .. } => {
                     self.pending_effects.push(effect);
                 }
                 CommandStep::Batch(effects) | CommandStep::Parallel(effects) => {

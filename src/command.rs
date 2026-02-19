@@ -1,5 +1,23 @@
 use smallvec::SmallVec;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum CancelId {
+    Static(&'static str),
+    Numeric(u64),
+}
+
+impl From<&'static str> for CancelId {
+    fn from(value: &'static str) -> Self {
+        Self::Static(value)
+    }
+}
+
+impl From<u64> for CancelId {
+    fn from(value: u64) -> Self {
+        Self::Numeric(value)
+    }
+}
+
 /// One atomic operation in the Core→Shell pipeline.
 ///
 /// This is what actually happens when your event handler returns a Command.
@@ -10,10 +28,25 @@ use smallvec::SmallVec;
 pub enum CommandStep<Event, Effect> {
     Event(Event),
     Effect(Effect),
+    CancellableEffect {
+        id: CancelId,
+        effect: Effect,
+        generation: u64,
+    },
     /// Effects dispatched in order; executors determine actual execution order
     Batch(Vec<Effect>),
     /// Effects dispatched without waiting between each submission
     Parallel(Vec<Effect>),
+}
+
+impl<Event, Effect> CommandStep<Event, Effect> {
+    pub(crate) fn cancellable(id: CancelId, effect: Effect) -> Self {
+        Self::CancellableEffect {
+            id,
+            effect,
+            generation: 0,
+        }
+    }
 }
 
 impl<Event, Effect> PartialEq for CommandStep<Event, Effect>
@@ -25,6 +58,18 @@ where
         match (self, other) {
             (Self::Event(a), Self::Event(b)) => a == b,
             (Self::Effect(a), Self::Effect(b)) => a == b,
+            (
+                Self::CancellableEffect {
+                    id: a_id,
+                    effect: a_effect,
+                    generation: a_generation,
+                },
+                Self::CancellableEffect {
+                    id: b_id,
+                    effect: b_effect,
+                    generation: b_generation,
+                },
+            ) => a_id == b_id && a_effect == b_effect && a_generation == b_generation,
             (Self::Batch(a), Self::Batch(b)) | (Self::Parallel(a), Self::Parallel(b)) => a == b,
             _ => false,
         }
@@ -40,6 +85,16 @@ where
         match self {
             Self::Event(e) => f.debug_tuple("Event").field(e).finish(),
             Self::Effect(x) => f.debug_tuple("Effect").field(x).finish(),
+            Self::CancellableEffect {
+                id,
+                effect,
+                generation,
+            } => f
+                .debug_struct("CancellableEffect")
+                .field("id", id)
+                .field("effect", effect)
+                .field("generation", generation)
+                .finish(),
             Self::Batch(v) => f.debug_tuple("Batch").field(v).finish(),
             Self::Parallel(v) => f.debug_tuple("Parallel").field(v).finish(),
         }
@@ -159,6 +214,13 @@ impl<Event, Effect> Command<Event, Effect> {
         Self::from_step(CommandStep::Effect(effect.into()))
     }
 
+    /// Creates a command that runs an effect with cancellation by ID.
+    ///
+    /// Dispatching another cancellable effect with the same ID cancels the prior in-flight task.
+    pub fn cancellable(id: impl Into<CancelId>, effect: impl Into<Effect>) -> Self {
+        Self::from_step(CommandStep::cancellable(id.into(), effect.into()))
+    }
+
     /// Creates a command that fires multiple events in order.
     ///
     /// Events are processed sequentially in the order provided. Each event
@@ -249,7 +311,9 @@ impl<Event, Effect> Command<Event, Effect> {
             .iter()
             .map(|o| match o {
                 CommandStep::Batch(v) | CommandStep::Parallel(v) => v.len(),
-                _ => 1,
+                CommandStep::Event(_)
+                | CommandStep::Effect(_)
+                | CommandStep::CancellableEffect { .. } => 1,
             })
             .sum()
     }
@@ -269,6 +333,15 @@ impl<Event, Effect> Command<Event, Effect> {
             .map(|step| match step {
                 CommandStep::Event(event) => CommandStep::Event(fe(event)),
                 CommandStep::Effect(effect) => CommandStep::Effect(fx(effect)),
+                CommandStep::CancellableEffect {
+                    id,
+                    effect,
+                    generation,
+                } => CommandStep::CancellableEffect {
+                    id,
+                    effect: fx(effect),
+                    generation,
+                },
                 CommandStep::Batch(effects) => {
                     CommandStep::Batch(effects.into_iter().map(&fx).collect())
                 }
@@ -324,6 +397,15 @@ impl<Event, Effect> Command<Event, Effect> {
     #[inline]
     pub fn and_effect(mut self, effect: impl Into<Effect>) -> Self {
         self.outputs.push(CommandStep::Effect(effect.into()));
+        self
+    }
+
+    /// Chain another cancellable effect to this command.
+    #[must_use]
+    #[inline]
+    pub fn and_cancellable(mut self, id: impl Into<CancelId>, effect: impl Into<Effect>) -> Self {
+        self.outputs
+            .push(CommandStep::cancellable(id.into(), effect.into()));
         self
     }
 
@@ -414,7 +496,7 @@ impl<Event, Effect> From<()> for Command<Event, Effect> {
 /// These functions mirror the inherent constructors on [`Command`] but live in a module that can
 /// be glob-imported from the prelude (`use syzygy::prelude::command::*;`) for quick prototyping.
 pub mod builders {
-    use super::Command;
+    use super::{CancelId, Command};
 
     /// Construct a no-op command.
     #[inline]
@@ -444,6 +526,16 @@ pub mod builders {
     #[must_use]
     pub fn effect<Event, Effect>(effect: impl Into<Effect>) -> Command<Event, Effect> {
         Command::effect(effect)
+    }
+
+    /// Schedule a single cancellable effect keyed by ID.
+    #[inline]
+    #[must_use]
+    pub fn cancellable<Event, Effect>(
+        id: impl Into<CancelId>,
+        effect: impl Into<Effect>,
+    ) -> Command<Event, Effect> {
+        Command::cancellable(id, effect)
     }
 
     /// Schedule a batch of effects sequentially.
@@ -485,7 +577,7 @@ pub mod builders {
 
 #[cfg(test)]
 mod tests {
-    use super::{Command, CommandStep};
+    use super::{CancelId, Command, CommandStep};
 
     #[derive(Debug, Clone, PartialEq, Eq)]
     enum ChildEvent {
@@ -576,5 +668,35 @@ mod tests {
 
         assert!(mapped.is_empty());
         assert_eq!(mapped.into_iter().count(), 0);
+    }
+
+    #[test]
+    fn cancellable_constructor_sets_id_and_effect() {
+        let command: Command<ChildEvent, ChildEffect> =
+            Command::cancellable("search", ChildEffect::Load);
+
+        assert_eq!(
+            command.into_iter().collect::<Vec<_>>(),
+            vec![CommandStep::CancellableEffect {
+                id: CancelId::Static("search"),
+                effect: ChildEffect::Load,
+                generation: 0,
+            }]
+        );
+    }
+
+    #[test]
+    fn map_effect_transforms_cancellable_effect() {
+        let mapped: Command<ChildEvent, ParentEffect> =
+            Command::cancellable(7_u64, ChildEffect::Save).map_effect(ParentEffect::Child);
+
+        assert_eq!(
+            mapped.into_iter().collect::<Vec<_>>(),
+            vec![CommandStep::CancellableEffect {
+                id: CancelId::Numeric(7),
+                effect: ParentEffect::Child(ChildEffect::Save),
+                generation: 0,
+            }]
+        );
     }
 }

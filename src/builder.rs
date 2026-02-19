@@ -14,11 +14,12 @@ use crate::executor::{
     ResourceBlockingExecutor, Task,
 };
 use crate::extract::{EffectContext, EventContext};
+use crate::reducer::Reducer;
 use crate::shell::{EffectHandlerFn, Shell, ShellStats};
 use crate::syzygy::{Syzygy, SyzygyConfig};
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::marker::PhantomData;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 /// Entry point for building a `Syzygy`.
 ///
@@ -124,6 +125,14 @@ where
             panic_handler: None,
             _marker: PhantomData,
         }
+    }
+
+    #[must_use]
+    pub fn reducer<R>(self, reducer: R) -> ConfiguredBuilder<Event, Effect, Model, Resources>
+    where
+        R: Reducer<State = Model, Event = Event, Effect = Effect> + Send + 'static,
+    {
+        self.event_handler(move |event, ctx| reducer.reduce(event, ctx))
     }
 }
 
@@ -349,6 +358,7 @@ where
             effect_handler,
             resources,
             activity: Activity::new(),
+            cancel_generations: Arc::new(Mutex::new(HashMap::new())),
             effect_channel_capacity,
             executors: exec_registry,
             closed: false,

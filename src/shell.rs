@@ -5,16 +5,16 @@
 //! the Shell drives using executors registered in an immutable registry.
 
 use crossbeam_channel::{Receiver, RecvTimeoutError, Sender, TrySendError};
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use crate::activity::Activity;
-use crate::command::{Command, CommandStep};
+use crate::command::{CancelId, Command, CommandStep};
 use crate::core::EventSender;
 use crate::error::ShellError;
-use crate::executor::task::{drive_task_with_activity, PanicHook};
+use crate::executor::task::{drive_task_with_activity, PanicHook, TaskRouting};
 use crate::executor::{ExecutorRegistry, Task};
 
 #[cfg(feature = "tracing")]
@@ -24,6 +24,61 @@ use crate::extract::EffectContext;
 
 pub(crate) type EffectHandlerFn<E, X, R> =
     Box<dyn Fn(X, &EffectContext<R>) -> Task<E, X> + Send + 'static>;
+
+pub(crate) type CancelGenerationMap = Arc<Mutex<HashMap<CancelId, u64>>>;
+pub(crate) type CancelGuard = Arc<dyn Fn() -> bool + Send + Sync + 'static>;
+
+fn lock_cancel_generations(
+    cancel_generations: &CancelGenerationMap,
+) -> std::sync::MutexGuard<'_, HashMap<CancelId, u64>> {
+    match cancel_generations.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    }
+}
+
+pub(crate) fn register_cancellable_generation(
+    cancel_generations: &CancelGenerationMap,
+    id: CancelId,
+) -> u64 {
+    let mut generations = lock_cancel_generations(cancel_generations);
+    let next = generations.get(&id).copied().unwrap_or(0).saturating_add(1);
+    generations.insert(id, next);
+    next
+}
+
+pub(crate) fn is_cancel_generation_current(
+    cancel_generations: &CancelGenerationMap,
+    id: CancelId,
+    generation: u64,
+) -> bool {
+    let generations = lock_cancel_generations(cancel_generations);
+    generations.get(&id).copied() == Some(generation)
+}
+
+pub(crate) fn prepare_effect_step_for_queue<E, X>(
+    step: CommandStep<E, X>,
+    cancel_generations: Option<&CancelGenerationMap>,
+) -> CommandStep<E, X> {
+    match (step, cancel_generations) {
+        (
+            CommandStep::CancellableEffect {
+                id,
+                effect,
+                generation: 0,
+            },
+            Some(cancel_generations),
+        ) => {
+            let next = register_cancellable_generation(cancel_generations, id);
+            CommandStep::CancellableEffect {
+                id,
+                effect,
+                generation: next,
+            }
+        }
+        (step, _) => step,
+    }
+}
 
 #[derive(Clone, Default)]
 pub struct ShellStats {
@@ -96,6 +151,9 @@ where
     /// Activity tracker for in-flight async work
     pub(crate) activity: Activity,
 
+    /// Latest generation per cancellation ID.
+    pub(crate) cancel_generations: CancelGenerationMap,
+
     /// Optional capacity for the effect queue (None => unbounded)
     pub(crate) effect_channel_capacity: Option<usize>,
 
@@ -124,6 +182,7 @@ where
     R: Clone + Send + 'static,
 {
     fn push_effect_step(&mut self, step: CommandStep<E, X>) -> Result<(), ShellError> {
+        let step = prepare_effect_step_for_queue(step, Some(&self.cancel_generations));
         match self.effect_tx.try_send(step) {
             Ok(()) => Ok(()),
             Err(TrySendError::Full(step)) => {
@@ -165,17 +224,31 @@ where
         }
     }
 
-    fn process_effect(&mut self, effect: X) -> Result<(), ShellError> {
+    fn process_effect(
+        &mut self,
+        effect: X,
+        cancellation: Option<(CancelId, u64)>,
+    ) -> Result<(), ShellError> {
         let ctx = EffectContext::new(self.resources.clone());
         let task = (self.effect_handler)(effect, &ctx);
+        let cancel_guard = cancellation.map(|(id, generation)| {
+            let cancel_generations = Arc::clone(&self.cancel_generations);
+            Arc::new(move || !is_cancel_generation_current(&cancel_generations, id, generation))
+                as CancelGuard
+        });
+
         drive_task_with_activity(
             &self.executors,
             task,
             self.event_tx.clone(),
             self.effect_tx.clone(),
-            Some(&self.activity),
-            Some(&self.stats),
-            self.panic_handler.as_ref(),
+            TaskRouting {
+                activity: Some(self.activity.clone()),
+                stats: Some(self.stats.clone()),
+                cancel_generations: Some(Arc::clone(&self.cancel_generations)),
+                cancel_guard,
+                panic_handler: self.panic_handler.clone(),
+            },
         )
     }
 
@@ -215,6 +288,21 @@ where
 
                     self.push_effect_step(CommandStep::Effect(effect))?;
                 }
+                CommandStep::CancellableEffect {
+                    id,
+                    effect,
+                    generation,
+                } => {
+                    _effect_count += 1;
+                    #[cfg(feature = "tracing")]
+                    debug!("Routing cancellable effect to Shell");
+
+                    self.push_effect_step(CommandStep::CancellableEffect {
+                        id,
+                        effect,
+                        generation,
+                    })?;
+                }
                 CommandStep::Batch(effects) => {
                     _effect_count += effects.len();
                     #[cfg(feature = "tracing")]
@@ -252,13 +340,25 @@ where
     fn handle_effect_step(&mut self, step: CommandStep<E, X>) -> Result<usize, ShellError> {
         match step {
             CommandStep::Effect(effect) => {
-                self.process_effect(effect)?;
+                self.process_effect(effect, None)?;
+                Ok(1)
+            }
+            CommandStep::CancellableEffect {
+                id,
+                effect,
+                generation,
+            } => {
+                if !is_cancel_generation_current(&self.cancel_generations, id, generation) {
+                    return Ok(0);
+                }
+
+                self.process_effect(effect, Some((id, generation)))?;
                 Ok(1)
             }
             CommandStep::Batch(effects) | CommandStep::Parallel(effects) => {
                 let mut handled = 0usize;
                 for effect in effects {
-                    self.process_effect(effect)?;
+                    self.process_effect(effect, None)?;
                     handled += 1;
                 }
                 Ok(handled)
@@ -440,5 +540,311 @@ where
             .field("pending_effects", &"<pending>")
             .field("closed", &self.closed)
             .finish_non_exhaustive()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Shell;
+    use crate::command::Command;
+    use crate::executor::{AsyncExecutor, ExecutorError, ExecutorLifecycle, Task};
+    use crate::extract::{EffectContext, EventContext};
+    use crate::syzygy::{Syzygy, SyzygyConfig};
+    use futures_util::future::{BoxFuture, FutureExt};
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Mutex;
+    use std::thread::JoinHandle;
+    use std::time::Duration;
+
+    #[derive(Clone)]
+    enum Event {
+        LaunchSameId {
+            first_gate: std::sync::Arc<AtomicBool>,
+            second_gate: std::sync::Arc<AtomicBool>,
+        },
+        LaunchDifferentIds {
+            first_gate: std::sync::Arc<AtomicBool>,
+            second_gate: std::sync::Arc<AtomicBool>,
+        },
+        LaunchNonCancellable {
+            first_gate: std::sync::Arc<AtomicBool>,
+            second_gate: std::sync::Arc<AtomicBool>,
+        },
+        Completed(&'static str),
+    }
+
+    #[derive(Clone)]
+    enum Effect {
+        Delayed {
+            value: &'static str,
+            gate: std::sync::Arc<AtomicBool>,
+        },
+    }
+
+    struct ThreadAsync {
+        shutdown: AtomicBool,
+        handles: Mutex<Vec<JoinHandle<()>>>,
+    }
+
+    impl ThreadAsync {
+        fn new() -> Self {
+            Self {
+                shutdown: AtomicBool::new(false),
+                handles: Mutex::new(Vec::new()),
+            }
+        }
+    }
+
+    impl AsyncExecutor for ThreadAsync {
+        fn spawn_async(&self, job: BoxFuture<'static, ()>) -> Result<(), ExecutorError> {
+            if self.shutdown.load(Ordering::Relaxed) {
+                return Err(ExecutorError::Shutdown);
+            }
+
+            let handle = std::thread::spawn(move || futures::executor::block_on(job));
+            let mut handles = match self.handles.lock() {
+                Ok(guard) => guard,
+                Err(poisoned) => poisoned.into_inner(),
+            };
+            handles.push(handle);
+            Ok(())
+        }
+
+        fn sleep(&self, duration: Duration) -> BoxFuture<'static, ()> {
+            async move { std::thread::sleep(duration) }.boxed()
+        }
+    }
+
+    impl ExecutorLifecycle for ThreadAsync {
+        fn shutdown(&self) {
+            self.shutdown.store(true, Ordering::Relaxed);
+        }
+
+        fn wait(&self) {
+            let mut handles = match self.handles.lock() {
+                Ok(guard) => guard,
+                Err(poisoned) => poisoned.into_inner(),
+            };
+
+            while let Some(handle) = handles.pop() {
+                let _ = handle.join();
+            }
+        }
+    }
+
+    fn handle_event(event: Event, ctx: &EventContext<Vec<&'static str>>) -> Command<Event, Effect> {
+        match event {
+            Event::LaunchSameId {
+                first_gate,
+                second_gate,
+            } => Command::cancellable(
+                "search",
+                Effect::Delayed {
+                    value: "first",
+                    gate: first_gate,
+                },
+            )
+            .and_cancellable(
+                "search",
+                Effect::Delayed {
+                    value: "second",
+                    gate: second_gate,
+                },
+            ),
+            Event::LaunchDifferentIds {
+                first_gate,
+                second_gate,
+            } => Command::cancellable(
+                "first",
+                Effect::Delayed {
+                    value: "first",
+                    gate: first_gate,
+                },
+            )
+            .and_cancellable(
+                "second",
+                Effect::Delayed {
+                    value: "second",
+                    gate: second_gate,
+                },
+            ),
+            Event::LaunchNonCancellable {
+                first_gate,
+                second_gate,
+            } => Command::effect(Effect::Delayed {
+                value: "first",
+                gate: first_gate,
+            })
+            .and_effect(Effect::Delayed {
+                value: "second",
+                gate: second_gate,
+            }),
+            Event::Completed(value) => {
+                // SAFETY: EventContext points to the active model for this dispatch.
+                let model = unsafe { &mut *ctx.model_ptr() };
+                model.push(value);
+                Command::none()
+            }
+        }
+    }
+
+    fn handle_effect(effect: Effect, _ctx: &EffectContext<()>) -> Task<Event, Effect> {
+        match effect {
+            Effect::Delayed { value, gate } => Task::async_on::<ThreadAsync, _>(async move {
+                while !gate.load(Ordering::SeqCst) {
+                    std::thread::sleep(Duration::from_millis(2));
+                }
+
+                Command::event(Event::Completed(value))
+            }),
+        }
+    }
+
+    type TestSyzygy = Syzygy<Event, Effect, Vec<&'static str>, ()>;
+
+    fn build_runner() -> TestSyzygy {
+        Syzygy::builder::<Event, Effect>()
+            .model(Vec::new())
+            .event_handler(handle_event)
+            .effect_handler(handle_effect)
+            .with_async_executor(ThreadAsync::new())
+            .with_syzygy_config(SyzygyConfig::default().idle_sleep(Duration::from_millis(0)))
+            .build()
+    }
+
+    fn step_n(runner: &mut TestSyzygy, steps: usize) {
+        for _ in 0..steps {
+            if let Err(err) = runner.step() {
+                panic!("step failed: {err}");
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+    }
+
+    fn step_until(
+        runner: &mut TestSyzygy,
+        max_steps: usize,
+        predicate: impl Fn(&[&'static str]) -> bool,
+    ) {
+        for _ in 0..max_steps {
+            if predicate(runner.model().as_slice()) {
+                return;
+            }
+            step_n(runner, 1);
+        }
+
+        panic!("condition not met within {max_steps} steps");
+    }
+
+    #[test]
+    fn same_cancel_id_only_latest_result_is_routed() {
+        let mut runner = build_runner();
+        let first_gate = std::sync::Arc::new(AtomicBool::new(false));
+        let second_gate = std::sync::Arc::new(AtomicBool::new(true));
+
+        if let Err(err) = runner.core().try_send_event(Event::LaunchSameId {
+            first_gate: std::sync::Arc::clone(&first_gate),
+            second_gate,
+        }) {
+            panic!("failed to queue launch event: {err}");
+        }
+
+        step_until(&mut runner, 200, |values| values.contains(&"second"));
+        first_gate.store(true, Ordering::SeqCst);
+        step_n(&mut runner, 60);
+
+        assert_eq!(runner.model().as_slice(), ["second"]);
+    }
+
+    #[test]
+    fn different_cancel_ids_run_independently() {
+        let mut runner = build_runner();
+        let first_gate = std::sync::Arc::new(AtomicBool::new(false));
+        let second_gate = std::sync::Arc::new(AtomicBool::new(false));
+
+        if let Err(err) = runner.core().try_send_event(Event::LaunchDifferentIds {
+            first_gate: std::sync::Arc::clone(&first_gate),
+            second_gate: std::sync::Arc::clone(&second_gate),
+        }) {
+            panic!("failed to queue launch event: {err}");
+        }
+
+        step_n(&mut runner, 5);
+        first_gate.store(true, Ordering::SeqCst);
+        second_gate.store(true, Ordering::SeqCst);
+        step_until(&mut runner, 200, |values| values.len() == 2);
+
+        let mut values = runner.model().clone();
+        values.sort_unstable();
+        assert_eq!(values, vec!["first", "second"]);
+    }
+
+    #[test]
+    fn non_cancellable_effects_are_unchanged() {
+        let mut runner = build_runner();
+        let first_gate = std::sync::Arc::new(AtomicBool::new(false));
+        let second_gate = std::sync::Arc::new(AtomicBool::new(true));
+
+        if let Err(err) = runner.core().try_send_event(Event::LaunchNonCancellable {
+            first_gate: std::sync::Arc::clone(&first_gate),
+            second_gate,
+        }) {
+            panic!("failed to queue launch event: {err}");
+        }
+
+        step_until(&mut runner, 200, |values| values.contains(&"second"));
+        first_gate.store(true, Ordering::SeqCst);
+        step_until(&mut runner, 200, |values| values.len() == 2);
+
+        let mut values = runner.model().clone();
+        values.sort_unstable();
+        assert_eq!(values, vec!["first", "second"]);
+    }
+
+    #[test]
+    fn shell_queue_assigns_generation_to_cancellable_effects() {
+        let runner = build_runner();
+        let mut shell: Shell<Event, Effect> = runner.split().1;
+
+        shell
+            .dispatch_command(Command::cancellable(
+                "search",
+                Effect::Delayed {
+                    value: "first",
+                    gate: std::sync::Arc::new(AtomicBool::new(true)),
+                },
+            ))
+            .unwrap_or_else(|err| panic!("dispatch failed: {err}"));
+
+        shell
+            .dispatch_command(Command::cancellable(
+                "search",
+                Effect::Delayed {
+                    value: "second",
+                    gate: std::sync::Arc::new(AtomicBool::new(true)),
+                },
+            ))
+            .unwrap_or_else(|err| panic!("dispatch failed: {err}"));
+
+        let first = shell
+            .next_effect_step()
+            .unwrap_or_else(|| panic!("missing first step"));
+        let second = shell
+            .next_effect_step()
+            .unwrap_or_else(|| panic!("missing second step"));
+
+        match first {
+            crate::command::CommandStep::CancellableEffect { generation, .. } => {
+                assert_eq!(generation, 1);
+            }
+            _ => panic!("unexpected first step variant"),
+        }
+
+        match second {
+            crate::command::CommandStep::CancellableEffect { generation, .. } => {
+                assert_eq!(generation, 2);
+            }
+            _ => panic!("unexpected second step variant"),
+        }
     }
 }
