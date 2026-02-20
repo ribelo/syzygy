@@ -34,7 +34,7 @@ pub mod prelude {
     #[cfg(feature = "shell")]
     pub use crate::builder::SyzygyBuilder;
     #[cfg(feature = "shell")]
-    pub use crate::executor::{InlineAsync, Plan, Task};
+    pub use crate::executor::{InlineAsync, InlineBlocking, Plan, Task};
     #[cfg(feature = "shell")]
     pub use crate::shell::Shell;
     #[cfg(feature = "shell")]

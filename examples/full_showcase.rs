@@ -6,6 +6,7 @@
 //! - `#[derive(Model)]` and `#[derive(Resources)]` proc macros
 //! - Magic event handlers (per-field extraction via `FromEventContext`)
 //! - Magic effect handlers (resource extraction via `FromEffectContext`)
+//! - `AsyncRt` extraction in effect handlers (runtime-agnostic sleep/delay)
 //! - Scope composition (`EventContext::scope`, `EffectContext::scope`)
 //! - Command mapping (`map`, `map_event`, `map_effect`)
 //! - Cancellable effects (`Command::cancellable`, `CancelId`)
@@ -16,7 +17,8 @@
 //! - `TestStore` (`send`, `state`, `assert_effects`, `assert_no_effects`,
 //!   `take_effects`, `with_max_event_steps`)
 //! - Panic testing (`assert_panic_contains`)
-//! - Task variants (`event`, `events`, `none`, `future`)
+//! - Semantic Task variants (`event`, `events`, `none`, `future`,
+//!   `compute`, `blocking`) — handlers declare work shape, Shell routes
 //! - Task mapping (`map`, `map_event`, `map_effect`)
 //! - Full `Syzygy` runtime (builder, model, resources, handlers,
 //!   reducer, executor, build, step, shutdown)
@@ -50,6 +52,7 @@ mod counter {
     #[derive(Debug, Clone, PartialEq, Eq)]
     pub enum Effect {
         LogValue(i32),
+        ComputeChecksum(Vec<i32>),
     }
 
     // #[derive(Resources)] generates:
@@ -64,7 +67,11 @@ mod counter {
     fn increment(amount: i32, mut value: Value, mut history: History) -> Command<Event, Effect> {
         *value += amount;
         history.push(*value);
-        Command::effect(Effect::LogValue(*value))
+        let mut cmd = Command::effect(Effect::LogValue(*value));
+        if history.len() >= 3 {
+            cmd = cmd.and_effect(Effect::ComputeChecksum(history.clone()));
+        }
+        cmd
     }
 
     fn decrement(amount: i32, mut value: Value) -> Command<Event, Effect> {
@@ -89,13 +96,29 @@ mod counter {
     // Magic effect handler: payload first, then extracted resources.
 
     fn log_value(value: i32, prefix: LogPrefix) -> Task<Event, Effect> {
-        println!("[{}] counter = {value}", prefix.0);
-        Task::none()
+        // Task::blocking — runs on the blocking executor (spawn_blocking).
+        // Use for IO-bound work that would block the async runtime:
+        // file writes, synchronous HTTP, database queries, etc.
+        Task::blocking(move || {
+            println!("[{}] counter = {value}", prefix.0);
+            Command::none()
+        })
+    }
+
+    fn compute_checksum(values: Vec<i32>) -> Task<Event, Effect> {
+        // Task::compute — runs on the compute executor (e.g. Rayon).
+        // Use for CPU-bound work: hashing, sorting, compression, etc.
+        // Shell routes this to compute_executor, falls back to blocking_executor.
+        Task::compute(move || {
+            let checksum: i32 = values.iter().fold(0, |acc, &v| acc ^ v);
+            Command::event(Event::Increment(checksum % 10))
+        })
     }
 
     pub fn dispatch_effect(effect: Effect, ctx: &EffectContext<Res>) -> Task<Event, Effect> {
         match effect {
             Effect::LogValue(v) => log_value.handle(v, ctx),
+            Effect::ComputeChecksum(values) => compute_checksum.handle(values, ctx),
         }
     }
 }
@@ -105,6 +128,8 @@ mod counter {
 // ════════════════════════════════════════════════════════════════════
 
 mod search {
+    use std::time::Duration;
+
     use syzygy::prelude::*;
 
     // #[derive(Model)] generates: Query, Results, Loading wrappers
@@ -123,8 +148,10 @@ mod search {
     }
 
     #[derive(Debug, Clone, PartialEq, Eq)]
+    #[allow(dead_code)]
     pub enum Effect {
         ExecuteSearch(String),
+        DebouncedSearch { query: String, delay: Duration },
     }
 
     // #[derive(Resources)] generates: ApiUrl(pub String) wrapper
@@ -141,7 +168,13 @@ mod search {
         (*query).clone_from(&new_query);
         *loading = true;
         // Cancellable: a new search with the same ID cancels the previous in-flight one.
-        Command::cancellable("search", Effect::ExecuteSearch(new_query))
+        Command::cancellable(
+            "search",
+            Effect::DebouncedSearch {
+                query: new_query,
+                delay: Duration::from_millis(300),
+            },
+        )
     }
 
     fn results_loaded(
@@ -174,12 +207,35 @@ mod search {
         }
     }
 
-    fn execute_search(query: String, api_url: ApiUrl) -> Task<Event, Effect> {
+    // AsyncRt — extracted from EffectContext, provides runtime-agnostic
+    // async capabilities (sleep, timeout). The handler never names a
+    // specific runtime (tokio, smol, etc.) — switching runtimes changes
+    // zero handler code.
+    fn debounced_search(
+        payload: (String, Duration),
+        api_url: ApiUrl,
+        rt: AsyncRt,
+    ) -> Task<Event, Effect> {
+        let (query, delay) = payload;
         if query.is_empty() {
-            // Task::events — return multiple events synchronously.
             return Task::events(vec![Event::ResultsLoaded(vec![])]);
         }
-        // Task::future — run a future on the configured async executor.
+        // Task::future — async IO work on the configured async executor.
+        let sleep_fut = rt.sleep(delay);
+        Task::future(async move {
+            sleep_fut.await;
+            let results = vec![
+                format!("{query} from {}", api_url.0),
+                format!("{query} - result 2"),
+            ];
+            Command::event(Event::ResultsLoaded(results))
+        })
+    }
+
+    fn execute_search(query: String, api_url: ApiUrl) -> Task<Event, Effect> {
+        if query.is_empty() {
+            return Task::events(vec![Event::ResultsLoaded(vec![])]);
+        }
         Task::future(async move {
             let results = vec![
                 format!("{query} from {}", api_url.0),
@@ -192,6 +248,9 @@ mod search {
     pub fn dispatch_effect(effect: Effect, ctx: &EffectContext<Res>) -> Task<Event, Effect> {
         match effect {
             Effect::ExecuteSearch(q) => execute_search.handle(q, ctx),
+            Effect::DebouncedSearch { query, delay } => {
+                debounced_search.handle((query, delay), ctx)
+            }
         }
     }
 }
@@ -222,6 +281,7 @@ enum AppEffect {
     Counter(counter::Effect),
     Search(search::Effect),
     Audit(String),
+    BlockingAudit(String),
 }
 
 // #[derive(Resources)] generates: ApiUrl, LogPrefix wrappers
@@ -274,6 +334,7 @@ fn dispatch_event(event: AppEvent, ctx: &EventContext<AppState>) -> Command<AppE
                 AppEffect::Audit("par-a".into()),
             ]))
             .and_cancellable(42_u64, AppEffect::Audit("startup-check".into()))
+            .and_effect(AppEffect::BlockingAudit("init-log".into()))
         }
     }
 }
@@ -300,10 +361,17 @@ fn dispatch_effect(effect: AppEffect, ctx: &EffectContext<AppRes>) -> Task<AppEv
             search::dispatch_effect(e, &child).map(AppEvent::Search, AppEffect::Search)
         }
         AppEffect::Audit(msg) => {
-            // FromEffectContext extraction at parent level via derived LogPrefix.
             let prefix = LogPrefix::from_context(ctx);
             println!("[{}] AUDIT: {msg}", prefix.0);
             Task::none()
+        }
+        AppEffect::BlockingAudit(msg) => {
+            let prefix = LogPrefix::from_context(ctx);
+            // Task::blocking — offload to blocking executor (spawn_blocking).
+            Task::blocking(move || {
+                println!("[{}] BLOCKING-AUDIT: {msg}", prefix.0);
+                Command::none()
+            })
         }
     }
 }
@@ -364,7 +432,6 @@ fn build_app_reducer() -> impl Reducer<State = AppState, Event = AppEvent, Effec
 // ════════════════════════════════════════════════════════════════════
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // SyzygyBuilder — wire model, resources, handlers, and executors.
     let mut runner = Syzygy::builder::<AppEvent, AppEffect>()
         .model(AppState::default())
         .with_resources(AppRes {
@@ -374,6 +441,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .event_handler(dispatch_event)
         .effect_handler(dispatch_effect)
         .async_executor(InlineAsync::new())
+        .blocking_executor(InlineBlocking::new())
         .build();
 
     // Initialize the app.
@@ -419,6 +487,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use super::*;
 
     // ── Counter child ─────────────────────────────────────────────
@@ -500,8 +570,10 @@ mod tests {
 
         assert_eq!(store.state().query, "test");
         assert!(store.state().loading);
-        // TestStore flattens CancellableEffect into the effect value.
-        store.assert_effects([search::Effect::ExecuteSearch("test".into())]);
+        store.assert_effects([search::Effect::DebouncedSearch {
+            query: "test".into(),
+            delay: Duration::from_millis(300),
+        }]);
     }
 
     #[test]
@@ -562,9 +634,10 @@ mod tests {
 
         assert_eq!(store.state().search.query, "hello");
         assert!(store.state().search.loading);
-        store.assert_effects([AppEffect::Search(search::Effect::ExecuteSearch(
-            "hello".into(),
-        ))]);
+        store.assert_effects([AppEffect::Search(search::Effect::DebouncedSearch {
+            query: "hello".into(),
+            delay: Duration::from_millis(300),
+        })]);
     }
 
     #[test]
@@ -600,13 +673,6 @@ mod tests {
         assert!(store.state().search.results.is_empty());
         assert!(!store.state().search.loading);
 
-        // Effects in emission order:
-        // 1. and_effect -> Audit("init-done")
-        // 2. sequential -> Batch([Audit("seq-1"), Audit("seq-2")])
-        // 3. parallel -> Parallel([Counter::LogValue(0), Audit("par-a")])
-        // 4. and_cancellable -> Audit("startup-check")
-        // 5. from SetStatus("ready") chained event -> Audit("status: ready")
-        // 6. from Counter::Increment(1) chained event -> Counter::LogValue(1)
         let effects = store.take_effects();
         assert_eq!(
             effects,
@@ -617,6 +683,7 @@ mod tests {
                 AppEffect::Counter(counter::Effect::LogValue(0)),
                 AppEffect::Audit("par-a".into()),
                 AppEffect::Audit("startup-check".into()),
+                AppEffect::BlockingAudit("init-log".into()),
                 AppEffect::Audit("status: ready".into()),
                 AppEffect::Counter(counter::Effect::LogValue(1)),
             ]
@@ -670,8 +737,11 @@ mod tests {
         let task = counter::dispatch_effect(counter::Effect::LogValue(42), &child_ctx);
 
         match task {
-            Task::Events(events) => assert!(events.is_empty(), "log_value returns Task::none"),
-            _ => panic!("expected Task::Events from log_value"),
+            Task::Blocking { job, .. } => {
+                let cmd = job();
+                assert_eq!(cmd.into_iter().count(), 0);
+            }
+            _ => panic!("expected Task::Blocking from log_value"),
         }
     }
 
@@ -695,6 +765,114 @@ mod tests {
             }
             _ => panic!("expected Task::Events for empty query"),
         }
+    }
+
+    // ── Semantic Task variants ───────────────────────────────────
+
+    #[test]
+    fn task_compute_runs_cpu_bound_work() {
+        let ctx = EffectContext::new(counter::Res {
+            log_prefix: "test".into(),
+        });
+
+        let task = counter::dispatch_effect(counter::Effect::ComputeChecksum(vec![1, 2, 3]), &ctx);
+
+        match task {
+            Task::Compute { job, .. } => {
+                let cmd = job();
+                let events: Vec<_> = cmd
+                    .into_iter()
+                    .filter_map(|s| {
+                        if let CommandStep::Event(e) = s {
+                            Some(e)
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+                assert_eq!(events.len(), 1);
+            }
+            _ => panic!("expected Task::Compute from compute_checksum"),
+        }
+    }
+
+    #[test]
+    fn task_blocking_runs_io_work() {
+        let ctx = EffectContext::new(counter::Res {
+            log_prefix: "test".into(),
+        });
+
+        let task = counter::dispatch_effect(counter::Effect::LogValue(7), &ctx);
+
+        match task {
+            Task::Blocking { job, .. } => {
+                let cmd = job();
+                assert_eq!(cmd.into_iter().count(), 0);
+            }
+            _ => panic!("expected Task::Blocking from log_value"),
+        }
+    }
+
+    #[test]
+    fn task_future_with_async_rt_debounce() {
+        let ctx = EffectContext::with_async_executor(
+            search::Res {
+                api_url: "https://test.api".into(),
+            },
+            Some(std::sync::Arc::new(InlineAsync::new())),
+        );
+
+        let task = search::dispatch_effect(
+            search::Effect::DebouncedSearch {
+                query: "hello".into(),
+                delay: Duration::from_millis(10),
+            },
+            &ctx,
+        );
+
+        match task {
+            Task::Async { future, .. } => {
+                let cmd = futures::executor::block_on(future);
+                let events: Vec<_> = cmd
+                    .into_iter()
+                    .filter_map(|s| {
+                        if let CommandStep::Event(e) = s {
+                            Some(e)
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+                assert_eq!(events.len(), 1);
+                assert_eq!(
+                    events[0],
+                    search::Event::ResultsLoaded(vec![
+                        "hello from https://test.api".into(),
+                        "hello - result 2".into(),
+                    ])
+                );
+            }
+            _ => panic!("expected Task::Async from debounced_search"),
+        }
+    }
+
+    #[test]
+    fn counter_triggers_compute_after_three_increments() {
+        let mut store = TestStore::new(counter::State::default(), counter::dispatch);
+
+        store.send(counter::Event::Increment(1));
+        store.send(counter::Event::Increment(2));
+        let effects = store.take_effects();
+        assert_eq!(effects.len(), 2);
+        assert!(!effects
+            .iter()
+            .any(|e| matches!(e, counter::Effect::ComputeChecksum(_))));
+
+        store.send(counter::Event::Increment(3));
+        let effects = store.take_effects();
+        assert_eq!(effects.len(), 2);
+        assert_eq!(effects[0], counter::Effect::LogValue(6));
+        assert!(matches!(&effects[1], counter::Effect::ComputeChecksum(v) if v.len() == 3));
     }
 
     // ── Reducer composition ───────────────────────────────────────
@@ -722,7 +900,10 @@ mod tests {
         store.send(AppEvent::Search(search::Event::UpdateQuery("q".into())));
 
         assert_eq!(store.state().search.query, "q");
-        store.assert_effects([AppEffect::Search(search::Effect::ExecuteSearch("q".into()))]);
+        store.assert_effects([AppEffect::Search(search::Effect::DebouncedSearch {
+            query: "q".into(),
+            delay: Duration::from_millis(300),
+        })]);
     }
 
     #[test]
@@ -778,21 +959,41 @@ mod tests {
     #[test]
     fn test_store_manual_effect_round_trip() {
         let mut store = TestStore::new(AppState::default(), dispatch_event);
-        let effect_ctx = EffectContext::new(AppRes {
-            api_url: "https://test.api".into(),
-            log_prefix: "test".into(),
-        });
+        let effect_ctx = EffectContext::with_async_executor(
+            AppRes {
+                api_url: "https://test.api".into(),
+                log_prefix: "test".into(),
+            },
+            Some(std::sync::Arc::new(InlineAsync::new())),
+        );
 
         store.send(AppEvent::Search(search::Event::UpdateQuery("rust".into())));
         let effects = store.take_effects();
         assert_eq!(effects.len(), 1);
 
-        // Simulate Shell: dispatch the effect, feed resulting events back.
-        for effect in effects {
-            let task = dispatch_effect(effect, &effect_ctx);
+        fn feed_task(
+            store: &mut TestStore<AppEvent, AppEffect, AppState>,
+            task: Task<AppEvent, AppEffect>,
+        ) {
             match task {
                 Task::Async { future, .. } => {
                     let cmd = futures::executor::block_on(future);
+                    for step in cmd {
+                        if let CommandStep::Event(e) = step {
+                            store.send(e);
+                        }
+                    }
+                }
+                Task::Blocking { job, .. } => {
+                    let cmd = job();
+                    for step in cmd {
+                        if let CommandStep::Event(e) = step {
+                            store.send(e);
+                        }
+                    }
+                }
+                Task::Compute { job, .. } => {
+                    let cmd = job();
                     for step in cmd {
                         if let CommandStep::Event(e) = step {
                             store.send(e);
@@ -809,7 +1010,11 @@ mod tests {
             }
         }
 
-        // Search results should have arrived.
+        for effect in effects {
+            let task = dispatch_effect(effect, &effect_ctx);
+            feed_task(&mut store, task);
+        }
+
         assert!(!store.state().search.loading);
         assert_eq!(store.state().search.results.len(), 2);
         assert!(store.state().search.results[0].contains("rust"));
@@ -828,6 +1033,7 @@ mod tests {
             .event_handler(dispatch_event)
             .effect_handler(dispatch_effect)
             .async_executor(InlineAsync::new())
+            .blocking_executor(InlineBlocking::new())
             .build();
 
         runner
@@ -855,6 +1061,7 @@ mod tests {
             .reducer(reducer)
             .effect_handler(dispatch_effect)
             .async_executor(InlineAsync::new())
+            .blocking_executor(InlineBlocking::new())
             .build();
 
         runner
@@ -879,6 +1086,7 @@ mod tests {
             .event_handler(dispatch_event)
             .effect_handler(dispatch_effect)
             .async_executor(InlineAsync::new())
+            .blocking_executor(InlineBlocking::new())
             .build();
 
         runner

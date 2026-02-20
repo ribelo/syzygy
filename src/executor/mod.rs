@@ -8,10 +8,14 @@ use thiserror::Error;
 
 #[cfg(feature = "rt-inline")]
 pub mod inline_async;
+#[cfg(feature = "rt-inline")]
+pub mod inline_blocking;
 pub mod task;
 
 #[cfg(feature = "rt-inline")]
 pub use inline_async::InlineAsync;
+#[cfg(feature = "rt-inline")]
+pub use inline_blocking::InlineBlocking;
 pub use task::{PanicDetails, PanicHook, PanicTaskKind, Task};
 /// Friendly alias for `Task` used in docs to highlight declarative plans.
 pub type Plan<E, X> = Task<E, X>;

@@ -22,7 +22,7 @@ impl<R> EffectContext<R> {
         }
     }
 
-    pub(crate) fn with_async_executor(
+    pub fn with_async_executor(
         resources: R,
         async_executor: Option<Arc<dyn AsyncExecutor>>,
     ) -> Self {
