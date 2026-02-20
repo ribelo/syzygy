@@ -6,7 +6,7 @@
 //! - `#[derive(Model)]` and `#[derive(Resources)]` proc macros
 //! - Magic event handlers (per-field extraction via `FromEventContext`)
 //! - Magic effect handlers (resource extraction via `FromEffectContext`)
-//! - `Task::future` runtime factories (`AsyncRt` injected at execution time)
+//! - `Task::future` / `Task::delayed` runtime factories (`AsyncRt` injected at execution time)
 //! - Scope composition (`EventContext::scope`, `EffectContext::scope`)
 //! - Command mapping (`map`, `map_event`, `map_effect`)
 //! - Cancellable effects (`Command::cancellable`, `CancelId`)
@@ -18,7 +18,8 @@
 //!   `take_effects`, `with_max_event_steps`)
 //! - Panic testing (`assert_panic_contains`)
 //! - Semantic Task variants (`send`, `resolved`, `none`, `future`,
-//!   `compute`, `blocking`) — handlers declare work shape, Shell routes
+//!   `delayed`, `delayed_send`, `compute`, `blocking`) — handlers
+//!   declare work shape, Shell routes
 //! - Task mapping (`map`, `map_event`, `map_effect`)
 //! - Full `Syzygy` runtime (builder, model, resources, handlers,
 //!   reducer, executor, build, step, shutdown)
@@ -212,8 +213,7 @@ mod search {
         if query.is_empty() {
             return Task::send(Event::ResultsLoaded(vec![]));
         }
-        Task::future(move |rt| async move {
-            rt.sleep(delay).await;
+        Task::delayed(delay, move |_rt| async move {
             let results = vec![
                 format!("{query} from {}", api_url.0),
                 format!("{query} - result 2"),

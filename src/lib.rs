@@ -28,7 +28,7 @@ pub mod prelude {
         FromEventContext,
     };
     pub use crate::reducer::{
-        combine, BoxedReducer, Combine, DebugReducer, Reduce, Reducer, ReducerExt, Scope,
+        combine, BoxedReducer, Combine, DebugReducer, OnChange, Reduce, Reducer, ReducerExt, Scope,
     };
     pub use crate::test_store::{assert_panic, assert_panic_contains, Exhaustivity, TestStore};
     pub use syzygy_macros::{Model, Resources};

@@ -73,6 +73,25 @@ pub struct DebugReducer<R> {
     printer: Option<Arc<DebugPrinter>>,
 }
 
+pub struct OnChange<R, V, F, ReactFn> {
+    inner: R,
+    selector: F,
+    reaction: ReactFn,
+    _phantom: PhantomData<V>,
+}
+
+impl<R, V, F, ReactFn> OnChange<R, V, F, ReactFn> {
+    #[must_use]
+    pub fn new(inner: R, selector: F, reaction: ReactFn) -> Self {
+        Self {
+            inner,
+            selector,
+            reaction,
+            _phantom: PhantomData,
+        }
+    }
+}
+
 impl<R> DebugReducer<R> {
     #[must_use]
     pub fn new(inner: R) -> Self {
@@ -264,9 +283,64 @@ pub trait ReducerExt: Reducer + Sized {
     {
         DebugReducer::with_printer(self, printer)
     }
+
+    #[must_use]
+    fn on_change<V, F, ReactFn>(
+        self,
+        selector: F,
+        reaction: ReactFn,
+    ) -> OnChange<Self, V, F, ReactFn>
+    where
+        V: PartialEq + Clone,
+        F: Fn(&Self::State) -> V + Send + 'static,
+        ReactFn: Fn(V, V, &EventContext<Self::State>) -> Command<Self::Event, Self::Effect>
+            + Send
+            + 'static,
+    {
+        OnChange::new(self, selector, reaction)
+    }
 }
 
 impl<T: Reducer> ReducerExt for T {}
+
+impl<R, V, F, ReactFn> Reducer for OnChange<R, V, F, ReactFn>
+where
+    R: Reducer,
+    V: PartialEq + Clone,
+    F: Fn(&R::State) -> V,
+    ReactFn: Fn(V, V, &EventContext<R::State>) -> Command<R::Event, R::Effect>,
+{
+    type State = R::State;
+    type Event = R::Event;
+    type Effect = R::Effect;
+
+    fn reduce(
+        &self,
+        event: Self::Event,
+        ctx: &EventContext<Self::State>,
+    ) -> Command<Self::Event, Self::Effect> {
+        let old_value = {
+            // SAFETY: EventContext points to the active model for this dispatch.
+            let model = unsafe { &*ctx.model_ptr() };
+            (self.selector)(model)
+        };
+
+        let command = self.inner.reduce(event, ctx);
+
+        let new_value = {
+            // SAFETY: EventContext points to the active model for this dispatch.
+            let model = unsafe { &*ctx.model_ptr() };
+            (self.selector)(model)
+        };
+
+        if old_value == new_value {
+            command
+        } else {
+            let reaction_command = (self.reaction)(old_value, new_value, ctx);
+            command.and(reaction_command)
+        }
+    }
+}
 
 impl<R> Reducer for DebugReducer<R>
 where
@@ -414,6 +488,24 @@ mod tests {
         counter: CounterState,
     }
 
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    enum OnChangeEvent {
+        SetValue(i32),
+        BumpOther,
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    enum OnChangeEffect {
+        Base(&'static str),
+        Watcher { old: i32, new: i32 },
+    }
+
+    #[derive(Debug, Default, Clone, PartialEq, Eq)]
+    struct OnChangeState {
+        value: i32,
+        other: i32,
+    }
+
     #[test]
     fn reduce_wraps_closure() {
         let reducer =
@@ -500,6 +592,119 @@ mod tests {
                 CommandStep::Effect(AppEffect::Secondary("second")),
             ]
         );
+    }
+
+    #[test]
+    fn on_change_fires_when_value_changes() {
+        let reducer =
+            Reduce::new(
+                |event: OnChangeEvent, ctx: &EventContext<OnChangeState>| match event {
+                    OnChangeEvent::SetValue(value) => {
+                        // SAFETY: EventContext points to a live OnChangeState for this dispatch.
+                        let state = unsafe { &mut *ctx.model_ptr() };
+                        state.value = value;
+                        Command::effect(OnChangeEffect::Base("set"))
+                    }
+                    OnChangeEvent::BumpOther => {
+                        // SAFETY: EventContext points to a live OnChangeState for this dispatch.
+                        let state = unsafe { &mut *ctx.model_ptr() };
+                        state.other += 1;
+                        Command::effect(OnChangeEffect::Base("other"))
+                    }
+                },
+            )
+            .on_change(
+                |state: &OnChangeState| state.value,
+                |old, new, _ctx| Command::effect(OnChangeEffect::Watcher { old, new }),
+            );
+
+        let mut state = OnChangeState::default();
+        let ctx = EventContext::new(&mut state);
+        let command = reducer.reduce(OnChangeEvent::SetValue(4), &ctx);
+
+        assert_eq!(
+            command.into_iter().collect::<Vec<_>>(),
+            vec![
+                CommandStep::Effect(OnChangeEffect::Base("set")),
+                CommandStep::Effect(OnChangeEffect::Watcher { old: 0, new: 4 }),
+            ]
+        );
+    }
+
+    #[test]
+    fn on_change_does_not_fire_when_value_unchanged() {
+        let reducer =
+            Reduce::new(
+                |event: OnChangeEvent, ctx: &EventContext<OnChangeState>| match event {
+                    OnChangeEvent::SetValue(value) => {
+                        // SAFETY: EventContext points to a live OnChangeState for this dispatch.
+                        let state = unsafe { &mut *ctx.model_ptr() };
+                        state.value = value;
+                        Command::effect(OnChangeEffect::Base("set"))
+                    }
+                    OnChangeEvent::BumpOther => {
+                        // SAFETY: EventContext points to a live OnChangeState for this dispatch.
+                        let state = unsafe { &mut *ctx.model_ptr() };
+                        state.other += 1;
+                        Command::effect(OnChangeEffect::Base("other"))
+                    }
+                },
+            )
+            .on_change(
+                |state: &OnChangeState| state.value,
+                |old, new, _ctx| Command::effect(OnChangeEffect::Watcher { old, new }),
+            );
+
+        let mut state = OnChangeState::default();
+        let ctx = EventContext::new(&mut state);
+        let command = reducer.reduce(OnChangeEvent::BumpOther, &ctx);
+
+        assert_eq!(
+            command.into_iter().collect::<Vec<_>>(),
+            vec![CommandStep::Effect(OnChangeEffect::Base("other"))]
+        );
+    }
+
+    #[test]
+    fn on_change_receives_old_and_new_values() {
+        let captures = Arc::new(Mutex::new(Vec::<(i32, i32)>::new()));
+        let sink = Arc::clone(&captures);
+
+        let reducer =
+            Reduce::new(
+                |event: OnChangeEvent, ctx: &EventContext<OnChangeState>| match event {
+                    OnChangeEvent::SetValue(value) => {
+                        // SAFETY: EventContext points to a live OnChangeState for this dispatch.
+                        let state = unsafe { &mut *ctx.model_ptr() };
+                        state.value = value;
+                        Command::none()
+                    }
+                    OnChangeEvent::BumpOther => {
+                        // SAFETY: EventContext points to a live OnChangeState for this dispatch.
+                        let state = unsafe { &mut *ctx.model_ptr() };
+                        state.other += 1;
+                        Command::none()
+                    }
+                },
+            )
+            .on_change(
+                |state: &OnChangeState| state.value,
+                move |old, new, _ctx| {
+                    let mut guard = sink.lock().expect("capture mutex poisoned");
+                    guard.push((old, new));
+                    Command::<OnChangeEvent, OnChangeEffect>::none()
+                },
+            );
+
+        let mut state = OnChangeState::default();
+        let ctx = EventContext::new(&mut state);
+
+        let _first = reducer.reduce(OnChangeEvent::SetValue(5), &ctx);
+        let _second = reducer.reduce(OnChangeEvent::SetValue(8), &ctx);
+        let _third = reducer.reduce(OnChangeEvent::BumpOther, &ctx);
+
+        let guard = captures.lock().expect("capture mutex poisoned");
+        assert_eq!(guard.as_slice(), &[(0, 5), (5, 8)]);
     }
 
     #[test]

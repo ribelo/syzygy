@@ -6,6 +6,7 @@ use std::any::Any;
 use std::future::Future;
 use std::panic::{self, AssertUnwindSafe};
 use std::sync::Arc;
+use std::time::Duration;
 
 use crossbeam_channel::Sender as EffectSender;
 use futures_util::future::{BoxFuture, Either, FutureExt};
@@ -144,6 +145,23 @@ where
         Self::Async {
             factory: Box::new(move |rt| Box::pin(factory(rt)) as BoxFuture<'static, Command<E, X>>),
         }
+    }
+
+    /// Run a future after waiting for the provided delay.
+    pub fn delayed<F, Fut>(duration: Duration, factory: F) -> Self
+    where
+        F: FnOnce(AsyncRt) -> Fut + Send + 'static,
+        Fut: Future<Output = Command<E, X>> + Send + 'static,
+    {
+        Self::future(move |rt| async move {
+            rt.sleep(duration).await;
+            factory(rt).await
+        })
+    }
+
+    /// Emit a single event after waiting for the provided delay.
+    pub fn delayed_send(duration: Duration, event: E) -> Self {
+        Self::delayed(duration, move |_rt| async move { Command::event(event) })
     }
 
     /// Run a future with cancellation support.
@@ -596,5 +614,28 @@ where
             let stream = factory(runtime);
             spawn_stream_task(async_executor, stream, event_tx, effect_tx, routing)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use super::Task;
+
+    #[test]
+    fn delayed_task_produces_correct_variant() {
+        let task = Task::<(), ()>::delayed(Duration::from_millis(5), |_rt| async {
+            super::Command::none()
+        });
+
+        assert!(matches!(task, Task::Async { .. }));
+    }
+
+    #[test]
+    fn delayed_send_produces_async_variant() {
+        let task = Task::<(), ()>::delayed_send(Duration::from_millis(5), ());
+
+        assert!(matches!(task, Task::Async { .. }));
     }
 }
