@@ -199,8 +199,8 @@ mod tests {
             }
             Task::Async { .. }
             | Task::Stream { .. }
-            | Task::Blocking { .. }
-            | Task::BlockingWithResource { .. } => panic!("expected immediate event task"),
+            | Task::Compute { .. }
+            | Task::Blocking { .. } => panic!("expected immediate event task"),
         }
     }
 

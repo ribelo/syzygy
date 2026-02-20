@@ -1,9 +1,8 @@
 //! Declarative task plans returned by effect handlers.
 //!
-//! A `Task<E, X>` describes what work to schedule and on which executor type.
-//! The Shell interprets the plan and routes any resulting `Command` steps back
-//! into the Core/Shell pipeline.
-use std::any::{type_name, Any, TypeId};
+//! A `Task<E, X>` describes what work to schedule. The Shell interprets the
+//! plan and routes resulting `Command` steps back into the Core/Shell pipeline.
+use std::any::Any;
 use std::future::Future;
 use std::panic::{self, AssertUnwindSafe};
 use std::sync::Arc;
@@ -16,57 +15,38 @@ use crate::activity::Activity;
 use crate::command::{Command, CommandStep};
 use crate::core::EventSender;
 use crate::error::ShellError;
-use crate::executor::{
-    panic_message, AsyncExecutor, BlockingExecutor, ExecutorRegistry, ResourceBlockingExecutor,
-};
+use crate::executor::{panic_message, AsyncExecutor, BlockingExecutor};
 use crate::shell::{prepare_effect_step_for_queue, CancelGenerationMap, CancelGuard, ShellStats};
 
-fn missing_executor(kind: &'static str, exec: TypeId, exec_name: &'static str) -> ShellError {
+fn missing_executor(kind: &'static str) -> ShellError {
     #[cfg(feature = "tracing")]
-    tracing::error!(
-        ?exec,
-        kind,
-        exec_name,
-        "Missing executor; effect could not be scheduled"
-    );
+    tracing::error!(kind, "Missing executor; effect could not be scheduled");
 
-    ShellError::TaskSpawnFailed(format!(
-        "Missing {kind} executor: {exec_name} (TypeId={exec:?})"
-    ))
+    ShellError::TaskSpawnFailed(format!("no {kind} executor configured"))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PanicTaskKind {
     Async,
+    Compute,
     Blocking,
-    BlockingWithResource,
+    Stream,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PanicDetails {
-    pub kind: PanicTaskKind,
-    pub executor_type_name: &'static str,
-    pub executor_type_id: TypeId,
+    pub task_kind: PanicTaskKind,
 }
 
 impl PanicDetails {
     #[must_use]
-    pub fn new(
-        kind: PanicTaskKind,
-        executor_type_name: &'static str,
-        executor_type_id: TypeId,
-    ) -> Self {
-        Self {
-            kind,
-            executor_type_name,
-            executor_type_id,
-        }
+    pub fn new(task_kind: PanicTaskKind) -> Self {
+        Self { task_kind }
     }
 }
 
 pub type PanicHook<E, X> = dyn Fn(PanicDetails, String) -> Command<E, X> + Send + Sync;
 type BlockingJob<E, X> = dyn FnOnce() -> Command<E, X> + Send;
-type ResourceBlockingJob<E, X> = dyn FnOnce(&mut dyn Any) -> Command<E, X> + Send;
 
 #[derive(Clone)]
 pub(crate) struct TaskRouting<E, X>
@@ -121,26 +101,16 @@ where
     Event(E),
     Events(Vec<E>),
     Async {
-        exec_type_id: TypeId,
-        exec_type_name: &'static str,
         future: BoxFuture<'static, Command<E, X>>,
     },
-    Stream {
-        exec_type_id: TypeId,
-        exec_type_name: &'static str,
-        stream: BoxStream<'static, E>,
-    },
-    Blocking {
-        exec_type_id: TypeId,
-        exec_type_name: &'static str,
+    Compute {
         job: Box<BlockingJob<E, X>>,
     },
-    BlockingWithResource {
-        exec_type_id: TypeId,
-        exec_type_name: &'static str,
-        resource_type_id: TypeId,
-        resource_type_name: &'static str,
-        job: Box<ResourceBlockingJob<E, X>>,
+    Blocking {
+        job: Box<BlockingJob<E, X>>,
+    },
+    Stream {
+        stream: BoxStream<'static, E>,
     },
 }
 
@@ -168,34 +138,22 @@ where
         Self::Event(event)
     }
 
-    /// Run a future on a specific async executor type.
-    ///
-    /// Selects the executor by its concrete type; register the same type on
-    /// the builder. The future resolves to a `Command` whose outputs are routed
-    /// back through the system.
-    pub fn async_on<Exec, Fut>(future: Fut) -> Self
+    /// Run a future on the configured async executor.
+    pub fn future<Fut>(future: Fut) -> Self
     where
-        Exec: AsyncExecutor + 'static,
         Fut: Future<Output = Command<E, X>> + Send + 'static,
     {
-        let exec_type_id = TypeId::of::<Exec>();
-        let exec_type_name = type_name::<Exec>();
         let future: BoxFuture<'static, Command<E, X>> = future.boxed();
-        Self::Async {
-            exec_type_id,
-            exec_type_name,
-            future,
-        }
+        Self::Async { future }
     }
 
-    /// Run a future on a specific async executor with cancellation support.
-    pub fn async_on_with_cancel<Exec, Fut, Cancel>(
+    /// Run a future with cancellation support.
+    pub fn future_with_cancel<Fut, Cancel>(
         future: Fut,
         cancel: Cancel,
         cancel_command: Command<E, X>,
     ) -> Self
     where
-        Exec: AsyncExecutor + 'static,
         Fut: Future<Output = Command<E, X>> + Send + 'static,
         Cancel: Future<Output = ()> + Send + 'static,
     {
@@ -207,66 +165,32 @@ where
                 Either::Right((command, _)) => command,
             }
         };
-        Self::async_on::<Exec, _>(fut)
+        Self::future(fut)
     }
 
-    /// Forward a stream’s items as events on a specific async executor.
-    pub fn stream_on<Exec, S>(stream: S) -> Self
+    /// Forward stream items as events.
+    pub fn stream<S>(stream: S) -> Self
     where
-        Exec: AsyncExecutor + 'static,
         S: futures_util::stream::Stream<Item = E> + Send + 'static,
     {
-        let exec_type_id = TypeId::of::<Exec>();
-        let exec_type_name = type_name::<Exec>();
         let stream: BoxStream<'static, E> = stream.boxed();
-        Self::Stream {
-            exec_type_id,
-            exec_type_name,
-            stream,
-        }
+        Self::Stream { stream }
     }
 
-    /// Run a blocking job on a blocking executor (no shared mutable resource).
-    pub fn blocking_on<Exec, F>(job: F) -> Self
+    /// Run CPU-bound work.
+    pub fn compute<F>(job: F) -> Self
     where
-        Exec: BlockingExecutor + 'static,
         F: FnOnce() -> Command<E, X> + Send + 'static,
     {
-        let exec_type_id = TypeId::of::<Exec>();
-        let exec_type_name = type_name::<Exec>();
-        let job: Box<BlockingJob<E, X>> = Box::new(job);
-        Self::Blocking {
-            exec_type_id,
-            exec_type_name,
-            job,
-        }
+        Self::Compute { job: Box::new(job) }
     }
 
-    /// Run a blocking job that requires mutable access to an executor-owned resource.
-    pub fn blocking_with_resource_on<Exec, R, F>(job: F) -> Self
+    /// Run blocking I/O work.
+    pub fn blocking<F>(job: F) -> Self
     where
-        Exec: ResourceBlockingExecutor + 'static,
-        R: 'static,
-        F: FnOnce(&mut R) -> Command<E, X> + Send + 'static,
+        F: FnOnce() -> Command<E, X> + Send + 'static,
     {
-        let exec_type_id = TypeId::of::<Exec>();
-        let exec_type_name = type_name::<Exec>();
-        let resource_type_id = TypeId::of::<R>();
-        let resource_type_name = type_name::<R>();
-        let user_job = job;
-        let job = Box::new(move |resource: &mut dyn Any| {
-            let resource = resource.downcast_mut::<R>().unwrap_or_else(|| {
-                panic!("resource type mismatch for single-thread executor; expected {resource_type_name}")
-            });
-            user_job(resource)
-        }) as Box<ResourceBlockingJob<E, X>>;
-        Self::BlockingWithResource {
-            exec_type_id,
-            exec_type_name,
-            resource_type_id,
-            resource_type_name,
-            job,
-        }
+        Self::Blocking { job: Box::new(job) }
     }
 
     /// Transform event and effect output types.
@@ -283,63 +207,27 @@ where
         match self {
             Self::Event(event) => Task::Event(fe(event)),
             Self::Events(events) => Task::Events(events.into_iter().map(&fe).collect()),
-            Self::Async {
-                exec_type_id,
-                exec_type_name,
-                future,
-            } => {
+            Self::Async { future } => {
                 let future = future.map(move |command| command.map(&fe, &fx)).boxed();
-                Task::Async {
-                    exec_type_id,
-                    exec_type_name,
-                    future,
-                }
+                Task::Async { future }
             }
-            Self::Stream {
-                exec_type_id,
-                exec_type_name,
-                stream,
-            } => {
+            Self::Stream { stream } => {
                 let stream = stream.map(fe).boxed();
-                Task::Stream {
-                    exec_type_id,
-                    exec_type_name,
-                    stream,
-                }
+                Task::Stream { stream }
             }
-            Self::Blocking {
-                exec_type_id,
-                exec_type_name,
-                job,
-            } => {
+            Self::Compute { job } => {
                 let job = Box::new(move || {
                     let command = job();
                     command.map(&fe, &fx)
                 }) as Box<BlockingJob<E2, X2>>;
-                Task::Blocking {
-                    exec_type_id,
-                    exec_type_name,
-                    job,
-                }
+                Task::Compute { job }
             }
-            Self::BlockingWithResource {
-                exec_type_id,
-                exec_type_name,
-                resource_type_id,
-                resource_type_name,
-                job,
-            } => {
-                let job = Box::new(move |resource: &mut dyn Any| {
-                    let command = job(resource);
+            Self::Blocking { job } => {
+                let job = Box::new(move || {
+                    let command = job();
                     command.map(&fe, &fx)
-                }) as Box<ResourceBlockingJob<E2, X2>>;
-                Task::BlockingWithResource {
-                    exec_type_id,
-                    exec_type_name,
-                    resource_type_id,
-                    resource_type_name,
-                    job,
-                }
+                }) as Box<BlockingJob<E2, X2>>;
+                Task::Blocking { job }
             }
         }
     }
@@ -411,9 +299,203 @@ fn route_command<E, X>(
     }
 }
 
+fn spawn_async_task<E, X>(
+    async_executor: &Arc<dyn AsyncExecutor>,
+    future: BoxFuture<'static, Command<E, X>>,
+    event_tx: EventSender<E>,
+    effect_tx: EffectSender<CommandStep<E, X>>,
+    routing: TaskRouting<E, X>,
+    panic_kind: PanicTaskKind,
+) -> Result<(), ShellError>
+where
+    E: Send + 'static,
+    X: Send + 'static,
+{
+    let activity_on_spawn_fail = routing.activity.clone();
+    let TaskRouting {
+        activity,
+        stats,
+        cancel_generations,
+        cancel_guard,
+        panic_handler,
+    } = routing;
+
+    if let Some(activity) = activity.as_ref() {
+        activity.inc();
+    }
+
+    let fut = async move {
+        let details = PanicDetails::new(panic_kind);
+        let result = AssertUnwindSafe(future).catch_unwind().await;
+        let command = match result {
+            Ok(command) => command,
+            Err(payload) => command_from_panic(panic_handler.as_ref(), details, payload),
+        };
+        route_command(
+            &event_tx,
+            &effect_tx,
+            command,
+            stats.as_ref(),
+            cancel_generations.as_ref(),
+            cancel_guard.as_ref(),
+        );
+        if let Some(activity) = activity {
+            activity.dec();
+        }
+    }
+    .boxed();
+
+    if let Err(err) = async_executor.spawn_async(fut) {
+        if let Some(activity) = activity_on_spawn_fail.as_ref() {
+            activity.dec();
+        }
+        return Err(ShellError::TaskSpawnFailed(format!(
+            "async executor: {err}"
+        )));
+    }
+
+    Ok(())
+}
+
+fn spawn_stream_task<E, X>(
+    async_executor: &Arc<dyn AsyncExecutor>,
+    stream: BoxStream<'static, E>,
+    event_tx: EventSender<E>,
+    effect_tx: EffectSender<CommandStep<E, X>>,
+    routing: TaskRouting<E, X>,
+) -> Result<(), ShellError>
+where
+    E: Send + 'static,
+    X: Send + 'static,
+{
+    let activity_on_spawn_fail = routing.activity.clone();
+    let TaskRouting {
+        activity,
+        stats,
+        cancel_generations,
+        cancel_guard,
+        panic_handler,
+    } = routing;
+
+    if let Some(activity) = activity.as_ref() {
+        activity.inc();
+    }
+
+    let stream_event_tx = event_tx.clone();
+    let stream_stats = stats.clone();
+    let stream_cancel_guard = cancel_guard.clone();
+
+    let fut = async move {
+        let details = PanicDetails::new(PanicTaskKind::Stream);
+        let result = AssertUnwindSafe(async move {
+            futures_util::pin_mut!(stream);
+            while let Some(event) = stream.next().await {
+                if is_cancelled(stream_cancel_guard.as_ref()) {
+                    break;
+                }
+                if stream_event_tx.send(event).is_err() {
+                    if let Some(stats) = stream_stats.as_ref() {
+                        stats.inc_dropped_event();
+                    }
+                    #[cfg(feature = "tracing")]
+                    tracing::debug!("event channel closed while forwarding stream item");
+                    break;
+                }
+            }
+        })
+        .catch_unwind()
+        .await;
+
+        if let Err(payload) = result {
+            let command = command_from_panic(panic_handler.as_ref(), details, payload);
+            route_command(
+                &event_tx,
+                &effect_tx,
+                command,
+                stats.as_ref(),
+                cancel_generations.as_ref(),
+                cancel_guard.as_ref(),
+            );
+        }
+
+        if let Some(activity) = activity {
+            activity.dec();
+        }
+    }
+    .boxed();
+
+    if let Err(err) = async_executor.spawn_async(fut) {
+        if let Some(activity) = activity_on_spawn_fail.as_ref() {
+            activity.dec();
+        }
+        return Err(ShellError::TaskSpawnFailed(format!(
+            "async stream executor: {err}"
+        )));
+    }
+
+    Ok(())
+}
+
+fn spawn_blocking_task<E, X>(
+    executor: &Arc<dyn BlockingExecutor>,
+    job: Box<BlockingJob<E, X>>,
+    event_tx: EventSender<E>,
+    effect_tx: EffectSender<CommandStep<E, X>>,
+    routing: TaskRouting<E, X>,
+    panic_kind: PanicTaskKind,
+    label: &'static str,
+) -> Result<(), ShellError>
+where
+    E: Send + 'static,
+    X: Send + 'static,
+{
+    let activity_on_spawn_fail = routing.activity.clone();
+    let TaskRouting {
+        activity,
+        stats,
+        cancel_generations,
+        cancel_guard,
+        panic_handler,
+    } = routing;
+
+    if let Some(activity) = activity.as_ref() {
+        activity.inc();
+    }
+
+    let blocking_job = Box::new(move || {
+        let details = PanicDetails::new(panic_kind);
+        let command = match panic::catch_unwind(AssertUnwindSafe(job)) {
+            Ok(command) => command,
+            Err(payload) => command_from_panic(panic_handler.as_ref(), details, payload),
+        };
+        route_command(
+            &event_tx,
+            &effect_tx,
+            command,
+            stats.as_ref(),
+            cancel_generations.as_ref(),
+            cancel_guard.as_ref(),
+        );
+        if let Some(activity) = activity {
+            activity.dec();
+        }
+    }) as Box<dyn FnOnce() + Send>;
+
+    if let Err(err) = executor.spawn_blocking(blocking_job) {
+        if let Some(activity) = activity_on_spawn_fail.as_ref() {
+            activity.dec();
+        }
+        return Err(ShellError::TaskSpawnFailed(format!(
+            "{label} executor: {err}"
+        )));
+    }
+
+    Ok(())
+}
+
 #[allow(dead_code)]
 pub(crate) fn drive_task<E, X>(
-    executors: &Arc<ExecutorRegistry<E>>,
+    async_executor: &Arc<dyn AsyncExecutor>,
     task: Task<E, X>,
     event_tx: EventSender<E>,
     effect_tx: EffectSender<CommandStep<E, X>>,
@@ -424,7 +506,9 @@ where
     X: Send + 'static,
 {
     drive_task_with_activity(
-        executors,
+        async_executor,
+        None,
+        None,
         task,
         event_tx,
         effect_tx,
@@ -436,7 +520,9 @@ where
 }
 
 pub(crate) fn drive_task_with_activity<E, X>(
-    executors: &Arc<ExecutorRegistry<E>>,
+    async_executor: &Arc<dyn AsyncExecutor>,
+    compute_executor: Option<&Arc<dyn BlockingExecutor>>,
+    blocking_executor: Option<&Arc<dyn BlockingExecutor>>,
     task: Task<E, X>,
     event_tx: EventSender<E>,
     effect_tx: EffectSender<CommandStep<E, X>>,
@@ -446,31 +532,24 @@ where
     E: Send + 'static,
     X: Send + 'static,
 {
-    let TaskRouting {
-        activity,
-        stats,
-        cancel_generations,
-        cancel_guard,
-        panic_handler,
-    } = routing;
     match task {
         Task::Event(event) => {
-            if !is_cancelled(cancel_guard.as_ref()) && event_tx.send(event).is_err() {
-                if let Some(stats) = stats.as_ref() {
+            if !is_cancelled(routing.cancel_guard.as_ref()) && event_tx.send(event).is_err() {
+                if let Some(stats) = routing.stats.as_ref() {
                     stats.inc_dropped_event();
                 }
                 #[cfg(feature = "tracing")]
                 tracing::debug!("event channel closed while dispatching event task");
             }
+            Ok(())
         }
         Task::Events(events) => {
-            for e in events {
-                if is_cancelled(cancel_guard.as_ref()) {
+            for event in events {
+                if is_cancelled(routing.cancel_guard.as_ref()) {
                     break;
                 }
-
-                if event_tx.send(e).is_err() {
-                    if let Some(stats) = stats.as_ref() {
+                if event_tx.send(event).is_err() {
+                    if let Some(stats) = routing.stats.as_ref() {
                         stats.inc_dropped_event();
                     }
                     #[cfg(feature = "tracing")]
@@ -478,223 +557,44 @@ where
                     break;
                 }
             }
+            Ok(())
         }
-        Task::Async {
-            exec_type_id,
-            exec_type_name,
+        Task::Async { future } => spawn_async_task(
+            async_executor,
             future,
-        } => {
-            let exec = executors
-                .async_exec_by_key(exec_type_id)
-                .ok_or_else(|| missing_executor("async", exec_type_id, exec_type_name))?;
-
-            let event_tx_cl = event_tx.clone();
-            let effect_tx_cl = effect_tx.clone();
-            let activity_cl = activity.clone();
-            let stats_cl = stats.clone();
-            let cancel_generations_cl = cancel_generations.clone();
-            let cancel_guard_cl = cancel_guard.clone();
-            if let Some(activity) = activity.as_ref() {
-                activity.inc();
-            }
-            let panic_handler_cl = panic_handler.clone();
-            let fut = async move {
-                let details = PanicDetails::new(PanicTaskKind::Async, exec_type_name, exec_type_id);
-                let result = AssertUnwindSafe(future).catch_unwind().await;
-                let command = match result {
-                    Ok(command) => command,
-                    Err(payload) => command_from_panic(panic_handler_cl.as_ref(), details, payload),
-                };
-                let stats_ref = stats_cl.as_ref();
-                let cancel_generations_ref = cancel_generations_cl.as_ref();
-                let cancel_guard_ref = cancel_guard_cl.as_ref();
-                route_command(
-                    &event_tx_cl,
-                    &effect_tx_cl,
-                    command,
-                    stats_ref,
-                    cancel_generations_ref,
-                    cancel_guard_ref,
-                );
-                if let Some(activity) = activity_cl {
-                    activity.dec();
-                }
-            }
-            .boxed();
-
-            if let Err(err) = exec.spawn_async(fut) {
-                if let Some(activity) = activity.as_ref() {
-                    activity.dec();
-                }
-                return Err(ShellError::TaskSpawnFailed(format!(
-                    "async executor {exec_type_name} (TypeId={exec_type_id:?}): {err}"
-                )));
-            }
+            event_tx,
+            effect_tx,
+            routing,
+            PanicTaskKind::Async,
+        ),
+        Task::Compute { job } => {
+            let executor = compute_executor.or(blocking_executor);
+            let executor = executor.ok_or_else(|| missing_executor("compute or blocking"))?;
+            spawn_blocking_task(
+                executor,
+                job,
+                event_tx,
+                effect_tx,
+                routing,
+                PanicTaskKind::Compute,
+                "compute",
+            )
         }
-        Task::Stream {
-            exec_type_id,
-            exec_type_name,
-            stream,
-        } => {
-            let exec = executors
-                .async_exec_by_key(exec_type_id)
-                .ok_or_else(|| missing_executor("stream", exec_type_id, exec_type_name))?;
-
-            let event_tx_cl = event_tx.clone();
-            let activity_cl = activity.clone();
-            let stats_cl = stats.clone();
-            let cancel_guard_cl = cancel_guard.clone();
-            if let Some(activity) = activity.as_ref() {
-                activity.inc();
-            }
-            let fut = async move {
-                futures_util::pin_mut!(stream);
-                while let Some(event) = stream.next().await {
-                    if is_cancelled(cancel_guard_cl.as_ref()) {
-                        break;
-                    }
-
-                    if event_tx_cl.send(event).is_err() {
-                        if let Some(stats) = stats_cl.as_ref() {
-                            stats.inc_dropped_event();
-                        }
-                        #[cfg(feature = "tracing")]
-                        tracing::debug!("event channel closed while forwarding stream item");
-                        break;
-                    }
-                }
-                if let Some(activity) = activity_cl {
-                    activity.dec();
-                }
-            }
-            .boxed();
-
-            if let Err(err) = exec.spawn_async(fut) {
-                if let Some(activity) = activity.as_ref() {
-                    activity.dec();
-                }
-                return Err(ShellError::TaskSpawnFailed(format!(
-                    "stream executor {exec_type_name} (TypeId={exec_type_id:?}): {err}"
-                )));
-            }
+        Task::Blocking { job } => {
+            let executor = blocking_executor.or(compute_executor);
+            let executor = executor.ok_or_else(|| missing_executor("blocking or compute"))?;
+            spawn_blocking_task(
+                executor,
+                job,
+                event_tx,
+                effect_tx,
+                routing,
+                PanicTaskKind::Blocking,
+                "blocking",
+            )
         }
-        Task::Blocking {
-            exec_type_id,
-            exec_type_name,
-            job,
-        } => {
-            let exec = executors
-                .blocking_exec_by_key(exec_type_id)
-                .ok_or_else(|| missing_executor("blocking", exec_type_id, exec_type_name))?;
-
-            let event_tx_cl = event_tx.clone();
-            let effect_tx_cl = effect_tx.clone();
-            let activity_cl = activity.clone();
-            let stats_cl = stats.clone();
-            let cancel_generations_cl = cancel_generations.clone();
-            let cancel_guard_cl = cancel_guard.clone();
-            if let Some(activity) = activity.as_ref() {
-                activity.inc();
-            }
-            let panic_handler_cl = panic_handler.clone();
-            let job = Box::new(move || {
-                let details =
-                    PanicDetails::new(PanicTaskKind::Blocking, exec_type_name, exec_type_id);
-                let command = match panic::catch_unwind(AssertUnwindSafe(job)) {
-                    Ok(command) => command,
-                    Err(payload) => command_from_panic(panic_handler_cl.as_ref(), details, payload),
-                };
-                let stats_ref = stats_cl.as_ref();
-                let cancel_generations_ref = cancel_generations_cl.as_ref();
-                let cancel_guard_ref = cancel_guard_cl.as_ref();
-                route_command(
-                    &event_tx_cl,
-                    &effect_tx_cl,
-                    command,
-                    stats_ref,
-                    cancel_generations_ref,
-                    cancel_guard_ref,
-                );
-                if let Some(activity) = activity_cl {
-                    activity.dec();
-                }
-            }) as Box<dyn FnOnce() + Send>;
-
-            if let Err(err) = exec.spawn_blocking(job) {
-                if let Some(activity) = activity.as_ref() {
-                    activity.dec();
-                }
-                return Err(ShellError::TaskSpawnFailed(format!(
-                    "blocking executor {exec_type_name} (TypeId={exec_type_id:?}): {err}"
-                )));
-            }
-        }
-        Task::BlockingWithResource {
-            exec_type_id,
-            exec_type_name,
-            resource_type_id,
-            resource_type_name,
-            job,
-        } => {
-            let exec = executors
-                .resource_blocking_exec_by_key(exec_type_id)
-                .ok_or_else(|| {
-                    missing_executor("resource-blocking", exec_type_id, exec_type_name)
-                })?;
-
-            let actual = exec.resource_type_id();
-            if actual != resource_type_id {
-                return Err(ShellError::TaskSpawnFailed(format!(
-                    "resource type mismatch for executor {exec_type_name} (TypeId={exec_type_id:?}): expected resource {resource_type_name} (TypeId={resource_type_id:?}), got TypeId={actual:?}"
-                )));
-            }
-
-            let event_tx_cl = event_tx.clone();
-            let effect_tx_cl = effect_tx.clone();
-            let activity_cl = activity.clone();
-            let stats_cl = stats.clone();
-            let cancel_generations_cl = cancel_generations.clone();
-            let cancel_guard_cl = cancel_guard.clone();
-            if let Some(activity) = activity.as_ref() {
-                activity.inc();
-            }
-            let panic_handler_cl = panic_handler.clone();
-            let job = Box::new(move |resource: &mut dyn Any| {
-                let details = PanicDetails::new(
-                    PanicTaskKind::BlockingWithResource,
-                    exec_type_name,
-                    exec_type_id,
-                );
-                let command = match panic::catch_unwind(AssertUnwindSafe(|| job(resource))) {
-                    Ok(command) => command,
-                    Err(payload) => command_from_panic(panic_handler_cl.as_ref(), details, payload),
-                };
-                let stats_ref = stats_cl.as_ref();
-                let cancel_generations_ref = cancel_generations_cl.as_ref();
-                let cancel_guard_ref = cancel_guard_cl.as_ref();
-                route_command(
-                    &event_tx_cl,
-                    &effect_tx_cl,
-                    command,
-                    stats_ref,
-                    cancel_generations_ref,
-                    cancel_guard_ref,
-                );
-                if let Some(activity) = activity_cl {
-                    activity.dec();
-                }
-            }) as Box<dyn FnOnce(&mut dyn Any) + Send>;
-
-            if let Err(err) = exec.spawn_blocking_with_resource(job) {
-                if let Some(activity) = activity.as_ref() {
-                    activity.dec();
-                }
-                return Err(ShellError::TaskSpawnFailed(format!(
-                    "resource-blocking executor {exec_type_name} (TypeId={exec_type_id:?}): {err}"
-                )));
-            }
+        Task::Stream { stream } => {
+            spawn_stream_task(async_executor, stream, event_tx, effect_tx, routing)
         }
     }
-
-    Ok(())
 }

@@ -1,8 +1,8 @@
 //! # Shell - Asynchronous Effect Management
 //!
 //! The Shell orchestrates asynchronous effect execution, bridging pure Core updates
-//! with side-effectful operations. Effect handlers now return `Task` plans which
-//! the Shell drives using executors registered in an immutable registry.
+//! with side-effectful operations. Effect handlers return `Task` plans which
+//! the Shell drives using configured async/compute/blocking executors.
 
 use crossbeam_channel::{Receiver, RecvTimeoutError, Sender, TrySendError};
 use std::collections::{HashMap, VecDeque};
@@ -15,7 +15,7 @@ use crate::command::{CancelId, Command, CommandStep};
 use crate::core::EventSender;
 use crate::error::ShellError;
 use crate::executor::task::{drive_task_with_activity, PanicHook, TaskRouting};
-use crate::executor::{ExecutorRegistry, Task};
+use crate::executor::{AsyncExecutor, BlockingExecutor, Task};
 
 #[cfg(feature = "tracing")]
 use tracing::{debug, span, Level};
@@ -139,8 +139,14 @@ where
     /// Channel for sending events back to Core
     pub(crate) event_tx: EventSender<E>,
 
-    /// Registry of pluggable executors
-    pub(crate) executors: Arc<ExecutorRegistry<E>>,
+    /// Executor used for async futures and streams
+    pub(crate) async_executor: Arc<dyn AsyncExecutor>,
+
+    /// Executor used primarily for CPU-bound work
+    pub(crate) compute_executor: Option<Arc<dyn BlockingExecutor>>,
+
+    /// Executor used primarily for blocking I/O work
+    pub(crate) blocking_executor: Option<Arc<dyn BlockingExecutor>>,
 
     /// User-provided effect handler
     pub(crate) effect_handler: EffectHandlerFn<E, X, R>,
@@ -229,7 +235,10 @@ where
         effect: X,
         cancellation: Option<(CancelId, u64)>,
     ) -> Result<(), ShellError> {
-        let ctx = EffectContext::new(self.resources.clone());
+        let ctx = EffectContext::with_async_executor(
+            self.resources.clone(),
+            Some(Arc::clone(&self.async_executor)),
+        );
         let task = (self.effect_handler)(effect, &ctx);
         let cancel_guard = cancellation.map(|(id, generation)| {
             let cancel_generations = Arc::clone(&self.cancel_generations);
@@ -238,7 +247,9 @@ where
         });
 
         drive_task_with_activity(
-            &self.executors,
+            &self.async_executor,
+            self.compute_executor.as_ref(),
+            self.blocking_executor.as_ref(),
             task,
             self.event_tx.clone(),
             self.effect_tx.clone(),
@@ -475,15 +486,42 @@ where
     /// Signal shutdown to higher-level Runner logic and request executor shutdown.
     pub fn shutdown(&mut self) {
         self.closed = true;
-        if !self.executors_shutdown {
-            self.executors.shutdown_all();
-            self.executors_shutdown = true;
+        if self.executors_shutdown {
+            return;
         }
+
+        self.async_executor.shutdown();
+        if let Some(compute_executor) = self.compute_executor.as_ref() {
+            compute_executor.shutdown();
+        }
+        if let Some(blocking_executor) = self.blocking_executor.as_ref() {
+            let same_as_compute = self
+                .compute_executor
+                .as_ref()
+                .is_some_and(|compute| Arc::ptr_eq(compute, blocking_executor));
+            if !same_as_compute {
+                blocking_executor.shutdown();
+            }
+        }
+
+        self.executors_shutdown = true;
     }
 
     /// Wait for all registered executors to finish outstanding work.
     pub fn wait_for_executors(&self) {
-        self.executors.wait_all();
+        self.async_executor.wait();
+        if let Some(compute_executor) = self.compute_executor.as_ref() {
+            compute_executor.wait();
+        }
+        if let Some(blocking_executor) = self.blocking_executor.as_ref() {
+            let same_as_compute = self
+                .compute_executor
+                .as_ref()
+                .is_some_and(|compute| Arc::ptr_eq(compute, blocking_executor));
+            if !same_as_compute {
+                blocking_executor.wait();
+            }
+        }
     }
 
     #[must_use]
@@ -690,7 +728,7 @@ mod tests {
 
     fn handle_effect(effect: Effect, _ctx: &EffectContext<()>) -> Task<Event, Effect> {
         match effect {
-            Effect::Delayed { value, gate } => Task::async_on::<ThreadAsync, _>(async move {
+            Effect::Delayed { value, gate } => Task::future(async move {
                 while !gate.load(Ordering::SeqCst) {
                     std::thread::sleep(Duration::from_millis(2));
                 }
@@ -707,7 +745,7 @@ mod tests {
             .model(Vec::new())
             .event_handler(handle_event)
             .effect_handler(handle_effect)
-            .with_async_executor(ThreadAsync::new())
+            .async_executor(ThreadAsync::new())
             .with_syzygy_config(SyzygyConfig::default().idle_sleep(Duration::from_millis(0)))
             .build()
     }

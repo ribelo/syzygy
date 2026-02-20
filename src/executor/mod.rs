@@ -1,22 +1,17 @@
 //! Executors — specialized async and blocking runtimes.
 
-use std::any::{Any, TypeId};
+use std::any::Any;
 use std::time::Duration;
 
 use futures_util::future::BoxFuture;
 use thiserror::Error;
 
-/// Type alias for the complex job function type used by ResourceBlockingExecutor
-type ResourceJobFn = Box<dyn FnOnce(&mut dyn Any) + Send>;
-
 #[cfg(feature = "rt-inline")]
 pub mod inline_async;
-pub mod registry;
 pub mod task;
 
 #[cfg(feature = "rt-inline")]
 pub use inline_async::InlineAsync;
-pub use registry::ExecutorRegistry;
 pub use task::{PanicDetails, PanicHook, PanicTaskKind, Task};
 /// Friendly alias for `Task` used in docs to highlight declarative plans.
 pub type Plan<E, X> = Task<E, X>;
@@ -58,14 +53,7 @@ pub trait AsyncExecutor: ExecutorLifecycle + Sync {
     fn sleep(&self, duration: Duration) -> BoxFuture<'static, ()>;
 }
 
-/// Executor for blocking work without shared resources.
+/// Executor for blocking work.
 pub trait BlockingExecutor: ExecutorLifecycle + Sync {
     fn spawn_blocking(&self, job: Box<dyn FnOnce() + Send>) -> Result<(), ExecutorError>;
-}
-
-/// Executor for blocking work with a dedicated, mutable resource.
-pub trait ResourceBlockingExecutor: ExecutorLifecycle + Sync {
-    fn resource_type_id(&self) -> TypeId;
-
-    fn spawn_blocking_with_resource(&self, job: ResourceJobFn) -> Result<(), ExecutorError>;
 }

@@ -72,7 +72,7 @@ fn derive_model_and_resources_work_in_runtime() {
                 Effect::Save => persist.handle((), ctx),
             },
         )
-        .with_async_executor(InlineAsync::new())
+        .async_executor(InlineAsync::new())
         .build();
 
     runner.core().try_send_event(Event::Increment(3)).unwrap();
@@ -112,7 +112,7 @@ fn derive_model_tracks_runtime_borrows() {
                 Effect::Save => persist.handle((), ctx),
             },
         )
-        .with_async_executor(InlineAsync::new())
+        .async_executor(InlineAsync::new())
         .build();
 
     assert_panic_contains("already borrowed mutably", || {

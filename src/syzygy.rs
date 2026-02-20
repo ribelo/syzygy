@@ -24,7 +24,7 @@
 //!     .model(Model::default())
 //!     .event_handler(update)
 //!     .effect_handler(handle_effects)
-//!     .with_async_executor(InlineAsync::new())
+//!     .async_executor(InlineAsync::new())
 //!     .build();
 //!
 //! // Run the application indefinitely

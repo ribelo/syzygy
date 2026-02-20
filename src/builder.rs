@@ -8,11 +8,8 @@
 //! so usage stays straightforward in real apps and tests.
 use crate::activity::Activity;
 use crate::command::Command;
-use crate::core::{Core, EventHandlerFn, EventSender};
-use crate::executor::{
-    AsyncExecutor, BlockingExecutor, ExecutorRegistry, PanicDetails, PanicHook,
-    ResourceBlockingExecutor, Task,
-};
+use crate::core::{Core, EventHandlerFn};
+use crate::executor::{AsyncExecutor, BlockingExecutor, PanicDetails, PanicHook, Task};
 use crate::extract::{EffectContext, EventContext};
 use crate::reducer::Reducer;
 use crate::shell::{EffectHandlerFn, Shell, ShellStats};
@@ -27,7 +24,7 @@ use std::sync::{Arc, Mutex};
 /// - set `.model(..)` and optional `.with_resources(..)`
 /// - install `.event_handler(..)` and `.effect_handler(..)`
 /// - configure channel capacities and idle cadence via explicit builder knobs
-/// - register executors via `.with_*_executor(..)`
+/// - register executors via `.async_executor(..)`, `.compute_executor(..)`, and `.blocking_executor(..)`
 /// - call `.build()`
 pub struct SyzygyBuilder<E, X, M, R = ()>
 where
@@ -118,7 +115,9 @@ where
             effect_handler: None,
             model: self.model,
             resources: self.resources,
-            exec_registry: ExecutorRegistry::<Event>::default(),
+            async_executor: None,
+            compute_executor: None,
+            blocking_executor: None,
             effect_channel_capacity: None,
             event_channel_capacity: None,
             syzygy_config: SyzygyConfig::default(),
@@ -138,11 +137,9 @@ where
 
 /// Builder stage where handlers and executors are configured.
 ///
-/// After installing handlers you can register any number of executors. If a
-/// `Task` targets a specific executor type you didn’t register, the Shell will
-/// error when scheduling it. You can avoid registry lookups entirely by using
-/// Register executors explicitly; pair `Task::async_on` with the executor types you add via the builder.
-/// runtime if available; otherwise completes inline by blocking the thread).
+/// Configure one async executor and optional compute/blocking executors. When
+/// an executor slot is not configured, the Shell applies compute/blocking
+/// fallback rules when driving tasks.
 pub struct ConfiguredBuilder<Event, Effect, Model, Resources>
 where
     Event: Send + 'static,
@@ -153,7 +150,9 @@ where
     effect_handler: Option<EffectHandlerFn<Event, Effect, Resources>>,
     model: Model,
     resources: Resources,
-    exec_registry: ExecutorRegistry<Event>,
+    async_executor: Option<Arc<dyn AsyncExecutor>>,
+    compute_executor: Option<Arc<dyn BlockingExecutor>>,
+    blocking_executor: Option<Arc<dyn BlockingExecutor>>,
     effect_channel_capacity: Option<usize>,
     event_channel_capacity: Option<usize>,
     syzygy_config: SyzygyConfig,
@@ -210,48 +209,33 @@ where
         self
     }
 
-    /// Replace the executor registry with a pre-built one.
+    /// Configure the async executor used for futures and streams.
     #[must_use]
-    pub fn with_executor_registry(mut self, registry: ExecutorRegistry<Event>) -> Self {
-        self.exec_registry = registry;
-        self
-    }
-
-    /// Register an async executor.
-    ///
-    /// Use for futures/streams scheduling (e.g. `TokioExecutor`, `InlineAsync`).
-    #[must_use]
-    pub fn with_async_executor<T>(mut self, exec: T) -> Self
+    pub fn async_executor<T>(mut self, exec: T) -> Self
     where
         T: AsyncExecutor + Send + Sync + 'static,
     {
-        self.exec_registry.insert_async(exec);
+        self.async_executor = Some(Arc::new(exec));
         self
     }
 
-    /// Register a blocking executor.
-    ///
-    /// Use for CPU-bound or blocking work that doesn’t require a shared
-    /// resource (e.g. Rayon-based executor).
+    /// Configure the compute executor used for CPU-bound work.
     #[must_use]
-    pub fn with_blocking_executor<T>(mut self, exec: T) -> Self
+    pub fn compute_executor<T>(mut self, exec: T) -> Self
     where
         T: BlockingExecutor + Send + Sync + 'static,
     {
-        self.exec_registry.insert_blocking(exec);
+        self.compute_executor = Some(Arc::new(exec));
         self
     }
 
-    /// Register a resource-blocking executor (single-threaded shared resource).
-    ///
-    /// Use when jobs need mutable access to a single owned resource with FIFO
-    /// guarantees (e.g. a device handle that must not be used concurrently).
+    /// Configure the blocking executor used for blocking I/O work.
     #[must_use]
-    pub fn with_resource_blocking_executor<T>(mut self, exec: T) -> Self
+    pub fn blocking_executor<T>(mut self, exec: T) -> Self
     where
-        T: ResourceBlockingExecutor + Send + Sync + 'static,
+        T: BlockingExecutor + Send + Sync + 'static,
     {
-        self.exec_registry.insert_resource_blocking(exec);
+        self.blocking_executor = Some(Arc::new(exec));
         self
     }
 
@@ -313,59 +297,56 @@ where
 
     /// Build the system and return a `Syzygy`.
     pub fn build(self) -> Syzygy<Event, Effect, Model, Resources> {
+        use crossbeam_channel::{bounded, unbounded};
+
         let (core, event_tx) = Core::with_event_channel_capacity(
             self.event_handler,
             self.model,
             self.event_channel_capacity,
         );
-        let registry = Arc::new(self.exec_registry);
 
-        let shell = Self::build_shell(
-            registry,
-            self.effect_handler,
-            self.resources,
-            event_tx,
-            self.effect_channel_capacity,
-            self.panic_handler,
-        );
-        Syzygy::with_config(core, shell, self.syzygy_config)
-    }
+        let async_executor = if let Some(async_executor) = self.async_executor {
+            async_executor
+        } else {
+            #[cfg(feature = "rt-inline")]
+            {
+                Arc::new(crate::executor::InlineAsync::new())
+            }
+            #[cfg(not(feature = "rt-inline"))]
+            {
+                panic!("no async executor configured")
+            }
+        };
 
-    fn build_shell(
-        exec_registry: Arc<ExecutorRegistry<Event>>,
-        effect_handler: Option<EffectHandlerFn<Event, Effect, Resources>>,
-        resources: Resources,
-        event_tx: EventSender<Event>,
-        effect_channel_capacity: Option<usize>,
-        panic_handler: Option<Arc<PanicHook<Event, Effect>>>,
-    ) -> Shell<Event, Effect, Resources> {
-        use crossbeam_channel::{bounded, unbounded};
-
-        let (effect_tx, effect_rx) = match effect_channel_capacity {
+        let (effect_tx, effect_rx) = match self.effect_channel_capacity {
             Some(capacity) => bounded(capacity),
             None => unbounded(),
         };
 
-        let effect_handler: EffectHandlerFn<Event, Effect, Resources> = effect_handler
-            .unwrap_or_else(|| {
+        let effect_handler: EffectHandlerFn<Event, Effect, Resources> =
+            self.effect_handler.unwrap_or_else(|| {
                 Box::new(|_effect, _ctx: &EffectContext<Resources>| Task::<Event, Effect>::none())
             });
 
-        Shell {
+        let shell = Shell {
             effect_rx,
             effect_tx,
             event_tx,
             effect_handler,
-            resources,
+            resources: self.resources,
             activity: Activity::new(),
             cancel_generations: Arc::new(Mutex::new(HashMap::new())),
-            effect_channel_capacity,
-            executors: exec_registry,
+            effect_channel_capacity: self.effect_channel_capacity,
+            async_executor,
+            compute_executor: self.compute_executor,
+            blocking_executor: self.blocking_executor,
             closed: false,
             prefetched_effects: VecDeque::new(),
             stats: ShellStats::default(),
             executors_shutdown: false,
-            panic_handler,
-        }
+            panic_handler: self.panic_handler,
+        };
+
+        Syzygy::with_config(core, shell, self.syzygy_config)
     }
 }

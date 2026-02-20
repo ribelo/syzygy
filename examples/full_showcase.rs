@@ -16,7 +16,7 @@
 //! - `TestStore` (`send`, `state`, `assert_effects`, `assert_no_effects`,
 //!   `take_effects`, `with_max_event_steps`)
 //! - Panic testing (`assert_panic_contains`)
-//! - Task variants (`event`, `events`, `none`, `async_on`)
+//! - Task variants (`event`, `events`, `none`, `future`)
 //! - Task mapping (`map`, `map_event`, `map_effect`)
 //! - Full `Syzygy` runtime (builder, model, resources, handlers,
 //!   reducer, executor, build, step, shutdown)
@@ -179,8 +179,8 @@ mod search {
             // Task::events — return multiple events synchronously.
             return Task::events(vec![Event::ResultsLoaded(vec![])]);
         }
-        // Task::async_on — run a future on the InlineAsync executor.
-        Task::async_on::<InlineAsync, _>(async move {
+        // Task::future — run a future on the configured async executor.
+        Task::future(async move {
             let results = vec![
                 format!("{query} from {}", api_url.0),
                 format!("{query} - result 2"),
@@ -373,7 +373,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         })
         .event_handler(dispatch_event)
         .effect_handler(dispatch_effect)
-        .with_async_executor(InlineAsync::new())
+        .async_executor(InlineAsync::new())
         .build();
 
     // Initialize the app.
@@ -827,7 +827,7 @@ mod tests {
             })
             .event_handler(dispatch_event)
             .effect_handler(dispatch_effect)
-            .with_async_executor(InlineAsync::new())
+            .async_executor(InlineAsync::new())
             .build();
 
         runner
@@ -854,7 +854,7 @@ mod tests {
             })
             .reducer(reducer)
             .effect_handler(dispatch_effect)
-            .with_async_executor(InlineAsync::new())
+            .async_executor(InlineAsync::new())
             .build();
 
         runner
@@ -878,7 +878,7 @@ mod tests {
             })
             .event_handler(dispatch_event)
             .effect_handler(dispatch_effect)
-            .with_async_executor(InlineAsync::new())
+            .async_executor(InlineAsync::new())
             .build();
 
         runner
