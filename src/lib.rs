@@ -24,7 +24,7 @@ pub mod prelude {
     pub use crate::core::{Core, EventSender};
 
     pub use crate::extract::{
-        AsyncRt, EffectContext, EffectHandler, EventContext, EventHandler, FromEffectContext,
+        EffectContext, EffectHandler, EventContext, EventHandler, FromEffectContext,
         FromEventContext,
     };
     pub use crate::reducer::{combine, BoxedReducer, Combine, Reduce, Reducer, ReducerExt, Scope};
@@ -34,7 +34,7 @@ pub mod prelude {
     #[cfg(feature = "shell")]
     pub use crate::builder::SyzygyBuilder;
     #[cfg(feature = "shell")]
-    pub use crate::executor::{InlineAsync, InlineBlocking, Plan, Task};
+    pub use crate::executor::{AsyncRt, InlineAsync, InlineBlocking, Plan, Task};
     #[cfg(feature = "shell")]
     pub use crate::shell::Shell;
     #[cfg(feature = "shell")]

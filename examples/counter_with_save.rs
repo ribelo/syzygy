@@ -138,9 +138,9 @@ fn save_failed(msg: String, mut saving: Saving) -> Command<Event, Effect> {
 
 fn save_to_server(value: i32, url: ServerUrl) -> Task<Event, Effect> {
     if url.0.is_empty() {
-        Task::event(Event::SaveFailed("server url is empty".to_string()))
+        Task::send(Event::SaveFailed("server url is empty".to_string()))
     } else {
-        Task::event(Event::SaveDone(value))
+        Task::send(Event::SaveDone(value))
     }
 }
 
@@ -191,10 +191,12 @@ mod tests {
 
     fn run_task_events(store: &mut TestStore<Event, Effect, Model>, task: Task<Event, Effect>) {
         match task {
-            Task::Event(event) => store.send(event),
-            Task::Events(events) => {
-                for event in events {
-                    store.send(event);
+            Task::None => {}
+            Task::Resolved(command) => {
+                for step in command {
+                    if let CommandStep::Event(event) = step {
+                        store.send(event);
+                    }
                 }
             }
             Task::Async { .. }

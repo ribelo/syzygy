@@ -1,35 +1,17 @@
 use std::cell::Cell;
-use std::sync::Arc;
-use std::time::Duration;
-
-use futures_util::future::BoxFuture;
 
 use crate::command::Command;
-use crate::executor::{AsyncExecutor, Task};
+use crate::executor::Task;
 
 // ── Effect side ─────────────────────────────────────────────────────
 
 pub struct EffectContext<R> {
     resources: R,
-    async_executor: Option<Arc<dyn AsyncExecutor>>,
 }
 
 impl<R> EffectContext<R> {
     pub fn new(resources: R) -> Self {
-        Self {
-            resources,
-            async_executor: None,
-        }
-    }
-
-    pub fn with_async_executor(
-        resources: R,
-        async_executor: Option<Arc<dyn AsyncExecutor>>,
-    ) -> Self {
-        Self {
-            resources,
-            async_executor,
-        }
+        Self { resources }
     }
 
     pub fn resources(&self) -> &R {
@@ -41,32 +23,12 @@ impl<R> EffectContext<R> {
     where
         F: FnOnce(&R) -> R2,
     {
-        EffectContext::with_async_executor(f(&self.resources), self.async_executor.clone())
-    }
-}
-
-#[derive(Clone)]
-pub struct AsyncRt(Arc<dyn AsyncExecutor>);
-
-impl AsyncRt {
-    #[must_use]
-    pub fn sleep(&self, duration: Duration) -> BoxFuture<'static, ()> {
-        self.0.sleep(duration)
+        EffectContext::new(f(&self.resources))
     }
 }
 
 pub trait FromEffectContext<R> {
     fn from_context(ctx: &EffectContext<R>) -> Self;
-}
-
-impl<R> FromEffectContext<R> for AsyncRt {
-    fn from_context(ctx: &EffectContext<R>) -> Self {
-        let async_executor = ctx
-            .async_executor
-            .clone()
-            .expect("no async executor configured");
-        Self(async_executor)
-    }
 }
 
 pub trait EffectHandler<E: Send + 'static, X: Send + 'static, P, R, Marker>:
@@ -430,7 +392,7 @@ mod tests {
         fn save(data: String, db: DbUrl) -> Task<Event, Effect> {
             assert_eq!(data, "x");
             assert_eq!(db.0, "pg://test");
-            Task::event(Event::Saved)
+            Task::send(Event::Saved)
         }
 
         fn log(msg: String) -> Task<Event, Effect> {

@@ -15,7 +15,7 @@ use crate::activity::Activity;
 use crate::command::{Command, CommandStep};
 use crate::core::EventSender;
 use crate::error::ShellError;
-use crate::executor::{panic_message, AsyncExecutor, BlockingExecutor};
+use crate::executor::{panic_message, AsyncExecutor, AsyncRt, BlockingExecutor};
 use crate::shell::{prepare_effect_step_for_queue, CancelGenerationMap, CancelGuard, ShellStats};
 
 fn missing_executor(kind: &'static str) -> ShellError {
@@ -98,10 +98,10 @@ where
     E: Send + 'static,
     X: Send + 'static,
 {
-    Event(E),
-    Events(Vec<E>),
+    None,
+    Resolved(Command<E, X>),
     Async {
-        future: BoxFuture<'static, Command<E, X>>,
+        factory: Box<dyn FnOnce(AsyncRt) -> BoxFuture<'static, Command<E, X>> + Send>,
     },
     Compute {
         job: Box<BlockingJob<E, X>>,
@@ -110,7 +110,7 @@ where
         job: Box<BlockingJob<E, X>>,
     },
     Stream {
-        stream: BoxStream<'static, E>,
+        factory: Box<dyn FnOnce(AsyncRt) -> BoxStream<'static, E> + Send>,
     },
 }
 
@@ -119,62 +119,66 @@ where
     E: Send + 'static,
     X: Send + 'static,
 {
-    /// Emit multiple events back to Core.
-    pub fn events<I>(events: I) -> Self
-    where
-        I: IntoIterator<Item = E>,
-    {
-        Self::Events(events.into_iter().collect())
-    }
-
     /// No-op task. Useful when effects are conditionally skipped.
     #[must_use]
     pub fn none() -> Self {
-        Self::Events(vec![])
+        Self::None
     }
 
     /// Emit a single event back to Core.
-    pub fn event(event: E) -> Self {
-        Self::Event(event)
+    pub fn send(event: E) -> Self {
+        Self::Resolved(Command::event(event))
+    }
+
+    /// Resolve to an already-built command.
+    pub fn resolved(command: Command<E, X>) -> Self {
+        Self::Resolved(command)
     }
 
     /// Run a future on the configured async executor.
-    pub fn future<Fut>(future: Fut) -> Self
+    pub fn future<F, Fut>(factory: F) -> Self
     where
+        F: FnOnce(AsyncRt) -> Fut + Send + 'static,
         Fut: Future<Output = Command<E, X>> + Send + 'static,
     {
-        let future: BoxFuture<'static, Command<E, X>> = future.boxed();
-        Self::Async { future }
+        Self::Async {
+            factory: Box::new(move |rt| Box::pin(factory(rt)) as BoxFuture<'static, Command<E, X>>),
+        }
     }
 
     /// Run a future with cancellation support.
-    pub fn future_with_cancel<Fut, Cancel>(
-        future: Fut,
+    pub fn future_with_cancel<F, Fut, Cancel>(
+        factory: F,
         cancel: Cancel,
         cancel_command: Command<E, X>,
     ) -> Self
     where
+        F: FnOnce(AsyncRt) -> Fut + Send + 'static,
         Fut: Future<Output = Command<E, X>> + Send + 'static,
         Cancel: Future<Output = ()> + Send + 'static,
     {
-        let fut = async move {
-            futures_util::pin_mut!(future);
-            futures_util::pin_mut!(cancel);
-            match futures_util::future::select(cancel, future).await {
-                Either::Left(((), _pending_future)) => cancel_command,
-                Either::Right((command, _)) => command,
+        Self::future(move |rt| {
+            let future = factory(rt);
+            async move {
+                futures_util::pin_mut!(future);
+                futures_util::pin_mut!(cancel);
+                match futures_util::future::select(cancel, future).await {
+                    Either::Left(((), _)) => cancel_command,
+                    Either::Right((command, _)) => command,
+                }
             }
-        };
-        Self::future(fut)
+        })
     }
 
     /// Forward stream items as events.
-    pub fn stream<S>(stream: S) -> Self
+    pub fn stream<F, S>(factory: F) -> Self
     where
+        F: FnOnce(AsyncRt) -> S + Send + 'static,
         S: futures_util::stream::Stream<Item = E> + Send + 'static,
     {
-        let stream: BoxStream<'static, E> = stream.boxed();
-        Self::Stream { stream }
+        Self::Stream {
+            factory: Box::new(move |rt| Box::pin(factory(rt)) as BoxStream<'static, E>),
+        }
     }
 
     /// Run CPU-bound work.
@@ -205,16 +209,20 @@ where
         X2: Send + 'static,
     {
         match self {
-            Self::Event(event) => Task::Event(fe(event)),
-            Self::Events(events) => Task::Events(events.into_iter().map(&fe).collect()),
-            Self::Async { future } => {
-                let future = future.map(move |command| command.map(&fe, &fx)).boxed();
-                Task::Async { future }
-            }
-            Self::Stream { stream } => {
-                let stream = stream.map(fe).boxed();
-                Task::Stream { stream }
-            }
+            Self::None => Task::None,
+            Self::Resolved(command) => Task::Resolved(command.map(&fe, &fx)),
+            Self::Async { factory } => Task::Async {
+                factory: Box::new(move |rt| {
+                    let future = factory(rt);
+                    future.map(move |command| command.map(&fe, &fx)).boxed()
+                }),
+            },
+            Self::Stream { factory } => Task::Stream {
+                factory: Box::new(move |rt| {
+                    let stream = factory(rt);
+                    stream.map(fe).boxed()
+                }),
+            },
             Self::Compute { job } => {
                 let job = Box::new(move || {
                     let command = job();
@@ -533,40 +541,30 @@ where
     X: Send + 'static,
 {
     match task {
-        Task::Event(event) => {
-            if !is_cancelled(routing.cancel_guard.as_ref()) && event_tx.send(event).is_err() {
-                if let Some(stats) = routing.stats.as_ref() {
-                    stats.inc_dropped_event();
-                }
-                #[cfg(feature = "tracing")]
-                tracing::debug!("event channel closed while dispatching event task");
-            }
+        Task::None => Ok(()),
+        Task::Resolved(command) => {
+            route_command(
+                &event_tx,
+                &effect_tx,
+                command,
+                routing.stats.as_ref(),
+                routing.cancel_generations.as_ref(),
+                routing.cancel_guard.as_ref(),
+            );
             Ok(())
         }
-        Task::Events(events) => {
-            for event in events {
-                if is_cancelled(routing.cancel_guard.as_ref()) {
-                    break;
-                }
-                if event_tx.send(event).is_err() {
-                    if let Some(stats) = routing.stats.as_ref() {
-                        stats.inc_dropped_event();
-                    }
-                    #[cfg(feature = "tracing")]
-                    tracing::debug!("event channel closed while dispatching event task");
-                    break;
-                }
-            }
-            Ok(())
+        Task::Async { factory } => {
+            let runtime = AsyncRt::from_executor(Arc::clone(async_executor));
+            let future = factory(runtime);
+            spawn_async_task(
+                async_executor,
+                future,
+                event_tx,
+                effect_tx,
+                routing,
+                PanicTaskKind::Async,
+            )
         }
-        Task::Async { future } => spawn_async_task(
-            async_executor,
-            future,
-            event_tx,
-            effect_tx,
-            routing,
-            PanicTaskKind::Async,
-        ),
         Task::Compute { job } => {
             let executor = compute_executor.or(blocking_executor);
             let executor = executor.ok_or_else(|| missing_executor("compute or blocking"))?;
@@ -593,7 +591,9 @@ where
                 "blocking",
             )
         }
-        Task::Stream { stream } => {
+        Task::Stream { factory } => {
+            let runtime = AsyncRt::from_executor(Arc::clone(async_executor));
+            let stream = factory(runtime);
             spawn_stream_task(async_executor, stream, event_tx, effect_tx, routing)
         }
     }

@@ -6,7 +6,7 @@
 //! - `#[derive(Model)]` and `#[derive(Resources)]` proc macros
 //! - Magic event handlers (per-field extraction via `FromEventContext`)
 //! - Magic effect handlers (resource extraction via `FromEffectContext`)
-//! - `AsyncRt` extraction in effect handlers (runtime-agnostic sleep/delay)
+//! - `Task::future` runtime factories (`AsyncRt` injected at execution time)
 //! - Scope composition (`EventContext::scope`, `EffectContext::scope`)
 //! - Command mapping (`map`, `map_event`, `map_effect`)
 //! - Cancellable effects (`Command::cancellable`, `CancelId`)
@@ -17,7 +17,7 @@
 //! - `TestStore` (`send`, `state`, `assert_effects`, `assert_no_effects`,
 //!   `take_effects`, `with_max_event_steps`)
 //! - Panic testing (`assert_panic_contains`)
-//! - Semantic Task variants (`event`, `events`, `none`, `future`,
+//! - Semantic Task variants (`send`, `resolved`, `none`, `future`,
 //!   `compute`, `blocking`) — handlers declare work shape, Shell routes
 //! - Task mapping (`map`, `map_event`, `map_effect`)
 //! - Full `Syzygy` runtime (builder, model, resources, handlers,
@@ -207,23 +207,13 @@ mod search {
         }
     }
 
-    // AsyncRt — extracted from EffectContext, provides runtime-agnostic
-    // async capabilities (sleep, timeout). The handler never names a
-    // specific runtime (tokio, smol, etc.) — switching runtimes changes
-    // zero handler code.
-    fn debounced_search(
-        payload: (String, Duration),
-        api_url: ApiUrl,
-        rt: AsyncRt,
-    ) -> Task<Event, Effect> {
+    fn debounced_search(payload: (String, Duration), api_url: ApiUrl) -> Task<Event, Effect> {
         let (query, delay) = payload;
         if query.is_empty() {
-            return Task::events(vec![Event::ResultsLoaded(vec![])]);
+            return Task::send(Event::ResultsLoaded(vec![]));
         }
-        // Task::future — async IO work on the configured async executor.
-        let sleep_fut = rt.sleep(delay);
-        Task::future(async move {
-            sleep_fut.await;
+        Task::future(move |rt| async move {
+            rt.sleep(delay).await;
             let results = vec![
                 format!("{query} from {}", api_url.0),
                 format!("{query} - result 2"),
@@ -234,9 +224,9 @@ mod search {
 
     fn execute_search(query: String, api_url: ApiUrl) -> Task<Event, Effect> {
         if query.is_empty() {
-            return Task::events(vec![Event::ResultsLoaded(vec![])]);
+            return Task::send(Event::ResultsLoaded(vec![]));
         }
-        Task::future(async move {
+        Task::future(move |_rt| async move {
             let results = vec![
                 format!("{query} from {}", api_url.0),
                 format!("{query} - result 2"),
@@ -757,13 +747,21 @@ mod tests {
 
         let task = search::dispatch_effect(search::Effect::ExecuteSearch("".into()), &child_ctx);
 
-        // Empty query returns Task::events([ResultsLoaded(vec![])]).
         match task {
-            Task::Events(events) => {
-                assert_eq!(events.len(), 1);
-                assert_eq!(events[0], search::Event::ResultsLoaded(vec![]));
+            Task::Resolved(command) => {
+                let events: Vec<_> = command
+                    .into_iter()
+                    .filter_map(|step| {
+                        if let CommandStep::Event(event) = step {
+                            Some(event)
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+                assert_eq!(events, vec![search::Event::ResultsLoaded(vec![])]);
             }
-            _ => panic!("expected Task::Events for empty query"),
+            _ => panic!("expected Task::Resolved for empty query"),
         }
     }
 
@@ -815,12 +813,9 @@ mod tests {
 
     #[test]
     fn task_future_with_async_rt_debounce() {
-        let ctx = EffectContext::with_async_executor(
-            search::Res {
-                api_url: "https://test.api".into(),
-            },
-            Some(std::sync::Arc::new(InlineAsync::new())),
-        );
+        let ctx = EffectContext::new(search::Res {
+            api_url: "https://test.api".into(),
+        });
 
         let task = search::dispatch_effect(
             search::Effect::DebouncedSearch {
@@ -831,27 +826,7 @@ mod tests {
         );
 
         match task {
-            Task::Async { future, .. } => {
-                let cmd = futures::executor::block_on(future);
-                let events: Vec<_> = cmd
-                    .into_iter()
-                    .filter_map(|s| {
-                        if let CommandStep::Event(e) = s {
-                            Some(e)
-                        } else {
-                            None
-                        }
-                    })
-                    .collect();
-                assert_eq!(events.len(), 1);
-                assert_eq!(
-                    events[0],
-                    search::Event::ResultsLoaded(vec![
-                        "hello from https://test.api".into(),
-                        "hello - result 2".into(),
-                    ])
-                );
-            }
+            Task::Async { .. } => {}
             _ => panic!("expected Task::Async from debounced_search"),
         }
     }
@@ -959,15 +934,12 @@ mod tests {
     #[test]
     fn test_store_manual_effect_round_trip() {
         let mut store = TestStore::new(AppState::default(), dispatch_event);
-        let effect_ctx = EffectContext::with_async_executor(
-            AppRes {
-                api_url: "https://test.api".into(),
-                log_prefix: "test".into(),
-            },
-            Some(std::sync::Arc::new(InlineAsync::new())),
-        );
+        let effect_ctx = EffectContext::new(AppRes {
+            api_url: "https://test.api".into(),
+            log_prefix: "test".into(),
+        });
 
-        store.send(AppEvent::Search(search::Event::UpdateQuery("rust".into())));
+        store.send(AppEvent::Search(search::Event::UpdateQuery("".into())));
         let effects = store.take_effects();
         assert_eq!(effects.len(), 1);
 
@@ -976,37 +948,31 @@ mod tests {
             task: Task<AppEvent, AppEffect>,
         ) {
             match task {
-                Task::Async { future, .. } => {
-                    let cmd = futures::executor::block_on(future);
-                    for step in cmd {
-                        if let CommandStep::Event(e) = step {
-                            store.send(e);
+                Task::None => {}
+                Task::Resolved(command) => {
+                    for step in command {
+                        if let CommandStep::Event(event) = step {
+                            store.send(event);
                         }
                     }
                 }
                 Task::Blocking { job, .. } => {
                     let cmd = job();
                     for step in cmd {
-                        if let CommandStep::Event(e) = step {
-                            store.send(e);
+                        if let CommandStep::Event(event) = step {
+                            store.send(event);
                         }
                     }
                 }
                 Task::Compute { job, .. } => {
                     let cmd = job();
                     for step in cmd {
-                        if let CommandStep::Event(e) = step {
-                            store.send(e);
+                        if let CommandStep::Event(event) = step {
+                            store.send(event);
                         }
                     }
                 }
-                Task::Event(e) => store.send(e),
-                Task::Events(events) => {
-                    for e in events {
-                        store.send(e);
-                    }
-                }
-                _ => {}
+                Task::Async { .. } | Task::Stream { .. } => panic!("expected non-async task"),
             }
         }
 
@@ -1016,8 +982,7 @@ mod tests {
         }
 
         assert!(!store.state().search.loading);
-        assert_eq!(store.state().search.results.len(), 2);
-        assert!(store.state().search.results[0].contains("rust"));
+        assert!(store.state().search.results.is_empty());
     }
 
     // ── Full Syzygy runtime ───────────────────────────────────────

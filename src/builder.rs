@@ -250,7 +250,7 @@ where
     /// ```rust
     /// # use syzygy::prelude::*;
     /// # fn update(_: Event, _: &mut Model) -> Command<Event, Effect> { Command::none() }
-    /// # fn effects(_: Effect, _: ()) -> Task<Event, Effect> { Task::none() }
+    /// # fn effects(_: Effect, _: &EffectContext<()>) -> Task<Event, Effect> { Task::none() }
     /// # #[derive(Default)] struct Model;
     /// # #[derive(Clone)] enum Event { Ping }
     /// # #[derive(Clone)] enum Effect { DoPing }
@@ -277,7 +277,7 @@ where
     /// ```rust
     /// # use syzygy::prelude::*;
     /// # fn update(_: Event, _: &mut Model) -> Command<Event, Effect> { Command::none() }
-    /// # fn effects(_: Effect, _: ()) -> Task<Event, Effect> { Task::none() }
+    /// # fn effects(_: Effect, _: &EffectContext<()>) -> Task<Event, Effect> { Task::none() }
     /// # #[derive(Default)] struct Model;
     /// # #[derive(Clone)] enum Event { Ping }
     /// # #[derive(Clone)] enum Effect { DoPing }

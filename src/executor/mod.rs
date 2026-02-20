@@ -1,6 +1,7 @@
 //! Executors — specialized async and blocking runtimes.
 
 use std::any::Any;
+use std::sync::Arc;
 use std::time::Duration;
 
 use futures_util::future::BoxFuture;
@@ -17,6 +18,21 @@ pub use inline_async::InlineAsync;
 #[cfg(feature = "rt-inline")]
 pub use inline_blocking::InlineBlocking;
 pub use task::{PanicDetails, PanicHook, PanicTaskKind, Task};
+
+#[derive(Clone)]
+pub struct AsyncRt(Arc<dyn AsyncExecutor>);
+
+impl AsyncRt {
+    pub(crate) fn from_executor(exec: Arc<dyn AsyncExecutor>) -> Self {
+        Self(exec)
+    }
+
+    #[must_use]
+    pub fn sleep(&self, duration: Duration) -> BoxFuture<'static, ()> {
+        self.0.sleep(duration)
+    }
+}
+
 /// Friendly alias for `Task` used in docs to highlight declarative plans.
 pub type Plan<E, X> = Task<E, X>;
 

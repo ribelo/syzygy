@@ -235,10 +235,7 @@ where
         effect: X,
         cancellation: Option<(CancelId, u64)>,
     ) -> Result<(), ShellError> {
-        let ctx = EffectContext::with_async_executor(
-            self.resources.clone(),
-            Some(Arc::clone(&self.async_executor)),
-        );
+        let ctx = EffectContext::new(self.resources.clone());
         let task = (self.effect_handler)(effect, &ctx);
         let cancel_guard = cancellation.map(|(id, generation)| {
             let cancel_generations = Arc::clone(&self.cancel_generations);
@@ -728,7 +725,7 @@ mod tests {
 
     fn handle_effect(effect: Effect, _ctx: &EffectContext<()>) -> Task<Event, Effect> {
         match effect {
-            Effect::Delayed { value, gate } => Task::future(async move {
+            Effect::Delayed { value, gate } => Task::future(move |_rt| async move {
                 while !gate.load(Ordering::SeqCst) {
                     std::thread::sleep(Duration::from_millis(2));
                 }

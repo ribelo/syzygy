@@ -16,7 +16,7 @@
 //! # #[derive(Debug, Clone)] enum TestEffect { DoPing }
 //! # #[derive(Debug, Default)] struct Model;
 //! # fn update(_event: TestEvent, _model: &mut Model) -> Command<TestEvent, TestEffect> { Command::none() }
-//! # fn handle_effects(_effect: TestEffect, _resources: ()) -> Task<TestEvent, TestEffect> { Task::none() }
+//! # fn handle_effects(_effect: TestEffect, _ctx: &EffectContext<()>) -> Task<TestEvent, TestEffect> { Task::none() }
 //! # #[tokio::main]
 //! # async fn main() -> Result<(), Box<dyn std::error::Error>> {
 //! // In a real application, you would build and run the system like this:
@@ -99,7 +99,7 @@ where
     /// let (core, shell) = Syzygy::builder::<Event, Effect>()
     ///     .model(Model::default())
     ///     .event_handler(|_event: Event, _model| Command::none())
-    ///     .effect_handler(|_effect: Effect, _resources| Task::none())
+    ///     .effect_handler(|_effect: Effect, _ctx: &EffectContext<()>| Task::none())
     ///     .build()
     ///     .split();
     ///
@@ -256,7 +256,7 @@ where
     /// let mut runner = Syzygy::builder::<Event, Effect>()
     ///     .model(Model::default())
     ///     .event_handler(|_event: Event, _model| Command::none())
-    ///     .effect_handler(|_effect: Effect, _resources| Task::none())
+    ///     .effect_handler(|_effect: Effect, _ctx: &EffectContext<()>| Task::none())
     ///     .build();
     /// runner.core().try_send_event(Event::Test)?;
     ///
