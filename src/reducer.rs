@@ -1,4 +1,5 @@
 use std::marker::PhantomData;
+use std::sync::Arc;
 
 use crate::command::Command;
 use crate::extract::EventContext;
@@ -62,6 +63,66 @@ impl<S, E, X> Reducer for Reduce<S, E, X> {
 
     fn reduce(&self, event: Self::Event, ctx: &EventContext<Self::State>) -> Command<E, X> {
         (self.f)(event, ctx)
+    }
+}
+
+type DebugPrinter = dyn Fn(&str) + Send + Sync;
+
+pub struct DebugReducer<R> {
+    inner: R,
+    printer: Option<Arc<DebugPrinter>>,
+}
+
+impl<R> DebugReducer<R> {
+    #[must_use]
+    pub fn new(inner: R) -> Self {
+        Self {
+            inner,
+            printer: None,
+        }
+    }
+
+    #[must_use]
+    pub fn with_printer<P>(inner: R, printer: P) -> Self
+    where
+        P: Fn(&str) + Send + Sync + 'static,
+    {
+        Self {
+            inner,
+            printer: Some(Arc::new(printer)),
+        }
+    }
+
+    #[cfg(debug_assertions)]
+    fn print(&self, message: &str) {
+        if let Some(printer) = &self.printer {
+            (printer)(message);
+        } else {
+            eprintln!("{message}");
+        }
+    }
+}
+
+impl<R> DebugReducer<R>
+where
+    R: Reducer,
+    R::State: std::fmt::Debug,
+{
+    #[cfg(debug_assertions)]
+    fn print_changes(&self, event_repr: &str, old_state: &R::State, new_state: &R::State) {
+        let old = format!("{old_state:?}");
+        let new = format!("{new_state:?}");
+
+        if old == new {
+            self.print(&format!(
+                "received event: {event_repr}\n  (no state changes)"
+            ));
+            return;
+        }
+
+        self.print(&format!(
+            "received event: {event_repr}\n  state changed:\n    old: {old}\n    new: {new}"
+        ));
     }
 }
 
@@ -184,9 +245,62 @@ pub trait ReducerExt: Reducer + Sized {
     {
         Box::new(self)
     }
+
+    #[must_use]
+    fn debug(self) -> DebugReducer<Self>
+    where
+        Self::State: Clone + std::fmt::Debug,
+        Self::Event: std::fmt::Debug,
+    {
+        DebugReducer::new(self)
+    }
+
+    #[must_use]
+    fn debug_with<P>(self, printer: P) -> DebugReducer<Self>
+    where
+        Self::State: Clone + std::fmt::Debug,
+        Self::Event: std::fmt::Debug,
+        P: Fn(&str) + Send + Sync + 'static,
+    {
+        DebugReducer::with_printer(self, printer)
+    }
 }
 
 impl<T: Reducer> ReducerExt for T {}
+
+impl<R> Reducer for DebugReducer<R>
+where
+    R: Reducer,
+    R::State: Clone + std::fmt::Debug,
+    R::Event: std::fmt::Debug,
+{
+    type State = R::State;
+    type Event = R::Event;
+    type Effect = R::Effect;
+
+    fn reduce(
+        &self,
+        event: Self::Event,
+        ctx: &EventContext<Self::State>,
+    ) -> Command<Self::Event, Self::Effect> {
+        #[cfg(debug_assertions)]
+        {
+            let event_repr = format!("{event:?}");
+            // SAFETY: EventContext points to the active model for this dispatch.
+            let old_state = unsafe { (*ctx.model_ptr()).clone() };
+            let command = self.inner.reduce(event, ctx);
+            // SAFETY: The model pointer remains valid until dispatch returns.
+            let new_state = unsafe { (*ctx.model_ptr()).clone() };
+            self.print_changes(&event_repr, &old_state, &new_state);
+            command
+        }
+
+        #[cfg(not(debug_assertions))]
+        {
+            self.inner.reduce(event, ctx)
+        }
+    }
+}
 
 pub struct Combine<S, E, X> {
     reducers: Vec<BoxedReducer<S, E, X>>,
@@ -262,6 +376,8 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Arc, Mutex};
+
     use crate::command::CommandStep;
     use crate::test_store::TestStore;
 
@@ -275,7 +391,7 @@ mod tests {
         Changed(i32),
     }
 
-    #[derive(Debug, Default)]
+    #[derive(Debug, Default, Clone, PartialEq, Eq)]
     struct CounterState {
         value: i32,
     }
@@ -293,7 +409,7 @@ mod tests {
         Secondary(&'static str),
     }
 
-    #[derive(Debug, Default)]
+    #[derive(Debug, Default, Clone, PartialEq, Eq)]
     struct AppState {
         counter: CounterState,
     }
@@ -384,6 +500,122 @@ mod tests {
                 CommandStep::Effect(AppEffect::Secondary("second")),
             ]
         );
+    }
+
+    #[test]
+    fn debug_reducer_forwards_command_unchanged() {
+        let plain_reducer =
+            Reduce::new(
+                |event: CounterEvent, ctx: &EventContext<CounterState>| match event {
+                    CounterEvent::Increment(amount) => {
+                        // SAFETY: EventContext points to a live CounterState for this dispatch.
+                        let state = unsafe { &mut *ctx.model_ptr() };
+                        state.value += amount;
+                        Command::<CounterEvent, CounterEffect>::event(CounterEvent::Increment(
+                            state.value,
+                        ))
+                        .and_effect(CounterEffect::Changed(state.value))
+                    }
+                },
+            );
+
+        let wrapped_reducer = Reduce::new(
+            |event: CounterEvent, ctx: &EventContext<CounterState>| match event {
+                CounterEvent::Increment(amount) => {
+                    // SAFETY: EventContext points to a live CounterState for this dispatch.
+                    let state = unsafe { &mut *ctx.model_ptr() };
+                    state.value += amount;
+                    Command::<CounterEvent, CounterEffect>::event(CounterEvent::Increment(
+                        state.value,
+                    ))
+                    .and_effect(CounterEffect::Changed(state.value))
+                }
+            },
+        )
+        .debug_with(|_| {});
+
+        let mut plain_state = CounterState::default();
+        let plain_ctx = EventContext::new(&mut plain_state);
+        let plain_command = plain_reducer.reduce(CounterEvent::Increment(3), &plain_ctx);
+
+        let mut wrapped_state = CounterState::default();
+        let wrapped_ctx = EventContext::new(&mut wrapped_state);
+        let wrapped_command = wrapped_reducer.reduce(CounterEvent::Increment(3), &wrapped_ctx);
+
+        assert_eq!(
+            plain_command.into_iter().collect::<Vec<_>>(),
+            wrapped_command.into_iter().collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn debug_reducer_with_custom_printer_captures_output() {
+        let logs = Arc::new(Mutex::new(Vec::<String>::new()));
+        let sink = Arc::clone(&logs);
+
+        let reducer = Reduce::new(|event: CounterEvent, ctx: &EventContext<CounterState>| {
+            match event {
+                CounterEvent::Increment(amount) => {
+                    // SAFETY: EventContext points to a live CounterState for this dispatch.
+                    let state = unsafe { &mut *ctx.model_ptr() };
+                    state.value += amount;
+                    Command::<CounterEvent, CounterEffect>::none()
+                }
+            }
+        })
+        .debug_with(move |line| {
+            let mut guard = sink.lock().expect("log mutex poisoned");
+            guard.push(line.to_owned());
+        });
+
+        let mut state = CounterState::default();
+        let ctx = EventContext::new(&mut state);
+        let _command = reducer.reduce(CounterEvent::Increment(2), &ctx);
+
+        let guard = logs.lock().expect("log mutex poisoned");
+        assert_eq!(guard.len(), 1);
+        assert!(guard[0].contains("received event: Increment(2)"));
+        assert!(guard[0].contains("state changed"));
+        assert!(guard[0].contains("old: CounterState { value: 0 }"));
+        assert!(guard[0].contains("new: CounterState { value: 2 }"));
+    }
+
+    #[test]
+    fn debug_reducer_reports_no_state_changes() {
+        let logs = Arc::new(Mutex::new(Vec::<String>::new()));
+        let sink = Arc::clone(&logs);
+
+        let reducer = Reduce::new(|event: CounterEvent, ctx: &EventContext<CounterState>| {
+            match event {
+                CounterEvent::Increment(amount) => {
+                    // SAFETY: EventContext points to a live CounterState for this dispatch.
+                    let state = unsafe { &mut *ctx.model_ptr() };
+                    state.value += amount;
+                    Command::<CounterEvent, CounterEffect>::none()
+                }
+            }
+        })
+        .debug_with(move |line| {
+            let mut guard = sink.lock().expect("log mutex poisoned");
+            guard.push(line.to_owned());
+        });
+
+        let mut state = CounterState::default();
+        let ctx = EventContext::new(&mut state);
+        let _command = reducer.reduce(CounterEvent::Increment(0), &ctx);
+
+        let guard = logs.lock().expect("log mutex poisoned");
+        assert_eq!(guard.len(), 1);
+        assert!(guard[0].contains("received event: Increment(0)"));
+        assert!(guard[0].contains("(no state changes)"));
+    }
+
+    #[test]
+    fn debug_reducer_is_send_when_inner_is_send() {
+        fn assert_send<T: Send>() {}
+
+        type CounterReducer = Reduce<CounterState, CounterEvent, CounterEffect>;
+        assert_send::<DebugReducer<CounterReducer>>();
     }
 
     #[test]

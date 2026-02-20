@@ -27,8 +27,10 @@ pub mod prelude {
         EffectContext, EffectHandler, EventContext, EventHandler, FromEffectContext,
         FromEventContext,
     };
-    pub use crate::reducer::{combine, BoxedReducer, Combine, Reduce, Reducer, ReducerExt, Scope};
-    pub use crate::test_store::{assert_panic, assert_panic_contains, TestStore};
+    pub use crate::reducer::{
+        combine, BoxedReducer, Combine, DebugReducer, Reduce, Reducer, ReducerExt, Scope,
+    };
+    pub use crate::test_store::{assert_panic, assert_panic_contains, Exhaustivity, TestStore};
     pub use syzygy_macros::{Model, Resources};
 
     #[cfg(feature = "shell")]

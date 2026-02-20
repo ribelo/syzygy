@@ -17,6 +17,13 @@ use crate::extract::EventContext;
 /// Guards tests against accidental infinite event loops.
 const DEFAULT_MAX_EVENT_STEPS: usize = 10_000;
 
+/// Controls whether [`TestStore`] enforces effect assertions between sends.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Exhaustivity {
+    On,
+    Off,
+}
+
 /// TCA-style synchronous harness for testing event logic.
 ///
 /// The store processes events synchronously, mutates model state through your
@@ -30,6 +37,8 @@ where
     pending_events: VecDeque<E>,
     pending_effects: Vec<X>,
     max_event_steps: usize,
+    exhaustivity: Exhaustivity,
+    effects_asserted: bool,
 }
 
 impl<E, X, M> TestStore<E, X, M>
@@ -48,6 +57,8 @@ where
             pending_events: VecDeque::new(),
             pending_effects: Vec::new(),
             max_event_steps: DEFAULT_MAX_EVENT_STEPS,
+            exhaustivity: Exhaustivity::Off,
+            effects_asserted: true,
         }
     }
 
@@ -62,11 +73,28 @@ where
         self
     }
 
+    /// Configure whether effect assertions are required between sends.
+    #[must_use]
+    pub fn with_exhaustivity(mut self, exhaustivity: Exhaustivity) -> Self {
+        self.exhaustivity = exhaustivity;
+        self
+    }
+
     /// Send an event and process all synchronously chained events.
     ///
     /// Any emitted effects are buffered until asserted or drained with
     /// [`take_effects`](Self::take_effects).
     pub fn send(&mut self, event: E) {
+        let send_allowed = self.exhaustivity == Exhaustivity::Off
+            || self.effects_asserted
+            || self.pending_effects.is_empty();
+        assert!(
+            send_allowed,
+            "must assert effects before sending next event. {} unasserted effects pending.",
+            self.pending_effects.len()
+        );
+
+        let effects_before = self.pending_effects.len();
         self.pending_events.push_back(event);
 
         let mut processed = 0usize;
@@ -81,6 +109,9 @@ where
             let command = self.core.handle_event(next);
             self.route_command(command);
         }
+
+        let emitted_effects = self.pending_effects.len() > effects_before;
+        self.effects_asserted = !emitted_effects;
     }
 
     /// Returns the current model state.
@@ -92,6 +123,19 @@ where
     /// Returns mutable access to model state.
     pub fn state_mut(&mut self) -> &mut M {
         self.core.model_mut()
+    }
+
+    /// Assert that the current state equals `expected`.
+    pub fn assert_state(&self, expected: &M)
+    where
+        M: PartialEq + std::fmt::Debug,
+    {
+        assert_eq!(self.state(), expected, "unexpected state");
+    }
+
+    /// Run custom assertions against the current state.
+    pub fn assert_state_changed(&self, check: impl FnOnce(&M)) {
+        check(self.state());
     }
 
     /// Number of buffered effects waiting for assertion.
@@ -108,6 +152,7 @@ where
 
     /// Drains and returns all buffered effects in emission order.
     pub fn take_effects(&mut self) -> Vec<X> {
+        self.effects_asserted = true;
         std::mem::take(&mut self.pending_effects)
     }
 
@@ -120,10 +165,11 @@ where
         let expected: Vec<X> = expected.into_iter().collect();
         let actual = self.take_effects();
         assert_eq!(actual, expected, "unexpected emitted effects");
+        self.effects_asserted = true;
     }
 
     /// Assert that no effects are currently buffered.
-    pub fn assert_no_effects(&self)
+    pub fn assert_no_effects(&mut self)
     where
         X: std::fmt::Debug,
     {
@@ -132,6 +178,7 @@ where
             "expected no emitted effects, got {:?}",
             self.pending_effects
         );
+        self.effects_asserted = true;
     }
 
     fn route_command(&mut self, command: Command<E, X>) {
@@ -148,6 +195,29 @@ where
                 }
             }
         }
+    }
+}
+
+impl<E, X, M> Drop for TestStore<E, X, M>
+where
+    E: Send + 'static,
+    X: Send + 'static,
+{
+    fn drop(&mut self) {
+        if self.exhaustivity == Exhaustivity::Off {
+            return;
+        }
+
+        if self.effects_asserted || self.pending_effects.is_empty() {
+            return;
+        }
+
+        let message = format!(
+            "must assert effects before dropping test store. {} unasserted effects pending.",
+            self.pending_effects.len()
+        );
+        eprintln!("{message}");
+        assert!(std::thread::panicking(), "{message}");
     }
 }
 
@@ -213,7 +283,7 @@ mod tests {
         Fourth,
     }
 
-    #[derive(Debug, Default)]
+    #[derive(Debug, Default, PartialEq, Eq)]
     struct Model {
         counter: i32,
         save_completed: bool,
@@ -337,6 +407,84 @@ mod tests {
 
         assert_panic_contains("already borrowed mutably", || {
             store.send(Event::DoubleBorrow);
+        });
+    }
+
+    #[test]
+    fn exhaustive_mode_panics_on_unasserted_effects() {
+        assert_panic_contains("must assert effects before sending next event", || {
+            let mut store =
+                TestStore::new(Model::default(), dispatch).with_exhaustivity(Exhaustivity::On);
+
+            store.send(Event::Increment(1));
+            store.send(Event::Increment(1));
+        });
+    }
+
+    #[test]
+    fn exhaustive_mode_allows_send_after_assert_effects() {
+        let mut store =
+            TestStore::new(Model::default(), dispatch).with_exhaustivity(Exhaustivity::On);
+
+        store.send(Event::Increment(1));
+        store.assert_effects([Effect::Log(1)]);
+        store.send(Event::Increment(2));
+
+        store.assert_effects([Effect::Log(3)]);
+    }
+
+    #[test]
+    fn exhaustive_mode_allows_send_when_no_effects() {
+        let mut store =
+            TestStore::new(Model::default(), dispatch).with_exhaustivity(Exhaustivity::On);
+
+        store.send(Event::SaveDone);
+        store.send(Event::SaveDone);
+
+        store.assert_no_effects();
+    }
+
+    #[test]
+    fn exhaustive_mode_panics_on_drop_with_unasserted_effects() {
+        assert_panic_contains("must assert effects before dropping test store", || {
+            let mut store =
+                TestStore::new(Model::default(), dispatch).with_exhaustivity(Exhaustivity::On);
+            store.send(Event::Increment(1));
+        });
+    }
+
+    #[test]
+    fn non_exhaustive_mode_allows_unasserted_effects() {
+        let mut store =
+            TestStore::new(Model::default(), dispatch).with_exhaustivity(Exhaustivity::Off);
+
+        store.send(Event::Increment(1));
+        store.send(Event::Increment(1));
+
+        assert_eq!(store.pending_effect_count(), 2);
+    }
+
+    #[test]
+    fn assert_state_checks_equality() {
+        let mut store = TestStore::new(Model::default(), dispatch);
+
+        store.send(Event::Increment(3));
+
+        store.assert_state(&Model {
+            counter: 3,
+            save_completed: false,
+        });
+    }
+
+    #[test]
+    fn assert_state_changed_runs_closure() {
+        let mut store = TestStore::new(Model::default(), dispatch);
+
+        store.send(Event::Increment(4));
+
+        store.assert_state_changed(|state| {
+            assert_eq!(state.counter, 4);
+            assert!(!state.save_completed);
         });
     }
 }
