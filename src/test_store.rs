@@ -8,8 +8,17 @@ use std::any::Any;
 use std::collections::VecDeque;
 use std::panic::{self, AssertUnwindSafe};
 
+#[cfg(feature = "shell")]
+use futures::executor::block_on;
+#[cfg(feature = "shell")]
+use futures_util::stream::StreamExt;
+
 use crate::command::{Command, CommandStep};
 use crate::core::Core;
+#[cfg(feature = "shell")]
+use crate::executor::{AsyncRt, InlineAsync, Task};
+#[cfg(feature = "shell")]
+use crate::extract::EffectContext;
 use crate::extract::EventContext;
 
 /// Default upper bound for reducer steps executed by [`TestStore::send`].
@@ -181,6 +190,75 @@ where
         self.effects_asserted = true;
     }
 
+    /// Drain pending effects, execute them through `effect_handler`, and feed
+    /// returned events back through [`send`](Self::send).
+    #[cfg(feature = "shell")]
+    pub fn receive<H, R>(&mut self, effect_handler: H, resources: &R)
+    where
+        H: Fn(X, &EffectContext<R>) -> Task<E, X>,
+        R: Clone + 'static,
+    {
+        for effect in self.take_effects() {
+            let ctx = EffectContext::new(resources.clone());
+            let task = effect_handler(effect, &ctx);
+            self.drive_received_task(task);
+        }
+
+        self.effects_asserted = self.pending_effects.is_empty();
+    }
+
+    #[cfg(feature = "shell")]
+    fn drive_received_task(&mut self, task: Task<E, X>) {
+        match task {
+            Task::None => {}
+            Task::Resolved(command) => {
+                self.feed_received_command(command);
+            }
+            Task::Blocking { job } | Task::Compute { job } => {
+                self.feed_received_command(job());
+            }
+            Task::Async { factory } => {
+                let command = block_on(factory(Self::inline_async_runtime()));
+                self.feed_received_command(command);
+            }
+            Task::Stream { factory } => {
+                let stream = factory(Self::inline_async_runtime());
+                let events = block_on(stream.collect::<Vec<_>>());
+                for event in events {
+                    self.send_from_receive(event);
+                }
+            }
+        }
+    }
+
+    #[cfg(feature = "shell")]
+    fn feed_received_command(&mut self, command: Command<E, X>) {
+        for step in command {
+            match step {
+                CommandStep::Event(event) => {
+                    self.send_from_receive(event);
+                }
+                CommandStep::Effect(effect) | CommandStep::CancellableEffect { effect, .. } => {
+                    self.pending_effects.push(effect);
+                }
+                CommandStep::Batch(effects) | CommandStep::Parallel(effects) => {
+                    self.pending_effects.extend(effects);
+                }
+            }
+        }
+    }
+
+    #[cfg(feature = "shell")]
+    fn send_from_receive(&mut self, event: E) {
+        self.effects_asserted = true;
+        self.send(event);
+    }
+
+    #[cfg(feature = "shell")]
+    fn inline_async_runtime() -> AsyncRt {
+        AsyncRt::from_executor(std::sync::Arc::new(InlineAsync::new()))
+    }
+
     fn route_command(&mut self, command: Command<E, X>) {
         for step in command {
             match step {
@@ -263,6 +341,8 @@ mod tests {
     use std::ops::{Deref, DerefMut};
 
     use super::*;
+    #[cfg(feature = "shell")]
+    use crate::executor::Task;
     use crate::extract::{EventHandler, FromEventContext};
 
     #[derive(Debug, Clone, PartialEq, Eq)]
@@ -462,6 +542,85 @@ mod tests {
         store.send(Event::Increment(1));
 
         assert_eq!(store.pending_effect_count(), 2);
+    }
+
+    #[cfg(feature = "shell")]
+    #[test]
+    fn receive_feeds_resolved_task_events_back() {
+        let mut store = TestStore::new(Model::default(), dispatch);
+
+        store.send(Event::Increment(1));
+        store.receive(
+            |effect, _ctx| match effect {
+                Effect::Log(_) => Task::resolved(Command::event(Event::SaveDone)),
+                _ => Task::none(),
+            },
+            &(),
+        );
+
+        assert!(store.state().save_completed);
+        store.assert_no_effects();
+    }
+
+    #[cfg(feature = "shell")]
+    #[test]
+    fn receive_feeds_blocking_task_events_back() {
+        let mut store = TestStore::new(Model::default(), dispatch);
+
+        store.send(Event::Increment(1));
+        store.receive(
+            |effect, _ctx| match effect {
+                Effect::Log(_) => Task::blocking(|| Command::event(Event::SaveDone)),
+                _ => Task::none(),
+            },
+            &(),
+        );
+
+        assert!(store.state().save_completed);
+        store.assert_no_effects();
+    }
+
+    #[cfg(feature = "shell")]
+    #[test]
+    fn receive_works_with_exhaustive_mode() {
+        let mut store =
+            TestStore::new(Model::default(), dispatch).with_exhaustivity(Exhaustivity::On);
+
+        store.send(Event::Increment(1));
+        store.receive(|_effect, _ctx| Task::none(), &());
+        store.send(Event::SaveDone);
+
+        assert!(store.state().save_completed);
+        store.assert_no_effects();
+    }
+
+    #[cfg(feature = "shell")]
+    #[test]
+    fn receive_handles_task_none() {
+        let mut store = TestStore::new(Model::default(), dispatch);
+
+        store.send(Event::Increment(2));
+        store.receive(|_effect, _ctx| Task::none(), &());
+
+        assert_eq!(store.state().counter, 2);
+        assert!(!store.state().save_completed);
+        store.assert_no_effects();
+    }
+
+    #[cfg(feature = "shell")]
+    #[test]
+    fn receive_cascading_effects_stay_pending() {
+        let mut store = TestStore::new(Model::default(), dispatch);
+
+        store.send(Event::Increment(1));
+        store.receive(
+            |_effect, _ctx| Task::resolved(Command::event(Event::Increment(2))),
+            &(),
+        );
+
+        assert_eq!(store.state().counter, 3);
+        assert_eq!(store.pending_effect_count(), 1);
+        store.assert_effects([Effect::Log(3)]);
     }
 
     #[test]

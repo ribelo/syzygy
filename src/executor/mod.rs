@@ -12,12 +12,17 @@ pub mod inline_async;
 #[cfg(feature = "rt-inline")]
 pub mod inline_blocking;
 pub mod task;
+#[cfg(feature = "rt-tokio")]
+#[path = "tokio.rs"]
+pub mod tokio_executor;
 
 #[cfg(feature = "rt-inline")]
 pub use inline_async::InlineAsync;
 #[cfg(feature = "rt-inline")]
 pub use inline_blocking::InlineBlocking;
 pub use task::{PanicDetails, PanicHook, PanicTaskKind, Task};
+#[cfg(feature = "rt-tokio")]
+pub use tokio_executor::TokioExecutor;
 
 #[derive(Clone)]
 pub struct AsyncRt(Arc<dyn AsyncExecutor>);

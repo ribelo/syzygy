@@ -3,6 +3,7 @@ pub mod command;
 pub mod core;
 pub mod error;
 pub mod extract;
+pub mod if_let;
 pub mod reducer;
 pub mod test_store;
 
@@ -27,14 +28,18 @@ pub mod prelude {
         EffectContext, EffectHandler, EventContext, EventHandler, FromEffectContext,
         FromEventContext,
     };
+    pub use crate::if_let::{if_let, IfLet};
     pub use crate::reducer::{
-        combine, BoxedReducer, Combine, DebugReducer, OnChange, Reduce, Reducer, ReducerExt, Scope,
+        combine, BoxedReducer, Combine, DebugReducer, ForEach, OnChange, Reduce, Reducer,
+        ReducerExt, Scope,
     };
     pub use crate::test_store::{assert_panic, assert_panic_contains, Exhaustivity, TestStore};
     pub use syzygy_macros::{Model, Resources};
 
     #[cfg(feature = "shell")]
     pub use crate::builder::SyzygyBuilder;
+    #[cfg(feature = "rt-tokio")]
+    pub use crate::executor::TokioExecutor;
     #[cfg(feature = "shell")]
     pub use crate::executor::{AsyncRt, InlineAsync, InlineBlocking, Plan, Task};
     #[cfg(feature = "shell")]
