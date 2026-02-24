@@ -1,6 +1,9 @@
 use std::cell::Cell;
 #[cfg(debug_assertions)]
 use std::cell::RefCell;
+use std::future::Future;
+
+use futures::Stream;
 
 use crate::command::Command;
 use crate::dependency::{Res, ResourceMap};
@@ -28,7 +31,7 @@ pub trait FromEffectContext {
     fn from_context(ctx: &EffectContext) -> Self;
 }
 
-impl<T: Send + Sync + 'static> FromEffectContext for Res<T> {
+impl<T: 'static> FromEffectContext for Res<T> {
     fn from_context(ctx: &EffectContext) -> Self {
         ctx.resources().get::<T>().map_or_else(
             || {
@@ -37,35 +40,100 @@ impl<T: Send + Sync + 'static> FromEffectContext for Res<T> {
                     std::any::type_name::<T>()
                 )
             },
-            Res::from_arc,
+            Res::from_rc,
         )
     }
 }
 
-pub trait EffectHandler<E: Send + 'static, X: Send + 'static, P, Marker>: Send + 'static {
+pub struct FutureEffect;
+pub struct StreamEffect;
+
+#[doc(hidden)]
+pub struct NP;
+
+pub trait EffectHandler<E: 'static, X: 'static, P, Marker>: 'static {
     fn handle(&self, payload: P, ctx: &EffectContext) -> Task<E, X>;
 }
 
 impl<E, X, P, F> EffectHandler<E, X, P, ()> for F
 where
-    F: Fn(P) -> Task<E, X> + Send + 'static,
-    E: Send + 'static,
-    X: Send + 'static,
+    F: Fn(P) -> Task<E, X> + 'static,
+    E: 'static,
+    X: 'static,
 {
     fn handle(&self, payload: P, _ctx: &EffectContext) -> Task<E, X> {
         (self)(payload)
     }
 }
 
-macro_rules! impl_effect_handler {
+impl<E, X, F> EffectHandler<E, X, (), NP> for F
+where
+    F: Fn() -> Task<E, X> + 'static,
+    E: 'static,
+    X: 'static,
+{
+    fn handle(&self, _payload: (), _ctx: &EffectContext) -> Task<E, X> {
+        (self)()
+    }
+}
+
+impl<E, X, P, F, Fut> EffectHandler<E, X, P, FutureEffect> for F
+where
+    F: Fn(P) -> Fut + 'static,
+    Fut: Future<Output = Command<E, X>> + 'static,
+    E: 'static,
+    X: 'static,
+{
+    fn handle(&self, payload: P, _ctx: &EffectContext) -> Task<E, X> {
+        Task::once((self)(payload))
+    }
+}
+
+impl<E, X, F, Fut> EffectHandler<E, X, (), (FutureEffect, NP)> for F
+where
+    F: Fn() -> Fut + 'static,
+    Fut: Future<Output = Command<E, X>> + 'static,
+    E: 'static,
+    X: 'static,
+{
+    fn handle(&self, _payload: (), _ctx: &EffectContext) -> Task<E, X> {
+        Task::once((self)())
+    }
+}
+
+impl<E, X, P, F, S> EffectHandler<E, X, P, StreamEffect> for F
+where
+    F: Fn(P) -> S + 'static,
+    S: Stream<Item = Command<E, X>> + 'static,
+    E: 'static,
+    X: 'static,
+{
+    fn handle(&self, payload: P, _ctx: &EffectContext) -> Task<E, X> {
+        Task::stream((self)(payload))
+    }
+}
+
+impl<E, X, F, S> EffectHandler<E, X, (), (StreamEffect, NP)> for F
+where
+    F: Fn() -> S + 'static,
+    S: Stream<Item = Command<E, X>> + 'static,
+    E: 'static,
+    X: 'static,
+{
+    fn handle(&self, _payload: (), _ctx: &EffectContext) -> Task<E, X> {
+        Task::stream((self)())
+    }
+}
+
+macro_rules! impl_effect_handler_task {
     ($($T:ident),+) => {
         #[allow(non_snake_case)]
         impl<E, X, P, F, $($T),+> EffectHandler<E, X, P, ($($T,)+)> for F
         where
-            F: Fn(P, $($T),+) -> Task<E, X> + Send + 'static,
+            F: Fn(P, $($T),+) -> Task<E, X> + 'static,
             $($T: FromEffectContext,)+
-            E: Send + 'static,
-            X: Send + 'static,
+            E: 'static,
+            X: 'static,
         {
             fn handle(&self, payload: P, ctx: &EffectContext) -> Task<E, X> {
                 (self)(payload, $($T::from_context(ctx)),+)
@@ -74,14 +142,124 @@ macro_rules! impl_effect_handler {
     }
 }
 
-impl_effect_handler!(T1);
-impl_effect_handler!(T1, T2);
-impl_effect_handler!(T1, T2, T3);
-impl_effect_handler!(T1, T2, T3, T4);
-impl_effect_handler!(T1, T2, T3, T4, T5);
-impl_effect_handler!(T1, T2, T3, T4, T5, T6);
-impl_effect_handler!(T1, T2, T3, T4, T5, T6, T7);
-impl_effect_handler!(T1, T2, T3, T4, T5, T6, T7, T8);
+macro_rules! impl_effect_handler_task_np {
+    ($($T:ident),+) => {
+        #[allow(non_snake_case)]
+        impl<E, X, F, $($T),+> EffectHandler<E, X, (), (NP, $($T,)+)> for F
+        where
+            F: Fn($($T),+) -> Task<E, X> + 'static,
+            $($T: FromEffectContext,)+
+            E: 'static,
+            X: 'static,
+        {
+            fn handle(&self, _payload: (), ctx: &EffectContext) -> Task<E, X> {
+                (self)($($T::from_context(ctx)),+)
+            }
+        }
+    }
+}
+
+macro_rules! impl_effect_handler_future {
+    ($($T:ident),+) => {
+        #[allow(non_snake_case)]
+        impl<E, X, P, F, Fut, $($T),+> EffectHandler<E, X, P, (FutureEffect, $($T,)+)> for F
+        where
+            F: Fn(P, $($T),+) -> Fut + 'static,
+            Fut: Future<Output = Command<E, X>> + 'static,
+            $($T: FromEffectContext,)+
+            E: 'static,
+            X: 'static,
+        {
+            fn handle(&self, payload: P, ctx: &EffectContext) -> Task<E, X> {
+                Task::once((self)(payload, $($T::from_context(ctx)),+))
+            }
+        }
+    }
+}
+
+macro_rules! impl_effect_handler_future_np {
+    ($($T:ident),+) => {
+        #[allow(non_snake_case)]
+        impl<E, X, F, Fut, $($T),+> EffectHandler<E, X, (), (FutureEffect, NP, $($T,)+)> for F
+        where
+            F: Fn($($T),+) -> Fut + 'static,
+            Fut: Future<Output = Command<E, X>> + 'static,
+            $($T: FromEffectContext,)+
+            E: 'static,
+            X: 'static,
+        {
+            fn handle(&self, _payload: (), ctx: &EffectContext) -> Task<E, X> {
+                Task::once((self)($($T::from_context(ctx)),+))
+            }
+        }
+    }
+}
+
+macro_rules! impl_effect_handler_stream {
+    ($($T:ident),+) => {
+        #[allow(non_snake_case)]
+        impl<E, X, P, F, S, $($T),+> EffectHandler<E, X, P, (StreamEffect, $($T,)+)> for F
+        where
+            F: Fn(P, $($T),+) -> S + 'static,
+            S: Stream<Item = Command<E, X>> + 'static,
+            $($T: FromEffectContext,)+
+            E: 'static,
+            X: 'static,
+        {
+            fn handle(&self, payload: P, ctx: &EffectContext) -> Task<E, X> {
+                Task::stream((self)(payload, $($T::from_context(ctx)),+))
+            }
+        }
+    }
+}
+
+macro_rules! impl_effect_handler_stream_np {
+    ($($T:ident),+) => {
+        #[allow(non_snake_case)]
+        impl<E, X, F, S, $($T),+> EffectHandler<E, X, (), (StreamEffect, NP, $($T,)+)> for F
+        where
+            F: Fn($($T),+) -> S + 'static,
+            S: Stream<Item = Command<E, X>> + 'static,
+            $($T: FromEffectContext,)+
+            E: 'static,
+            X: 'static,
+        {
+            fn handle(&self, _payload: (), ctx: &EffectContext) -> Task<E, X> {
+                Task::stream((self)($($T::from_context(ctx)),+))
+            }
+        }
+    }
+}
+
+impl_effect_handler_task!(T1);
+impl_effect_handler_task!(T1, T2);
+impl_effect_handler_task!(T1, T2, T3);
+impl_effect_handler_task!(T1, T2, T3, T4);
+
+impl_effect_handler_task_np!(T1);
+impl_effect_handler_task_np!(T1, T2);
+impl_effect_handler_task_np!(T1, T2, T3);
+impl_effect_handler_task_np!(T1, T2, T3, T4);
+
+impl_effect_handler_future!(T1);
+impl_effect_handler_future!(T1, T2);
+impl_effect_handler_future!(T1, T2, T3);
+impl_effect_handler_future!(T1, T2, T3, T4);
+
+impl_effect_handler_future_np!(T1);
+impl_effect_handler_future_np!(T1, T2);
+impl_effect_handler_future_np!(T1, T2, T3);
+impl_effect_handler_future_np!(T1, T2, T3, T4);
+
+impl_effect_handler_stream!(T1);
+impl_effect_handler_stream!(T1, T2);
+impl_effect_handler_stream!(T1, T2, T3);
+impl_effect_handler_stream!(T1, T2, T3, T4);
+
+impl_effect_handler_stream_np!(T1);
+impl_effect_handler_stream_np!(T1, T2);
+impl_effect_handler_stream_np!(T1, T2, T3);
+impl_effect_handler_stream_np!(T1, T2, T3, T4);
 
 // ── Event side ──────────────────────────────────────────────────────
 
@@ -222,7 +400,7 @@ macro_rules! impl_event_handler {
 pub struct Mut<T>(::core::marker::PhantomData<fn(&mut T)>);
 
 #[doc(hidden)]
-pub struct NP<Inner>(::core::marker::PhantomData<fn() -> Inner>);
+pub struct EventNP<Inner>(::core::marker::PhantomData<fn() -> Inner>);
 
 macro_rules! impl_event_handler_mut {
     ($($T:ident),+) => {
@@ -244,7 +422,7 @@ macro_rules! impl_event_handler_mut {
 macro_rules! impl_event_handler_np_owned {
     ($($T:ident),+) => {
         #[allow(non_snake_case)]
-        impl<E, X, M, F, $($T),+> EventHandler<E, X, (), M, NP<($(Owned<$T>,)+)>> for F
+        impl<E, X, M, F, $($T),+> EventHandler<E, X, (), M, EventNP<($(Owned<$T>,)+)>> for F
         where
             F: Fn($($T),+) -> Command<E, X> + Send + 'static,
             $($T: FromEventContext<M>,)+
@@ -261,7 +439,7 @@ macro_rules! impl_event_handler_np_owned {
 macro_rules! impl_event_handler_np_mut {
     ($($T:ident),+) => {
         #[allow(non_snake_case)]
-        impl<E, X, M, F, $($T),+> EventHandler<E, X, (), M, NP<($(Mut<$T>,)+)>> for F
+        impl<E, X, M, F, $($T),+> EventHandler<E, X, (), M, EventNP<($(Mut<$T>,)+)>> for F
         where
             F: for<'a> Fn($(&'a mut $T),+) -> Command<E, X> + Send + 'static,
             $($T: ExtractMutFrom<M>,)+
@@ -304,6 +482,7 @@ mod tests {
     use super::*;
     use crate::command::CommandStep;
     use crate::test_store::TestStore;
+    use futures::StreamExt;
 
     // ── shared test types ───────────────────────────────────────────
 
@@ -601,6 +780,50 @@ mod tests {
         };
         let _ = save.handle("x".into(), &ctx);
         let _ = dispatch(Effect::Log("hi".into()), &ctx);
+    }
+
+    #[test]
+    fn effect_async_handler_infers_future_marker() {
+        async fn save(data: String, db: Res<DbUrl>) -> Command<Event, Effect> {
+            assert_eq!(data, "x");
+            assert_eq!(db.as_str(), "pg://test");
+            Command::event(Event::Saved)
+        }
+
+        let mut resources = ResourceMap::new();
+        resources.insert(DbUrl("pg://test".into()));
+        let ctx = EffectContext::new(resources);
+
+        match save.handle("x".to_string(), &ctx) {
+            Task::Once(future) => {
+                let command = futures::executor::block_on(future);
+                assert_eq!(command.into_iter().count(), 1);
+            }
+            _ => panic!("expected Task::Once for async effect handler"),
+        }
+    }
+
+    #[test]
+    fn effect_stream_handler_infers_stream_marker() {
+        fn watch(db: Res<DbUrl>) -> impl Stream<Item = Command<Event, Effect>> {
+            let first = db.as_str().to_string();
+            futures::stream::iter([
+                Command::event(Event::Saved),
+                Command::effect(Effect::Log(first)),
+            ])
+        }
+
+        let mut resources = ResourceMap::new();
+        resources.insert(DbUrl("pg://test".into()));
+        let ctx = EffectContext::new(resources);
+
+        match watch.handle((), &ctx) {
+            Task::Stream(stream) => {
+                let commands = futures::executor::block_on(stream.collect::<Vec<_>>());
+                assert_eq!(commands.len(), 2);
+            }
+            _ => panic!("expected Task::Stream for stream effect handler"),
+        }
     }
 
     // ── Scope composition tests ─────────────────────────────────────
@@ -957,7 +1180,6 @@ mod tests {
                 Ev::Rename(s) => rename.handle(s, ctx),
             })
             .effect_handler(|_effect: Fx, _ctx: &EffectContext| Task::<Ev, Fx>::none())
-            .async_executor(InlineAsync::new())
             .build();
 
         runner.core().try_send_event(Ev::Increment(7)).unwrap();

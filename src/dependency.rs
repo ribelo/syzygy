@@ -1,12 +1,12 @@
 use std::any::{Any, TypeId};
 use std::ops::Deref;
-use std::sync::Arc;
+use std::rc::Rc;
 
 use rustc_hash::FxHashMap;
 
 #[derive(Default, Clone)]
 pub struct ResourceMap {
-    inner: FxHashMap<TypeId, Arc<dyn Any + Send + Sync>>,
+    inner: FxHashMap<TypeId, Rc<dyn Any>>,
 }
 
 impl ResourceMap {
@@ -15,20 +15,20 @@ impl ResourceMap {
         Self::default()
     }
 
-    pub fn insert<T: Send + Sync + 'static>(&mut self, value: T) {
-        self.inner.insert(TypeId::of::<T>(), Arc::new(value));
+    pub fn insert<T: 'static>(&mut self, value: T) {
+        self.inner.insert(TypeId::of::<T>(), Rc::new(value));
     }
 
     #[must_use]
-    pub fn get<T: Send + Sync + 'static>(&self) -> Option<Arc<T>> {
+    pub fn get<T: 'static>(&self) -> Option<Rc<T>> {
         self.inner
             .get(&TypeId::of::<T>())
             .cloned()
-            .map(|arc| arc.downcast::<T>().expect("TypeId mismatch"))
+            .and_then(|rc| rc.downcast::<T>().ok())
     }
 
     #[must_use]
-    pub fn contains<T: Send + Sync + 'static>(&self) -> bool {
+    pub fn contains<T: 'static>(&self) -> bool {
         self.inner.contains_key(&TypeId::of::<T>())
     }
 
@@ -53,7 +53,7 @@ impl std::fmt::Debug for ResourceMap {
 
 /// Extractor for typed resources from the ResourceMap.
 /// Use in effect handler signatures: `fn handle(payload: P, api: Res<ApiClient>) -> Task<E, X>`
-pub struct Res<T>(Arc<T>);
+pub struct Res<T>(Rc<T>);
 
 impl<T> Deref for Res<T> {
     type Target = T;
@@ -65,7 +65,7 @@ impl<T> Deref for Res<T> {
 
 impl<T> Clone for Res<T> {
     fn clone(&self) -> Self {
-        Self(Arc::clone(&self.0))
+        Self(Rc::clone(&self.0))
     }
 }
 
@@ -77,11 +77,11 @@ impl<T: std::fmt::Debug> std::fmt::Debug for Res<T> {
 
 impl<T> Res<T> {
     #[must_use]
-    pub fn into_arc(self) -> Arc<T> {
+    pub fn into_rc(self) -> Rc<T> {
         self.0
     }
 
-    pub(crate) fn from_arc(inner: Arc<T>) -> Self {
+    pub(crate) fn from_rc(inner: Rc<T>) -> Self {
         Self(inner)
     }
 }

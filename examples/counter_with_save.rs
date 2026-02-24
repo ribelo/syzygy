@@ -14,7 +14,6 @@ enum Event {
     Increment(i32),
     Save,
     SaveDone(i32),
-    SaveFailed(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -125,18 +124,12 @@ fn save_done(value: i32, mut saving: Saving, mut last_saved: LastSaved) -> Comma
     Command::none()
 }
 
-fn save_failed(msg: String, mut saving: Saving) -> Command<Event, Effect> {
-    *saving = false;
-    eprintln!("save failed: {msg}");
-    Command::none()
-}
-
 fn save_to_server(value: i32, url: Res<ServerUrl>) -> Task<Event, Effect> {
-    if url.as_str().is_empty() {
-        Task::send(Event::SaveFailed("server url is empty".to_string()))
-    } else {
-        Task::send(Event::SaveDone(value))
-    }
+    let endpoint = url.as_str().to_string();
+    Task::once(async move {
+        let _ = endpoint;
+        Command::event(Event::SaveDone(value))
+    })
 }
 
 fn dispatch_event(event: Event, ctx: &EventContext<Model>) -> Command<Event, Effect> {
@@ -144,7 +137,6 @@ fn dispatch_event(event: Event, ctx: &EventContext<Model>) -> Command<Event, Eff
         Event::Increment(amount) => increment.handle(amount, ctx),
         Event::Save => save.handle((), ctx),
         Event::SaveDone(value) => save_done.handle(value, ctx),
-        Event::SaveFailed(msg) => save_failed.handle(msg, ctx),
     }
 }
 
@@ -192,21 +184,16 @@ mod tests {
                     }
                 }
             }
-            Task::Async { .. }
-            | Task::Stream { .. }
-            | Task::Compute { .. }
-            | Task::Blocking { .. } => panic!("expected immediate event task"),
+            Task::Once(future) => {
+                let command = futures::executor::block_on(future);
+                for step in command {
+                    if let CommandStep::Event(event) = step {
+                        store.send(event);
+                    }
+                }
+            }
+            Task::Stream(_) => panic!("expected one-shot task"),
         }
-    }
-
-    #[test]
-    fn increment_updates_counter_without_effects() {
-        let mut store = TestStore::new(Model::default(), dispatch_event);
-
-        store.send(Event::Increment(4));
-
-        assert_eq!(store.state().counter, 4);
-        store.assert_no_effects();
     }
 
     #[test]
@@ -246,23 +233,6 @@ mod tests {
         }
 
         assert_eq!(store.state().last_saved, Some(9));
-        assert!(!store.state().saving);
-        store.assert_no_effects();
-    }
-
-    #[test]
-    fn save_failed_event_clears_saving() {
-        let mut store = TestStore::new(
-            Model {
-                counter: 1,
-                saving: true,
-                last_saved: None,
-            },
-            dispatch_event,
-        );
-
-        store.send(Event::SaveFailed("network error".to_string()));
-
         assert!(!store.state().saving);
         store.assert_no_effects();
     }

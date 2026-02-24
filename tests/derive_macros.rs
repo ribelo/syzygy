@@ -80,7 +80,6 @@ fn derive_model_works_in_runtime() {
         .effect_handler(|effect: Effect, ctx: &EffectContext| match effect {
             Effect::Save => persist.handle((), ctx),
         })
-        .async_executor(InlineAsync::new())
         .build();
 
     runner.core().try_send_event(Event::Increment(3)).unwrap();
@@ -116,7 +115,6 @@ fn derive_model_tracks_runtime_borrows() {
         .effect_handler(|effect: Effect, ctx: &EffectContext| match effect {
             Effect::Save => persist.handle((), ctx),
         })
-        .async_executor(InlineAsync::new())
         .build();
 
     assert_panic_contains("already borrowed mutably", || {
@@ -203,7 +201,6 @@ fn derive_model_extract_attribute_projects_child_models() {
         .effect_handler(|_effect: ExtractEffect, _ctx: &EffectContext| {
             Task::<ExtractEvent, ExtractEffect>::none()
         })
-        .async_executor(InlineAsync::new())
         .build();
 
     runner
@@ -248,7 +245,6 @@ fn derive_model_extract_attribute_detects_overlap() {
         .effect_handler(|_effect: ExtractEffect, _ctx: &EffectContext| {
             Task::<ExtractEvent, ExtractEffect>::none()
         })
-        .async_executor(InlineAsync::new())
         .build();
 
     assert_panic_contains("overlaps already-borrowed mutable region", || {

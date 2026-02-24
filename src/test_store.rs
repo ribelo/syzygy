@@ -11,13 +11,13 @@ use std::panic::{self, AssertUnwindSafe};
 #[cfg(feature = "shell")]
 use futures::executor::block_on;
 #[cfg(feature = "shell")]
-use futures_util::stream::StreamExt;
+use futures::StreamExt;
 
 use crate::command::{Command, CommandStep};
 use crate::core::Core;
 use crate::dependency::ResourceMap;
 #[cfg(feature = "shell")]
-use crate::executor::{AsyncRt, InlineAsync, Task};
+use crate::executor::Task;
 #[cfg(feature = "shell")]
 use crate::extract::EffectContext;
 use crate::extract::EventContext;
@@ -40,8 +40,8 @@ pub enum Exhaustivity {
 /// event handler, and buffers emitted effects for assertions.
 pub struct TestStore<E, X, M>
 where
-    E: Send + 'static,
-    X: Send + 'static,
+    E: 'static,
+    X: 'static,
 {
     core: Core<E, X, M>,
     pending_events: VecDeque<E>,
@@ -54,13 +54,13 @@ where
 
 impl<E, X, M> TestStore<E, X, M>
 where
-    E: Send + 'static,
-    X: Send + 'static,
+    E: 'static,
+    X: 'static,
 {
     /// Create a new test store from model state and event dispatcher.
     pub fn new<H>(model: M, handler: H) -> Self
     where
-        H: Fn(E, &EventContext<M>) -> Command<E, X> + Send + 'static,
+        H: Fn(E, &EventContext<M>) -> Command<E, X> + 'static,
     {
         let (core, _sender) = Core::new(Box::new(handler), model);
         Self {
@@ -93,13 +93,13 @@ where
     }
 
     #[must_use]
-    pub fn with_resource<T: Send + Sync + 'static>(mut self, resource: T) -> Self {
+    pub fn with_resource<T: 'static>(mut self, resource: T) -> Self {
         self.resources.insert(resource);
         self
     }
 
     #[must_use]
-    pub fn with_dependency<T: Send + Sync + 'static>(self, resource: T) -> Self {
+    pub fn with_dependency<T: 'static>(self, resource: T) -> Self {
         self.with_resource(resource)
     }
 
@@ -238,18 +238,14 @@ where
             Task::Resolved(command) => {
                 self.feed_received_command(command);
             }
-            Task::Blocking { job } | Task::Compute { job } => {
-                self.feed_received_command(job());
-            }
-            Task::Async { factory } => {
-                let command = block_on(factory(Self::inline_async_runtime()));
+            Task::Once(future) => {
+                let command = block_on(future);
                 self.feed_received_command(command);
             }
-            Task::Stream { factory } => {
-                let stream = factory(Self::inline_async_runtime());
-                let events = block_on(stream.collect::<Vec<_>>());
-                for event in events {
-                    self.send_from_receive(event);
+            Task::Stream(stream) => {
+                let commands = block_on(stream.collect::<Vec<_>>());
+                for command in commands {
+                    self.feed_received_command(command);
                 }
             }
         }
@@ -279,11 +275,6 @@ where
         self.send(event);
     }
 
-    #[cfg(feature = "shell")]
-    fn inline_async_runtime() -> AsyncRt {
-        AsyncRt::from_executor(std::sync::Arc::new(InlineAsync::new()))
-    }
-
     fn route_command(&mut self, command: Command<E, X>) {
         for step in command {
             match step {
@@ -304,8 +295,8 @@ where
 
 impl<E, X, M> Drop for TestStore<E, X, M>
 where
-    E: Send + 'static,
-    X: Send + 'static,
+    E: 'static,
+    X: 'static,
 {
     fn drop(&mut self) {
         if self.exhaustivity == Exhaustivity::Off {
@@ -592,7 +583,7 @@ mod tests {
 
         store.send(Event::Increment(1));
         store.receive(|effect, _ctx| match effect {
-            Effect::Log(_) => Task::blocking(|| Command::event(Event::SaveDone)),
+            Effect::Log(_) => Task::once(async { Command::event(Event::SaveDone) }),
             _ => Task::none(),
         });
 

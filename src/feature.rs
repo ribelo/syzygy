@@ -3,10 +3,10 @@ use crate::executor::Task;
 use crate::extract::{EffectContext, EventContext};
 use crate::reducer::Reducer;
 
-pub trait Feature: Send + Sync + 'static {
-    type State: Send + 'static;
-    type Event: Clone + Send + 'static;
-    type Effect: Send + 'static;
+pub trait Feature: 'static {
+    type State: 'static;
+    type Event: Clone + 'static;
+    type Effect: 'static;
 
     fn reduce(
         &self,

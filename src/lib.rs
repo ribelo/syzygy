@@ -30,7 +30,7 @@ pub mod prelude {
 
     pub use crate::extract::{
         EffectContext, EffectHandler, EventContext, EventHandler, ExtractMutFrom,
-        FromEffectContext, FromEventContext,
+        FromEffectContext, FromEventContext, FutureEffect, StreamEffect,
     };
     pub use crate::feature::Feature;
     pub use crate::if_let::{if_let, IfLet};
@@ -43,10 +43,8 @@ pub mod prelude {
 
     #[cfg(feature = "shell")]
     pub use crate::builder::SyzygyBuilder;
-    #[cfg(feature = "rt-tokio")]
-    pub use crate::executor::TokioExecutor;
     #[cfg(feature = "shell")]
-    pub use crate::executor::{AsyncRt, InlineAsync, InlineBlocking, Plan, Task};
+    pub use crate::executor::{Plan, Task};
     #[cfg(feature = "shell")]
     pub use crate::shell::Shell;
     #[cfg(feature = "shell")]
