@@ -124,7 +124,7 @@ fn save_done(value: i32, mut saving: Saving, mut last_saved: LastSaved) -> Comma
     Command::none()
 }
 
-fn save_to_server(value: i32, url: Res<ServerUrl>) -> Task<Event, Effect> {
+fn save_to_server(value: i32, url: ServerUrl) -> Task<Event, Effect> {
     let endpoint = url.as_str().to_string();
     Task::once(async move {
         let _ = endpoint;

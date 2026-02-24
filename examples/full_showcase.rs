@@ -102,13 +102,13 @@ fn dispatch_event(event: Event, ctx: &EventContext<AppState>) -> Command<Event, 
 
 // -- Effect handlers: async fns and stream-returning fns --
 
-async fn save_to_server(value: i32, url: Res<ServerUrl>) -> Command<Event, Effect> {
+async fn save_to_server(value: i32, url: ServerUrl) -> Command<Event, Effect> {
     let _endpoint = format!("{}/save?v={value}", url.0);
     compio::runtime::time::sleep(Duration::from_millis(1)).await;
     Command::event(Event::SaveDone(value))
 }
 
-fn start_ticker() -> impl futures::Stream<Item = Command<Event, Effect>> {
+fn start_ticker(_: ()) -> impl futures::Stream<Item = Command<Event, Effect>> {
     stream::iter(vec![
         Command::event(Event::Tick),
         Command::event(Event::Tick),
@@ -129,7 +129,7 @@ async fn slow_compute(value: i32) -> Command<Event, Effect> {
 fn dispatch_effect(effect: Effect, ctx: &EffectContext) -> Task<Event, Effect> {
     match effect {
         Effect::SaveToServer(v) => save_to_server.handle(v, ctx),
-        Effect::StartTicker => ctx.dispatch(start_ticker),
+        Effect::StartTicker => dispatch!(ctx, start_ticker, ()),
         Effect::SlowCompute(v) => slow_compute.handle(v, ctx),
     }
 }

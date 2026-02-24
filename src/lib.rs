@@ -26,7 +26,7 @@ pub mod prelude {
     pub use crate::command::{CancelId, Command, CommandStep};
 
     pub use crate::core::{Core, EventSender};
-    pub use crate::dependency::{Res, ResourceMap};
+    pub use crate::dependency::{Resource, ResourceMap};
     pub use crate::dispatch;
 
     pub use crate::extract::{

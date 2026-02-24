@@ -1,12 +1,45 @@
 use std::any::{Any, TypeId};
-use std::ops::Deref;
-use std::rc::Rc;
 
 use rustc_hash::FxHashMap;
 
-#[derive(Default, Clone)]
+type CloneFn = fn(&dyn Any) -> Box<dyn Any>;
+
+struct Entry {
+    value: Box<dyn Any>,
+    clone_fn: CloneFn,
+}
+
+#[derive(Default)]
 pub struct ResourceMap {
-    inner: FxHashMap<TypeId, Rc<dyn Any>>,
+    inner: FxHashMap<TypeId, Entry>,
+}
+
+impl Clone for ResourceMap {
+    fn clone(&self) -> Self {
+        let inner = self
+            .inner
+            .iter()
+            .map(|(&tid, entry)| {
+                let cloned_value = (entry.clone_fn)(&*entry.value);
+                (
+                    tid,
+                    Entry {
+                        value: cloned_value,
+                        clone_fn: entry.clone_fn,
+                    },
+                )
+            })
+            .collect();
+        Self { inner }
+    }
+}
+
+fn clone_fn_for<T: Clone + 'static>(any: &dyn Any) -> Box<dyn Any> {
+    Box::new(
+        any.downcast_ref::<T>()
+            .expect("type mismatch in ResourceMap")
+            .clone(),
+    )
 }
 
 impl ResourceMap {
@@ -15,16 +48,25 @@ impl ResourceMap {
         Self::default()
     }
 
-    pub fn insert<T: 'static>(&mut self, value: T) {
-        self.inner.insert(TypeId::of::<T>(), Rc::new(value));
+    pub fn insert<T: Clone + 'static>(&mut self, value: T) {
+        self.inner.insert(
+            TypeId::of::<T>(),
+            Entry {
+                value: Box::new(value),
+                clone_fn: clone_fn_for::<T>,
+            },
+        );
     }
 
     #[must_use]
-    pub fn get<T: 'static>(&self) -> Option<Rc<T>> {
-        self.inner
-            .get(&TypeId::of::<T>())
-            .cloned()
-            .and_then(|rc| rc.downcast::<T>().ok())
+    pub fn get<T: Clone + 'static>(&self) -> Option<T> {
+        self.inner.get(&TypeId::of::<T>()).map(|entry| {
+            entry
+                .value
+                .downcast_ref::<T>()
+                .expect("type mismatch in ResourceMap")
+                .clone()
+        })
     }
 
     #[must_use]
@@ -51,37 +93,5 @@ impl std::fmt::Debug for ResourceMap {
     }
 }
 
-/// Extractor for typed resources from the ResourceMap.
-/// Use in effect handler signatures: `fn handle(payload: P, api: Res<ApiClient>) -> Task<E, X>`
-pub struct Res<T>(Rc<T>);
-
-impl<T> Deref for Res<T> {
-    type Target = T;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
-impl<T> Clone for Res<T> {
-    fn clone(&self) -> Self {
-        Self(Rc::clone(&self.0))
-    }
-}
-
-impl<T: std::fmt::Debug> std::fmt::Debug for Res<T> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.0.fmt(f)
-    }
-}
-
-impl<T> Res<T> {
-    #[must_use]
-    pub fn into_rc(self) -> Rc<T> {
-        self.0
-    }
-
-    pub(crate) fn from_rc(inner: Rc<T>) -> Self {
-        Self(inner)
-    }
-}
+pub trait Resource: Clone + 'static {}
+impl<T: Clone + 'static> Resource for T {}

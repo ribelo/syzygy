@@ -6,7 +6,7 @@ use std::future::Future;
 use futures::Stream;
 
 use crate::command::Command;
-use crate::dependency::{Res, ResourceMap};
+use crate::dependency::{Resource, ResourceMap};
 use crate::executor::Task;
 
 // ── Effect side ─────────────────────────────────────────────────────
@@ -25,32 +25,20 @@ impl EffectContext {
     pub fn resources(&self) -> &ResourceMap {
         &self.resources
     }
-
-    pub fn dispatch<E, X, H, Marker>(&self, handler: H) -> Task<E, X>
-    where
-        H: EffectHandler<E, X, (), Marker>,
-        E: 'static,
-        X: 'static,
-    {
-        handler.handle((), self)
-    }
 }
 
 pub trait FromEffectContext {
     fn from_context(ctx: &EffectContext) -> Self;
 }
 
-impl<T: 'static> FromEffectContext for Res<T> {
+impl<T: Resource> FromEffectContext for T {
     fn from_context(ctx: &EffectContext) -> Self {
-        ctx.resources().get::<T>().map_or_else(
-            || {
-                panic!(
-                    "Resource `{}` not found in ResourceMap. Register it with .with_resource()",
-                    std::any::type_name::<T>()
-                )
-            },
-            Res::from_rc,
-        )
+        ctx.resources().get::<T>().unwrap_or_else(|| {
+            panic!(
+                "Resource `{}` not found in ResourceMap. Register it with .with_resource()",
+                std::any::type_name::<T>()
+            )
+        })
     }
 }
 
@@ -151,23 +139,6 @@ macro_rules! impl_effect_handler_task {
     }
 }
 
-macro_rules! impl_effect_handler_task_np {
-    ($($T:ident),+) => {
-        #[allow(non_snake_case)]
-        impl<E, X, F, $($T),+> EffectHandler<E, X, (), (NP, $($T,)+)> for F
-        where
-            F: Fn($($T),+) -> Task<E, X> + 'static,
-            $($T: FromEffectContext,)+
-            E: 'static,
-            X: 'static,
-        {
-            fn handle(&self, _payload: (), ctx: &EffectContext) -> Task<E, X> {
-                (self)($($T::from_context(ctx)),+)
-            }
-        }
-    }
-}
-
 macro_rules! impl_effect_handler_future {
     ($($T:ident),+) => {
         #[allow(non_snake_case)]
@@ -181,24 +152,6 @@ macro_rules! impl_effect_handler_future {
         {
             fn handle(&self, payload: P, ctx: &EffectContext) -> Task<E, X> {
                 Task::once((self)(payload, $($T::from_context(ctx)),+))
-            }
-        }
-    }
-}
-
-macro_rules! impl_effect_handler_future_np {
-    ($($T:ident),+) => {
-        #[allow(non_snake_case)]
-        impl<E, X, F, Fut, $($T),+> EffectHandler<E, X, (), (FutureEffect, NP, $($T,)+)> for F
-        where
-            F: Fn($($T),+) -> Fut + 'static,
-            Fut: Future<Output = Command<E, X>> + 'static,
-            $($T: FromEffectContext,)+
-            E: 'static,
-            X: 'static,
-        {
-            fn handle(&self, _payload: (), ctx: &EffectContext) -> Task<E, X> {
-                Task::once((self)($($T::from_context(ctx)),+))
             }
         }
     }
@@ -222,53 +175,20 @@ macro_rules! impl_effect_handler_stream {
     }
 }
 
-macro_rules! impl_effect_handler_stream_np {
-    ($($T:ident),+) => {
-        #[allow(non_snake_case)]
-        impl<E, X, F, S, $($T),+> EffectHandler<E, X, (), (StreamEffect, NP, $($T,)+)> for F
-        where
-            F: Fn($($T),+) -> S + 'static,
-            S: Stream<Item = Command<E, X>> + 'static,
-            $($T: FromEffectContext,)+
-            E: 'static,
-            X: 'static,
-        {
-            fn handle(&self, _payload: (), ctx: &EffectContext) -> Task<E, X> {
-                Task::stream((self)($($T::from_context(ctx)),+))
-            }
-        }
-    }
-}
-
 impl_effect_handler_task!(T1);
 impl_effect_handler_task!(T1, T2);
 impl_effect_handler_task!(T1, T2, T3);
 impl_effect_handler_task!(T1, T2, T3, T4);
-
-impl_effect_handler_task_np!(T1);
-impl_effect_handler_task_np!(T1, T2);
-impl_effect_handler_task_np!(T1, T2, T3);
-impl_effect_handler_task_np!(T1, T2, T3, T4);
 
 impl_effect_handler_future!(T1);
 impl_effect_handler_future!(T1, T2);
 impl_effect_handler_future!(T1, T2, T3);
 impl_effect_handler_future!(T1, T2, T3, T4);
 
-impl_effect_handler_future_np!(T1);
-impl_effect_handler_future_np!(T1, T2);
-impl_effect_handler_future_np!(T1, T2, T3);
-impl_effect_handler_future_np!(T1, T2, T3, T4);
-
 impl_effect_handler_stream!(T1);
 impl_effect_handler_stream!(T1, T2);
 impl_effect_handler_stream!(T1, T2, T3);
 impl_effect_handler_stream!(T1, T2, T3, T4);
-
-impl_effect_handler_stream_np!(T1);
-impl_effect_handler_stream_np!(T1, T2);
-impl_effect_handler_stream_np!(T1, T2, T3);
-impl_effect_handler_stream_np!(T1, T2, T3, T4);
 
 // ── Event side ──────────────────────────────────────────────────────
 
@@ -779,7 +699,7 @@ mod tests {
 
     #[test]
     fn effect_dispatch() {
-        fn save(data: String, db: Res<DbUrl>) -> Task<Event, Effect> {
+        fn save(data: String, db: DbUrl) -> Task<Event, Effect> {
             assert_eq!(data, "x");
             assert_eq!(db.as_str(), "pg://test");
             Task::send(Event::Saved)
@@ -802,7 +722,7 @@ mod tests {
 
     #[test]
     fn effect_async_handler_infers_future_marker() {
-        async fn save(data: String, db: Res<DbUrl>) -> Command<Event, Effect> {
+        async fn save(data: String, db: DbUrl) -> Command<Event, Effect> {
             assert_eq!(data, "x");
             assert_eq!(db.as_str(), "pg://test");
             Command::event(Event::Saved)
@@ -823,7 +743,7 @@ mod tests {
 
     #[test]
     fn effect_stream_handler_infers_stream_marker() {
-        fn watch(db: Res<DbUrl>) -> impl Stream<Item = Command<Event, Effect>> {
+        fn watch(_: (), db: DbUrl) -> impl Stream<Item = Command<Event, Effect>> {
             let first = db.as_str().to_string();
             futures::stream::iter([
                 Command::event(Event::Saved),
@@ -1056,10 +976,7 @@ mod tests {
         }
     }
 
-    fn scoped_save(
-        _: (),
-        db_url: Res<ScopedDbUrl>,
-    ) -> Task<ScopedCounterEvent, ScopedCounterEffect> {
+    fn scoped_save(_: (), db_url: ScopedDbUrl) -> Task<ScopedCounterEvent, ScopedCounterEffect> {
         assert_eq!(db_url.as_str(), "pg://scope");
         Task::none()
     }

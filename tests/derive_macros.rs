@@ -56,7 +56,7 @@ fn double_borrow(_: (), _first: Counter, _second: Counter) -> Command<Event, Eff
     unreachable!()
 }
 
-fn persist(_: (), db_url: Res<DbUrl>, save_completed: Res<SaveCompleted>) -> Task<Event, Effect> {
+fn persist(_: (), db_url: DbUrl, save_completed: SaveCompleted) -> Task<Event, Effect> {
     assert_eq!(db_url.as_str(), "pg://test");
     assert!(!save_completed.is_done());
     Task::none()

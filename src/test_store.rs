@@ -93,13 +93,13 @@ where
     }
 
     #[must_use]
-    pub fn with_resource<T: 'static>(mut self, resource: T) -> Self {
+    pub fn with_resource<T: Clone + 'static>(mut self, resource: T) -> Self {
         self.resources.insert(resource);
         self
     }
 
     #[must_use]
-    pub fn with_dependency<T: 'static>(self, resource: T) -> Self {
+    pub fn with_dependency<T: Clone + 'static>(self, resource: T) -> Self {
         self.with_resource(resource)
     }
 
