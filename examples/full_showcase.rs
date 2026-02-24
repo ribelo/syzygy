@@ -55,7 +55,7 @@ fn increment(amount: i32, mut counter: Counter) -> Command<Event, Effect> {
     Command::none()
 }
 
-fn save(_: (), counter: Counter) -> Command<Event, Effect> {
+fn save(counter: Counter) -> Command<Event, Effect> {
     Command::effect(Effect::SaveToServer(*counter))
 }
 
@@ -69,7 +69,7 @@ fn save_done(value: i32, mut status: Status) -> Command<Event, Effect> {
     Command::none()
 }
 
-fn tick(_: (), mut counter: Counter) -> Command<Event, Effect> {
+fn tick(mut counter: Counter) -> Command<Event, Effect> {
     *counter += 1;
     Command::none()
 }
