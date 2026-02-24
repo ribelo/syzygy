@@ -147,6 +147,17 @@ where
         }
     }
 
+    pub fn run<F, Fut>(factory: F) -> Self
+    where
+        F: FnOnce(AsyncRt) -> Fut + Send + 'static,
+        Fut: Future<Output = ()> + Send + 'static,
+    {
+        Self::future(move |rt| async move {
+            factory(rt).await;
+            Command::none()
+        })
+    }
+
     /// Run a future after waiting for the provided delay.
     pub fn delayed<F, Fut>(duration: Duration, factory: F) -> Self
     where

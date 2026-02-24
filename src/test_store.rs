@@ -15,6 +15,7 @@ use futures_util::stream::StreamExt;
 
 use crate::command::{Command, CommandStep};
 use crate::core::Core;
+use crate::dependency::ResourceMap;
 #[cfg(feature = "shell")]
 use crate::executor::{AsyncRt, InlineAsync, Task};
 #[cfg(feature = "shell")]
@@ -48,6 +49,7 @@ where
     max_event_steps: usize,
     exhaustivity: Exhaustivity,
     effects_asserted: bool,
+    resources: ResourceMap,
 }
 
 impl<E, X, M> TestStore<E, X, M>
@@ -68,6 +70,7 @@ where
             max_event_steps: DEFAULT_MAX_EVENT_STEPS,
             exhaustivity: Exhaustivity::Off,
             effects_asserted: true,
+            resources: ResourceMap::new(),
         }
     }
 
@@ -87,6 +90,17 @@ where
     pub fn with_exhaustivity(mut self, exhaustivity: Exhaustivity) -> Self {
         self.exhaustivity = exhaustivity;
         self
+    }
+
+    #[must_use]
+    pub fn with_resource<T: Send + Sync + 'static>(mut self, resource: T) -> Self {
+        self.resources.insert(resource);
+        self
+    }
+
+    #[must_use]
+    pub fn with_dependency<T: Send + Sync + 'static>(self, resource: T) -> Self {
+        self.with_resource(resource)
     }
 
     /// Send an event and process all synchronously chained events.
@@ -121,6 +135,17 @@ where
 
         let emitted_effects = self.pending_effects.len() > effects_before;
         self.effects_asserted = !emitted_effects;
+    }
+
+    pub fn send_assert(&mut self, event: E, update_expected: impl FnOnce(&mut M)) -> &mut Self
+    where
+        M: Clone + PartialEq + std::fmt::Debug,
+    {
+        let mut expected = self.state().clone();
+        update_expected(&mut expected);
+        self.send(event);
+        self.assert_state(&expected);
+        self
     }
 
     /// Returns the current model state.
@@ -193,13 +218,12 @@ where
     /// Drain pending effects, execute them through `effect_handler`, and feed
     /// returned events back through [`send`](Self::send).
     #[cfg(feature = "shell")]
-    pub fn receive<H, R>(&mut self, effect_handler: H, resources: &R)
+    pub fn receive<H>(&mut self, effect_handler: H)
     where
-        H: Fn(X, &EffectContext<R>) -> Task<E, X>,
-        R: Clone + 'static,
+        H: Fn(X, &EffectContext) -> Task<E, X>,
     {
         for effect in self.take_effects() {
-            let ctx = EffectContext::new(resources.clone());
+            let ctx = EffectContext::new(self.resources.clone());
             let task = effect_handler(effect, &ctx);
             self.drive_received_task(task);
         }
@@ -244,6 +268,7 @@ where
                 CommandStep::Batch(effects) | CommandStep::Parallel(effects) => {
                     self.pending_effects.extend(effects);
                 }
+                CommandStep::Cancel(_) => {}
             }
         }
     }
@@ -271,6 +296,7 @@ where
                 CommandStep::Batch(effects) | CommandStep::Parallel(effects) => {
                     self.pending_effects.extend(effects);
                 }
+                CommandStep::Cancel(_) => {}
             }
         }
     }
@@ -550,13 +576,10 @@ mod tests {
         let mut store = TestStore::new(Model::default(), dispatch);
 
         store.send(Event::Increment(1));
-        store.receive(
-            |effect, _ctx| match effect {
-                Effect::Log(_) => Task::resolved(Command::event(Event::SaveDone)),
-                _ => Task::none(),
-            },
-            &(),
-        );
+        store.receive(|effect, _ctx| match effect {
+            Effect::Log(_) => Task::resolved(Command::event(Event::SaveDone)),
+            _ => Task::none(),
+        });
 
         assert!(store.state().save_completed);
         store.assert_no_effects();
@@ -568,13 +591,10 @@ mod tests {
         let mut store = TestStore::new(Model::default(), dispatch);
 
         store.send(Event::Increment(1));
-        store.receive(
-            |effect, _ctx| match effect {
-                Effect::Log(_) => Task::blocking(|| Command::event(Event::SaveDone)),
-                _ => Task::none(),
-            },
-            &(),
-        );
+        store.receive(|effect, _ctx| match effect {
+            Effect::Log(_) => Task::blocking(|| Command::event(Event::SaveDone)),
+            _ => Task::none(),
+        });
 
         assert!(store.state().save_completed);
         store.assert_no_effects();
@@ -587,7 +607,7 @@ mod tests {
             TestStore::new(Model::default(), dispatch).with_exhaustivity(Exhaustivity::On);
 
         store.send(Event::Increment(1));
-        store.receive(|_effect, _ctx| Task::none(), &());
+        store.receive(|_effect, _ctx| Task::none());
         store.send(Event::SaveDone);
 
         assert!(store.state().save_completed);
@@ -600,7 +620,7 @@ mod tests {
         let mut store = TestStore::new(Model::default(), dispatch);
 
         store.send(Event::Increment(2));
-        store.receive(|_effect, _ctx| Task::none(), &());
+        store.receive(|_effect, _ctx| Task::none());
 
         assert_eq!(store.state().counter, 2);
         assert!(!store.state().save_completed);
@@ -613,10 +633,7 @@ mod tests {
         let mut store = TestStore::new(Model::default(), dispatch);
 
         store.send(Event::Increment(1));
-        store.receive(
-            |_effect, _ctx| Task::resolved(Command::event(Event::Increment(2))),
-            &(),
-        );
+        store.receive(|_effect, _ctx| Task::resolved(Command::event(Event::Increment(2))));
 
         assert_eq!(store.state().counter, 3);
         assert_eq!(store.pending_effect_count(), 1);

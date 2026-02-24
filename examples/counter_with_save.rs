@@ -23,8 +23,12 @@ enum Effect {
 }
 
 #[derive(Debug, Clone)]
-struct Resources {
-    server_url: String,
+struct ServerUrl(String);
+
+impl ServerUrl {
+    fn as_str(&self) -> &str {
+        &self.0
+    }
 }
 
 struct Counter(*mut i32);
@@ -105,15 +109,6 @@ impl FromEventContext<Model> for LastSaved {
     }
 }
 
-#[derive(Clone)]
-struct ServerUrl(String);
-
-impl FromEffectContext<Resources> for ServerUrl {
-    fn from_context(ctx: &EffectContext<Resources>) -> Self {
-        Self(ctx.resources().server_url.clone())
-    }
-}
-
 fn increment(amount: i32, mut counter: Counter) -> Command<Event, Effect> {
     *counter += amount;
     Command::none()
@@ -136,8 +131,8 @@ fn save_failed(msg: String, mut saving: Saving) -> Command<Event, Effect> {
     Command::none()
 }
 
-fn save_to_server(value: i32, url: ServerUrl) -> Task<Event, Effect> {
-    if url.0.is_empty() {
+fn save_to_server(value: i32, url: Res<ServerUrl>) -> Task<Event, Effect> {
+    if url.as_str().is_empty() {
         Task::send(Event::SaveFailed("server url is empty".to_string()))
     } else {
         Task::send(Event::SaveDone(value))
@@ -153,7 +148,7 @@ fn dispatch_event(event: Event, ctx: &EventContext<Model>) -> Command<Event, Eff
     }
 }
 
-fn dispatch_effect(effect: Effect, ctx: &EffectContext<Resources>) -> Task<Event, Effect> {
+fn dispatch_effect(effect: Effect, ctx: &EffectContext) -> Task<Event, Effect> {
     match effect {
         Effect::SaveToServer(value) => save_to_server.handle(value, ctx),
     }
@@ -162,9 +157,7 @@ fn dispatch_effect(effect: Effect, ctx: &EffectContext<Resources>) -> Task<Event
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut runner = Syzygy::builder::<Event, Effect>()
         .model(Model::default())
-        .with_resources(Resources {
-            server_url: "https://api.example.test/counter".to_string(),
-        })
+        .with_resource(ServerUrl("https://api.example.test/counter".to_string()))
         .event_handler(dispatch_event)
         .effect_handler(dispatch_effect)
         .build();
@@ -235,10 +228,8 @@ mod tests {
 
     #[test]
     fn full_cycle_updates_last_saved() {
-        let mut store = TestStore::new(Model::default(), dispatch_event);
-        let effect_ctx = EffectContext::new(Resources {
-            server_url: "https://api.example.test/counter".to_string(),
-        });
+        let mut store = TestStore::new(Model::default(), dispatch_event)
+            .with_resource(ServerUrl("https://api.example.test/counter".to_string()));
 
         store.send(Event::Increment(9));
         store.send(Event::Save);
@@ -247,6 +238,9 @@ mod tests {
         assert_eq!(effects, vec![Effect::SaveToServer(9)]);
 
         for effect in effects {
+            let mut resources = ResourceMap::new();
+            resources.insert(ServerUrl("https://api.example.test/counter".to_string()));
+            let effect_ctx = EffectContext::new(resources);
             let task = dispatch_effect(effect, &effect_ctx);
             run_task_events(&mut store, task);
         }

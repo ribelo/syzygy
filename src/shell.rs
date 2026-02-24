@@ -13,6 +13,7 @@ use std::time::Duration;
 use crate::activity::Activity;
 use crate::command::{CancelId, Command, CommandStep};
 use crate::core::EventSender;
+use crate::dependency::ResourceMap;
 use crate::error::ShellError;
 use crate::executor::task::{drive_task_with_activity, PanicHook, TaskRouting};
 use crate::executor::{AsyncExecutor, BlockingExecutor, Task};
@@ -22,8 +23,8 @@ use tracing::{debug, span, Level};
 
 use crate::extract::EffectContext;
 
-pub(crate) type EffectHandlerFn<E, X, R> =
-    Box<dyn Fn(X, &EffectContext<R>) -> Task<E, X> + Send + 'static>;
+pub(crate) type EffectHandlerFn<E, X> =
+    Box<dyn Fn(X, &EffectContext) -> Task<E, X> + Send + 'static>;
 
 pub(crate) type CancelGenerationMap = Arc<Mutex<HashMap<CancelId, u64>>>;
 pub(crate) type CancelGuard = Arc<dyn Fn() -> bool + Send + Sync + 'static>;
@@ -126,11 +127,10 @@ pub struct ShellStatsSnapshot {
 }
 
 /// The Shell orchestrates async effect execution independently of Core
-pub struct Shell<E, X, R = ()>
+pub struct Shell<E, X>
 where
     E: Send + 'static,
     X: Send + 'static,
-    R: Clone + Send + 'static,
 {
     /// Channel for receiving command outputs (effects)
     pub(crate) effect_rx: Receiver<CommandStep<E, X>>,
@@ -149,10 +149,10 @@ where
     pub(crate) blocking_executor: Option<Arc<dyn BlockingExecutor>>,
 
     /// User-provided effect handler
-    pub(crate) effect_handler: EffectHandlerFn<E, X, R>,
+    pub(crate) effect_handler: EffectHandlerFn<E, X>,
 
     /// Shared application resources cloned per effect invocation
-    pub(crate) resources: R,
+    pub(crate) resources: ResourceMap,
 
     /// Activity tracker for in-flight async work
     pub(crate) activity: Activity,
@@ -181,11 +181,10 @@ where
 
 // No public constructors. Shell instances are created exclusively by the builder.
 
-impl<E, X, R> Shell<E, X, R>
+impl<E, X> Shell<E, X>
 where
     E: Send + 'static,
     X: Send + 'static,
-    R: Clone + Send + 'static,
 {
     fn push_effect_step(&mut self, step: CommandStep<E, X>) -> Result<(), ShellError> {
         let step = prepare_effect_step_for_queue(step, Some(&self.cancel_generations));
@@ -311,6 +310,9 @@ where
                         generation,
                     })?;
                 }
+                CommandStep::Cancel(id) => {
+                    register_cancellable_generation(&self.cancel_generations, id);
+                }
                 CommandStep::Batch(effects) => {
                     _effect_count += effects.len();
                     #[cfg(feature = "tracing")]
@@ -371,6 +373,7 @@ where
                 }
                 Ok(handled)
             }
+            CommandStep::Cancel(_) => Ok(0),
             CommandStep::Event(_) => unreachable!(),
         }
     }
@@ -537,11 +540,10 @@ where
     }
 }
 
-impl<E, X, R> Drop for Shell<E, X, R>
+impl<E, X> Drop for Shell<E, X>
 where
     E: Send + 'static,
     X: Send + 'static,
-    R: Clone + Send + 'static,
 {
     fn drop(&mut self) {
         self.shutdown();
@@ -564,11 +566,10 @@ where
     }
 }
 
-impl<E, X, R> std::fmt::Debug for Shell<E, X, R>
+impl<E, X> std::fmt::Debug for Shell<E, X>
 where
     E: Send + 'static,
     X: Send + 'static,
-    R: Clone + Send + 'static,
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Shell")
@@ -723,7 +724,7 @@ mod tests {
         }
     }
 
-    fn handle_effect(effect: Effect, _ctx: &EffectContext<()>) -> Task<Event, Effect> {
+    fn handle_effect(effect: Effect, _ctx: &EffectContext) -> Task<Event, Effect> {
         match effect {
             Effect::Delayed { value, gate } => Task::future(move |_rt| async move {
                 while !gate.load(Ordering::SeqCst) {
@@ -735,7 +736,7 @@ mod tests {
         }
     }
 
-    type TestSyzygy = Syzygy<Event, Effect, Vec<&'static str>, ()>;
+    type TestSyzygy = Syzygy<Event, Effect, Vec<&'static str>>;
 
     fn build_runner() -> TestSyzygy {
         Syzygy::builder::<Event, Effect>()

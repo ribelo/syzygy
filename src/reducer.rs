@@ -68,6 +68,39 @@ impl<S, E, X> Reducer for Reduce<S, E, X> {
     }
 }
 
+pub struct Combined<R1, R2> {
+    r1: R1,
+    r2: R2,
+}
+
+impl<R1, R2> Combined<R1, R2> {
+    #[must_use]
+    pub fn new(r1: R1, r2: R2) -> Self {
+        Self { r1, r2 }
+    }
+}
+
+impl<S, E, X, R1, R2> Reducer for Combined<R1, R2>
+where
+    E: Clone,
+    R1: Reducer<State = S, Event = E, Effect = X>,
+    R2: Reducer<State = S, Event = E, Effect = X>,
+{
+    type State = S;
+    type Event = E;
+    type Effect = X;
+
+    fn reduce(
+        &self,
+        event: Self::Event,
+        ctx: &EventContext<Self::State>,
+    ) -> Command<Self::Event, Self::Effect> {
+        let cmd1 = self.r1.reduce(event.clone(), ctx);
+        let cmd2 = self.r2.reduce(event, ctx);
+        cmd1.and(cmd2)
+    }
+}
+
 type DebugPrinter = dyn Fn(&str) + Send + Sync;
 
 pub struct DebugReducer<R> {
@@ -1225,7 +1258,7 @@ mod tests {
         let mut runner = Syzygy::builder::<AppEvent, AppEffect>()
             .model(AppState::default())
             .reducer(reducer)
-            .effect_handler(|_effect: AppEffect, _ctx: &EffectContext<()>| {
+            .effect_handler(|_effect: AppEffect, _ctx: &EffectContext| {
                 Task::<AppEvent, AppEffect>::none()
             })
             .build();

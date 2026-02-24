@@ -33,7 +33,6 @@ default = ["shell", "rt-inline"]
 shell = [
     "dep:futures",
     "dep:futures-util",
-    "dep:rustc-hash",
 ]
 rt-inline = ["shell"]
 rt-tokio = ["shell", "dep:tokio"]
@@ -46,7 +45,7 @@ crossbeam-channel = "0.5"
 futures = { version = "0.3", optional = true }
 futures-util = { version = "0.3", optional = true }
 smallvec = "1.13"
-rustc-hash = { version = "2.0", optional = true }
+rustc-hash = "2.0"
 rayon = { version = "1.9", optional = true }
 
 # Runtime dependency

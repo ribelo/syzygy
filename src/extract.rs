@@ -1,49 +1,58 @@
 use std::cell::Cell;
+#[cfg(debug_assertions)]
+use std::cell::RefCell;
 
 use crate::command::Command;
+use crate::dependency::{Res, ResourceMap};
 use crate::executor::Task;
 
 // ── Effect side ─────────────────────────────────────────────────────
 
-pub struct EffectContext<R> {
-    resources: R,
+pub struct EffectContext {
+    resources: ResourceMap,
 }
 
-impl<R> EffectContext<R> {
-    pub fn new(resources: R) -> Self {
+impl EffectContext {
+    #[must_use]
+    pub fn new(resources: ResourceMap) -> Self {
         Self { resources }
     }
 
-    pub fn resources(&self) -> &R {
+    #[must_use]
+    pub fn resources(&self) -> &ResourceMap {
         &self.resources
     }
+}
 
-    /// Create a child context with resources derived from parent resources.
-    pub fn scope<R2, F>(&self, f: F) -> EffectContext<R2>
-    where
-        F: FnOnce(&R) -> R2,
-    {
-        EffectContext::new(f(&self.resources))
+pub trait FromEffectContext {
+    fn from_context(ctx: &EffectContext) -> Self;
+}
+
+impl<T: Send + Sync + 'static> FromEffectContext for Res<T> {
+    fn from_context(ctx: &EffectContext) -> Self {
+        ctx.resources().get::<T>().map_or_else(
+            || {
+                panic!(
+                    "Resource `{}` not found in ResourceMap. Register it with .with_resource()",
+                    std::any::type_name::<T>()
+                )
+            },
+            Res::from_arc,
+        )
     }
 }
 
-pub trait FromEffectContext<R> {
-    fn from_context(ctx: &EffectContext<R>) -> Self;
+pub trait EffectHandler<E: Send + 'static, X: Send + 'static, P, Marker>: Send + 'static {
+    fn handle(&self, payload: P, ctx: &EffectContext) -> Task<E, X>;
 }
 
-pub trait EffectHandler<E: Send + 'static, X: Send + 'static, P, R, Marker>:
-    Send + 'static
-{
-    fn handle(&self, payload: P, ctx: &EffectContext<R>) -> Task<E, X>;
-}
-
-impl<E, X, P, R, F> EffectHandler<E, X, P, R, ()> for F
+impl<E, X, P, F> EffectHandler<E, X, P, ()> for F
 where
     F: Fn(P) -> Task<E, X> + Send + 'static,
     E: Send + 'static,
     X: Send + 'static,
 {
-    fn handle(&self, payload: P, _ctx: &EffectContext<R>) -> Task<E, X> {
+    fn handle(&self, payload: P, _ctx: &EffectContext) -> Task<E, X> {
         (self)(payload)
     }
 }
@@ -51,14 +60,14 @@ where
 macro_rules! impl_effect_handler {
     ($($T:ident),+) => {
         #[allow(non_snake_case)]
-        impl<E, X, P, R, F, $($T),+> EffectHandler<E, X, P, R, ($($T,)+)> for F
+        impl<E, X, P, F, $($T),+> EffectHandler<E, X, P, ($($T,)+)> for F
         where
             F: Fn(P, $($T),+) -> Task<E, X> + Send + 'static,
-            $($T: FromEffectContext<R>,)+
+            $($T: FromEffectContext,)+
             E: Send + 'static,
             X: Send + 'static,
         {
-            fn handle(&self, payload: P, ctx: &EffectContext<R>) -> Task<E, X> {
+            fn handle(&self, payload: P, ctx: &EffectContext) -> Task<E, X> {
                 (self)(payload, $($T::from_context(ctx)),+)
             }
         }
@@ -79,6 +88,8 @@ impl_effect_handler!(T1, T2, T3, T4, T5, T6, T7, T8);
 pub struct EventContext<M> {
     ptr: *mut M,
     borrowed: Cell<u64>,
+    #[cfg(debug_assertions)]
+    borrowed_ranges: RefCell<Vec<(usize, usize)>>,
 }
 
 impl<M> EventContext<M> {
@@ -86,6 +97,8 @@ impl<M> EventContext<M> {
         Self {
             ptr: model as *mut M,
             borrowed: Cell::new(0),
+            #[cfg(debug_assertions)]
+            borrowed_ranges: RefCell::new(Vec::new()),
         }
     }
 
@@ -97,6 +110,31 @@ impl<M> EventContext<M> {
             "field '{field_name}' (index {field_index}) already borrowed mutably in this handler"
         );
         self.borrowed.set(current | mask);
+    }
+
+    pub fn track_borrow_range(&self, ptr: *mut u8, size: usize, field_name: &str) {
+        #[cfg(debug_assertions)]
+        {
+            let start = ptr as usize;
+            let end = start.checked_add(size).unwrap_or_else(|| {
+                panic!(
+                    "field '{field_name}' produced an overflow while tracking mutable borrow range"
+                )
+            });
+            let mut borrowed_ranges = self.borrowed_ranges.borrow_mut();
+
+            for &(borrowed_start, borrowed_end) in borrowed_ranges.iter() {
+                let disjoint = start >= borrowed_end || end <= borrowed_start;
+                assert!(
+                    disjoint,
+                    "field '{field_name}' overlaps already-borrowed mutable region"
+                );
+            }
+
+            borrowed_ranges.push((start, end));
+        }
+
+        let _ = (ptr, size, field_name);
     }
 
     /// # Safety
@@ -130,12 +168,19 @@ impl<M> EventContext<M> {
         EventContext {
             ptr: child_ptr,
             borrowed: Cell::new(0),
+            #[cfg(debug_assertions)]
+            borrowed_ranges: RefCell::new(Vec::new()),
         }
     }
 }
 
 pub trait FromEventContext<M> {
     fn from_context(ctx: &EventContext<M>) -> Self;
+}
+
+#[allow(clippy::mut_from_ref)]
+pub trait ExtractMutFrom<M> {
+    fn extract_mut(ctx: &EventContext<M>) -> &mut Self;
 }
 
 pub trait EventHandler<E: Send + 'static, X: Send + 'static, P, M, Marker>: Send + 'static {
@@ -153,10 +198,13 @@ where
     }
 }
 
+#[doc(hidden)]
+pub struct Owned<T>(::core::marker::PhantomData<fn() -> T>);
+
 macro_rules! impl_event_handler {
     ($($T:ident),+) => {
         #[allow(non_snake_case)]
-        impl<E, X, P, M, F, $($T),+> EventHandler<E, X, P, M, ($($T,)+)> for F
+        impl<E, X, P, M, F, $($T),+> EventHandler<E, X, P, M, ($(Owned<$T>,)+)> for F
         where
             F: Fn(P, $($T),+) -> Command<E, X> + Send + 'static,
             $($T: FromEventContext<M>,)+
@@ -170,6 +218,63 @@ macro_rules! impl_event_handler {
     }
 }
 
+#[doc(hidden)]
+pub struct Mut<T>(::core::marker::PhantomData<fn(&mut T)>);
+
+#[doc(hidden)]
+pub struct NP<Inner>(::core::marker::PhantomData<fn() -> Inner>);
+
+macro_rules! impl_event_handler_mut {
+    ($($T:ident),+) => {
+        #[allow(non_snake_case)]
+        impl<E, X, P, M, F, $($T),+> EventHandler<E, X, P, M, ($(Mut<$T>,)+)> for F
+        where
+            F: for<'a> Fn(P, $(&'a mut $T),+) -> Command<E, X> + Send + 'static,
+            $($T: ExtractMutFrom<M>,)+
+            E: Send + 'static,
+            X: Send + 'static,
+        {
+            fn handle(&self, payload: P, ctx: &EventContext<M>) -> Command<E, X> {
+                (self)(payload, $($T::extract_mut(ctx)),+)
+            }
+        }
+    }
+}
+
+macro_rules! impl_event_handler_np_owned {
+    ($($T:ident),+) => {
+        #[allow(non_snake_case)]
+        impl<E, X, M, F, $($T),+> EventHandler<E, X, (), M, NP<($(Owned<$T>,)+)>> for F
+        where
+            F: Fn($($T),+) -> Command<E, X> + Send + 'static,
+            $($T: FromEventContext<M>,)+
+            E: Send + 'static,
+            X: Send + 'static,
+        {
+            fn handle(&self, _payload: (), ctx: &EventContext<M>) -> Command<E, X> {
+                (self)($($T::from_context(ctx)),+)
+            }
+        }
+    }
+}
+
+macro_rules! impl_event_handler_np_mut {
+    ($($T:ident),+) => {
+        #[allow(non_snake_case)]
+        impl<E, X, M, F, $($T),+> EventHandler<E, X, (), M, NP<($(Mut<$T>,)+)>> for F
+        where
+            F: for<'a> Fn($(&'a mut $T),+) -> Command<E, X> + Send + 'static,
+            $($T: ExtractMutFrom<M>,)+
+            E: Send + 'static,
+            X: Send + 'static,
+        {
+            fn handle(&self, _payload: (), ctx: &EventContext<M>) -> Command<E, X> {
+                (self)($($T::extract_mut(ctx)),+)
+            }
+        }
+    }
+}
+
 impl_event_handler!(T1);
 impl_event_handler!(T1, T2);
 impl_event_handler!(T1, T2, T3);
@@ -178,6 +283,21 @@ impl_event_handler!(T1, T2, T3, T4, T5);
 impl_event_handler!(T1, T2, T3, T4, T5, T6);
 impl_event_handler!(T1, T2, T3, T4, T5, T6, T7);
 impl_event_handler!(T1, T2, T3, T4, T5, T6, T7, T8);
+
+impl_event_handler_mut!(T1);
+impl_event_handler_mut!(T1, T2);
+impl_event_handler_mut!(T1, T2, T3);
+impl_event_handler_mut!(T1, T2, T3, T4);
+
+impl_event_handler_np_owned!(T1);
+impl_event_handler_np_owned!(T1, T2);
+impl_event_handler_np_owned!(T1, T2, T3);
+impl_event_handler_np_owned!(T1, T2, T3, T4);
+
+impl_event_handler_np_mut!(T1);
+impl_event_handler_np_mut!(T1, T2);
+impl_event_handler_np_mut!(T1, T2, T3);
+impl_event_handler_np_mut!(T1, T2, T3, T4);
 
 #[cfg(test)]
 mod tests {
@@ -257,19 +377,36 @@ mod tests {
         }
     }
 
-    // ── Resources (for effect tests) ────────────────────────────────
-
-    #[derive(Clone)]
-    struct Resources {
-        db_url: String,
+    #[allow(clippy::mut_from_ref)]
+    impl ExtractMutFrom<AppModel> for i32 {
+        fn extract_mut(ctx: &EventContext<AppModel>) -> &mut Self {
+            // SAFETY: `model_ptr` is valid for the active handler.
+            let ptr = unsafe { ::core::ptr::addr_of_mut!((*ctx.model_ptr()).counter) };
+            ctx.track_borrow_range(ptr.cast::<u8>(), ::core::mem::size_of::<i32>(), "counter");
+            // SAFETY: range tracking prevents overlapping mutable projections in debug builds.
+            unsafe { &mut *ptr }
+        }
     }
+
+    #[allow(clippy::mut_from_ref)]
+    impl ExtractMutFrom<AppModel> for String {
+        fn extract_mut(ctx: &EventContext<AppModel>) -> &mut Self {
+            // SAFETY: `model_ptr` is valid for the active handler.
+            let ptr = unsafe { ::core::ptr::addr_of_mut!((*ctx.model_ptr()).name) };
+            ctx.track_borrow_range(ptr.cast::<u8>(), ::core::mem::size_of::<String>(), "name");
+            // SAFETY: range tracking prevents overlapping mutable projections in debug builds.
+            unsafe { &mut *ptr }
+        }
+    }
+
+    // ── Resources (for effect tests) ────────────────────────────────
 
     #[derive(Clone)]
     struct DbUrl(String);
 
-    impl FromEffectContext<Resources> for DbUrl {
-        fn from_context(ctx: &EffectContext<Resources>) -> Self {
-            DbUrl(ctx.resources().db_url.clone())
+    impl DbUrl {
+        fn as_str(&self) -> &str {
+            &self.0
         }
     }
 
@@ -344,6 +481,62 @@ mod tests {
     }
 
     #[test]
+    fn event_extract_mut_single_field() {
+        fn increment(amount: u32, counter: &mut i32) -> Command<Event, Effect> {
+            let amount = i32::try_from(amount).expect("u32 amount must fit in i32");
+            *counter += amount;
+            Command::none()
+        }
+
+        let mut model = AppModel {
+            counter: 1,
+            name: String::new(),
+        };
+        {
+            let ctx = EventContext::new(&mut model);
+            let _ = increment.handle(4, &ctx);
+        }
+
+        assert_eq!(model.counter, 5);
+    }
+
+    #[test]
+    fn event_extract_mut_multiple_fields() {
+        fn mutate(counter: &mut i32, name: &mut String) -> Command<Event, Effect> {
+            *counter += 2;
+            name.push_str("-updated");
+            Command::none()
+        }
+
+        let mut model = AppModel {
+            counter: 3,
+            name: "state".to_string(),
+        };
+        {
+            let ctx = EventContext::new(&mut model);
+            let _ = mutate.handle((), &ctx);
+        }
+
+        assert_eq!(model.counter, 5);
+        assert_eq!(model.name, "state-updated");
+    }
+
+    #[test]
+    #[should_panic(expected = "overlaps already-borrowed mutable region")]
+    fn event_extract_mut_double_borrow_panics() {
+        fn bad(_: (), _first: &mut i32, _second: &mut i32) -> Command<Event, Effect> {
+            unreachable!()
+        }
+
+        let mut model = AppModel {
+            counter: 0,
+            name: String::new(),
+        };
+        let ctx = EventContext::new(&mut model);
+        let _ = bad.handle((), &ctx);
+    }
+
+    #[test]
     fn event_dispatch_match() {
         fn increment(amount: u32, mut counter: Counter) -> Command<Event, Effect> {
             let amount = i32::try_from(amount).expect("u32 amount must fit in i32");
@@ -389,9 +582,9 @@ mod tests {
 
     #[test]
     fn effect_dispatch() {
-        fn save(data: String, db: DbUrl) -> Task<Event, Effect> {
+        fn save(data: String, db: Res<DbUrl>) -> Task<Event, Effect> {
             assert_eq!(data, "x");
-            assert_eq!(db.0, "pg://test");
+            assert_eq!(db.as_str(), "pg://test");
             Task::send(Event::Saved)
         }
 
@@ -400,10 +593,10 @@ mod tests {
             Task::none()
         }
 
-        let ctx = EffectContext::new(Resources {
-            db_url: "pg://test".into(),
-        });
-        let dispatch = |effect: Effect, ctx: &EffectContext<Resources>| match effect {
+        let mut resources = ResourceMap::new();
+        resources.insert(DbUrl("pg://test".into()));
+        let ctx = EffectContext::new(resources);
+        let dispatch = |effect: Effect, ctx: &EffectContext| match effect {
             Effect::Log(msg) => log.handle(msg, ctx),
         };
         let _ = save.handle("x".into(), &ctx);
@@ -614,26 +807,19 @@ mod tests {
     }
 
     #[derive(Clone)]
-    struct ScopedResources {
-        db_url: String,
-    }
-
-    #[derive(Clone)]
-    struct ScopedCounterResources {
-        db_url: String,
-    }
-
-    #[derive(Clone)]
     struct ScopedDbUrl(String);
 
-    impl FromEffectContext<ScopedCounterResources> for ScopedDbUrl {
-        fn from_context(ctx: &EffectContext<ScopedCounterResources>) -> Self {
-            Self(ctx.resources().db_url.clone())
+    impl ScopedDbUrl {
+        fn as_str(&self) -> &str {
+            &self.0
         }
     }
 
-    fn scoped_save(_: (), db_url: ScopedDbUrl) -> Task<ScopedCounterEvent, ScopedCounterEffect> {
-        assert_eq!(db_url.0, "pg://scope");
+    fn scoped_save(
+        _: (),
+        db_url: Res<ScopedDbUrl>,
+    ) -> Task<ScopedCounterEvent, ScopedCounterEffect> {
+        assert_eq!(db_url.as_str(), "pg://scope");
         Task::none()
     }
 
@@ -726,15 +912,12 @@ mod tests {
     }
 
     #[test]
-    fn effect_scope_derives_child_resources() {
-        let resources = EffectContext::new(ScopedResources {
-            db_url: "pg://scope".to_string(),
-        });
-        let child_ctx = resources.scope(|parent| ScopedCounterResources {
-            db_url: parent.db_url.clone(),
-        });
+    fn effect_context_extracts_registered_resources() {
+        let mut resources = ResourceMap::new();
+        resources.insert(ScopedDbUrl("pg://scope".to_string()));
+        let ctx = EffectContext::new(resources);
 
-        let _ = scoped_save.handle((), &child_ctx);
+        let _ = scoped_save.handle((), &ctx);
     }
 
     // ── End-to-end with builder ─────────────────────────────────────
@@ -773,7 +956,7 @@ mod tests {
                 Ev::Increment(n) => increment.handle(n, ctx),
                 Ev::Rename(s) => rename.handle(s, ctx),
             })
-            .effect_handler(|_effect: Fx, _ctx: &EffectContext<()>| Task::<Ev, Fx>::none())
+            .effect_handler(|_effect: Fx, _ctx: &EffectContext| Task::<Ev, Fx>::none())
             .async_executor(InlineAsync::new())
             .build();
 

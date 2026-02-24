@@ -1,14 +1,14 @@
 //! Builder for composing Core, Shell, resources, and executors.
 //!
 //! The builder wires your pure event handler to the async effect handler and
-//! registers any executors you want the Shell to use. Keep models and resources
-//! cheap to move/clone; the Shell clones resources for each effect call.
+//! registers any executors you want the Shell to use.
 //!
 //! This module intentionally avoids traits and lifetimes in the public surface
 //! so usage stays straightforward in real apps and tests.
 use crate::activity::Activity;
 use crate::command::Command;
 use crate::core::{Core, EventHandlerFn};
+use crate::dependency::ResourceMap;
 use crate::executor::{AsyncExecutor, BlockingExecutor, PanicDetails, PanicHook, Task};
 use crate::extract::{EffectContext, EventContext};
 use crate::reducer::Reducer;
@@ -21,23 +21,22 @@ use std::sync::{Arc, Mutex};
 /// Entry point for building a `Syzygy`.
 ///
 /// Typical flow:
-/// - set `.model(..)` and optional `.with_resources(..)`
+/// - set `.model(..)` and optional `.with_resource(..)` values
 /// - install `.event_handler(..)` and `.effect_handler(..)`
 /// - configure channel capacities and idle cadence via explicit builder knobs
 /// - register executors via `.async_executor(..)`, `.compute_executor(..)`, and `.blocking_executor(..)`
 /// - call `.build()`
-pub struct SyzygyBuilder<E, X, M, R = ()>
+pub struct SyzygyBuilder<E, X, M = ()>
 where
     E: Send + 'static,
     X: Send + 'static,
-    R: Clone + Send + 'static,
 {
     model: M,
-    resources: R,
+    resources: ResourceMap,
     _marker: PhantomData<(E, X)>,
 }
 
-impl<E, X> Default for SyzygyBuilder<E, X, (), ()>
+impl<E, X> Default for SyzygyBuilder<E, X, ()>
 where
     E: Send + 'static,
     X: Send + 'static,
@@ -47,7 +46,7 @@ where
     }
 }
 
-impl<E, X> SyzygyBuilder<E, X, (), ()>
+impl<E, X> SyzygyBuilder<E, X, ()>
 where
     E: Send + 'static,
     X: Send + 'static,
@@ -56,27 +55,21 @@ where
     pub fn new() -> Self {
         Self {
             model: (),
-            resources: (),
+            resources: ResourceMap::new(),
             _marker: PhantomData,
         }
     }
 }
 
-impl<Event, Effect, Model, Resources> SyzygyBuilder<Event, Effect, Model, Resources>
+impl<Event, Effect, Model> SyzygyBuilder<Event, Effect, Model>
 where
     Event: Send + 'static,
     Effect: Send + 'static,
     Model: 'static,
-    Resources: Clone + Send + 'static,
 {
     /// Replace the current model with a new one.
-    ///
-    /// Models are owned by `Core` and mutated only by your event handler.
-    /// Calling `.model(..)` more than once replaces the previous value—compose
-    /// your application state inside a single struct or tuple if you need
-    /// multiple parts of state.
     #[must_use]
-    pub fn model<M: 'static>(self, model: M) -> SyzygyBuilder<Event, Effect, M, Resources> {
+    pub fn model<M: 'static>(self, model: M) -> SyzygyBuilder<Event, Effect, M> {
         SyzygyBuilder {
             model,
             resources: self.resources,
@@ -84,29 +77,22 @@ where
         }
     }
 
-    /// Install application resources that all effects can access.
-    ///
-    /// The Shell clones `Resources` per effect call. Use `Arc<_>` for heavy
-    /// dependencies (DB pools, clients) or wrap interior mutability explicitly.
+    /// Register a typed resource available to all effect handlers via `Res<T>`.
     #[must_use]
-    pub fn with_resources<R2>(self, resources: R2) -> SyzygyBuilder<Event, Effect, Model, R2>
-    where
-        R2: Clone + Send + 'static,
-    {
-        SyzygyBuilder {
-            model: self.model,
-            resources,
-            _marker: PhantomData,
-        }
+    pub fn with_resource<T: Send + Sync + 'static>(mut self, resource: T) -> Self {
+        self.resources.insert(resource);
+        self
+    }
+
+    /// Alias for [`Self::with_resource`].
+    #[must_use]
+    pub fn with_dependency<T: Send + Sync + 'static>(self, resource: T) -> Self {
+        self.with_resource(resource)
     }
 
     /// Install the event dispatch function.
-    ///
-    /// Match on event variants and call `.handle(payload, ctx)` on individual
-    /// handlers. Each handler extracts model fields via
-    /// [`FromEventContext`](crate::extract::FromEventContext).
     #[must_use]
-    pub fn event_handler<H>(self, handler: H) -> ConfiguredBuilder<Event, Effect, Model, Resources>
+    pub fn event_handler<H>(self, handler: H) -> ConfiguredBuilder<Event, Effect, Model>
     where
         H: Fn(Event, &EventContext<Model>) -> Command<Event, Effect> + Send + 'static,
     {
@@ -127,7 +113,7 @@ where
     }
 
     #[must_use]
-    pub fn reducer<R>(self, reducer: R) -> ConfiguredBuilder<Event, Effect, Model, Resources>
+    pub fn reducer<R>(self, reducer: R) -> ConfiguredBuilder<Event, Effect, Model>
     where
         R: Reducer<State = Model, Event = Event, Effect = Effect> + Send + 'static,
     {
@@ -136,20 +122,15 @@ where
 }
 
 /// Builder stage where handlers and executors are configured.
-///
-/// Configure one async executor and optional compute/blocking executors. When
-/// an executor slot is not configured, the Shell applies compute/blocking
-/// fallback rules when driving tasks.
-pub struct ConfiguredBuilder<Event, Effect, Model, Resources>
+pub struct ConfiguredBuilder<Event, Effect, Model>
 where
     Event: Send + 'static,
     Effect: Send + 'static,
-    Resources: Clone + Send + 'static,
 {
     event_handler: EventHandlerFn<Event, Effect, Model>,
-    effect_handler: Option<EffectHandlerFn<Event, Effect, Resources>>,
+    effect_handler: Option<EffectHandlerFn<Event, Effect>>,
     model: Model,
-    resources: Resources,
+    resources: ResourceMap,
     async_executor: Option<Arc<dyn AsyncExecutor>>,
     compute_executor: Option<Arc<dyn BlockingExecutor>>,
     blocking_executor: Option<Arc<dyn BlockingExecutor>>,
@@ -160,32 +141,33 @@ where
     _marker: PhantomData<Effect>,
 }
 
-impl<Event, Effect, Model, Resources> ConfiguredBuilder<Event, Effect, Model, Resources>
+impl<Event, Effect, Model> ConfiguredBuilder<Event, Effect, Model>
 where
     Event: Send + 'static,
     Effect: Send + 'static,
     Model: 'static,
-    Resources: Clone + Send + 'static,
 {
     /// Install the effect dispatch function.
-    ///
-    /// Match on effect variants and call `.handle(payload, ctx)` on individual
-    /// handlers. Each handler extracts its own resources via
-    /// [`FromEffectContext`](crate::extract::FromEffectContext).
-    ///
-    /// ```ignore
-    /// .effect_handler(|effect, ctx| match effect {
-    ///     Effect::Save(data) => save.handle(data, ctx),
-    ///     Effect::Notify(msg) => notify.handle(msg, ctx),
-    /// })
-    /// ```
     #[must_use]
     pub fn effect_handler<H>(mut self, handler: H) -> Self
     where
-        H: Fn(Effect, &EffectContext<Resources>) -> Task<Event, Effect> + Send + 'static,
+        H: Fn(Effect, &EffectContext) -> Task<Event, Effect> + Send + 'static,
     {
         self.effect_handler = Some(Box::new(handler));
         self
+    }
+
+    /// Register a typed resource available to all effect handlers via `Res<T>`.
+    #[must_use]
+    pub fn with_resource<T: Send + Sync + 'static>(mut self, resource: T) -> Self {
+        self.resources.insert(resource);
+        self
+    }
+
+    /// Alias for [`Self::with_resource`].
+    #[must_use]
+    pub fn with_dependency<T: Send + Sync + 'static>(self, resource: T) -> Self {
+        self.with_resource(resource)
     }
 
     /// Apply a prebuilt runner configuration.
@@ -196,10 +178,6 @@ where
     }
 
     /// Install a handler invoked whenever a task panics.
-    ///
-    /// The handler receives [`PanicDetails`] describing the task context and a message captured
-    /// from the panic payload. Return a `Command` (typically an error event) to surface the
-    /// failure to your Core.
     #[must_use]
     pub fn with_panic_handler<H>(mut self, handler: H) -> Self
     where
@@ -240,28 +218,6 @@ where
     }
 
     /// Override the Shell effect channel capacity.
-    ///
-    /// `None` means unbounded. Bounded channels apply backpressure to the
-    /// caller when the effect queue is saturated by returning
-    /// [`ShellError::EffectQueueFull`](crate::error::ShellError::EffectQueueFull).
-    /// Combine with [`Self::with_syzygy_config`] to tune idle cadence alongside channel sizing.
-    ///
-    /// # Example
-    /// ```rust
-    /// # use syzygy::prelude::*;
-    /// # fn update(_: Event, _: &mut Model) -> Command<Event, Effect> { Command::none() }
-    /// # fn effects(_: Effect, _: &EffectContext<()>) -> Task<Event, Effect> { Task::none() }
-    /// # #[derive(Default)] struct Model;
-    /// # #[derive(Clone)] enum Event { Ping }
-    /// # #[derive(Clone)] enum Effect { DoPing }
-    /// let runner = Syzygy::builder::<Event, Effect>()
-    ///     .model(Model::default())
-    ///     .event_handler(update)
-    ///     .effect_handler(effects)
-    ///     .with_effect_channel_capacity(Some(256))
-    ///     .build();
-    /// # let _ = runner;
-    /// ```
     #[must_use]
     pub fn with_effect_channel_capacity(mut self, capacity: Option<usize>) -> Self {
         self.effect_channel_capacity = capacity;
@@ -269,26 +225,6 @@ where
     }
 
     /// Override the core event channel capacity.
-    ///
-    /// `None` keeps the default unbounded channel. Bounded channels apply backpressure
-    /// to event producers by returning [`CoreError::ChannelFull`](crate::error::CoreError::ChannelFull).
-    ///
-    /// # Example
-    /// ```rust
-    /// # use syzygy::prelude::*;
-    /// # fn update(_: Event, _: &mut Model) -> Command<Event, Effect> { Command::none() }
-    /// # fn effects(_: Effect, _: &EffectContext<()>) -> Task<Event, Effect> { Task::none() }
-    /// # #[derive(Default)] struct Model;
-    /// # #[derive(Clone)] enum Event { Ping }
-    /// # #[derive(Clone)] enum Effect { DoPing }
-    /// let runner = Syzygy::builder::<Event, Effect>()
-    ///     .model(Model::default())
-    ///     .event_handler(update)
-    ///     .effect_handler(effects)
-    ///     .with_event_channel_capacity(Some(64))
-    ///     .build();
-    /// # let _ = runner;
-    /// ```
     #[must_use]
     pub fn with_event_channel_capacity(mut self, capacity: Option<usize>) -> Self {
         self.event_channel_capacity = capacity;
@@ -296,7 +232,7 @@ where
     }
 
     /// Build the system and return a `Syzygy`.
-    pub fn build(self) -> Syzygy<Event, Effect, Model, Resources> {
+    pub fn build(self) -> Syzygy<Event, Effect, Model> {
         use crossbeam_channel::{bounded, unbounded};
 
         let (core, event_tx) = Core::with_event_channel_capacity(
@@ -323,9 +259,9 @@ where
             None => unbounded(),
         };
 
-        let effect_handler: EffectHandlerFn<Event, Effect, Resources> =
+        let effect_handler: EffectHandlerFn<Event, Effect> =
             self.effect_handler.unwrap_or_else(|| {
-                Box::new(|_effect, _ctx: &EffectContext<Resources>| Task::<Event, Effect>::none())
+                Box::new(|_effect, _ctx: &EffectContext| Task::<Event, Effect>::none())
             });
 
         let shell = Shell {

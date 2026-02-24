@@ -1,13 +1,16 @@
 pub mod activity;
 pub mod command;
 pub mod core;
+pub mod dependency;
 pub mod error;
 pub mod extract;
+pub mod feature;
 pub mod if_let;
+pub mod macros;
 pub mod reducer;
 pub mod test_store;
 
-pub use syzygy_macros::{Model, Resources};
+pub use syzygy_macros::Model;
 
 #[cfg(feature = "shell")]
 pub mod builder;
@@ -23,18 +26,20 @@ pub mod prelude {
     pub use crate::command::{CancelId, Command, CommandStep};
 
     pub use crate::core::{Core, EventSender};
+    pub use crate::dependency::{Res, ResourceMap};
 
     pub use crate::extract::{
-        EffectContext, EffectHandler, EventContext, EventHandler, FromEffectContext,
-        FromEventContext,
+        EffectContext, EffectHandler, EventContext, EventHandler, ExtractMutFrom,
+        FromEffectContext, FromEventContext,
     };
+    pub use crate::feature::Feature;
     pub use crate::if_let::{if_let, IfLet};
     pub use crate::reducer::{
-        combine, BoxedReducer, Combine, DebugReducer, ForEach, OnChange, Reduce, Reducer,
+        combine, BoxedReducer, Combine, Combined, DebugReducer, ForEach, OnChange, Reduce, Reducer,
         ReducerExt, Scope,
     };
     pub use crate::test_store::{assert_panic, assert_panic_contains, Exhaustivity, TestStore};
-    pub use syzygy_macros::{Model, Resources};
+    pub use syzygy_macros::Model;
 
     #[cfg(feature = "shell")]
     pub use crate::builder::SyzygyBuilder;

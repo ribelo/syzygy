@@ -33,6 +33,7 @@ pub enum CommandStep<Event, Effect> {
         effect: Effect,
         generation: u64,
     },
+    Cancel(CancelId),
     /// Effects dispatched in order; executors determine actual execution order
     Batch(Vec<Effect>),
     /// Effects dispatched without waiting between each submission
@@ -70,6 +71,7 @@ where
                     generation: b_generation,
                 },
             ) => a_id == b_id && a_effect == b_effect && a_generation == b_generation,
+            (Self::Cancel(a), Self::Cancel(b)) => a == b,
             (Self::Batch(a), Self::Batch(b)) | (Self::Parallel(a), Self::Parallel(b)) => a == b,
             _ => false,
         }
@@ -95,6 +97,7 @@ where
                 .field("effect", effect)
                 .field("generation", generation)
                 .finish(),
+            Self::Cancel(id) => f.debug_tuple("Cancel").field(id).finish(),
             Self::Batch(v) => f.debug_tuple("Batch").field(v).finish(),
             Self::Parallel(v) => f.debug_tuple("Parallel").field(v).finish(),
         }
@@ -221,6 +224,11 @@ impl<Event, Effect> Command<Event, Effect> {
         Self::from_step(CommandStep::cancellable(id.into(), effect.into()))
     }
 
+    /// Creates a command that cancels in-flight effects by ID.
+    pub fn cancel(id: impl Into<CancelId>) -> Self {
+        Self::from_step(CommandStep::Cancel(id.into()))
+    }
+
     /// Creates a command that fires multiple events in order.
     ///
     /// Events are processed sequentially in the order provided. Each event
@@ -313,7 +321,8 @@ impl<Event, Effect> Command<Event, Effect> {
                 CommandStep::Batch(v) | CommandStep::Parallel(v) => v.len(),
                 CommandStep::Event(_)
                 | CommandStep::Effect(_)
-                | CommandStep::CancellableEffect { .. } => 1,
+                | CommandStep::CancellableEffect { .. }
+                | CommandStep::Cancel(_) => 1,
             })
             .sum()
     }
@@ -342,6 +351,7 @@ impl<Event, Effect> Command<Event, Effect> {
                     effect: fx(effect),
                     generation,
                 },
+                CommandStep::Cancel(id) => CommandStep::Cancel(id),
                 CommandStep::Batch(effects) => {
                     CommandStep::Batch(effects.into_iter().map(&fx).collect())
                 }
@@ -536,6 +546,13 @@ pub mod builders {
         effect: impl Into<Effect>,
     ) -> Command<Event, Effect> {
         Command::cancellable(id, effect)
+    }
+
+    /// Cancel all in-flight effects for the given ID.
+    #[inline]
+    #[must_use]
+    pub fn cancel<Event, Effect>(id: impl Into<CancelId>) -> Command<Event, Effect> {
+        Command::cancel(id)
     }
 
     /// Schedule a batch of effects sequentially.

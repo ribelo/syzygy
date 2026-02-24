@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use proc_macro::TokenStream;
 use proc_macro2::TokenStream as TokenStream2;
 use quote::format_ident;
@@ -9,19 +11,10 @@ use syn::Fields;
 use syn::Generics;
 use syn::Ident;
 
-#[proc_macro_derive(Model)]
+#[proc_macro_derive(Model, attributes(extract))]
 pub fn derive_model(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
     match expand_model(input) {
-        Ok(tokens) => tokens.into(),
-        Err(err) => err.into_compile_error().into(),
-    }
-}
-
-#[proc_macro_derive(Resources)]
-pub fn derive_resources(input: TokenStream) -> TokenStream {
-    let input = parse_macro_input!(input as DeriveInput);
-    match expand_resources(input) {
         Ok(tokens) => tokens.into(),
         Err(err) => err.into_compile_error().into(),
     }
@@ -32,25 +25,60 @@ fn expand_model(input: DeriveInput) -> syn::Result<TokenStream2> {
     let generics = input.generics;
     let fields = named_fields(&input.data)?;
 
-    if fields.len() > 64 {
-        return Err(syn::Error::new_spanned(
-            model_ident,
-            "Model derive supports up to 64 fields for runtime borrow tracking",
-        ));
-    }
-
     let mut wrappers = Vec::with_capacity(fields.len());
+    let mut extract_impls = Vec::new();
+    let mut tracked_field_count = 0usize;
+    let mut extract_types = HashSet::new();
 
-    for (index, field) in fields.iter().enumerate() {
+    for field in fields {
         let field_ident = field.ident.as_ref().ok_or_else(|| {
             syn::Error::new_spanned(field, "Model derive requires named struct fields")
         })?;
-        let wrapper_ident = field_wrapper_ident(field_ident)?;
         let field_ty = &field.ty;
         let field_name = field_ident.to_string();
-        let field_index = index as u32;
+        let is_extract = has_extract_attr(field)?;
 
         let (struct_generics, impl_generics, ty_generics, where_clause) = split_generics(&generics);
+
+        if is_extract {
+            let extract_type_key = quote!(#field_ty).to_string();
+            if !extract_types.insert(extract_type_key) {
+                return Err(syn::Error::new_spanned(
+                    field_ty,
+                    "duplicate #[extract] field type in this model; each extracted type must be unique",
+                ));
+            }
+
+            extract_impls.push(quote! {
+                #[allow(clippy::mut_from_ref)]
+                impl #impl_generics ::syzygy::extract::ExtractMutFrom<#model_ident #ty_generics> for #field_ty #where_clause {
+                    fn extract_mut(ctx: &::syzygy::extract::EventContext<#model_ident #ty_generics>) -> &mut Self {
+                        // SAFETY: EventContext stores a valid mutable pointer for the active handler call.
+                        let ptr = unsafe { ::core::ptr::addr_of_mut!((*ctx.model_ptr()).#field_ident) };
+                        ctx.track_borrow_range(
+                            ptr.cast::<u8>(),
+                            ::core::mem::size_of::<#field_ty>(),
+                            #field_name,
+                        );
+                        // SAFETY: Borrow ranges are checked in debug builds and handler execution is single-threaded per event.
+                        unsafe { &mut *ptr }
+                    }
+                }
+            });
+
+            continue;
+        }
+
+        tracked_field_count += 1;
+        if tracked_field_count > 64 {
+            return Err(syn::Error::new_spanned(
+                model_ident.clone(),
+                "Model derive supports up to 64 non-#[extract] fields for runtime borrow tracking",
+            ));
+        }
+
+        let wrapper_ident = field_wrapper_ident(field_ident)?;
+        let field_index = (tracked_field_count - 1) as u32;
 
         wrappers.push(quote! {
             pub struct #wrapper_ident #struct_generics (*mut #field_ty) #where_clause;
@@ -84,39 +112,29 @@ fn expand_model(input: DeriveInput) -> syn::Result<TokenStream2> {
 
     Ok(quote! {
         #(#wrappers)*
+        #(#extract_impls)*
     })
 }
 
-fn expand_resources(input: DeriveInput) -> syn::Result<TokenStream2> {
-    let resources_ident = input.ident;
-    let generics = input.generics;
-    let fields = named_fields(&input.data)?;
+fn has_extract_attr(field: &syn::Field) -> syn::Result<bool> {
+    let mut is_extract = false;
 
-    let mut wrappers = Vec::with_capacity(fields.len());
+    for attr in &field.attrs {
+        if !attr.path().is_ident("extract") {
+            continue;
+        }
 
-    for field in fields {
-        let field_ident = field.ident.as_ref().ok_or_else(|| {
-            syn::Error::new_spanned(field, "Resources derive requires named struct fields")
-        })?;
-        let wrapper_ident = field_wrapper_ident(field_ident)?;
-        let field_ty = &field.ty;
+        if !matches!(&attr.meta, syn::Meta::Path(_)) {
+            return Err(syn::Error::new_spanned(
+                attr,
+                "`#[extract]` does not accept arguments",
+            ));
+        }
 
-        let (struct_generics, impl_generics, ty_generics, where_clause) = split_generics(&generics);
-
-        wrappers.push(quote! {
-            pub struct #wrapper_ident #struct_generics (pub #field_ty) #where_clause;
-
-            impl #impl_generics ::syzygy::extract::FromEffectContext<#resources_ident #ty_generics> for #wrapper_ident #ty_generics #where_clause {
-                fn from_context(ctx: &::syzygy::extract::EffectContext<#resources_ident #ty_generics>) -> Self {
-                    Self(ctx.resources().#field_ident.clone())
-                }
-            }
-        });
+        is_extract = true;
     }
 
-    Ok(quote! {
-        #(#wrappers)*
-    })
+    Ok(is_extract)
 }
 
 fn named_fields(

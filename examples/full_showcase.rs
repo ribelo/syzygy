@@ -3,11 +3,11 @@
 //! A "dashboard" app with two child features (counter + search) composed
 //! into a parent via scope, demonstrating:
 //!
-//! - `#[derive(Model)]` and `#[derive(Resources)]` proc macros
+//! - `#[derive(Model)]` and `Res<T>` extractors backed by `ResourceMap`
 //! - Magic event handlers (per-field extraction via `FromEventContext`)
 //! - Magic effect handlers (resource extraction via `FromEffectContext`)
 //! - `Task::future` / `Task::delayed` runtime factories (`AsyncRt` injected at execution time)
-//! - Scope composition (`EventContext::scope`, `EffectContext::scope`)
+//! - Scope composition (`EventContext::scope`) with type-based effect resources
 //! - Command mapping (`map`, `map_event`, `map_effect`)
 //! - Cancellable effects (`Command::cancellable`, `CancelId`)
 //! - Command builders (`none`, `event`, `events`, `effect`, `sequential`,
@@ -56,11 +56,13 @@ mod counter {
         ComputeChecksum(Vec<i32>),
     }
 
-    // #[derive(Resources)] generates:
-    //   pub struct LogPrefix(pub String) + FromEffectContext<Res>
-    #[derive(Debug, Clone, Resources)]
-    pub struct Res {
-        pub log_prefix: String,
+    #[derive(Debug, Clone)]
+    pub struct LogPrefix(pub String);
+
+    impl LogPrefix {
+        pub fn as_str(&self) -> &str {
+            &self.0
+        }
     }
 
     // Magic event handlers: payload first, then extracted model fields.
@@ -96,12 +98,12 @@ mod counter {
 
     // Magic effect handler: payload first, then extracted resources.
 
-    fn log_value(value: i32, prefix: LogPrefix) -> Task<Event, Effect> {
+    fn log_value(value: i32, prefix: Res<LogPrefix>) -> Task<Event, Effect> {
         // Task::blocking — runs on the blocking executor (spawn_blocking).
         // Use for IO-bound work that would block the async runtime:
         // file writes, synchronous HTTP, database queries, etc.
         Task::blocking(move || {
-            println!("[{}] counter = {value}", prefix.0);
+            println!("[{}] counter = {value}", prefix.as_str());
             Command::none()
         })
     }
@@ -116,7 +118,7 @@ mod counter {
         })
     }
 
-    pub fn dispatch_effect(effect: Effect, ctx: &EffectContext<Res>) -> Task<Event, Effect> {
+    pub fn dispatch_effect(effect: Effect, ctx: &EffectContext) -> Task<Event, Effect> {
         match effect {
             Effect::LogValue(v) => log_value.handle(v, ctx),
             Effect::ComputeChecksum(values) => compute_checksum.handle(values, ctx),
@@ -155,10 +157,13 @@ mod search {
         DebouncedSearch { query: String, delay: Duration },
     }
 
-    // #[derive(Resources)] generates: ApiUrl(pub String) wrapper
-    #[derive(Debug, Clone, Resources)]
-    pub struct Res {
-        pub api_url: String,
+    #[derive(Debug, Clone)]
+    pub struct ApiUrl(pub String);
+
+    impl ApiUrl {
+        pub fn as_str(&self) -> &str {
+            &self.0
+        }
     }
 
     fn update_query(
@@ -208,34 +213,34 @@ mod search {
         }
     }
 
-    fn debounced_search(payload: (String, Duration), api_url: ApiUrl) -> Task<Event, Effect> {
+    fn debounced_search(payload: (String, Duration), api_url: Res<ApiUrl>) -> Task<Event, Effect> {
         let (query, delay) = payload;
         if query.is_empty() {
             return Task::send(Event::ResultsLoaded(vec![]));
         }
         Task::delayed(delay, move |_rt| async move {
             let results = vec![
-                format!("{query} from {}", api_url.0),
+                format!("{query} from {}", api_url.as_str()),
                 format!("{query} - result 2"),
             ];
             Command::event(Event::ResultsLoaded(results))
         })
     }
 
-    fn execute_search(query: String, api_url: ApiUrl) -> Task<Event, Effect> {
+    fn execute_search(query: String, api_url: Res<ApiUrl>) -> Task<Event, Effect> {
         if query.is_empty() {
             return Task::send(Event::ResultsLoaded(vec![]));
         }
         Task::future(move |_rt| async move {
             let results = vec![
-                format!("{query} from {}", api_url.0),
+                format!("{query} from {}", api_url.as_str()),
                 format!("{query} - result 2"),
             ];
             Command::event(Event::ResultsLoaded(results))
         })
     }
 
-    pub fn dispatch_effect(effect: Effect, ctx: &EffectContext<Res>) -> Task<Event, Effect> {
+    pub fn dispatch_effect(effect: Effect, ctx: &EffectContext) -> Task<Event, Effect> {
         match effect {
             Effect::ExecuteSearch(q) => execute_search.handle(q, ctx),
             Effect::DebouncedSearch { query, delay } => {
@@ -272,13 +277,6 @@ enum AppEffect {
     Search(search::Effect),
     Audit(String),
     BlockingAudit(String),
-}
-
-// #[derive(Resources)] generates: ApiUrl, LogPrefix wrappers
-#[derive(Debug, Clone, Resources)]
-struct AppRes {
-    pub api_url: String,
-    pub log_prefix: String,
 }
 
 // ── Event dispatch — manual scope composition ───────────────────────
@@ -331,39 +329,35 @@ fn dispatch_event(event: AppEvent, ctx: &EventContext<AppState>) -> Command<AppE
 
 // ── Effect dispatch — scope composition for resources ───────────────
 
-fn dispatch_effect(effect: AppEffect, ctx: &EffectContext<AppRes>) -> Task<AppEvent, AppEffect> {
+fn dispatch_effect(effect: AppEffect, ctx: &EffectContext) -> Task<AppEvent, AppEffect> {
     match effect {
-        AppEffect::Counter(e) => {
-            // EffectContext::scope — derive child resources from parent.
-            let child = ctx.scope(|r| counter::Res {
-                log_prefix: r.log_prefix.clone(),
-            });
-            // Task::map_event + Task::map_effect — remap child types.
-            counter::dispatch_effect(e, &child)
-                .map_event(AppEvent::Counter)
-                .map_effect(AppEffect::Counter)
-        }
+        AppEffect::Counter(e) => counter::dispatch_effect(e, ctx)
+            .map_event(AppEvent::Counter)
+            .map_effect(AppEffect::Counter),
         AppEffect::Search(e) => {
-            let child = ctx.scope(|r| search::Res {
-                api_url: r.api_url.clone(),
-            });
-            // Task::map — remap both types at once.
-            search::dispatch_effect(e, &child).map(AppEvent::Search, AppEffect::Search)
+            search::dispatch_effect(e, ctx).map(AppEvent::Search, AppEffect::Search)
         }
         AppEffect::Audit(msg) => {
-            let prefix = LogPrefix::from_context(ctx);
-            println!("[{}] AUDIT: {msg}", prefix.0);
+            let prefix = Res::<counter::LogPrefix>::from_context(ctx);
+            println!("[{}] AUDIT: {msg}", prefix.as_str());
             Task::none()
         }
         AppEffect::BlockingAudit(msg) => {
-            let prefix = LogPrefix::from_context(ctx);
-            // Task::blocking — offload to blocking executor (spawn_blocking).
+            let prefix = Res::<counter::LogPrefix>::from_context(ctx);
             Task::blocking(move || {
-                println!("[{}] BLOCKING-AUDIT: {msg}", prefix.0);
+                println!("[{}] BLOCKING-AUDIT: {msg}", prefix.as_str());
                 Command::none()
             })
         }
     }
+}
+
+#[cfg(test)]
+fn build_resource_map(log_prefix: &str, api_url: &str) -> ResourceMap {
+    let mut resources = ResourceMap::new();
+    resources.insert(counter::LogPrefix(log_prefix.to_string()));
+    resources.insert(search::ApiUrl(api_url.to_string()));
+    resources
 }
 
 // ── Reducer-based composition (alternative to manual dispatch) ──────
@@ -424,10 +418,8 @@ fn build_app_reducer() -> impl Reducer<State = AppState, Event = AppEvent, Effec
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut runner = Syzygy::builder::<AppEvent, AppEffect>()
         .model(AppState::default())
-        .with_resources(AppRes {
-            api_url: "https://api.example.test".into(),
-            log_prefix: "showcase".into(),
-        })
+        .with_resource(search::ApiUrl("https://api.example.test".into()))
+        .with_resource(counter::LogPrefix("showcase".into()))
         .event_handler(dispatch_event)
         .effect_handler(dispatch_effect)
         .async_executor(InlineAsync::new())
@@ -716,15 +708,9 @@ mod tests {
 
     #[test]
     fn effect_scope_routes_to_counter_child() {
-        let ctx = EffectContext::new(AppRes {
-            api_url: "https://test.api".into(),
-            log_prefix: "test".into(),
-        });
-        let child_ctx = ctx.scope(|r| counter::Res {
-            log_prefix: r.log_prefix.clone(),
-        });
+        let ctx = EffectContext::new(build_resource_map("test", "https://test.api"));
 
-        let task = counter::dispatch_effect(counter::Effect::LogValue(42), &child_ctx);
+        let task = counter::dispatch_effect(counter::Effect::LogValue(42), &ctx);
 
         match task {
             Task::Blocking { job, .. } => {
@@ -737,15 +723,9 @@ mod tests {
 
     #[test]
     fn effect_scope_routes_to_search_child() {
-        let ctx = EffectContext::new(AppRes {
-            api_url: "https://test.api".into(),
-            log_prefix: "test".into(),
-        });
-        let child_ctx = ctx.scope(|r| search::Res {
-            api_url: r.api_url.clone(),
-        });
+        let ctx = EffectContext::new(build_resource_map("test", "https://test.api"));
 
-        let task = search::dispatch_effect(search::Effect::ExecuteSearch("".into()), &child_ctx);
+        let task = search::dispatch_effect(search::Effect::ExecuteSearch("".into()), &ctx);
 
         match task {
             Task::Resolved(command) => {
@@ -769,9 +749,9 @@ mod tests {
 
     #[test]
     fn task_compute_runs_cpu_bound_work() {
-        let ctx = EffectContext::new(counter::Res {
-            log_prefix: "test".into(),
-        });
+        let mut resources = ResourceMap::new();
+        resources.insert(counter::LogPrefix("test".into()));
+        let ctx = EffectContext::new(resources);
 
         let task = counter::dispatch_effect(counter::Effect::ComputeChecksum(vec![1, 2, 3]), &ctx);
 
@@ -796,9 +776,9 @@ mod tests {
 
     #[test]
     fn task_blocking_runs_io_work() {
-        let ctx = EffectContext::new(counter::Res {
-            log_prefix: "test".into(),
-        });
+        let mut resources = ResourceMap::new();
+        resources.insert(counter::LogPrefix("test".into()));
+        let ctx = EffectContext::new(resources);
 
         let task = counter::dispatch_effect(counter::Effect::LogValue(7), &ctx);
 
@@ -813,9 +793,9 @@ mod tests {
 
     #[test]
     fn task_future_with_async_rt_debounce() {
-        let ctx = EffectContext::new(search::Res {
-            api_url: "https://test.api".into(),
-        });
+        let mut resources = ResourceMap::new();
+        resources.insert(search::ApiUrl("https://test.api".into()));
+        let ctx = EffectContext::new(resources);
 
         let task = search::dispatch_effect(
             search::Effect::DebouncedSearch {
@@ -934,10 +914,7 @@ mod tests {
     #[test]
     fn test_store_manual_effect_round_trip() {
         let mut store = TestStore::new(AppState::default(), dispatch_event);
-        let effect_ctx = EffectContext::new(AppRes {
-            api_url: "https://test.api".into(),
-            log_prefix: "test".into(),
-        });
+        let effect_ctx = EffectContext::new(build_resource_map("test", "https://test.api"));
 
         store.send(AppEvent::Search(search::Event::UpdateQuery("".into())));
         let effects = store.take_effects();
@@ -991,10 +968,8 @@ mod tests {
     fn full_runtime_with_manual_dispatch() {
         let mut runner = Syzygy::builder::<AppEvent, AppEffect>()
             .model(AppState::default())
-            .with_resources(AppRes {
-                api_url: "https://test.api".into(),
-                log_prefix: "rt".into(),
-            })
+            .with_resource(search::ApiUrl("https://test.api".into()))
+            .with_resource(counter::LogPrefix("rt".into()))
             .event_handler(dispatch_event)
             .effect_handler(dispatch_effect)
             .async_executor(InlineAsync::new())
@@ -1019,10 +994,8 @@ mod tests {
 
         let mut runner = Syzygy::builder::<AppEvent, AppEffect>()
             .model(AppState::default())
-            .with_resources(AppRes {
-                api_url: "https://test.api".into(),
-                log_prefix: "rt".into(),
-            })
+            .with_resource(search::ApiUrl("https://test.api".into()))
+            .with_resource(counter::LogPrefix("rt".into()))
             .reducer(reducer)
             .effect_handler(dispatch_effect)
             .async_executor(InlineAsync::new())
@@ -1044,10 +1017,8 @@ mod tests {
     fn full_runtime_search_with_async_effect() {
         let mut runner = Syzygy::builder::<AppEvent, AppEffect>()
             .model(AppState::default())
-            .with_resources(AppRes {
-                api_url: "https://test.api".into(),
-                log_prefix: "rt".into(),
-            })
+            .with_resource(search::ApiUrl("https://test.api".into()))
+            .with_resource(counter::LogPrefix("rt".into()))
             .event_handler(dispatch_event)
             .effect_handler(dispatch_effect)
             .async_executor(InlineAsync::new())
