@@ -56,3 +56,13 @@ macro_rules! if_let {
         )
     };
 }
+
+#[macro_export]
+macro_rules! dispatch {
+    ($ctx:expr, $handler:expr) => {
+        $handler.handle((), $ctx)
+    };
+    ($ctx:expr, $handler:expr, $payload:expr) => {
+        $handler.handle($payload, $ctx)
+    };
+}

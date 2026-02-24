@@ -91,12 +91,12 @@ fn stream_finished(mut status: Status) -> Command<Event, Effect> {
 
 fn dispatch_event(event: Event, ctx: &EventContext<AppState>) -> Command<Event, Effect> {
     match event {
-        Event::Increment(n) => increment.handle(n, ctx),
-        Event::Save => ctx.dispatch(save).and(ctx.dispatch(record_save)),
-        Event::SaveDone(v) => save_done.handle(v, ctx),
-        Event::Tick => ctx.dispatch(tick).and(ctx.dispatch(record_tick)),
-        Event::SetStatus(s) => set_status.handle(s, ctx),
-        Event::StreamFinished => ctx.dispatch(stream_finished),
+        Event::Increment(n) => dispatch!(ctx, increment, n),
+        Event::Save => dispatch!(ctx, save).and(dispatch!(ctx, record_save)),
+        Event::SaveDone(v) => dispatch!(ctx, save_done, v),
+        Event::Tick => dispatch!(ctx, tick).and(dispatch!(ctx, record_tick)),
+        Event::SetStatus(s) => dispatch!(ctx, set_status, s),
+        Event::StreamFinished => dispatch!(ctx, stream_finished),
     }
 }
 

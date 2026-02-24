@@ -27,6 +27,7 @@ pub mod prelude {
 
     pub use crate::core::{Core, EventSender};
     pub use crate::dependency::{Res, ResourceMap};
+    pub use crate::dispatch;
 
     pub use crate::extract::{
         EffectContext, EffectHandler, EventContext, EventHandler, ExtractMutFrom,
