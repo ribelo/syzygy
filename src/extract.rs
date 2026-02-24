@@ -25,6 +25,15 @@ impl EffectContext {
     pub fn resources(&self) -> &ResourceMap {
         &self.resources
     }
+
+    pub fn dispatch<E, X, H, Marker>(&self, handler: H) -> Task<E, X>
+    where
+        H: EffectHandler<E, X, (), Marker>,
+        E: 'static,
+        X: 'static,
+    {
+        handler.handle((), self)
+    }
 }
 
 pub trait FromEffectContext {
@@ -349,6 +358,15 @@ impl<M> EventContext<M> {
             #[cfg(debug_assertions)]
             borrowed_ranges: RefCell::new(Vec::new()),
         }
+    }
+
+    pub fn dispatch<E, X, H, Marker>(&self, handler: H) -> Command<E, X>
+    where
+        H: EventHandler<E, X, (), M, Marker>,
+        E: Send + 'static,
+        X: Send + 'static,
+    {
+        handler.handle((), self)
     }
 }
 

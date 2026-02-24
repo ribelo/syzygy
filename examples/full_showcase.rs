@@ -92,19 +92,11 @@ fn stream_finished(mut status: Status) -> Command<Event, Effect> {
 fn dispatch_event(event: Event, ctx: &EventContext<AppState>) -> Command<Event, Effect> {
     match event {
         Event::Increment(n) => increment.handle(n, ctx),
-        Event::Save => {
-            let effect_cmd = save.handle((), ctx);
-            let stats_cmd = record_save.handle((), ctx);
-            effect_cmd.and(stats_cmd)
-        }
+        Event::Save => ctx.dispatch(save).and(ctx.dispatch(record_save)),
         Event::SaveDone(v) => save_done.handle(v, ctx),
-        Event::Tick => {
-            let counter_cmd = tick.handle((), ctx);
-            let stats_cmd = record_tick.handle((), ctx);
-            counter_cmd.and(stats_cmd)
-        }
+        Event::Tick => ctx.dispatch(tick).and(ctx.dispatch(record_tick)),
         Event::SetStatus(s) => set_status.handle(s, ctx),
-        Event::StreamFinished => stream_finished.handle((), ctx),
+        Event::StreamFinished => ctx.dispatch(stream_finished),
     }
 }
 
@@ -116,7 +108,7 @@ async fn save_to_server(value: i32, url: Res<ServerUrl>) -> Command<Event, Effec
     Command::event(Event::SaveDone(value))
 }
 
-fn start_ticker(_: ()) -> impl futures::Stream<Item = Command<Event, Effect>> {
+fn start_ticker() -> impl futures::Stream<Item = Command<Event, Effect>> {
     stream::iter(vec![
         Command::event(Event::Tick),
         Command::event(Event::Tick),
@@ -137,7 +129,7 @@ async fn slow_compute(value: i32) -> Command<Event, Effect> {
 fn dispatch_effect(effect: Effect, ctx: &EffectContext) -> Task<Event, Effect> {
     match effect {
         Effect::SaveToServer(v) => save_to_server.handle(v, ctx),
-        Effect::StartTicker => start_ticker.handle((), ctx),
+        Effect::StartTicker => ctx.dispatch(start_ticker),
         Effect::SlowCompute(v) => slow_compute.handle(v, ctx),
     }
 }
