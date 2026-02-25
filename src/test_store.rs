@@ -258,13 +258,12 @@ where
                 CommandStep::Event(event) => {
                     self.send_from_receive(event);
                 }
-                CommandStep::Effect(effect) | CommandStep::CancellableEffect { effect, .. } => {
+                CommandStep::Effect(effect) => {
                     self.pending_effects.push(effect);
                 }
                 CommandStep::Batch(effects) | CommandStep::Parallel(effects) => {
                     self.pending_effects.extend(effects);
                 }
-                CommandStep::Cancel(_) => {}
             }
         }
     }
@@ -281,13 +280,12 @@ where
                 CommandStep::Event(event) => {
                     self.pending_events.push_back(event);
                 }
-                CommandStep::Effect(effect) | CommandStep::CancellableEffect { effect, .. } => {
+                CommandStep::Effect(effect) => {
                     self.pending_effects.push(effect);
                 }
                 CommandStep::Batch(effects) | CommandStep::Parallel(effects) => {
                     self.pending_effects.extend(effects);
                 }
-                CommandStep::Cancel(_) => {}
             }
         }
     }

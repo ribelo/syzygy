@@ -33,12 +33,10 @@ This is the map. No marketing. Just how it works and where it will bite you if y
 - Variants:
   - `Event(E)` / `Events(Vec<E>)`
   - `async_on::<Exec, _>(future)` – run future on registered async executor
-  - `async_on_with_cancel::<Exec, _>(future, cancel, on_cancel)` – race a cancellation future and emit a fallback `Command`
   - `stream_on::<Exec, _>(stream)` – forward stream items as events
   - `blocking_on::<Exec, _>(|| Command)` – blocking job (no shared resource)
   - `blocking_with_resource_on::<Exec, R, _>(|&mut R| Command)` – FIFO single-resource lane
   - `async_current(...)` / `stream_current(...)` – use current Tokio runtime if present, else block inline (no executor registration required)
-  - `async_current_with_cancel(...)` – cancellation-aware version of `async_current`
 
 ### Executors (Policy)
 - Register zero or more:

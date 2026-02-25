@@ -1,23 +1,5 @@
 use smallvec::SmallVec;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum CancelId {
-    Static(&'static str),
-    Numeric(u64),
-}
-
-impl From<&'static str> for CancelId {
-    fn from(value: &'static str) -> Self {
-        Self::Static(value)
-    }
-}
-
-impl From<u64> for CancelId {
-    fn from(value: u64) -> Self {
-        Self::Numeric(value)
-    }
-}
-
 /// One atomic operation in the Core→Shell pipeline.
 ///
 /// This is what actually happens when your event handler returns a Command.
@@ -28,26 +10,10 @@ impl From<u64> for CancelId {
 pub enum CommandStep<Event, Effect> {
     Event(Event),
     Effect(Effect),
-    CancellableEffect {
-        id: CancelId,
-        effect: Effect,
-        generation: u64,
-    },
-    Cancel(CancelId),
-    /// Effects dispatched in order; executors determine actual execution order
+    /// Effects dispatched in order; executors determine actual execution order.
     Batch(Vec<Effect>),
-    /// Effects dispatched without waiting between each submission
+    /// Effects dispatched without waiting between each submission.
     Parallel(Vec<Effect>),
-}
-
-impl<Event, Effect> CommandStep<Event, Effect> {
-    pub(crate) fn cancellable(id: CancelId, effect: Effect) -> Self {
-        Self::CancellableEffect {
-            id,
-            effect,
-            generation: 0,
-        }
-    }
 }
 
 impl<Event, Effect> PartialEq for CommandStep<Event, Effect>
@@ -59,19 +25,6 @@ where
         match (self, other) {
             (Self::Event(a), Self::Event(b)) => a == b,
             (Self::Effect(a), Self::Effect(b)) => a == b,
-            (
-                Self::CancellableEffect {
-                    id: a_id,
-                    effect: a_effect,
-                    generation: a_generation,
-                },
-                Self::CancellableEffect {
-                    id: b_id,
-                    effect: b_effect,
-                    generation: b_generation,
-                },
-            ) => a_id == b_id && a_effect == b_effect && a_generation == b_generation,
-            (Self::Cancel(a), Self::Cancel(b)) => a == b,
             (Self::Batch(a), Self::Batch(b)) | (Self::Parallel(a), Self::Parallel(b)) => a == b,
             _ => false,
         }
@@ -87,17 +40,6 @@ where
         match self {
             Self::Event(e) => f.debug_tuple("Event").field(e).finish(),
             Self::Effect(x) => f.debug_tuple("Effect").field(x).finish(),
-            Self::CancellableEffect {
-                id,
-                effect,
-                generation,
-            } => f
-                .debug_struct("CancellableEffect")
-                .field("id", id)
-                .field("effect", effect)
-                .field("generation", generation)
-                .finish(),
-            Self::Cancel(id) => f.debug_tuple("Cancel").field(id).finish(),
             Self::Batch(v) => f.debug_tuple("Batch").field(v).finish(),
             Self::Parallel(v) => f.debug_tuple("Parallel").field(v).finish(),
         }
@@ -156,14 +98,6 @@ impl<Event, Effect> Command<Event, Effect> {
     ///     Command::none() // Model updated, no side effects needed
     /// }
     /// ```
-    ///
-    /// # Example
-    /// ```
-    /// fn handle_increment(event: Event, model: &mut Model) -> Command<Event, Effect> {
-    ///     model.counter += 1;
-    ///     Command::none() // Model updated, no side effects needed
-    /// }
-    /// ```
     #[must_use]
     pub fn none() -> Self {
         Self {
@@ -171,7 +105,7 @@ impl<Event, Effect> Command<Event, Effect> {
         }
     }
 
-    /// Create a command with a single step
+    /// Create a command with a single step.
     fn from_step(step: CommandStep<Event, Effect>) -> Self {
         let mut outputs = SmallVec::new();
         outputs.push(step);
@@ -184,18 +118,6 @@ impl<Event, Effect> Command<Event, Effect> {
     /// boundary, no delay, and no chance for external interference between
     /// the chained events. Use this for breaking complex flows into smaller,
     /// testable pieces.
-    ///
-    /// # Example
-    /// ```
-    /// fn handle_login(event: Event, model: &mut Model) -> Command<Event, Effect> {
-    ///     if model.user.is_authenticated() {
-    ///         // Chain to dashboard event immediately
-    ///         Command::event(Event::ShowDashboard)
-    ///     } else {
-    ///         Command::effect(Effect::Authenticate { credentials: event.credentials })
-    ///     }
-    /// }
-    /// ```
     pub fn event(event: impl Into<Event>) -> Self {
         Self::from_step(CommandStep::Event(event.into()))
     }
@@ -205,47 +127,15 @@ impl<Event, Effect> Command<Event, Effect> {
     /// Effects run in the Shell's async context. They can spawn tasks, make
     /// HTTP requests, write files - all the dirty stuff your pure event handler
     /// shouldn't touch. Effects can send events back to Core when they're done.
-    ///
-    /// # Example
-    /// ```
-    /// fn handle_save(event: Event, model: &mut Model) -> Command<Event, Effect> {
-    ///     let data = model.data.clone();
-    ///     Command::effect(Effect::SaveToDisk { data })
-    /// }
-    /// ```
     pub fn effect(effect: impl Into<Effect>) -> Self {
         Self::from_step(CommandStep::Effect(effect.into()))
-    }
-
-    /// Creates a command that runs an effect with cancellation by ID.
-    ///
-    /// Dispatching another cancellable effect with the same ID cancels the prior in-flight task.
-    pub fn cancellable(id: impl Into<CancelId>, effect: impl Into<Effect>) -> Self {
-        Self::from_step(CommandStep::cancellable(id.into(), effect.into()))
-    }
-
-    /// Creates a command that cancels in-flight effects by ID.
-    pub fn cancel(id: impl Into<CancelId>) -> Self {
-        Self::from_step(CommandStep::Cancel(id.into()))
     }
 
     /// Creates a command that fires multiple events in order.
     ///
     /// Events are processed sequentially in the order provided. Each event
     /// gets its own call to your event handler, so the model can change
-    /// between events. Use this when you need to trigger a sequence of
-    /// state changes without any async operations between them.
-    ///
-    /// # Example
-    /// ```
-    /// fn handle_reset(event: Event, model: &mut Model) -> Command<Event, Effect> {
-    ///     Command::events(vec![
-    ///         Event::ClearUserData,
-    ///         Event::ResetUI,
-    ///         Event::ShowWelcomeScreen,
-    ///     ])
-    /// }
-    /// ```
+    /// between events.
     pub fn events(events: impl IntoIterator<Item = Event>) -> Self {
         let outputs = events.into_iter().map(CommandStep::Event).collect();
         Self { outputs }
@@ -282,16 +172,6 @@ impl<Event, Effect> Command<Event, Effect> {
     /// No magic, no deduplication, no ordering guarantees beyond what
     /// each individual command already provides. If you need specific
     /// ordering, build your commands carefully - this just concatenates.
-    ///
-    /// # Example
-    /// ```
-    /// let cmd1 = Command::event(Event::StartLoading);
-    /// let cmd2 = Command::effect(Effect::FetchData);
-    /// let cmd3 = Command::event(Event::ShowSpinner);
-    ///
-    /// // Combines all three into one command
-    /// let combined = Command::batch(vec![cmd1, cmd2, cmd3]);
-    /// ```
     pub fn batch(commands: impl IntoIterator<Item = Self>) -> Self {
         let mut outputs = SmallVec::new();
         for c in commands {
@@ -301,28 +181,20 @@ impl<Event, Effect> Command<Event, Effect> {
     }
 
     /// Returns true if this command does nothing.
-    ///
-    /// Equivalent to checking if `len() == 0`, but doesn't need to
-    /// iterate through batch effects to count them. Use this for
-    /// quick checks instead of counting steps you don't care about.
     pub fn is_empty(&self) -> bool {
         self.outputs.is_empty()
     }
 
     /// Returns the total number of steps in this command.
     ///
-    /// Counts individual events and effects as 1 each. Batch effects
-    /// contribute their length to the total. This walks through all
-    /// steps, so it's O(n) where n is the number of `CommandSteps`.
+    /// Counts individual events and effects as 1 each. Batch and parallel effects
+    /// contribute their length to the total.
     pub fn len(&self) -> usize {
         self.outputs
             .iter()
             .map(|o| match o {
                 CommandStep::Batch(v) | CommandStep::Parallel(v) => v.len(),
-                CommandStep::Event(_)
-                | CommandStep::Effect(_)
-                | CommandStep::CancellableEffect { .. }
-                | CommandStep::Cancel(_) => 1,
+                CommandStep::Event(_) | CommandStep::Effect(_) => 1,
             })
             .sum()
     }
@@ -342,16 +214,6 @@ impl<Event, Effect> Command<Event, Effect> {
             .map(|step| match step {
                 CommandStep::Event(event) => CommandStep::Event(fe(event)),
                 CommandStep::Effect(effect) => CommandStep::Effect(fx(effect)),
-                CommandStep::CancellableEffect {
-                    id,
-                    effect,
-                    generation,
-                } => CommandStep::CancellableEffect {
-                    id,
-                    effect: fx(effect),
-                    generation,
-                },
-                CommandStep::Cancel(id) => CommandStep::Cancel(id),
                 CommandStep::Batch(effects) => {
                     CommandStep::Batch(effects.into_iter().map(&fx).collect())
                 }
@@ -381,13 +243,6 @@ impl<Event, Effect> Command<Event, Effect> {
     // ---------------------------
 
     /// Chain another event to this command.
-    ///
-    /// # Example
-    /// ```
-    /// let cmd = Command::event(Event::Start)
-    ///     .and_event(Event::Initialize)
-    ///     .and_event(Event::Ready);
-    /// ```
     #[must_use]
     #[inline]
     pub fn and_event(mut self, event: impl Into<Event>) -> Self {
@@ -396,13 +251,6 @@ impl<Event, Effect> Command<Event, Effect> {
     }
 
     /// Chain another effect to this command.
-    ///
-    /// # Example
-    /// ```
-    /// let cmd = Command::effect(Effect::LoadConfig)
-    ///     .and_effect(Effect::ConnectDatabase)
-    ///     .and_effect(Effect::StartServer);
-    /// ```
     #[must_use]
     #[inline]
     pub fn and_effect(mut self, effect: impl Into<Effect>) -> Self {
@@ -410,23 +258,7 @@ impl<Event, Effect> Command<Event, Effect> {
         self
     }
 
-    /// Chain another cancellable effect to this command.
-    #[must_use]
-    #[inline]
-    pub fn and_cancellable(mut self, id: impl Into<CancelId>, effect: impl Into<Effect>) -> Self {
-        self.outputs
-            .push(CommandStep::cancellable(id.into(), effect.into()));
-        self
-    }
-
     /// Chain another command to this one (concatenates all steps).
-    ///
-    /// # Example
-    /// ```
-    /// let init = Command::event(Event::Init);
-    /// let load = Command::effect(Effect::LoadData);
-    /// let combined = init.and(load);
-    /// ```
     #[must_use]
     #[inline]
     pub fn and(mut self, other: Self) -> Self {
@@ -453,15 +285,11 @@ impl<'a, Event, Effect> IntoIterator for &'a Command<Event, Effect> {
 
 impl<Event: Clone, Effect: Clone> Command<Event, Effect> {
     /// Returns an iterator over the command steps.
-    ///
-    /// Iterates in the order steps were added. Batch effects appear
-    /// as single `CommandStep::Batch` items - this doesn't flatten
-    /// them. Use this when you need to inspect or transform the
-    /// individual steps in a command.
     pub fn iter(&self) -> std::slice::Iter<'_, CommandStep<Event, Effect>> {
         self.outputs.iter()
     }
 }
+
 impl<Event, Effect> FromIterator<CommandStep<Event, Effect>> for Command<Event, Effect> {
     fn from_iter<I: IntoIterator<Item = CommandStep<Event, Effect>>>(iter: I) -> Self {
         Self {
@@ -469,6 +297,7 @@ impl<Event, Effect> FromIterator<CommandStep<Event, Effect>> for Command<Event, 
         }
     }
 }
+
 impl<Event, Effect> From<()> for Command<Event, Effect> {
     fn from((): ()) -> Self {
         Self::none()
@@ -506,7 +335,7 @@ impl<Event, Effect> From<()> for Command<Event, Effect> {
 /// These functions mirror the inherent constructors on [`Command`] but live in a module that can
 /// be glob-imported from the prelude (`use syzygy::prelude::command::*;`) for quick prototyping.
 pub mod builders {
-    use super::{CancelId, Command};
+    use super::Command;
 
     /// Construct a no-op command.
     #[inline]
@@ -536,23 +365,6 @@ pub mod builders {
     #[must_use]
     pub fn effect<Event, Effect>(effect: impl Into<Effect>) -> Command<Event, Effect> {
         Command::effect(effect)
-    }
-
-    /// Schedule a single cancellable effect keyed by ID.
-    #[inline]
-    #[must_use]
-    pub fn cancellable<Event, Effect>(
-        id: impl Into<CancelId>,
-        effect: impl Into<Effect>,
-    ) -> Command<Event, Effect> {
-        Command::cancellable(id, effect)
-    }
-
-    /// Cancel all in-flight effects for the given ID.
-    #[inline]
-    #[must_use]
-    pub fn cancel<Event, Effect>(id: impl Into<CancelId>) -> Command<Event, Effect> {
-        Command::cancel(id)
     }
 
     /// Schedule a batch of effects sequentially.
@@ -594,7 +406,7 @@ pub mod builders {
 
 #[cfg(test)]
 mod tests {
-    use super::{CancelId, Command, CommandStep};
+    use super::{Command, CommandStep};
 
     #[derive(Debug, Clone, PartialEq, Eq)]
     enum ChildEvent {
@@ -685,35 +497,5 @@ mod tests {
 
         assert!(mapped.is_empty());
         assert_eq!(mapped.into_iter().count(), 0);
-    }
-
-    #[test]
-    fn cancellable_constructor_sets_id_and_effect() {
-        let command: Command<ChildEvent, ChildEffect> =
-            Command::cancellable("search", ChildEffect::Load);
-
-        assert_eq!(
-            command.into_iter().collect::<Vec<_>>(),
-            vec![CommandStep::CancellableEffect {
-                id: CancelId::Static("search"),
-                effect: ChildEffect::Load,
-                generation: 0,
-            }]
-        );
-    }
-
-    #[test]
-    fn map_effect_transforms_cancellable_effect() {
-        let mapped: Command<ChildEvent, ParentEffect> =
-            Command::cancellable(7_u64, ChildEffect::Save).map_effect(ParentEffect::Child);
-
-        assert_eq!(
-            mapped.into_iter().collect::<Vec<_>>(),
-            vec![CommandStep::CancellableEffect {
-                id: CancelId::Numeric(7),
-                effect: ParentEffect::Child(ChildEffect::Save),
-                generation: 0,
-            }]
-        );
     }
 }

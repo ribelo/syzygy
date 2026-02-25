@@ -7,10 +7,6 @@ pub enum CommandError {
     #[error("Command panicked: {0}")]
     CommandPanic(String),
 
-    /// Command execution was cancelled
-    #[error("Command execution was cancelled")]
-    Cancelled,
-
     /// Command timed out
     #[error("Command execution timed out")]
     Timeout,

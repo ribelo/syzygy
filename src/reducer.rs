@@ -1,4 +1,6 @@
+#[cfg(feature = "tca")]
 use std::collections::HashMap;
+#[cfg(feature = "tca")]
 use std::hash::Hash;
 use std::marker::PhantomData;
 use std::sync::Arc;
@@ -17,6 +19,7 @@ pub trait Reducer {
         ctx: &EventContext<Self::State>,
     ) -> Command<Self::Event, Self::Effect>;
 
+    #[cfg(feature = "tca")]
     #[must_use]
     fn scope<ParentState, ParentEvent, ParentEffect, StateLens, EventFrom, EventInto, EffectInto>(
         self,
@@ -180,6 +183,7 @@ where
     }
 }
 
+#[cfg(feature = "tca")]
 pub struct Scope<
     Child,
     ParentState,
@@ -198,6 +202,7 @@ pub struct Scope<
     _marker: PhantomData<fn(ParentState, ParentEvent, ParentEffect)>,
 }
 
+#[cfg(feature = "tca")]
 impl<
         Child,
         ParentState,
@@ -238,6 +243,7 @@ impl<
     }
 }
 
+#[cfg(feature = "tca")]
 impl<
         ParentState,
         ParentEvent,
@@ -295,6 +301,7 @@ where
     }
 }
 
+#[cfg(feature = "tca")]
 pub struct ForEach<
     Child,
     Id,
@@ -316,6 +323,7 @@ pub struct ForEach<
     _marker: PhantomData<fn(Id, ParentState, ParentEvent, ParentEffect)>,
 }
 
+#[cfg(feature = "tca")]
 impl<
         Child,
         Id,
@@ -362,6 +370,7 @@ impl<
     }
 }
 
+#[cfg(feature = "tca")]
 impl<
         ParentState,
         ParentEvent,
@@ -484,6 +493,7 @@ pub trait ReducerExt: Reducer + Sized {
         OnChange::new(self, selector, reaction)
     }
 
+    #[cfg(feature = "tca")]
     #[must_use]
     fn for_each<
         Id,
@@ -682,10 +692,12 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(feature = "tca")]
     use std::collections::HashMap;
     use std::sync::{Arc, Mutex};
 
     use crate::command::CommandStep;
+    #[cfg(feature = "tca")]
     use crate::test_store::TestStore;
 
     #[derive(Debug, Clone, PartialEq, Eq)]
@@ -705,12 +717,14 @@ mod tests {
 
     #[derive(Debug, Clone, PartialEq, Eq)]
     enum AppEvent {
+        #[cfg(feature = "tca")]
         Counter(CounterEvent),
         Ping,
     }
 
     #[derive(Debug, Clone, PartialEq, Eq)]
     enum AppEffect {
+        #[cfg(feature = "tca")]
         Counter(CounterEffect),
         Audit(&'static str),
         Secondary(&'static str),
@@ -718,6 +732,7 @@ mod tests {
 
     #[derive(Debug, Default, Clone, PartialEq, Eq)]
     struct AppState {
+        #[cfg(feature = "tca")]
         counter: CounterState,
     }
 
@@ -739,38 +754,45 @@ mod tests {
         other: i32,
     }
 
+    #[cfg(feature = "tca")]
     #[derive(Debug, Clone, PartialEq, Eq)]
     enum ItemEvent {
         Increment(i32),
         Emit(i32),
     }
 
+    #[cfg(feature = "tca")]
     #[derive(Debug, Clone, PartialEq, Eq)]
     enum ItemEffect {
         Emitted(i32),
     }
 
+    #[cfg(feature = "tca")]
     #[derive(Debug, Clone, PartialEq, Eq)]
     enum CollectionEvent {
         Item { id: &'static str, event: ItemEvent },
         Global,
     }
 
+    #[cfg(feature = "tca")]
     #[derive(Debug, Clone, PartialEq, Eq)]
     enum CollectionEffect {
         Item(ItemEffect),
     }
 
+    #[cfg(feature = "tca")]
     #[derive(Debug, Default, Clone, PartialEq, Eq)]
     struct ItemState {
         value: i32,
     }
 
+    #[cfg(feature = "tca")]
     #[derive(Debug, Default, Clone, PartialEq, Eq)]
     struct CollectionState {
         items: HashMap<&'static str, ItemState>,
     }
 
+    #[cfg(feature = "tca")]
     fn for_each_reducer(
     ) -> impl Reducer<State = CollectionState, Event = CollectionEvent, Effect = CollectionEffect>
     {
@@ -823,6 +845,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "tca")]
     #[test]
     fn scope_adapts_child_reducer_to_parent_types() {
         let child = Reduce::new(
@@ -858,6 +881,7 @@ mod tests {
         assert!(no_match.is_empty());
     }
 
+    #[cfg(feature = "tca")]
     #[test]
     fn for_each_routes_event_to_correct_item() {
         let reducer = for_each_reducer();
@@ -880,6 +904,7 @@ mod tests {
         assert_eq!(state.items.get("b").map(|item| item.value), Some(5));
     }
 
+    #[cfg(feature = "tca")]
     #[test]
     fn for_each_returns_none_for_unknown_id() {
         let reducer = for_each_reducer();
@@ -901,6 +926,7 @@ mod tests {
         assert_eq!(state.items.get("a").map(|item| item.value), Some(1));
     }
 
+    #[cfg(feature = "tca")]
     #[test]
     fn for_each_returns_none_when_id_not_extracted() {
         let reducer = for_each_reducer();
@@ -916,6 +942,7 @@ mod tests {
         assert_eq!(state.items.get("a").map(|item| item.value), Some(1));
     }
 
+    #[cfg(feature = "tca")]
     #[test]
     fn for_each_maps_commands_to_parent_types() {
         let reducer = for_each_reducer();
@@ -946,12 +973,14 @@ mod tests {
         let first = Reduce::new(
             |event: AppEvent, _ctx: &EventContext<AppState>| match event {
                 AppEvent::Ping => Command::effect(AppEffect::Audit("first")),
+                #[cfg(feature = "tca")]
                 AppEvent::Counter(_) => Command::none(),
             },
         );
         let second = Reduce::new(
             |event: AppEvent, _ctx: &EventContext<AppState>| match event {
                 AppEvent::Ping => Command::effect(AppEffect::Secondary("second")),
+                #[cfg(feature = "tca")]
                 AppEvent::Counter(_) => Command::none(),
             },
         );
@@ -1193,6 +1222,7 @@ mod tests {
         assert!(guard[0].contains("(no state changes)"));
     }
 
+    #[cfg(feature = "tca")]
     #[test]
     fn reducer_works_with_test_store() {
         let counter = Reduce::new(|event: CounterEvent, ctx: &EventContext<CounterState>| {
@@ -1226,7 +1256,7 @@ mod tests {
         store.assert_effects([AppEffect::Counter(CounterEffect::Changed(4))]);
     }
 
-    #[cfg(feature = "shell")]
+    #[cfg(all(feature = "shell", feature = "tca"))]
     #[test]
     fn builder_accepts_reducer() {
         use crate::executor::Task;

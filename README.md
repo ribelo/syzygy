@@ -18,13 +18,13 @@ Most software isn't web servers - it's desktop apps, games, CLI tools, IoT devic
 - Core/Shell Separation — Pure sync Core + async Shell for effects
 - Predictable Event Processing — FIFO ordering via queue + channel
 - Explicit Effects — Event handlers return Commands; Shell executes effects
+- TEA-first routing — parent event handlers use explicit `match` routing for child domains
 - User-defined effects — No built-in effects; your types, your logic
 - Executor Abstraction — Async, blocking, and resource-blocking executors
 - Batch and Parallel Effect Steps — Parallelism depends on your executor
 - Error-as-events — Recommended pattern; modeled in your `Event` type
 - Events only need `Send` — `Rc`-backed events are welcome; `Sync` is no longer required
 - Panic hooks — wire executor panics back into your event graph with `with_panic_handler`
-- Cancellation helpers — compose abortable futures via `Task::async_*_with_cancel`
 
 ## 5-Minute Tour
 
@@ -249,14 +249,12 @@ fn retry_effect(delay_ms: u64) -> Plan<AppEvent, AppEffect> {
 
 Full example: [`examples/timeout_pattern.rs`](examples/timeout_pattern.rs).
 
-### Panic hooks & cancellation
+### Panic hooks
 
 - `with_panic_handler(|details, message| ...)` lets you surface executor panics as explicit events.
-- `Task::async_on_with_cancel` composes futures that react to cancellation tokens.
 
 ```rust
 use std::sync::{Arc, Mutex};
-use tokio_util::sync::CancellationToken;
 
 let panic_log = Arc::new(Mutex::new(Vec::new()));
 let handler_log = Arc::clone(&panic_log);
@@ -266,13 +264,7 @@ let mut runner = Syzygy::builder::<Event, Effect>()
         handler_log.lock().unwrap().push((details.kind, message.clone()));
         cmd::event(Event::PanicLogged(message))
     })
-    .effect_handler(|effect, token: CancellationToken| match effect {
-        Effect::Work => Task::async_on_with_cancel::<TokioExecutor, _>(
-            async move { cmd::event(Event::Finished) },
-            token.cancelled(),
-            cmd::event(Event::Cancelled),
-        ),
-    })
+    .effect_handler(|_effect, _ctx| Task::none())
     .build();
 ```
 
@@ -291,7 +283,6 @@ let mut runner = Syzygy::builder::<Event, Effect>()
 - Enable the optional `flair` feature to sprinkle emoji into startup/shutdown logs and banner output (debug builds only).
 - Command helpers live in both `command::` and the shorter `cmd::` namespaces—use whichever reads best.
 - `with_panic_handler` transforms executor panics into explicit events so Core stays informed.
-- `Task::async_*_with_cancel` helpers pair perfectly with `CancellationToken` or custom futures for graceful aborts.
 
 > Tip: add `use syzygy::prelude::command;` to import lightweight helpers like `command::event(...)` and `command::parallel([...])` when you prefer DSL-style builders over associated functions.
 
@@ -604,7 +595,7 @@ Syzygy ships with production-ready executors so you can match every workload to 
 
 `TokioExecutor::builder()` lets you configure thread model and capabilities when creating dedicated runtimes. To reuse an existing Tokio runtime, use `TokioExecutor::from_handle(handle)` or `TokioExecutor::try_from_current()`.
 
-Register the executor you plan to use and pair it with `Task::async_on::<YourExecutor, _>` (or `Task::async_on_with_cancel` for cancellation). Inline workflows can rely on `InlineAsync::new()` for deterministic execution.
+Register the executor you plan to use and pair it with `Task::async_on::<YourExecutor, _>`. Inline workflows can rely on `InlineAsync::new()` for deterministic execution.
 
 Register them directly on the builder:
 
@@ -662,7 +653,8 @@ Counters increment whenever the shell cannot deliver events or effect steps (e.g
 ## Optional Features
 
 - `shell` *(default)* – enable the Shell, executors, and async integration layers.
-- Features: `shell` (core runtime), `rt-inline` (InlineAsync), `examples`, and `tracing`. Companion crates provide executors such as Tokio, single-thread resource pools, or Rayon integration.
+- `tca` *(optional, default off)* – enable higher-level reducer composition helpers (`scope`, `for_each`, `if_let`) for TCA-style module composition.
+- `examples` and `tracing` remain optional feature flags for examples and instrumentation.
 
 ## Executor Architecture
 

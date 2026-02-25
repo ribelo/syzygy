@@ -11,6 +11,7 @@ macro_rules! combine {
     };
 }
 
+#[cfg(feature = "tca")]
 #[macro_export]
 macro_rules! scope {
     ($child:expr, |$state:ident| $state_lens:expr, $event_variant:path, $effect_variant:path $(,)?) => {
@@ -27,6 +28,7 @@ macro_rules! scope {
     };
 }
 
+#[cfg(feature = "tca")]
 #[macro_export]
 macro_rules! for_each {
     ($child:expr, |$state:ident| $state_lens:expr, $id_extractor:expr, $event_from:expr, $event_into:expr, $effect_into:expr $(,)?) => {
@@ -41,6 +43,7 @@ macro_rules! for_each {
     };
 }
 
+#[cfg(feature = "tca")]
 #[macro_export]
 macro_rules! if_let {
     ($child:expr, |$state:ident| $state_lens:expr, $event_variant:path, $effect_variant:path $(,)?) => {
