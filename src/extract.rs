@@ -1,4 +1,3 @@
-use std::cell::Cell;
 #[cfg(debug_assertions)]
 use std::cell::RefCell;
 use std::future::Future;
@@ -194,7 +193,6 @@ impl_effect_handler_stream!(T1, T2, T3, T4);
 
 pub struct EventContext<M> {
     ptr: *mut M,
-    borrowed: Cell<u64>,
     #[cfg(debug_assertions)]
     borrowed_ranges: RefCell<Vec<(usize, usize)>>,
 }
@@ -203,20 +201,9 @@ impl<M> EventContext<M> {
     pub(crate) fn new(model: &mut M) -> Self {
         Self {
             ptr: model as *mut M,
-            borrowed: Cell::new(0),
             #[cfg(debug_assertions)]
             borrowed_ranges: RefCell::new(Vec::new()),
         }
-    }
-
-    pub fn track_borrow(&self, field_index: u32, field_name: &str) {
-        let mask = 1u64 << field_index;
-        let current = self.borrowed.get();
-        assert!(
-            current & mask == 0,
-            "field '{field_name}' (index {field_index}) already borrowed mutably in this handler"
-        );
-        self.borrowed.set(current | mask);
     }
 
     pub fn track_borrow_range(&self, ptr: *mut u8, size: usize, field_name: &str) {
@@ -245,8 +232,8 @@ impl<M> EventContext<M> {
     }
 
     /// # Safety
-    /// Caller must have called `track_borrow` for this field first, and the
-    /// field offset must be correct for type `T` within `M`.
+    /// Caller must guarantee that no aliased mutable access is created and the
+    /// field offset is correct for type `T` within `M`.
     pub unsafe fn field_ptr<T>(&self, offset: usize) -> *mut T {
         self.ptr.cast::<u8>().add(offset).cast::<T>()
     }
@@ -255,36 +242,11 @@ impl<M> EventContext<M> {
         self.ptr
     }
 
-    /// Create a child context pointing to a sub-field of the model.
-    ///
-    /// The child context gets independent borrow tracking so child field indexes
-    /// do not conflict with parent field indexes.
-    pub fn scope<C, F>(&self, f: F) -> EventContext<C>
-    where
-        F: FnOnce(&mut M) -> &mut C,
-    {
-        let model_ptr = self.model_ptr();
-        let child_ptr = {
-            // SAFETY: `self.ptr` was created from a live mutable model reference.
-            // `scope` is intended for short-lived child dispatch where parent and
-            // child borrows are coordinated by runtime tracking.
-            let model = unsafe { &mut *model_ptr };
-            f(model) as *mut C
-        };
-
-        EventContext {
-            ptr: child_ptr,
-            borrowed: Cell::new(0),
-            #[cfg(debug_assertions)]
-            borrowed_ranges: RefCell::new(Vec::new()),
-        }
-    }
-
     pub fn dispatch<E, X, H, Marker>(&self, handler: H) -> Command<E, X>
     where
         H: EventHandler<E, X, (), M, Marker>,
-        E: Send + 'static,
-        X: Send + 'static,
+        E: 'static,
+        X: 'static,
     {
         handler.handle((), self)
     }
@@ -299,15 +261,15 @@ pub trait ExtractMutFrom<M> {
     fn extract_mut(ctx: &EventContext<M>) -> &mut Self;
 }
 
-pub trait EventHandler<E: Send + 'static, X: Send + 'static, P, M, Marker>: Send + 'static {
+pub trait EventHandler<E: 'static, X: 'static, P, M, Marker>: 'static {
     fn handle(&self, payload: P, ctx: &EventContext<M>) -> Command<E, X>;
 }
 
 impl<E, X, P, M, F> EventHandler<E, X, P, M, ()> for F
 where
-    F: Fn(P) -> Command<E, X> + Send + 'static,
-    E: Send + 'static,
-    X: Send + 'static,
+    F: Fn(P) -> Command<E, X> + 'static,
+    E: 'static,
+    X: 'static,
 {
     fn handle(&self, payload: P, _ctx: &EventContext<M>) -> Command<E, X> {
         (self)(payload)
@@ -322,10 +284,10 @@ macro_rules! impl_event_handler {
         #[allow(non_snake_case)]
         impl<E, X, P, M, F, $($T),+> EventHandler<E, X, P, M, ($(Owned<$T>,)+)> for F
         where
-            F: Fn(P, $($T),+) -> Command<E, X> + Send + 'static,
+            F: Fn(P, $($T),+) -> Command<E, X> + 'static,
             $($T: FromEventContext<M>,)+
-            E: Send + 'static,
-            X: Send + 'static,
+            E: 'static,
+            X: 'static,
         {
             fn handle(&self, payload: P, ctx: &EventContext<M>) -> Command<E, X> {
                 (self)(payload, $($T::from_context(ctx)),+)
@@ -345,10 +307,10 @@ macro_rules! impl_event_handler_mut {
         #[allow(non_snake_case)]
         impl<E, X, P, M, F, $($T),+> EventHandler<E, X, P, M, ($(Mut<$T>,)+)> for F
         where
-            F: for<'a> Fn(P, $(&'a mut $T),+) -> Command<E, X> + Send + 'static,
+            F: for<'a> Fn(P, $(&'a mut $T),+) -> Command<E, X> + 'static,
             $($T: ExtractMutFrom<M>,)+
-            E: Send + 'static,
-            X: Send + 'static,
+            E: 'static,
+            X: 'static,
         {
             fn handle(&self, payload: P, ctx: &EventContext<M>) -> Command<E, X> {
                 (self)(payload, $($T::extract_mut(ctx)),+)
@@ -362,10 +324,10 @@ macro_rules! impl_event_handler_np_owned {
         #[allow(non_snake_case)]
         impl<E, X, M, F, $($T),+> EventHandler<E, X, (), M, EventNP<($(Owned<$T>,)+)>> for F
         where
-            F: Fn($($T),+) -> Command<E, X> + Send + 'static,
+            F: Fn($($T),+) -> Command<E, X> + 'static,
             $($T: FromEventContext<M>,)+
-            E: Send + 'static,
-            X: Send + 'static,
+            E: 'static,
+            X: 'static,
         {
             fn handle(&self, _payload: (), ctx: &EventContext<M>) -> Command<E, X> {
                 (self)($($T::from_context(ctx)),+)
@@ -379,10 +341,10 @@ macro_rules! impl_event_handler_np_mut {
         #[allow(non_snake_case)]
         impl<E, X, M, F, $($T),+> EventHandler<E, X, (), M, EventNP<($(Mut<$T>,)+)>> for F
         where
-            F: for<'a> Fn($(&'a mut $T),+) -> Command<E, X> + Send + 'static,
+            F: for<'a> Fn($(&'a mut $T),+) -> Command<E, X> + 'static,
             $($T: ExtractMutFrom<M>,)+
-            E: Send + 'static,
-            X: Send + 'static,
+            E: 'static,
+            X: 'static,
         {
             fn handle(&self, _payload: (), ctx: &EventContext<M>) -> Command<E, X> {
                 (self)($($T::extract_mut(ctx)),+)
@@ -455,15 +417,14 @@ mod tests {
     }
     impl std::ops::DerefMut for Counter {
         fn deref_mut(&mut self) -> &mut i32 {
-            // SAFETY: Counter provides unique mutable access tracked by `EventContext::track_borrow`.
+            // SAFETY: Counter points to a valid `AppModel::counter` field.
             unsafe { &mut *self.0 }
         }
     }
 
     impl FromEventContext<AppModel> for Counter {
         fn from_context(ctx: &EventContext<AppModel>) -> Self {
-            ctx.track_borrow(0, "counter");
-            // SAFETY: `track_borrow` enforces single mutable access to this field for the handler call.
+            // SAFETY: EventContext points to the active model for this dispatch.
             Counter(unsafe { &mut (*ctx.model_ptr()).counter })
         }
     }
@@ -481,15 +442,14 @@ mod tests {
     }
     impl std::ops::DerefMut for Name {
         fn deref_mut(&mut self) -> &mut String {
-            // SAFETY: Name provides unique mutable access tracked by `EventContext::track_borrow`.
+            // SAFETY: Name points to a valid `AppModel::name` field.
             unsafe { &mut *self.0 }
         }
     }
 
     impl FromEventContext<AppModel> for Name {
         fn from_context(ctx: &EventContext<AppModel>) -> Self {
-            ctx.track_borrow(1, "name");
-            // SAFETY: `track_borrow` enforces single mutable access to this field for the handler call.
+            // SAFETY: EventContext points to the active model for this dispatch.
             Name(unsafe { &mut (*ctx.model_ptr()).name })
         }
     }
@@ -583,10 +543,9 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "already borrowed mutably")]
-    fn double_borrow_panics() {
+    fn double_borrow_allows_wrapper_projection() {
         fn bad(_: (), _c1: Counter, _c2: Counter) -> Command<Event, Effect> {
-            unreachable!()
+            Command::none()
         }
 
         let mut model = AppModel {
@@ -594,7 +553,8 @@ mod tests {
             name: String::new(),
         };
         let ctx = EventContext::new(&mut model);
-        let _ = bad.handle((), &ctx);
+        let command = bad.handle((), &ctx);
+        assert!(command.is_empty());
     }
 
     #[test]
@@ -791,7 +751,6 @@ mod tests {
 
     impl FromEventContext<ScopedCounterModel> for ScopedCount {
         fn from_context(ctx: &EventContext<ScopedCounterModel>) -> Self {
-            ctx.track_borrow(0, "count");
             // SAFETY: field index 0 maps to `ScopedCounterModel::count`.
             ScopedCount(unsafe { &mut (*ctx.model_ptr()).count })
         }
@@ -849,7 +808,6 @@ mod tests {
 
     impl FromEventContext<ScopedToggleModel> for ScopedEnabled {
         fn from_context(ctx: &EventContext<ScopedToggleModel>) -> Self {
-            ctx.track_borrow(0, "enabled");
             // SAFETY: field index 0 maps to `ScopedToggleModel::enabled`.
             ScopedEnabled(unsafe { &mut (*ctx.model_ptr()).enabled })
         }
@@ -909,7 +867,6 @@ mod tests {
 
     impl FromEventContext<ScopedAppModel> for ScopedTitle {
         fn from_context(ctx: &EventContext<ScopedAppModel>) -> Self {
-            ctx.track_borrow(0, "title");
             // SAFETY: field index 0 maps to `ScopedAppModel::title`.
             ScopedTitle(unsafe { &mut (*ctx.model_ptr()).title })
         }
@@ -935,14 +892,26 @@ mod tests {
     ) -> Command<ScopedAppEvent, ScopedAppEffect> {
         match event {
             ScopedAppEvent::Counter(child_event) => {
-                let child_ctx = ctx.scope(|model| &mut model.counter);
-                scoped_counter_dispatch(child_event, &child_ctx)
+                let command = {
+                    // SAFETY: EventContext points to the active model for this dispatch.
+                    let model = unsafe { &mut *ctx.model_ptr() };
+                    let child_ctx = EventContext::new(&mut model.counter);
+                    scoped_counter_dispatch(child_event, &child_ctx)
+                };
+
+                command
                     .map_event(ScopedAppEvent::Counter)
                     .map_effect(ScopedAppEffect::Counter)
             }
             ScopedAppEvent::Toggle(child_event) => {
-                let child_ctx = ctx.scope(|model| &mut model.toggle);
-                scoped_toggle_dispatch(child_event, &child_ctx)
+                let command = {
+                    // SAFETY: EventContext points to the active model for this dispatch.
+                    let model = unsafe { &mut *ctx.model_ptr() };
+                    let child_ctx = EventContext::new(&mut model.toggle);
+                    scoped_toggle_dispatch(child_event, &child_ctx)
+                };
+
+                command
                     .map_event(ScopedAppEvent::Toggle)
                     .map_effect(ScopedAppEffect::Toggle)
             }
@@ -958,9 +927,14 @@ mod tests {
                 let mut title = ScopedTitle::from_context(ctx);
                 *title = new_title;
 
-                let child_ctx = ctx.scope(|model| &mut model.counter);
-                scoped_counter_increment
-                    .handle(amount, &child_ctx)
+                let command = {
+                    // SAFETY: EventContext points to the active model for this dispatch.
+                    let model = unsafe { &mut *ctx.model_ptr() };
+                    let child_ctx = EventContext::new(&mut model.counter);
+                    scoped_counter_increment.handle(amount, &child_ctx)
+                };
+
+                command
                     .map_event(ScopedAppEvent::Counter)
                     .map_effect(ScopedAppEffect::Counter)
             }

@@ -50,7 +50,6 @@ impl DerefMut for Counter {
 
 impl FromEventContext<Model> for Counter {
     fn from_context(ctx: &EventContext<Model>) -> Self {
-        ctx.track_borrow(0, "counter");
         // SAFETY: Field index 0 is reserved for `Model::counter`.
         Counter(unsafe { &mut (*ctx.model_ptr()).counter })
     }
@@ -76,7 +75,6 @@ impl DerefMut for Saving {
 
 impl FromEventContext<Model> for Saving {
     fn from_context(ctx: &EventContext<Model>) -> Self {
-        ctx.track_borrow(1, "saving");
         // SAFETY: Field index 1 is reserved for `Model::saving`.
         Saving(unsafe { &mut (*ctx.model_ptr()).saving })
     }
@@ -102,7 +100,6 @@ impl DerefMut for LastSaved {
 
 impl FromEventContext<Model> for LastSaved {
     fn from_context(ctx: &EventContext<Model>) -> Self {
-        ctx.track_borrow(2, "last_saved");
         // SAFETY: Field index 2 is reserved for `Model::last_saved`.
         LastSaved(unsafe { &mut (*ctx.model_ptr()).last_saved })
     }

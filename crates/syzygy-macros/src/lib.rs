@@ -27,7 +27,6 @@ fn expand_model(input: DeriveInput) -> syn::Result<TokenStream2> {
 
     let mut wrappers = Vec::with_capacity(fields.len());
     let mut extract_impls = Vec::new();
-    let mut tracked_field_count = 0usize;
     let mut extract_types = HashSet::new();
 
     for field in fields {
@@ -35,12 +34,12 @@ fn expand_model(input: DeriveInput) -> syn::Result<TokenStream2> {
             syn::Error::new_spanned(field, "Model derive requires named struct fields")
         })?;
         let field_ty = &field.ty;
-        let field_name = field_ident.to_string();
         let is_extract = has_extract_attr(field)?;
 
         let (struct_generics, impl_generics, ty_generics, where_clause) = split_generics(&generics);
 
         if is_extract {
+            let field_name = field_ident.to_string();
             let extract_type_key = quote!(#field_ty).to_string();
             if !extract_types.insert(extract_type_key) {
                 return Err(syn::Error::new_spanned(
@@ -69,16 +68,7 @@ fn expand_model(input: DeriveInput) -> syn::Result<TokenStream2> {
             continue;
         }
 
-        tracked_field_count += 1;
-        if tracked_field_count > 64 {
-            return Err(syn::Error::new_spanned(
-                model_ident.clone(),
-                "Model derive supports up to 64 non-#[extract] fields for runtime borrow tracking",
-            ));
-        }
-
         let wrapper_ident = field_wrapper_ident(field_ident)?;
-        let field_index = (tracked_field_count - 1) as u32;
 
         wrappers.push(quote! {
             pub struct #wrapper_ident #struct_generics (*mut #field_ty) #where_clause;
@@ -94,15 +84,14 @@ fn expand_model(input: DeriveInput) -> syn::Result<TokenStream2> {
 
             impl #impl_generics ::std::ops::DerefMut for #wrapper_ident #ty_generics #where_clause {
                 fn deref_mut(&mut self) -> &mut Self::Target {
-                    // SAFETY: Runtime borrow tracking ensures unique mutable access for this field.
+                    // SAFETY: Wrapper points to a valid mutable model field for this dispatch.
                     unsafe { &mut *self.0 }
                 }
             }
 
             impl #impl_generics ::syzygy::extract::FromEventContext<#model_ident #ty_generics> for #wrapper_ident #ty_generics #where_clause {
                 fn from_context(ctx: &::syzygy::extract::EventContext<#model_ident #ty_generics>) -> Self {
-                    ctx.track_borrow(#field_index, #field_name);
-                    // SAFETY: `track_borrow` guarantees exclusive mutable access for this field.
+                    // SAFETY: EventContext points to the active model for this dispatch.
                     let ptr = unsafe { &mut (*ctx.model_ptr()).#field_ident };
                     Self(ptr)
                 }

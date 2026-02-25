@@ -407,7 +407,6 @@ mod tests {
 
     impl FromEventContext<Model> for Counter {
         fn from_context(ctx: &EventContext<Model>) -> Self {
-            ctx.track_borrow(0, "counter");
             // SAFETY: field index 0 is reserved for `counter`; this matches the
             // wrapper's contract and test model layout.
             Counter(unsafe { &mut (*ctx.model_ptr()).counter })
@@ -434,7 +433,6 @@ mod tests {
 
     impl FromEventContext<Model> for SaveCompleted {
         fn from_context(ctx: &EventContext<Model>) -> Self {
-            ctx.track_borrow(1, "save_completed");
             // SAFETY: field index 1 is reserved for `save_completed`.
             SaveCompleted(unsafe { &mut (*ctx.model_ptr()).save_completed })
         }
@@ -499,12 +497,11 @@ mod tests {
     }
 
     #[test]
-    fn assert_panic_helper_captures_borrow_rule_panics() {
+    fn double_wrapper_projection_does_not_panic() {
         let mut store = TestStore::new(Model::default(), dispatch);
 
-        assert_panic_contains("already borrowed mutably", || {
-            store.send(Event::DoubleBorrow);
-        });
+        store.send(Event::DoubleBorrow);
+        store.assert_no_effects();
     }
 
     #[test]

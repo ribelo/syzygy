@@ -111,14 +111,18 @@ where
             return Command::none();
         }
 
-        let child_ctx = ctx.scope(|model| match (self.state_lens)(model).as_mut() {
-            Some(child_state) => child_state,
-            None => unreachable!("child state must be present after if_let guard"),
-        });
-
         let child_event = (self.event_from)(event);
-        self.child
-            .reduce(child_event, &child_ctx)
+        let child_command = {
+            // SAFETY: EventContext points to the active model for this dispatch.
+            let model = unsafe { &mut *ctx.model_ptr() };
+            let Some(child_state) = (self.state_lens)(model).as_mut() else {
+                unreachable!("child state must be present after if_let guard")
+            };
+            let child_ctx = EventContext::new(child_state);
+            self.child.reduce(child_event, &child_ctx)
+        };
+
+        child_command
             .map_event(|child_event| (self.event_into)(child_event))
             .map_effect(|child_effect| (self.effect_into)(child_effect))
     }

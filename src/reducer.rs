@@ -45,7 +45,7 @@ pub trait Reducer {
     }
 }
 
-type ReduceFn<S, E, X> = dyn Fn(E, &EventContext<S>) -> Command<E, X> + Send;
+type ReduceFn<S, E, X> = dyn Fn(E, &EventContext<S>) -> Command<E, X>;
 
 pub struct Reduce<S, E, X> {
     f: Box<ReduceFn<S, E, X>>,
@@ -53,7 +53,7 @@ pub struct Reduce<S, E, X> {
 
 impl<S, E, X> Reduce<S, E, X> {
     #[must_use]
-    pub fn new(f: impl Fn(E, &EventContext<S>) -> Command<E, X> + Send + 'static) -> Self {
+    pub fn new(f: impl Fn(E, &EventContext<S>) -> Command<E, X> + 'static) -> Self {
         Self { f: Box::new(f) }
     }
 }
@@ -278,9 +278,15 @@ where
         ctx: &EventContext<Self::State>,
     ) -> Command<Self::Event, Self::Effect> {
         if let Some(child_event) = (self.event_from)(event) {
-            let child_ctx = ctx.scope(|model| (self.state_lens)(model));
-            self.child
-                .reduce(child_event, &child_ctx)
+            let child_command = {
+                // SAFETY: EventContext points to the active parent state for this dispatch.
+                let parent_state = unsafe { &mut *ctx.model_ptr() };
+                let child_state = (self.state_lens)(parent_state);
+                let child_ctx = EventContext::new(child_state);
+                self.child.reduce(child_event, &child_ctx)
+            };
+
+            child_command
                 .map_event(|event| (self.event_into)(event))
                 .map_effect(|effect| (self.effect_into)(effect))
         } else {
@@ -416,28 +422,30 @@ where
             return Command::none();
         }
 
-        let child_ctx = ctx.scope(|state| {
+        let child_command = {
+            // SAFETY: EventContext points to the active model for this dispatch.
+            let state = unsafe { &mut *ctx.model_ptr() };
             let collection = (self.state_lens)(state);
-            match collection.get_mut(&target_id) {
-                Some(child_state) => child_state,
-                None => panic!("target id disappeared after existence check"),
-            }
-        });
+            let Some(child_state) = collection.get_mut(&target_id) else {
+                panic!("target id disappeared after existence check")
+            };
+            let child_ctx = EventContext::new(child_state);
+            self.child.reduce(child_event, &child_ctx)
+        };
 
-        self.child
-            .reduce(child_event, &child_ctx)
+        child_command
             .map_event(|event| (self.event_into)(event))
             .map_effect(|effect| (self.effect_into)(effect))
     }
 }
 
-pub type BoxedReducer<S, E, X> = Box<dyn Reducer<State = S, Event = E, Effect = X> + Send>;
+pub type BoxedReducer<S, E, X> = Box<dyn Reducer<State = S, Event = E, Effect = X>>;
 
 pub trait ReducerExt: Reducer + Sized {
     #[must_use]
     fn boxed(self) -> BoxedReducer<Self::State, Self::Event, Self::Effect>
     where
-        Self: Send + 'static,
+        Self: 'static,
     {
         Box::new(self)
     }
@@ -469,10 +477,9 @@ pub trait ReducerExt: Reducer + Sized {
     ) -> OnChange<Self, V, F, ReactFn>
     where
         V: PartialEq + Clone,
-        F: Fn(&Self::State) -> V + Send + 'static,
-        ReactFn: Fn(V, V, &EventContext<Self::State>) -> Command<Self::Event, Self::Effect>
-            + Send
-            + 'static,
+        F: Fn(&Self::State) -> V + 'static,
+        ReactFn:
+            Fn(V, V, &EventContext<Self::State>) -> Command<Self::Event, Self::Effect> + 'static,
     {
         OnChange::new(self, selector, reaction)
     }
@@ -621,7 +628,7 @@ impl<S, E, X> Combine<S, E, X> {
 
     pub fn push<R>(&mut self, reducer: R)
     where
-        R: Reducer<State = S, Event = E, Effect = X> + Send + 'static,
+        R: Reducer<State = S, Event = E, Effect = X> + 'static,
     {
         self.reducers.push(Box::new(reducer));
     }
@@ -1184,14 +1191,6 @@ mod tests {
         assert_eq!(guard.len(), 1);
         assert!(guard[0].contains("received event: Increment(0)"));
         assert!(guard[0].contains("(no state changes)"));
-    }
-
-    #[test]
-    fn debug_reducer_is_send_when_inner_is_send() {
-        fn assert_send<T: Send>() {}
-
-        type CounterReducer = Reduce<CounterState, CounterEvent, CounterEffect>;
-        assert_send::<DebugReducer<CounterReducer>>();
     }
 
     #[test]

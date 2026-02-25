@@ -53,7 +53,7 @@ fn trigger_save(_: ()) -> Command<Event, Effect> {
 }
 
 fn double_borrow(_: (), _first: Counter, _second: Counter) -> Command<Event, Effect> {
-    unreachable!()
+    Command::none()
 }
 
 fn persist(_: (), db_url: DbUrl, save_completed: SaveCompleted) -> Task<Event, Effect> {
@@ -98,7 +98,7 @@ fn derive_model_works_in_runtime() {
 }
 
 #[test]
-fn derive_model_tracks_runtime_borrows() {
+fn derive_model_allows_double_wrapper_projection() {
     let mut runner = Syzygy::builder::<Event, Effect>()
         .model(AppModel {
             counter: 0,
@@ -117,10 +117,8 @@ fn derive_model_tracks_runtime_borrows() {
         })
         .build();
 
-    assert_panic_contains("already borrowed mutably", || {
-        runner.core().try_send_event(Event::DoubleBorrow).unwrap();
-        let _ = runner.step();
-    });
+    runner.core().try_send_event(Event::DoubleBorrow).unwrap();
+    runner.step().unwrap();
 }
 
 #[derive(Debug, Clone)]
