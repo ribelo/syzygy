@@ -1,7 +1,3 @@
-#[cfg(feature = "tca")]
-use std::collections::HashMap;
-#[cfg(feature = "tca")]
-use std::hash::Hash;
 use std::marker::PhantomData;
 use std::sync::Arc;
 
@@ -18,34 +14,6 @@ pub trait Reducer {
         event: Self::Event,
         ctx: &EventContext<Self::State>,
     ) -> Command<Self::Event, Self::Effect>;
-
-    #[cfg(feature = "tca")]
-    #[must_use]
-    fn scope<ParentState, ParentEvent, ParentEffect, StateLens, EventFrom, EventInto, EffectInto>(
-        self,
-        state_lens: StateLens,
-        event_from: EventFrom,
-        event_into: EventInto,
-        effect_into: EffectInto,
-    ) -> Scope<
-        Self,
-        ParentState,
-        ParentEvent,
-        ParentEffect,
-        StateLens,
-        EventFrom,
-        EventInto,
-        EffectInto,
-    >
-    where
-        Self: Sized,
-        StateLens: Fn(&mut ParentState) -> &mut Self::State,
-        EventFrom: Fn(ParentEvent) -> Option<Self::Event>,
-        EventInto: Fn(Self::Event) -> ParentEvent,
-        EffectInto: Fn(Self::Effect) -> ParentEffect,
-    {
-        Scope::new(self, state_lens, event_from, event_into, effect_into)
-    }
 }
 
 type ReduceFn<S, E, X> = dyn Fn(E, &EventContext<S>) -> Command<E, X>;
@@ -183,271 +151,6 @@ where
     }
 }
 
-#[cfg(feature = "tca")]
-pub struct Scope<
-    Child,
-    ParentState,
-    ParentEvent,
-    ParentEffect,
-    StateLens,
-    EventFrom,
-    EventInto,
-    EffectInto,
-> {
-    child: Child,
-    state_lens: StateLens,
-    event_from: EventFrom,
-    event_into: EventInto,
-    effect_into: EffectInto,
-    _marker: PhantomData<fn(ParentState, ParentEvent, ParentEffect)>,
-}
-
-#[cfg(feature = "tca")]
-impl<
-        Child,
-        ParentState,
-        ParentEvent,
-        ParentEffect,
-        StateLens,
-        EventFrom,
-        EventInto,
-        EffectInto,
-    >
-    Scope<
-        Child,
-        ParentState,
-        ParentEvent,
-        ParentEffect,
-        StateLens,
-        EventFrom,
-        EventInto,
-        EffectInto,
-    >
-{
-    #[must_use]
-    pub fn new(
-        child: Child,
-        state_lens: StateLens,
-        event_from: EventFrom,
-        event_into: EventInto,
-        effect_into: EffectInto,
-    ) -> Self {
-        Self {
-            child,
-            state_lens,
-            event_from,
-            event_into,
-            effect_into,
-            _marker: PhantomData,
-        }
-    }
-}
-
-#[cfg(feature = "tca")]
-impl<
-        ParentState,
-        ParentEvent,
-        ParentEffect,
-        Child,
-        ChildState,
-        ChildEvent,
-        ChildEffect,
-        StateLens,
-        EventFrom,
-        EventInto,
-        EffectInto,
-    > Reducer
-    for Scope<
-        Child,
-        ParentState,
-        ParentEvent,
-        ParentEffect,
-        StateLens,
-        EventFrom,
-        EventInto,
-        EffectInto,
-    >
-where
-    Child: Reducer<State = ChildState, Event = ChildEvent, Effect = ChildEffect>,
-    StateLens: Fn(&mut ParentState) -> &mut ChildState,
-    EventFrom: Fn(ParentEvent) -> Option<ChildEvent>,
-    EventInto: Fn(ChildEvent) -> ParentEvent,
-    EffectInto: Fn(ChildEffect) -> ParentEffect,
-{
-    type State = ParentState;
-    type Event = ParentEvent;
-    type Effect = ParentEffect;
-
-    fn reduce(
-        &self,
-        event: Self::Event,
-        ctx: &EventContext<Self::State>,
-    ) -> Command<Self::Event, Self::Effect> {
-        if let Some(child_event) = (self.event_from)(event) {
-            let child_command = {
-                // SAFETY: EventContext points to the active model for this dispatch.
-                let parent_state = unsafe { &mut *ctx.model_ptr() };
-                let child_state = (self.state_lens)(parent_state);
-                let child_ctx = EventContext::new(child_state);
-                self.child.reduce(child_event, &child_ctx)
-            };
-
-            child_command
-                .map_event(|event| (self.event_into)(event))
-                .map_effect(|effect| (self.effect_into)(effect))
-        } else {
-            Command::none()
-        }
-    }
-}
-
-#[cfg(feature = "tca")]
-pub struct ForEach<
-    Child,
-    Id,
-    StateLens,
-    IdExtractor,
-    EventFrom,
-    EventInto,
-    EffectInto,
-    ParentState,
-    ParentEvent,
-    ParentEffect,
-> {
-    child: Child,
-    state_lens: StateLens,
-    id_extractor: IdExtractor,
-    event_from: EventFrom,
-    event_into: EventInto,
-    effect_into: EffectInto,
-    _marker: PhantomData<fn(Id, ParentState, ParentEvent, ParentEffect)>,
-}
-
-#[cfg(feature = "tca")]
-impl<
-        Child,
-        Id,
-        StateLens,
-        IdExtractor,
-        EventFrom,
-        EventInto,
-        EffectInto,
-        ParentState,
-        ParentEvent,
-        ParentEffect,
-    >
-    ForEach<
-        Child,
-        Id,
-        StateLens,
-        IdExtractor,
-        EventFrom,
-        EventInto,
-        EffectInto,
-        ParentState,
-        ParentEvent,
-        ParentEffect,
-    >
-{
-    #[must_use]
-    pub fn new(
-        child: Child,
-        state_lens: StateLens,
-        id_extractor: IdExtractor,
-        event_from: EventFrom,
-        event_into: EventInto,
-        effect_into: EffectInto,
-    ) -> Self {
-        Self {
-            child,
-            state_lens,
-            id_extractor,
-            event_from,
-            event_into,
-            effect_into,
-            _marker: PhantomData,
-        }
-    }
-}
-
-#[cfg(feature = "tca")]
-impl<
-        ParentState,
-        ParentEvent,
-        ParentEffect,
-        Child,
-        ChildState,
-        ChildEvent,
-        ChildEffect,
-        Id,
-        StateLens,
-        IdExtractor,
-        EventFrom,
-        EventInto,
-        EffectInto,
-    > Reducer
-    for ForEach<
-        Child,
-        Id,
-        StateLens,
-        IdExtractor,
-        EventFrom,
-        EventInto,
-        EffectInto,
-        ParentState,
-        ParentEvent,
-        ParentEffect,
-    >
-where
-    Child: Reducer<State = ChildState, Event = ChildEvent, Effect = ChildEffect>,
-    Id: Eq + Hash + 'static,
-    StateLens: Fn(&mut ParentState) -> &mut HashMap<Id, ChildState>,
-    IdExtractor: Fn(&ParentEvent) -> Option<Id>,
-    EventFrom: Fn(ParentEvent) -> ChildEvent,
-    EventInto: Fn(ChildEvent) -> ParentEvent,
-    EffectInto: Fn(ChildEffect) -> ParentEffect,
-{
-    type State = ParentState;
-    type Event = ParentEvent;
-    type Effect = ParentEffect;
-
-    fn reduce(
-        &self,
-        event: Self::Event,
-        ctx: &EventContext<Self::State>,
-    ) -> Command<Self::Event, Self::Effect> {
-        let Some(target_id) = (self.id_extractor)(&event) else {
-            return Command::none();
-        };
-
-        let child_event = (self.event_from)(event);
-
-        let item_exists = {
-            // SAFETY: EventContext points to the active model for this dispatch.
-            let state = unsafe { &mut *ctx.model_ptr() };
-            (self.state_lens)(state).contains_key(&target_id)
-        };
-        if !item_exists {
-            return Command::none();
-        }
-
-        let child_command = {
-            // SAFETY: EventContext points to the active model for this dispatch.
-            let parent_state = unsafe { &mut *ctx.model_ptr() };
-            let collection = (self.state_lens)(parent_state);
-            let Some(child_state) = collection.get_mut(&target_id) else {
-                panic!("target id disappeared after existence check")
-            };
-            let child_ctx = EventContext::new(child_state);
-            self.child.reduce(child_event, &child_ctx)
-        };
-
-        child_command
-            .map_event(|event| (self.event_into)(event))
-            .map_effect(|effect| (self.effect_into)(effect))
-    }
-}
-
 pub type BoxedReducer<S, E, X> = Box<dyn Reducer<State = S, Event = E, Effect = X>>;
 
 pub trait ReducerExt: Reducer + Sized {
@@ -491,55 +194,6 @@ pub trait ReducerExt: Reducer + Sized {
             Fn(V, V, &EventContext<Self::State>) -> Command<Self::Event, Self::Effect> + 'static,
     {
         OnChange::new(self, selector, reaction)
-    }
-
-    #[cfg(feature = "tca")]
-    #[must_use]
-    fn for_each<
-        Id,
-        ParentState,
-        ParentEvent,
-        ParentEffect,
-        StateLens,
-        IdExtractor,
-        EventFrom,
-        EventInto,
-        EffectInto,
-    >(
-        self,
-        state_lens: StateLens,
-        id_extractor: IdExtractor,
-        event_from: EventFrom,
-        event_into: EventInto,
-        effect_into: EffectInto,
-    ) -> ForEach<
-        Self,
-        Id,
-        StateLens,
-        IdExtractor,
-        EventFrom,
-        EventInto,
-        EffectInto,
-        ParentState,
-        ParentEvent,
-        ParentEffect,
-    >
-    where
-        Id: Eq + Hash + 'static,
-        StateLens: Fn(&mut ParentState) -> &mut HashMap<Id, Self::State>,
-        IdExtractor: Fn(&ParentEvent) -> Option<Id>,
-        EventFrom: Fn(ParentEvent) -> Self::Event,
-        EventInto: Fn(Self::Event) -> ParentEvent,
-        EffectInto: Fn(Self::Effect) -> ParentEffect,
-    {
-        ForEach::new(
-            self,
-            state_lens,
-            id_extractor,
-            event_from,
-            event_into,
-            effect_into,
-        )
     }
 }
 
@@ -692,13 +346,9 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[cfg(feature = "tca")]
-    use std::collections::HashMap;
     use std::sync::{Arc, Mutex};
 
     use crate::command::CommandStep;
-    #[cfg(feature = "tca")]
-    use crate::test_store::TestStore;
 
     #[derive(Debug, Clone, PartialEq, Eq)]
     enum CounterEvent {
@@ -717,24 +367,17 @@ mod tests {
 
     #[derive(Debug, Clone, PartialEq, Eq)]
     enum AppEvent {
-        #[cfg(feature = "tca")]
-        Counter(CounterEvent),
         Ping,
     }
 
     #[derive(Debug, Clone, PartialEq, Eq)]
     enum AppEffect {
-        #[cfg(feature = "tca")]
-        Counter(CounterEffect),
         Audit(&'static str),
         Secondary(&'static str),
     }
 
     #[derive(Debug, Default, Clone, PartialEq, Eq)]
-    struct AppState {
-        #[cfg(feature = "tca")]
-        counter: CounterState,
-    }
+    struct AppState;
 
     #[derive(Debug, Clone, PartialEq, Eq)]
     enum OnChangeEvent {
@@ -752,75 +395,6 @@ mod tests {
     struct OnChangeState {
         value: i32,
         other: i32,
-    }
-
-    #[cfg(feature = "tca")]
-    #[derive(Debug, Clone, PartialEq, Eq)]
-    enum ItemEvent {
-        Increment(i32),
-        Emit(i32),
-    }
-
-    #[cfg(feature = "tca")]
-    #[derive(Debug, Clone, PartialEq, Eq)]
-    enum ItemEffect {
-        Emitted(i32),
-    }
-
-    #[cfg(feature = "tca")]
-    #[derive(Debug, Clone, PartialEq, Eq)]
-    enum CollectionEvent {
-        Item { id: &'static str, event: ItemEvent },
-        Global,
-    }
-
-    #[cfg(feature = "tca")]
-    #[derive(Debug, Clone, PartialEq, Eq)]
-    enum CollectionEffect {
-        Item(ItemEffect),
-    }
-
-    #[cfg(feature = "tca")]
-    #[derive(Debug, Default, Clone, PartialEq, Eq)]
-    struct ItemState {
-        value: i32,
-    }
-
-    #[cfg(feature = "tca")]
-    #[derive(Debug, Default, Clone, PartialEq, Eq)]
-    struct CollectionState {
-        items: HashMap<&'static str, ItemState>,
-    }
-
-    #[cfg(feature = "tca")]
-    fn for_each_reducer(
-    ) -> impl Reducer<State = CollectionState, Event = CollectionEvent, Effect = CollectionEffect>
-    {
-        let child = Reduce::new(
-            |event: ItemEvent, ctx: &EventContext<ItemState>| match event {
-                ItemEvent::Increment(amount) => {
-                    // SAFETY: EventContext points to a live ItemState for this dispatch.
-                    let state = unsafe { &mut *ctx.model_ptr() };
-                    state.value += amount;
-                    Command::none()
-                }
-                ItemEvent::Emit(value) => Command::effect(ItemEffect::Emitted(value)),
-            },
-        );
-
-        child.for_each(
-            |state: &mut CollectionState| &mut state.items,
-            |event: &CollectionEvent| match event {
-                CollectionEvent::Item { id, .. } => Some(*id),
-                CollectionEvent::Global => None,
-            },
-            |event: CollectionEvent| match event {
-                CollectionEvent::Item { event, .. } => event,
-                CollectionEvent::Global => panic!("id extractor should filter global events"),
-            },
-            |_event| CollectionEvent::Global,
-            CollectionEffect::Item,
-        )
     }
 
     #[test]
@@ -845,149 +419,22 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "tca")]
-    #[test]
-    fn scope_adapts_child_reducer_to_parent_types() {
-        let child = Reduce::new(
-            |event: CounterEvent, _ctx: &EventContext<CounterState>| match event {
-                CounterEvent::Increment(amount) => Command::event(CounterEvent::Increment(amount))
-                    .and_effect(CounterEffect::Changed(amount)),
-            },
-        );
-
-        let parent = child.scope(
-            |state: &mut AppState| &mut state.counter,
-            |event: AppEvent| match event {
-                AppEvent::Counter(event) => Some(event),
-                AppEvent::Ping => None,
-            },
-            AppEvent::Counter,
-            AppEffect::Counter,
-        );
-
-        let mut state = AppState::default();
-        let ctx = EventContext::new(&mut state);
-
-        let mapped = parent.reduce(AppEvent::Counter(CounterEvent::Increment(2)), &ctx);
-        assert_eq!(
-            mapped.into_iter().collect::<Vec<_>>(),
-            vec![
-                CommandStep::Event(AppEvent::Counter(CounterEvent::Increment(2))),
-                CommandStep::Effect(AppEffect::Counter(CounterEffect::Changed(2))),
-            ]
-        );
-
-        let no_match = parent.reduce(AppEvent::Ping, &ctx);
-        assert!(no_match.is_empty());
-    }
-
-    #[cfg(feature = "tca")]
-    #[test]
-    fn for_each_routes_event_to_correct_item() {
-        let reducer = for_each_reducer();
-
-        let mut state = CollectionState {
-            items: HashMap::from([("a", ItemState { value: 1 }), ("b", ItemState { value: 2 })]),
-        };
-        let ctx = EventContext::new(&mut state);
-
-        let command = reducer.reduce(
-            CollectionEvent::Item {
-                id: "b",
-                event: ItemEvent::Increment(3),
-            },
-            &ctx,
-        );
-
-        assert!(command.is_empty());
-        assert_eq!(state.items.get("a").map(|item| item.value), Some(1));
-        assert_eq!(state.items.get("b").map(|item| item.value), Some(5));
-    }
-
-    #[cfg(feature = "tca")]
-    #[test]
-    fn for_each_returns_none_for_unknown_id() {
-        let reducer = for_each_reducer();
-
-        let mut state = CollectionState {
-            items: HashMap::from([("a", ItemState { value: 1 })]),
-        };
-        let ctx = EventContext::new(&mut state);
-
-        let command = reducer.reduce(
-            CollectionEvent::Item {
-                id: "missing",
-                event: ItemEvent::Increment(3),
-            },
-            &ctx,
-        );
-
-        assert!(command.is_empty());
-        assert_eq!(state.items.get("a").map(|item| item.value), Some(1));
-    }
-
-    #[cfg(feature = "tca")]
-    #[test]
-    fn for_each_returns_none_when_id_not_extracted() {
-        let reducer = for_each_reducer();
-
-        let mut state = CollectionState {
-            items: HashMap::from([("a", ItemState { value: 1 })]),
-        };
-        let ctx = EventContext::new(&mut state);
-
-        let command = reducer.reduce(CollectionEvent::Global, &ctx);
-
-        assert!(command.is_empty());
-        assert_eq!(state.items.get("a").map(|item| item.value), Some(1));
-    }
-
-    #[cfg(feature = "tca")]
-    #[test]
-    fn for_each_maps_commands_to_parent_types() {
-        let reducer = for_each_reducer();
-
-        let mut state = CollectionState {
-            items: HashMap::from([("a", ItemState { value: 1 })]),
-        };
-        let ctx = EventContext::new(&mut state);
-
-        let command = reducer.reduce(
-            CollectionEvent::Item {
-                id: "a",
-                event: ItemEvent::Emit(9),
-            },
-            &ctx,
-        );
-
-        assert_eq!(
-            command.into_iter().collect::<Vec<_>>(),
-            vec![CommandStep::Effect(CollectionEffect::Item(
-                ItemEffect::Emitted(9,)
-            ))]
-        );
-    }
-
     #[test]
     fn combine_runs_all_reducers() {
         let first = Reduce::new(
             |event: AppEvent, _ctx: &EventContext<AppState>| match event {
                 AppEvent::Ping => Command::effect(AppEffect::Audit("first")),
-                #[cfg(feature = "tca")]
-                AppEvent::Counter(_) => Command::none(),
             },
         );
         let second = Reduce::new(
             |event: AppEvent, _ctx: &EventContext<AppState>| match event {
                 AppEvent::Ping => Command::effect(AppEffect::Secondary("second")),
-                #[cfg(feature = "tca")]
-                AppEvent::Counter(_) => Command::none(),
             },
         );
 
         let reducer = combine(vec![first.boxed(), second.boxed()]);
 
-        let mut state = AppState::default();
+        let mut state = AppState;
         let ctx = EventContext::new(&mut state);
 
         let command = reducer.reduce(AppEvent::Ping, &ctx);
@@ -1220,85 +667,5 @@ mod tests {
         assert_eq!(guard.len(), 1);
         assert!(guard[0].contains("received event: Increment(0)"));
         assert!(guard[0].contains("(no state changes)"));
-    }
-
-    #[cfg(feature = "tca")]
-    #[test]
-    fn reducer_works_with_test_store() {
-        let counter = Reduce::new(|event: CounterEvent, ctx: &EventContext<CounterState>| {
-            match event {
-                CounterEvent::Increment(amount) => {
-                    // SAFETY: EventContext points to a live CounterState for this dispatch.
-                    let state = unsafe { &mut *ctx.model_ptr() };
-                    state.value += amount;
-                    Command::effect(CounterEffect::Changed(state.value))
-                }
-            }
-        });
-
-        let reducer = counter.scope(
-            |state: &mut AppState| &mut state.counter,
-            |event: AppEvent| match event {
-                AppEvent::Counter(event) => Some(event),
-                AppEvent::Ping => None,
-            },
-            AppEvent::Counter,
-            AppEffect::Counter,
-        );
-
-        let mut store = TestStore::new(AppState::default(), move |event, ctx| {
-            reducer.reduce(event, ctx)
-        });
-
-        store.send(AppEvent::Counter(CounterEvent::Increment(4)));
-
-        assert_eq!(store.state().counter.value, 4);
-        store.assert_effects([AppEffect::Counter(CounterEffect::Changed(4))]);
-    }
-
-    #[cfg(all(feature = "shell", feature = "tca"))]
-    #[test]
-    fn builder_accepts_reducer() {
-        use crate::executor::Task;
-        use crate::extract::EffectContext;
-        use crate::syzygy::Syzygy;
-
-        let counter = Reduce::new(|event: CounterEvent, ctx: &EventContext<CounterState>| {
-            match event {
-                CounterEvent::Increment(amount) => {
-                    // SAFETY: EventContext points to a live CounterState for this dispatch.
-                    let state = unsafe { &mut *ctx.model_ptr() };
-                    state.value += amount;
-                    Command::effect(CounterEffect::Changed(state.value))
-                }
-            }
-        });
-
-        let reducer = counter.scope(
-            |state: &mut AppState| &mut state.counter,
-            |event: AppEvent| match event {
-                AppEvent::Counter(event) => Some(event),
-                AppEvent::Ping => None,
-            },
-            AppEvent::Counter,
-            AppEffect::Counter,
-        );
-
-        let mut runner = Syzygy::builder::<AppEvent, AppEffect>()
-            .model(AppState::default())
-            .reducer(reducer)
-            .effect_handler(|_effect: AppEffect, _ctx: &EffectContext| {
-                Task::<AppEvent, AppEffect>::none()
-            })
-            .build();
-
-        runner
-            .core()
-            .try_send_event(AppEvent::Counter(CounterEvent::Increment(6)))
-            .expect("event should enqueue");
-
-        runner.step().expect("step should complete");
-
-        assert_eq!(runner.model().counter.value, 6);
     }
 }

@@ -32,7 +32,6 @@ required-features = ["shell"]
 default = ["shell"]
 shell = ["dep:futures"]
 examples = ["shell"]
-tca = []
 tracing = ["dep:tracing"]
 
 [dependencies]

@@ -653,7 +653,6 @@ Counters increment whenever the shell cannot deliver events or effect steps (e.g
 ## Optional Features
 
 - `shell` *(default)* – enable the Shell, executors, and async integration layers.
-- `tca` *(optional, default off)* – enable higher-level reducer composition helpers (`scope`, `for_each`, `if_let`) for TCA-style module composition.
 - `examples` and `tracing` remain optional feature flags for examples and instrumentation.
 
 ## Executor Architecture

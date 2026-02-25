@@ -5,8 +5,6 @@ pub mod dependency;
 pub mod error;
 pub mod extract;
 pub mod feature;
-#[cfg(feature = "tca")]
-pub mod if_let;
 pub mod macros;
 pub mod reducer;
 pub mod test_store;
@@ -35,14 +33,10 @@ pub mod prelude {
         FromEffectContext, FromEventContext, FutureEffect, StreamEffect,
     };
     pub use crate::feature::Feature;
-    #[cfg(feature = "tca")]
-    pub use crate::if_let::{if_let, IfLet};
     pub use crate::reducer::{
         combine, BoxedReducer, Combine, Combined, DebugReducer, OnChange, Reduce, Reducer,
         ReducerExt,
     };
-    #[cfg(feature = "tca")]
-    pub use crate::reducer::{ForEach, Scope};
     pub use crate::test_store::{assert_panic, assert_panic_contains, Exhaustivity, TestStore};
     pub use syzygy_macros::Model;
 
