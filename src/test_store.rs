@@ -355,12 +355,11 @@ fn panic_payload_to_string(payload: Box<dyn Any + Send>) -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::ops::{Deref, DerefMut};
-
     use super::*;
+    use crate as syzygy;
     #[cfg(feature = "shell")]
     use crate::executor::Task;
-    use crate::extract::{EventHandler, FromEventContext};
+    use crate::extract::EventHandler;
 
     #[derive(Debug, Clone, PartialEq, Eq)]
     enum Event {
@@ -380,75 +379,27 @@ mod tests {
         Fourth,
     }
 
-    #[derive(Debug, Default, PartialEq, Eq)]
+    #[derive(Debug, Default, PartialEq, Eq, crate::Model)]
     struct Model {
         counter: i32,
         save_completed: bool,
     }
 
-    struct Counter(*mut i32);
-
-    impl Deref for Counter {
-        type Target = i32;
-
-        fn deref(&self) -> &Self::Target {
-            // SAFETY: FromEventContext guarantees this pointer was created from
-            // the live model and points to `Model::counter`.
-            unsafe { &*self.0 }
-        }
+    fn increment(amount: i32, counter: &mut Counter) -> Command<Event, Effect> {
+        **counter += amount;
+        Command::effect(Effect::Log(**counter))
     }
 
-    impl DerefMut for Counter {
-        fn deref_mut(&mut self) -> &mut Self::Target {
-            // SAFETY: same invariant as above, now mutably borrowed.
-            unsafe { &mut *self.0 }
-        }
-    }
-
-    impl FromEventContext<Model> for Counter {
-        fn from_context(ctx: &EventContext<Model>) -> Self {
-            // SAFETY: field index 0 is reserved for `counter`; this matches the
-            // wrapper's contract and test model layout.
-            Counter(unsafe { &mut (*ctx.model_ptr()).counter })
-        }
-    }
-
-    struct SaveCompleted(*mut bool);
-
-    impl Deref for SaveCompleted {
-        type Target = bool;
-
-        fn deref(&self) -> &Self::Target {
-            // SAFETY: pointer targets `Model::save_completed` in the active model.
-            unsafe { &*self.0 }
-        }
-    }
-
-    impl DerefMut for SaveCompleted {
-        fn deref_mut(&mut self) -> &mut Self::Target {
-            // SAFETY: same invariant as above with mutable access.
-            unsafe { &mut *self.0 }
-        }
-    }
-
-    impl FromEventContext<Model> for SaveCompleted {
-        fn from_context(ctx: &EventContext<Model>) -> Self {
-            // SAFETY: field index 1 is reserved for `save_completed`.
-            SaveCompleted(unsafe { &mut (*ctx.model_ptr()).save_completed })
-        }
-    }
-
-    fn increment(amount: i32, mut counter: Counter) -> Command<Event, Effect> {
-        *counter += amount;
-        Command::effect(Effect::Log(*counter))
-    }
-
-    fn save_done(_: (), mut done: SaveCompleted) -> Command<Event, Effect> {
-        *done = true;
+    fn save_done(_: (), done: &mut SaveCompleted) -> Command<Event, Effect> {
+        **done = true;
         Command::none()
     }
 
-    fn bad_double_borrow(_: (), _first: Counter, _second: Counter) -> Command<Event, Effect> {
+    fn bad_double_borrow(
+        _: (),
+        _first: &mut Counter,
+        _second: &mut Counter,
+    ) -> Command<Event, Effect> {
         Command::none()
     }
 
@@ -497,11 +448,12 @@ mod tests {
     }
 
     #[test]
-    fn double_wrapper_projection_does_not_panic() {
+    fn assert_panic_helper_captures_borrow_rule_panics() {
         let mut store = TestStore::new(Model::default(), dispatch);
 
-        store.send(Event::DoubleBorrow);
-        store.assert_no_effects();
+        assert_panic_contains("already borrowed mutably", || {
+            store.send(Event::DoubleBorrow);
+        });
     }
 
     #[test]

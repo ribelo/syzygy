@@ -27,6 +27,7 @@ fn expand_model(input: DeriveInput) -> syn::Result<TokenStream2> {
 
     let mut wrappers = Vec::with_capacity(fields.len());
     let mut extract_impls = Vec::new();
+    let mut tracked_field_count = 0usize;
     let mut extract_types = HashSet::new();
 
     for field in fields {
@@ -34,12 +35,21 @@ fn expand_model(input: DeriveInput) -> syn::Result<TokenStream2> {
             syn::Error::new_spanned(field, "Model derive requires named struct fields")
         })?;
         let field_ty = &field.ty;
+        let field_name = field_ident.to_string();
         let is_extract = has_extract_attr(field)?;
+
+        tracked_field_count += 1;
+        if tracked_field_count > 64 {
+            return Err(syn::Error::new_spanned(
+                model_ident.clone(),
+                "Model derive supports up to 64 tracked fields for runtime borrow checks",
+            ));
+        }
+        let field_index = (tracked_field_count - 1) as u32;
 
         let (struct_generics, impl_generics, ty_generics, where_clause) = split_generics(&generics);
 
         if is_extract {
-            let field_name = field_ident.to_string();
             let extract_type_key = quote!(#field_ty).to_string();
             if !extract_types.insert(extract_type_key) {
                 return Err(syn::Error::new_spanned(
@@ -50,16 +60,13 @@ fn expand_model(input: DeriveInput) -> syn::Result<TokenStream2> {
 
             extract_impls.push(quote! {
                 #[allow(clippy::mut_from_ref)]
-                impl #impl_generics ::syzygy::extract::ExtractMutFrom<#model_ident #ty_generics> for #field_ty #where_clause {
-                    fn extract_mut(ctx: &::syzygy::extract::EventContext<#model_ident #ty_generics>) -> &mut Self {
-                        // SAFETY: EventContext stores a valid mutable pointer for the active handler call.
+                impl #impl_generics syzygy::extract::ExtractMutFrom<#model_ident #ty_generics> for #field_ty #where_clause {
+                    fn extract_mut(ctx: &syzygy::extract::EventContext<#model_ident #ty_generics>) -> &mut Self {
+                        ctx.track_borrow(#field_index, #field_name);
+                        // SAFETY: EventContext stores a valid mutable pointer for the active handler call,
+                        // and borrow tracking ensures this field is extracted at most once per handler.
                         let ptr = unsafe { ::core::ptr::addr_of_mut!((*ctx.model_ptr()).#field_ident) };
-                        ctx.track_borrow_range(
-                            ptr.cast::<u8>(),
-                            ::core::mem::size_of::<#field_ty>(),
-                            #field_name,
-                        );
-                        // SAFETY: Borrow ranges are checked in debug builds and handler execution is single-threaded per event.
+                        // SAFETY: `ptr` points to the extracted field and runtime tracking enforces exclusivity.
                         unsafe { &mut *ptr }
                     }
                 }
@@ -71,29 +78,33 @@ fn expand_model(input: DeriveInput) -> syn::Result<TokenStream2> {
         let wrapper_ident = field_wrapper_ident(field_ident)?;
 
         wrappers.push(quote! {
-            pub struct #wrapper_ident #struct_generics (*mut #field_ty) #where_clause;
+            #[repr(transparent)]
+            pub struct #wrapper_ident #struct_generics (#field_ty) #where_clause;
 
-            impl #impl_generics ::std::ops::Deref for #wrapper_ident #ty_generics #where_clause {
+            impl #impl_generics ::core::ops::Deref for #wrapper_ident #ty_generics #where_clause {
                 type Target = #field_ty;
 
                 fn deref(&self) -> &Self::Target {
-                    // SAFETY: Wrapper instances are constructed from valid pointers to model fields.
-                    unsafe { &*self.0 }
+                    &self.0
                 }
             }
 
-            impl #impl_generics ::std::ops::DerefMut for #wrapper_ident #ty_generics #where_clause {
+            impl #impl_generics ::core::ops::DerefMut for #wrapper_ident #ty_generics #where_clause {
                 fn deref_mut(&mut self) -> &mut Self::Target {
-                    // SAFETY: Wrapper points to a valid mutable model field for this dispatch.
-                    unsafe { &mut *self.0 }
+                    &mut self.0
                 }
             }
 
-            impl #impl_generics ::syzygy::extract::FromEventContext<#model_ident #ty_generics> for #wrapper_ident #ty_generics #where_clause {
-                fn from_context(ctx: &::syzygy::extract::EventContext<#model_ident #ty_generics>) -> Self {
-                    // SAFETY: EventContext points to the active model for this dispatch.
-                    let ptr = unsafe { &mut (*ctx.model_ptr()).#field_ident };
-                    Self(ptr)
+            #[allow(clippy::mut_from_ref)]
+            impl #impl_generics syzygy::extract::ExtractMutFrom<#model_ident #ty_generics> for #wrapper_ident #ty_generics #where_clause {
+                fn extract_mut(ctx: &syzygy::extract::EventContext<#model_ident #ty_generics>) -> &mut Self {
+                    ctx.track_borrow(#field_index, #field_name);
+                    // SAFETY: `repr(transparent)` guarantees Wrapper has the same layout as the field type.
+                    let ptr = unsafe {
+                        ::core::ptr::addr_of_mut!((*ctx.model_ptr()).#field_ident).cast::<Self>()
+                    };
+                    // SAFETY: `track_borrow` ensures unique mutable access for this field in the handler.
+                    unsafe { &mut *ptr }
                 }
             }
         });

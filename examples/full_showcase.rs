@@ -50,13 +50,13 @@ struct ServerUrl(String);
 
 // -- Event handlers: mix of wrapper extractors and &mut child --
 
-fn increment(amount: i32, mut counter: Counter) -> Command<Event, Effect> {
-    *counter += amount;
+fn increment(amount: i32, counter: &mut Counter) -> Command<Event, Effect> {
+    **counter += amount;
     Command::none()
 }
 
-fn save(counter: Counter) -> Command<Event, Effect> {
-    Command::effect(Effect::SaveToServer(*counter))
+fn save(counter: &mut Counter) -> Command<Event, Effect> {
+    Command::effect(Effect::SaveToServer(**counter))
 }
 
 fn record_save(stats: &mut Stats) -> Command<Event, Effect> {
@@ -64,13 +64,13 @@ fn record_save(stats: &mut Stats) -> Command<Event, Effect> {
     Command::none()
 }
 
-fn save_done(value: i32, mut status: Status) -> Command<Event, Effect> {
-    *status = format!("saved: {value}");
+fn save_done(value: i32, status: &mut Status) -> Command<Event, Effect> {
+    **status = format!("saved: {value}");
     Command::none()
 }
 
-fn tick(mut counter: Counter) -> Command<Event, Effect> {
-    *counter += 1;
+fn tick(counter: &mut Counter) -> Command<Event, Effect> {
+    **counter += 1;
     Command::none()
 }
 
@@ -79,13 +79,13 @@ fn record_tick(stats: &mut Stats) -> Command<Event, Effect> {
     Command::none()
 }
 
-fn set_status(new_status: String, mut status: Status) -> Command<Event, Effect> {
-    *status = new_status;
+fn set_status(new_status: String, status: &mut Status) -> Command<Event, Effect> {
+    **status = new_status;
     Command::none()
 }
 
-fn stream_finished(mut status: Status) -> Command<Event, Effect> {
-    *status = "stream done".to_string();
+fn stream_finished(status: &mut Status) -> Command<Event, Effect> {
+    **status = "stream done".to_string();
     Command::none()
 }
 

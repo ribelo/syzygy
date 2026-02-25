@@ -114,8 +114,8 @@ where
         let child_event = (self.event_from)(event);
         let child_command = {
             // SAFETY: EventContext points to the active model for this dispatch.
-            let model = unsafe { &mut *ctx.model_ptr() };
-            let Some(child_state) = (self.state_lens)(model).as_mut() else {
+            let parent_state = unsafe { &mut *ctx.model_ptr() };
+            let Some(child_state) = (self.state_lens)(parent_state).as_mut() else {
                 unreachable!("child state must be present after if_let guard")
             };
             let child_ctx = EventContext::new(child_state);

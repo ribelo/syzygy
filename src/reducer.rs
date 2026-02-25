@@ -279,7 +279,7 @@ where
     ) -> Command<Self::Event, Self::Effect> {
         if let Some(child_event) = (self.event_from)(event) {
             let child_command = {
-                // SAFETY: EventContext points to the active parent state for this dispatch.
+                // SAFETY: EventContext points to the active model for this dispatch.
                 let parent_state = unsafe { &mut *ctx.model_ptr() };
                 let child_state = (self.state_lens)(parent_state);
                 let child_ctx = EventContext::new(child_state);
@@ -424,8 +424,8 @@ where
 
         let child_command = {
             // SAFETY: EventContext points to the active model for this dispatch.
-            let state = unsafe { &mut *ctx.model_ptr() };
-            let collection = (self.state_lens)(state);
+            let parent_state = unsafe { &mut *ctx.model_ptr() };
+            let collection = (self.state_lens)(parent_state);
             let Some(child_state) = collection.get_mut(&target_id) else {
                 panic!("target id disappeared after existence check")
             };

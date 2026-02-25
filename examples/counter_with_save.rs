@@ -1,8 +1,6 @@
-use std::ops::{Deref, DerefMut};
-
 use syzygy::prelude::*;
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Model)]
 struct Model {
     counter: i32,
     saving: bool,
@@ -30,94 +28,23 @@ impl ServerUrl {
     }
 }
 
-struct Counter(*mut i32);
-
-impl Deref for Counter {
-    type Target = i32;
-
-    fn deref(&self) -> &Self::Target {
-        // SAFETY: Pointer is created from `Model::counter` for the active model.
-        unsafe { &*self.0 }
-    }
-}
-
-impl DerefMut for Counter {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        // SAFETY: Pointer is created from `Model::counter` and borrow tracking enforces exclusivity.
-        unsafe { &mut *self.0 }
-    }
-}
-
-impl FromEventContext<Model> for Counter {
-    fn from_context(ctx: &EventContext<Model>) -> Self {
-        // SAFETY: Field index 0 is reserved for `Model::counter`.
-        Counter(unsafe { &mut (*ctx.model_ptr()).counter })
-    }
-}
-
-struct Saving(*mut bool);
-
-impl Deref for Saving {
-    type Target = bool;
-
-    fn deref(&self) -> &Self::Target {
-        // SAFETY: Pointer is created from `Model::saving` for the active model.
-        unsafe { &*self.0 }
-    }
-}
-
-impl DerefMut for Saving {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        // SAFETY: Pointer is created from `Model::saving` and borrow tracking enforces exclusivity.
-        unsafe { &mut *self.0 }
-    }
-}
-
-impl FromEventContext<Model> for Saving {
-    fn from_context(ctx: &EventContext<Model>) -> Self {
-        // SAFETY: Field index 1 is reserved for `Model::saving`.
-        Saving(unsafe { &mut (*ctx.model_ptr()).saving })
-    }
-}
-
-struct LastSaved(*mut Option<i32>);
-
-impl Deref for LastSaved {
-    type Target = Option<i32>;
-
-    fn deref(&self) -> &Self::Target {
-        // SAFETY: Pointer is created from `Model::last_saved` for the active model.
-        unsafe { &*self.0 }
-    }
-}
-
-impl DerefMut for LastSaved {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        // SAFETY: Pointer is created from `Model::last_saved` and borrow tracking enforces exclusivity.
-        unsafe { &mut *self.0 }
-    }
-}
-
-impl FromEventContext<Model> for LastSaved {
-    fn from_context(ctx: &EventContext<Model>) -> Self {
-        // SAFETY: Field index 2 is reserved for `Model::last_saved`.
-        LastSaved(unsafe { &mut (*ctx.model_ptr()).last_saved })
-    }
-}
-
-fn increment(amount: i32, mut counter: Counter) -> Command<Event, Effect> {
-    *counter += amount;
+fn increment(amount: i32, counter: &mut Counter) -> Command<Event, Effect> {
+    **counter += amount;
     Command::none()
 }
 
-fn save(_: (), mut saving: Saving, counter: Counter) -> Command<Event, Effect> {
-    *saving = true;
-    Command::effect(Effect::SaveToServer(*counter))
+fn save(_: (), saving: &mut Saving, counter: &mut Counter) -> Command<Event, Effect> {
+    **saving = true;
+    Command::effect(Effect::SaveToServer(**counter))
 }
 
-fn save_done(value: i32, mut saving: Saving, mut last_saved: LastSaved) -> Command<Event, Effect> {
-    *saving = false;
-    *last_saved = Some(value);
+fn save_done(
+    value: i32,
+    saving: &mut Saving,
+    last_saved: &mut LastSaved,
+) -> Command<Event, Effect> {
+    **saving = false;
+    **last_saved = Some(value);
     Command::none()
 }
 

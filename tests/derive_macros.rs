@@ -37,14 +37,14 @@ impl SaveCompleted {
     }
 }
 
-fn increment(amount: u32, mut counter: Counter) -> Command<Event, Effect> {
+fn increment(amount: u32, counter: &mut Counter) -> Command<Event, Effect> {
     let amount = i32::try_from(amount).expect("u32 amount must fit in i32");
-    *counter += amount;
+    **counter += amount;
     Command::none()
 }
 
-fn rename(new_name: String, mut display_name: DisplayName) -> Command<Event, Effect> {
-    *display_name = new_name;
+fn rename(new_name: String, display_name: &mut DisplayName) -> Command<Event, Effect> {
+    **display_name = new_name;
     Command::none()
 }
 
@@ -52,8 +52,8 @@ fn trigger_save(_: ()) -> Command<Event, Effect> {
     Command::effect(Effect::Save)
 }
 
-fn double_borrow(_: (), _first: Counter, _second: Counter) -> Command<Event, Effect> {
-    Command::none()
+fn double_borrow(_: (), _first: &mut Counter, _second: &mut Counter) -> Command<Event, Effect> {
+    unreachable!()
 }
 
 fn persist(_: (), db_url: DbUrl, save_completed: SaveCompleted) -> Task<Event, Effect> {
@@ -98,7 +98,7 @@ fn derive_model_works_in_runtime() {
 }
 
 #[test]
-fn derive_model_allows_double_wrapper_projection() {
+fn derive_model_tracks_runtime_borrows() {
     let mut runner = Syzygy::builder::<Event, Effect>()
         .model(AppModel {
             counter: 0,
@@ -117,8 +117,10 @@ fn derive_model_allows_double_wrapper_projection() {
         })
         .build();
 
-    runner.core().try_send_event(Event::DoubleBorrow).unwrap();
-    runner.step().unwrap();
+    assert_panic_contains("already borrowed mutably", || {
+        runner.core().try_send_event(Event::DoubleBorrow).unwrap();
+        let _ = runner.step();
+    });
 }
 
 #[derive(Debug, Clone)]
@@ -159,8 +161,8 @@ fn increment_child(
     Command::none()
 }
 
-fn rename_extract(new_title: String, mut title: Title) -> Command<ExtractEvent, ExtractEffect> {
-    *title = new_title;
+fn rename_extract(new_title: String, title: &mut Title) -> Command<ExtractEvent, ExtractEffect> {
+    **title = new_title;
     Command::none()
 }
 
@@ -225,7 +227,7 @@ fn derive_model_extract_attribute_projects_child_models() {
 }
 
 #[test]
-fn derive_model_extract_attribute_detects_overlap() {
+fn derive_model_extract_attribute_detects_double_borrow() {
     let mut runner = Syzygy::builder::<ExtractEvent, ExtractEffect>()
         .model(ExtractAppModel {
             counter: CounterState { value: 0 },
@@ -245,7 +247,7 @@ fn derive_model_extract_attribute_detects_overlap() {
         })
         .build();
 
-    assert_panic_contains("overlaps already-borrowed mutable region", || {
+    assert_panic_contains("already borrowed mutably", || {
         runner
             .core()
             .try_send_event(ExtractEvent::DoubleBorrow)
