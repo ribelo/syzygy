@@ -82,6 +82,7 @@ let mut runner = Syzygy::builder::<Event, Effect>()
 Notes:
 
 - `with_event_channel_capacity(Some(n))` creates a bounded channel; producers can receive `CoreError::ChannelFull`.
+- `feature(feature_impl)` wires both `Feature::reduce` and `Feature::handle_effect` in one call.
 - Backward-compatibility methods such as `async_executor`, `compute_executor`, `blocking_executor`, and `with_effect_channel_capacity` are currently no-op shims.
 
 ## Cancellable Slots
@@ -95,6 +96,7 @@ Command::cancel("search")
 ```
 
 `CancelId` is type-tagged. `1_u32` and `1_u64` are different slot IDs.
+When commands are transformed with `map`/`map_event`/`map_effect`, tracked slots are namespaced by the source/target command types to avoid cross-component collisions.
 
 ## TestStore Exhaustivity
 

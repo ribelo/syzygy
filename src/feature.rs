@@ -17,7 +17,7 @@ pub trait Feature: 'static {
     fn handle_effect(
         &self,
         effect: Self::Effect,
-        ctx: &EffectContext,
+        ctx: &EffectContext<'_>,
     ) -> Task<Self::Event, Self::Effect> {
         let _ = (effect, ctx);
         Task::none()

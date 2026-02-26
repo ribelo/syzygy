@@ -306,10 +306,10 @@ where
     #[cfg(feature = "shell")]
     pub fn receive<H>(&mut self, effect_handler: H)
     where
-        H: Fn(X, &EffectContext) -> Task<E, X>,
+        H: Fn(X, &EffectContext<'_>) -> Task<E, X>,
     {
         for effect in self.take_effects() {
-            let ctx = EffectContext::new(self.resources.clone());
+            let ctx = EffectContext::new(&self.resources);
             let task = effect_handler(effect, &ctx);
             self.drive_received_task(task);
         }

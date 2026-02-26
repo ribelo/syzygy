@@ -35,6 +35,7 @@ Channel behavior:
 - `Cancel { id }`: cancel currently tracked task in slot
 
 `CancelId` is type-aware (`TypeId + hash`). Different Rust types with same value are different IDs.
+Command mapping (`map`/`map_event`/`map_effect`) additionally namespaces tracked slots by source/target command types to prevent sibling collisions in composed trees.
 
 ## Shell
 

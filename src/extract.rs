@@ -9,28 +9,28 @@ use crate::executor::Task;
 
 // ── Effect side ─────────────────────────────────────────────────────
 
-pub struct EffectContext {
-    resources: ResourceMap,
+pub struct EffectContext<'a> {
+    resources: &'a ResourceMap,
 }
 
-impl EffectContext {
+impl<'a> EffectContext<'a> {
     #[must_use]
-    pub fn new(resources: ResourceMap) -> Self {
+    pub fn new(resources: &'a ResourceMap) -> Self {
         Self { resources }
     }
 
     #[must_use]
     pub fn resources(&self) -> &ResourceMap {
-        &self.resources
+        self.resources
     }
 }
 
 pub trait FromEffectContext {
-    fn from_context(ctx: &EffectContext) -> Self;
+    fn from_context(ctx: &EffectContext<'_>) -> Self;
 }
 
 impl<T: Resource> FromEffectContext for T {
-    fn from_context(ctx: &EffectContext) -> Self {
+    fn from_context(ctx: &EffectContext<'_>) -> Self {
         ctx.resources().get::<T>().unwrap_or_else(|| {
             panic!(
                 "Resource `{}` not found in ResourceMap. Register it with .with_resource()",
@@ -47,7 +47,7 @@ pub struct StreamEffect;
 pub struct NP;
 
 pub trait EffectHandler<E: 'static, X: 'static, P, Marker>: 'static {
-    fn handle(&self, payload: P, ctx: &EffectContext) -> Task<E, X>;
+    fn handle(&self, payload: P, ctx: &EffectContext<'_>) -> Task<E, X>;
 }
 
 impl<E, X, P, F> EffectHandler<E, X, P, ()> for F
@@ -56,7 +56,7 @@ where
     E: 'static,
     X: 'static,
 {
-    fn handle(&self, payload: P, _ctx: &EffectContext) -> Task<E, X> {
+    fn handle(&self, payload: P, _ctx: &EffectContext<'_>) -> Task<E, X> {
         (self)(payload)
     }
 }
@@ -67,7 +67,7 @@ where
     E: 'static,
     X: 'static,
 {
-    fn handle(&self, _payload: (), _ctx: &EffectContext) -> Task<E, X> {
+    fn handle(&self, _payload: (), _ctx: &EffectContext<'_>) -> Task<E, X> {
         (self)()
     }
 }
@@ -79,7 +79,7 @@ where
     E: 'static,
     X: 'static,
 {
-    fn handle(&self, payload: P, _ctx: &EffectContext) -> Task<E, X> {
+    fn handle(&self, payload: P, _ctx: &EffectContext<'_>) -> Task<E, X> {
         Task::future((self)(payload))
     }
 }
@@ -91,7 +91,7 @@ where
     E: 'static,
     X: 'static,
 {
-    fn handle(&self, _payload: (), _ctx: &EffectContext) -> Task<E, X> {
+    fn handle(&self, _payload: (), _ctx: &EffectContext<'_>) -> Task<E, X> {
         Task::future((self)())
     }
 }
@@ -103,7 +103,7 @@ where
     E: 'static,
     X: 'static,
 {
-    fn handle(&self, payload: P, _ctx: &EffectContext) -> Task<E, X> {
+    fn handle(&self, payload: P, _ctx: &EffectContext<'_>) -> Task<E, X> {
         Task::stream((self)(payload))
     }
 }
@@ -115,7 +115,7 @@ where
     E: 'static,
     X: 'static,
 {
-    fn handle(&self, _payload: (), _ctx: &EffectContext) -> Task<E, X> {
+    fn handle(&self, _payload: (), _ctx: &EffectContext<'_>) -> Task<E, X> {
         Task::stream((self)())
     }
 }
@@ -130,7 +130,7 @@ macro_rules! impl_effect_handler_task {
             E: 'static,
             X: 'static,
         {
-            fn handle(&self, payload: P, ctx: &EffectContext) -> Task<E, X> {
+            fn handle(&self, payload: P, ctx: &EffectContext<'_>) -> Task<E, X> {
                 (self)(payload, $($T::from_context(ctx)),+)
             }
         }
@@ -148,7 +148,7 @@ macro_rules! impl_effect_handler_future {
             E: 'static,
             X: 'static,
         {
-            fn handle(&self, payload: P, ctx: &EffectContext) -> Task<E, X> {
+            fn handle(&self, payload: P, ctx: &EffectContext<'_>) -> Task<E, X> {
                 Task::future((self)(payload, $($T::from_context(ctx)),+))
             }
         }
@@ -166,7 +166,7 @@ macro_rules! impl_effect_handler_stream {
             E: 'static,
             X: 'static,
         {
-            fn handle(&self, payload: P, ctx: &EffectContext) -> Task<E, X> {
+            fn handle(&self, payload: P, ctx: &EffectContext<'_>) -> Task<E, X> {
                 Task::stream((self)(payload, $($T::from_context(ctx)),+))
             }
         }
@@ -655,8 +655,8 @@ mod tests {
 
         let mut resources = ResourceMap::new();
         resources.insert(DbUrl("pg://test".into()));
-        let ctx = EffectContext::new(resources);
-        let dispatch = |effect: Effect, ctx: &EffectContext| match effect {
+        let ctx = EffectContext::new(&resources);
+        let dispatch = |effect: Effect, ctx: &EffectContext<'_>| match effect {
             Effect::Log(msg) => log.handle(msg, ctx),
         };
         let _ = save.handle("x".into(), &ctx);
@@ -673,7 +673,7 @@ mod tests {
 
         let mut resources = ResourceMap::new();
         resources.insert(DbUrl("pg://test".into()));
-        let ctx = EffectContext::new(resources);
+        let ctx = EffectContext::new(&resources);
 
         match save.handle("x".to_string(), &ctx) {
             Task::Future(future) => {
@@ -696,7 +696,7 @@ mod tests {
 
         let mut resources = ResourceMap::new();
         resources.insert(DbUrl("pg://test".into()));
-        let ctx = EffectContext::new(resources);
+        let ctx = EffectContext::new(&resources);
 
         match watch.handle((), &ctx) {
             Task::Stream(stream) => {
@@ -945,7 +945,7 @@ mod tests {
     fn effect_context_extracts_registered_resources() {
         let mut resources = ResourceMap::new();
         resources.insert(ScopedDbUrl("pg://scope".to_string()));
-        let ctx = EffectContext::new(resources);
+        let ctx = EffectContext::new(&resources);
 
         let _ = scoped_save.handle((), &ctx);
     }
@@ -986,7 +986,7 @@ mod tests {
                 Ev::Increment(n) => increment.handle(n, ctx),
                 Ev::Rename(s) => rename.handle(s, ctx),
             })
-            .effect_handler(|_effect: Fx, _ctx: &EffectContext| Task::<Ev, Fx>::none())
+            .effect_handler(|_effect: Fx, _ctx: &EffectContext<'_>| Task::<Ev, Fx>::none())
             .build();
 
         runner.core().try_send_event(Ev::Increment(7)).unwrap();

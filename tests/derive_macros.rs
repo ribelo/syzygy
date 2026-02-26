@@ -77,7 +77,7 @@ fn derive_model_works_in_runtime() {
             Event::TriggerSave => trigger_save.handle((), ctx),
             Event::DoubleBorrow => double_borrow.handle((), ctx),
         })
-        .effect_handler(|effect: Effect, ctx: &EffectContext| match effect {
+        .effect_handler(|effect: Effect, ctx: &EffectContext<'_>| match effect {
             Effect::Save => persist.handle((), ctx),
         })
         .build();
@@ -112,7 +112,7 @@ fn derive_model_tracks_runtime_borrows() {
             Event::TriggerSave => trigger_save.handle((), ctx),
             Event::DoubleBorrow => double_borrow.handle((), ctx),
         })
-        .effect_handler(|effect: Effect, ctx: &EffectContext| match effect {
+        .effect_handler(|effect: Effect, ctx: &EffectContext<'_>| match effect {
             Effect::Save => persist.handle((), ctx),
         })
         .build();
@@ -198,7 +198,7 @@ fn derive_model_extract_attribute_projects_child_models() {
                 ExtractEvent::DoubleBorrow => double_borrow_child.handle((), ctx),
             },
         )
-        .effect_handler(|_effect: ExtractEffect, _ctx: &EffectContext| {
+        .effect_handler(|_effect: ExtractEffect, _ctx: &EffectContext<'_>| {
             Task::<ExtractEvent, ExtractEffect>::none()
         })
         .build();
@@ -242,7 +242,7 @@ fn derive_model_extract_attribute_detects_double_borrow() {
                 ExtractEvent::DoubleBorrow => double_borrow_child.handle((), ctx),
             },
         )
-        .effect_handler(|_effect: ExtractEffect, _ctx: &EffectContext| {
+        .effect_handler(|_effect: ExtractEffect, _ctx: &EffectContext<'_>| {
             Task::<ExtractEvent, ExtractEffect>::none()
         })
         .build();

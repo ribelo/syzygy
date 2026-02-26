@@ -126,7 +126,7 @@ async fn slow_compute(value: i32) -> Command<Event, Effect> {
     Command::event(Event::SetStatus(format!("computed: {result}")))
 }
 
-fn dispatch_effect(effect: Effect, ctx: &EffectContext) -> Task<Event, Effect> {
+fn dispatch_effect(effect: Effect, ctx: &EffectContext<'_>) -> Task<Event, Effect> {
     match effect {
         Effect::SaveToServer(v) => save_to_server.handle(v, ctx),
         Effect::StartTicker => dispatch!(ctx, start_ticker, ()),
@@ -234,7 +234,7 @@ mod tests {
         rt.block_on(async {
             let mut resources = ResourceMap::new();
             resources.insert(ServerUrl("https://test.example".to_string()));
-            let ctx = EffectContext::new(resources);
+            let ctx = EffectContext::new(&resources);
             let task = save_to_server.handle(99, &ctx);
             match task {
                 Task::Future(fut) => {
@@ -253,7 +253,9 @@ mod tests {
 
     #[test]
     fn stream_effect_produces_events() {
-        let task = start_ticker.handle((), &EffectContext::new(ResourceMap::new()));
+        let resources = ResourceMap::new();
+        let effect_ctx = EffectContext::new(&resources);
+        let task = start_ticker.handle((), &effect_ctx);
         match task {
             Task::Stream(mut stream) => {
                 let rt = compio::runtime::Runtime::new().expect("compio runtime");

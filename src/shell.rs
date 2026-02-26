@@ -1,4 +1,4 @@
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, VecDeque};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -14,7 +14,7 @@ use crate::error::ShellError;
 use crate::executor::Task;
 use crate::extract::EffectContext;
 
-pub(crate) type EffectHandlerFn<E, X> = Rc<dyn Fn(X, &EffectContext) -> Task<E, X>>;
+pub(crate) type EffectHandlerFn<E, X> = Rc<dyn for<'a> Fn(X, &EffectContext<'a>) -> Task<E, X>>;
 type TaskHandle = compio::runtime::JoinHandle<()>;
 
 #[derive(Debug)]
@@ -25,6 +25,7 @@ struct ActiveTaskEntry {
 
 type ActiveTasks = Rc<RefCell<HashMap<CancelId, ActiveTaskEntry>>>;
 type DeferredEvents<E> = Rc<RefCell<VecDeque<E>>>;
+type ClosedFlag = Rc<Cell<bool>>;
 
 #[derive(Debug)]
 struct SpawnedTask {
@@ -82,7 +83,7 @@ where
     activity: Activity,
     active_tasks: ActiveTasks,
     deferred_events: DeferredEvents<E>,
-    closed: bool,
+    closed: ClosedFlag,
 }
 
 impl<E, X> Shell<E, X>
@@ -102,12 +103,12 @@ where
             activity: Activity::new(),
             active_tasks: Rc::new(RefCell::new(HashMap::new())),
             deferred_events: Rc::new(RefCell::new(VecDeque::new())),
-            closed: false,
+            closed: Rc::new(Cell::new(false)),
         }
     }
 
     pub fn dispatch_command(&mut self, command: Command<E, X>) -> Result<(), ShellError> {
-        if self.closed {
+        if self.closed.get() {
             return Ok(());
         }
 
@@ -119,7 +120,7 @@ where
             &self.activity,
             &self.active_tasks,
             &self.deferred_events,
-            true,
+            &self.closed,
         )
     }
 
@@ -148,11 +149,11 @@ where
 
     #[must_use]
     pub fn is_closed(&self) -> bool {
-        self.closed
+        self.closed.get()
     }
 
     pub fn shutdown(&mut self) {
-        self.closed = true;
+        self.closed.set(true);
         self.active_tasks.borrow_mut().clear();
         self.deferred_events.borrow_mut().clear();
     }
@@ -185,7 +186,7 @@ fn route_command_iterative<E, X>(
     activity: &Activity,
     active_tasks: &ActiveTasks,
     deferred_events: &DeferredEvents<E>,
-    strict_event_send: bool,
+    closed: &ClosedFlag,
 ) -> Result<(), ShellError>
 where
     E: 'static,
@@ -194,26 +195,15 @@ where
     let mut queue = VecDeque::from([initial_command]);
 
     while let Some(command) = queue.pop_front() {
+        if closed.get() {
+            return Ok(());
+        }
+
         for step in command {
             match step {
                 CommandStep::Event(event) => {
-                    if strict_event_send {
-                        event_tx
-                            .send(event)
-                            .map_err(|_| ShellError::EventChannelClosed)?;
-                    } else {
-                        match event_tx.try_send_owned(event) {
-                            Ok(()) => {}
-                            Err(crossbeam_channel::TrySendError::Full(event)) => {
-                                deferred_events.borrow_mut().push_back(event);
-                            }
-                            Err(crossbeam_channel::TrySendError::Disconnected(_)) => {
-                                report_spawned_event_drop(
-                                    "event channel disconnected while routing spawned event",
-                                );
-                            }
-                        }
-                    }
+                    route_event(event_tx, deferred_events, event)
+                        .map_err(|_| ShellError::EventChannelClosed)?;
                 }
                 CommandStep::Effect(effect) => {
                     if let Some(spawned) = run_effect_task(
@@ -225,6 +215,7 @@ where
                         activity,
                         active_tasks,
                         deferred_events,
+                        closed,
                         &mut queue,
                     ) {
                         spawned.handle.detach();
@@ -241,6 +232,7 @@ where
                         activity,
                         active_tasks,
                         deferred_events,
+                        closed,
                         &mut queue,
                     ) {
                         if let Some(token) = spawned.token {
@@ -276,13 +268,14 @@ fn run_effect_task<E, X>(
     activity: &Activity,
     active_tasks: &ActiveTasks,
     deferred_events: &DeferredEvents<E>,
+    closed: &ClosedFlag,
     queue: &mut VecDeque<Command<E, X>>,
 ) -> Option<SpawnedTask>
 where
     E: 'static,
     X: 'static,
 {
-    let ctx = EffectContext::new(resources.clone());
+    let ctx = EffectContext::new(resources);
     let task = effect_handler(effect, &ctx);
     spawn_task(
         task,
@@ -293,6 +286,7 @@ where
         activity,
         active_tasks,
         deferred_events,
+        closed,
         queue,
     )
 }
@@ -307,6 +301,7 @@ fn spawn_task<E, X>(
     activity: &Activity,
     active_tasks: &ActiveTasks,
     deferred_events: &DeferredEvents<E>,
+    closed: &ClosedFlag,
     queue: &mut VecDeque<Command<E, X>>,
 ) -> Option<SpawnedTask>
 where
@@ -333,6 +328,7 @@ where
             let activity = activity.clone();
             let active_tasks = Rc::clone(active_tasks);
             let deferred_events = Rc::clone(deferred_events);
+            let closed = Rc::clone(closed);
             let token = tracked_slot.map(|_| next_task_token());
             activity.inc();
             let lifecycle_guard = TaskLifecycleGuard::new(
@@ -345,6 +341,9 @@ where
             let handle = compio::runtime::spawn(async move {
                 let _lifecycle_guard = lifecycle_guard;
                 let command = future.await;
+                if closed.get() {
+                    return;
+                }
                 route_spawned_command(
                     command,
                     &event_tx,
@@ -353,6 +352,7 @@ where
                     &activity,
                     &active_tasks,
                     &deferred_events,
+                    &closed,
                 );
             });
 
@@ -374,6 +374,7 @@ where
             let activity = activity.clone();
             let active_tasks = Rc::clone(active_tasks);
             let deferred_events = Rc::clone(deferred_events);
+            let closed = Rc::clone(closed);
             let token = tracked_slot.map(|_| next_task_token());
             activity.inc();
             let lifecycle_guard = TaskLifecycleGuard::new(
@@ -387,6 +388,10 @@ where
                 let _lifecycle_guard = lifecycle_guard;
                 futures::pin_mut!(stream);
                 while let Some(command) = stream.next().await {
+                    if closed.get() {
+                        break;
+                    }
+
                     route_spawned_command(
                         command,
                         &event_tx,
@@ -395,7 +400,12 @@ where
                         &activity,
                         &active_tasks,
                         &deferred_events,
+                        &closed,
                     );
+
+                    if closed.get() {
+                        break;
+                    }
                 }
             });
 
@@ -404,6 +414,7 @@ where
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn route_spawned_command<E, X>(
     command: Command<E, X>,
     event_tx: &EventSender<E>,
@@ -412,11 +423,16 @@ fn route_spawned_command<E, X>(
     activity: &Activity,
     active_tasks: &ActiveTasks,
     deferred_events: &DeferredEvents<E>,
+    closed: &ClosedFlag,
 ) where
     E: 'static,
     X: 'static,
 {
-    let _ = route_command_iterative(
+    if closed.get() {
+        return;
+    }
+
+    if route_command_iterative(
         command,
         event_tx,
         effect_handler,
@@ -424,8 +440,34 @@ fn route_spawned_command<E, X>(
         activity,
         active_tasks,
         deferred_events,
-        false,
-    );
+        closed,
+    )
+    .is_err()
+    {
+        report_spawned_event_drop("event channel disconnected while routing spawned command");
+    }
+}
+
+fn route_event<E>(
+    event_tx: &EventSender<E>,
+    deferred_events: &DeferredEvents<E>,
+    event: E,
+) -> Result<(), crossbeam_channel::TrySendError<E>> {
+    if !deferred_events.borrow().is_empty() {
+        deferred_events.borrow_mut().push_back(event);
+        return Ok(());
+    }
+
+    match event_tx.try_send_owned(event) {
+        Ok(()) => Ok(()),
+        Err(crossbeam_channel::TrySendError::Full(event)) => {
+            deferred_events.borrow_mut().push_back(event);
+            Ok(())
+        }
+        Err(crossbeam_channel::TrySendError::Disconnected(event)) => {
+            Err(crossbeam_channel::TrySendError::Disconnected(event))
+        }
+    }
 }
 
 fn flush_deferred_events<E>(

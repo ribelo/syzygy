@@ -64,7 +64,7 @@ fn dispatch_event(event: Event, ctx: &EventContext<Model>) -> Command<Event, Eff
     }
 }
 
-fn dispatch_effect(effect: Effect, ctx: &EffectContext) -> Task<Event, Effect> {
+fn dispatch_effect(effect: Effect, ctx: &EffectContext<'_>) -> Task<Event, Effect> {
     match effect {
         Effect::SaveToServer(value) => save_to_server.handle(value, ctx),
     }
@@ -151,7 +151,7 @@ mod tests {
         for effect in effects {
             let mut resources = ResourceMap::new();
             resources.insert(ServerUrl("https://api.example.test/counter".to_string()));
-            let effect_ctx = EffectContext::new(resources);
+            let effect_ctx = EffectContext::new(&resources);
             let task = dispatch_effect(effect, &effect_ctx);
             run_task_events(&mut store, task);
         }

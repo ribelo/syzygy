@@ -6,6 +6,7 @@ use crate::core::{Core, EventHandlerFn};
 use crate::dependency::ResourceMap;
 use crate::executor::Task;
 use crate::extract::{EffectContext, EventContext};
+use crate::feature::Feature;
 use crate::reducer::Reducer;
 use crate::shell::{EffectHandlerFn, Shell};
 use crate::syzygy::{Syzygy, SyzygyConfig};
@@ -94,6 +95,23 @@ where
     {
         self.event_handler(move |event, ctx| reducer.reduce(event, ctx))
     }
+
+    #[must_use]
+    pub fn feature<F>(self, feature: F) -> ConfiguredBuilder<Event, Effect, Model>
+    where
+        F: Feature<State = Model, Event = Event, Effect = Effect> + 'static,
+    {
+        let feature = Rc::new(feature);
+        let reducer_feature = Rc::clone(&feature);
+        let effect_feature = Rc::clone(&feature);
+
+        let mut configured =
+            self.event_handler(move |event, ctx| reducer_feature.reduce(event, ctx));
+        configured.effect_handler = Some(Rc::new(move |effect, ctx| {
+            effect_feature.handle_effect(effect, ctx)
+        }));
+        configured
+    }
 }
 
 pub struct ConfiguredBuilder<Event, Effect, Model>
@@ -119,7 +137,7 @@ where
     #[must_use]
     pub fn effect_handler<H>(mut self, handler: H) -> Self
     where
-        H: Fn(Effect, &EffectContext) -> Task<Event, Effect> + 'static,
+        H: for<'a> Fn(Effect, &EffectContext<'a>) -> Task<Event, Effect> + 'static,
     {
         self.effect_handler = Some(Rc::new(handler));
         self
@@ -181,7 +199,7 @@ where
 
         let effect_handler = self
             .effect_handler
-            .unwrap_or_else(|| Rc::new(|_effect, _ctx: &EffectContext| Task::none()));
+            .unwrap_or_else(|| Rc::new(|_effect, _ctx: &EffectContext<'_>| Task::none()));
 
         let shell = Shell::new(event_tx, effect_handler, self.resources);
         Syzygy::with_config(core, shell, self.syzygy_config)

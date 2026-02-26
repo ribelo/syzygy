@@ -26,6 +26,28 @@ impl CancelId {
             hash: hasher.finish(),
         }
     }
+
+    #[must_use]
+    fn map_namespace<Event, Effect, E2, X2>(self) -> Self
+    where
+        Event: 'static,
+        Effect: 'static,
+        E2: 'static,
+        X2: 'static,
+    {
+        let mut hasher = FxHasher::default();
+        self.type_id.hash(&mut hasher);
+        self.hash.hash(&mut hasher);
+        TypeId::of::<Event>().hash(&mut hasher);
+        TypeId::of::<Effect>().hash(&mut hasher);
+        TypeId::of::<E2>().hash(&mut hasher);
+        TypeId::of::<X2>().hash(&mut hasher);
+
+        Self {
+            type_id: TypeId::of::<(Event, Effect, E2, X2)>(),
+            hash: hasher.finish(),
+        }
+    }
 }
 
 pub trait IntoCancelId {
@@ -236,11 +258,13 @@ impl<Event, Effect> Command<Event, Effect> {
     ///
     /// Useful when embedding child commands into parent commands.
     #[must_use]
-    pub fn map<E2, X2>(
-        self,
-        fe: impl Fn(Event) -> E2,
-        fx: impl Fn(Effect) -> X2,
-    ) -> Command<E2, X2> {
+    pub fn map<E2, X2>(self, fe: impl Fn(Event) -> E2, fx: impl Fn(Effect) -> X2) -> Command<E2, X2>
+    where
+        Event: 'static,
+        Effect: 'static,
+        E2: 'static,
+        X2: 'static,
+    {
         let outputs = self
             .outputs
             .into_iter()
@@ -248,10 +272,12 @@ impl<Event, Effect> Command<Event, Effect> {
                 CommandStep::Event(event) => CommandStep::Event(fe(event)),
                 CommandStep::Effect(effect) => CommandStep::Effect(fx(effect)),
                 CommandStep::Tracked { id, effect } => CommandStep::Tracked {
-                    id,
+                    id: id.map_namespace::<Event, Effect, E2, X2>(),
                     effect: fx(effect),
                 },
-                CommandStep::Cancel { id } => CommandStep::Cancel { id },
+                CommandStep::Cancel { id } => CommandStep::Cancel {
+                    id: id.map_namespace::<Event, Effect, E2, X2>(),
+                },
             })
             .collect();
 
@@ -260,13 +286,23 @@ impl<Event, Effect> Command<Event, Effect> {
 
     /// Transform only the event type.
     #[must_use]
-    pub fn map_event<E2>(self, f: impl Fn(Event) -> E2) -> Command<E2, Effect> {
+    pub fn map_event<E2>(self, f: impl Fn(Event) -> E2) -> Command<E2, Effect>
+    where
+        Event: 'static,
+        Effect: 'static,
+        E2: 'static,
+    {
         self.map(f, std::convert::identity)
     }
 
     /// Transform only the effect type.
     #[must_use]
-    pub fn map_effect<X2>(self, f: impl Fn(Effect) -> X2) -> Command<Event, X2> {
+    pub fn map_effect<X2>(self, f: impl Fn(Effect) -> X2) -> Command<Event, X2>
+    where
+        Event: 'static,
+        Effect: 'static,
+        X2: 'static,
+    {
         self.map(std::convert::identity, f)
     }
 
@@ -534,7 +570,7 @@ mod tests {
     }
 
     #[test]
-    fn tracked_steps_map_effects_but_keep_slots() {
+    fn tracked_steps_map_effects_are_namespaced_consistently() {
         #[derive(Debug, Clone, PartialEq, Eq, Hash)]
         enum Slot {
             Active,
@@ -545,17 +581,79 @@ mod tests {
                 .and_cancel(Slot::Active)
                 .map_effect(ParentEffect::Child);
 
-        let id = CancelId::new(Slot::Active);
-        assert_eq!(
-            mapped.into_iter().collect::<Vec<_>>(),
-            vec![
+        let steps = mapped.into_iter().collect::<Vec<_>>();
+        assert_eq!(steps.len(), 2);
+
+        match (&steps[0], &steps[1]) {
+            (
                 CommandStep::Tracked {
-                    id,
-                    effect: ParentEffect::Child(ChildEffect::Load),
+                    id: tracked_id,
+                    effect,
                 },
-                CommandStep::Cancel { id },
-            ]
-        );
+                CommandStep::Cancel { id: cancel_id },
+            ) => {
+                assert_eq!(*effect, ParentEffect::Child(ChildEffect::Load));
+                assert_eq!(tracked_id, cancel_id);
+                assert_ne!(*tracked_id, CancelId::new(Slot::Active));
+            }
+            _ => panic!("expected tracked + cancel steps"),
+        }
+    }
+
+    #[test]
+    fn map_namespaces_tracked_slots_across_component_boundaries() {
+        #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+        enum Slot {
+            Active,
+        }
+
+        #[derive(Debug, Clone, PartialEq, Eq)]
+        struct ChildEventA;
+
+        #[derive(Debug, Clone, PartialEq, Eq)]
+        struct ChildEventB;
+
+        #[derive(Debug, Clone, PartialEq, Eq)]
+        enum ChildEffectA {
+            Work,
+        }
+
+        #[derive(Debug, Clone, PartialEq, Eq)]
+        enum ChildEffectB {
+            Work,
+        }
+
+        #[derive(Debug, Clone, PartialEq, Eq)]
+        enum ParentEvent {
+            A(ChildEventA),
+            B(ChildEventB),
+        }
+
+        #[derive(Debug, Clone, PartialEq, Eq)]
+        enum ParentEffect {
+            A(ChildEffectA),
+            B(ChildEffectB),
+        }
+
+        let a = Command::<ChildEventA, ChildEffectA>::track(Slot::Active, ChildEffectA::Work)
+            .map(ParentEvent::A, ParentEffect::A)
+            .into_iter()
+            .collect::<Vec<_>>();
+        let b = Command::<ChildEventB, ChildEffectB>::track(Slot::Active, ChildEffectB::Work)
+            .map(ParentEvent::B, ParentEffect::B)
+            .into_iter()
+            .collect::<Vec<_>>();
+
+        let a_id = match &a[0] {
+            CommandStep::Tracked { id, .. } => *id,
+            _ => panic!("expected tracked step"),
+        };
+        let b_id = match &b[0] {
+            CommandStep::Tracked { id, .. } => *id,
+            _ => panic!("expected tracked step"),
+        };
+
+        assert_ne!(a_id, b_id);
     }
 
     #[test]

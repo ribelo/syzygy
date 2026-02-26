@@ -86,6 +86,10 @@ where
     {
         while !condition(&self.core, &self.shell) {
             let did_work = self.step()?;
+            if self.shell.is_closed() {
+                return Ok(());
+            }
+
             if !did_work {
                 park_for_runtime(self.config.idle_sleep);
             }
