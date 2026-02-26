@@ -1,19 +1,57 @@
+use std::any::{Any, TypeId};
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
+
 use smallvec::SmallVec;
+
+/// Stable, type-tagged identifier for a cancellable effect slot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct CancelId {
+    type_id: TypeId,
+    hash: u64,
+}
+
+impl CancelId {
+    #[must_use]
+    pub fn new<T: Hash + 'static>(value: T) -> Self {
+        if let Some(existing) = (&value as &dyn Any).downcast_ref::<Self>() {
+            return *existing;
+        }
+
+        let mut hasher = DefaultHasher::new();
+        value.hash(&mut hasher);
+
+        Self {
+            type_id: TypeId::of::<T>(),
+            hash: hasher.finish(),
+        }
+    }
+}
+
+pub trait IntoCancelId {
+    fn into_cancel_id(self) -> CancelId;
+}
+
+impl<T> IntoCancelId for T
+where
+    T: Hash + 'static,
+{
+    fn into_cancel_id(self) -> CancelId {
+        CancelId::new(self)
+    }
+}
 
 /// One atomic operation in the Core→Shell pipeline.
 ///
 /// This is what actually happens when your event handler returns a Command.
 /// Events go back to Core for immediate processing. Effects get queued for
-/// async execution. Both `Batch` and `Parallel` dispatch effects immediately;
-/// actual concurrency depends on the registered executors.
+/// async execution.
 #[derive(Clone)]
 pub enum CommandStep<Event, Effect> {
     Event(Event),
     Effect(Effect),
-    /// Effects dispatched in order; executors determine actual execution order.
-    Batch(Vec<Effect>),
-    /// Effects dispatched without waiting between each submission.
-    Parallel(Vec<Effect>),
+    Tracked { id: CancelId, effect: Effect },
+    Cancel { id: CancelId },
 }
 
 impl<Event, Effect> PartialEq for CommandStep<Event, Effect>
@@ -25,7 +63,17 @@ where
         match (self, other) {
             (Self::Event(a), Self::Event(b)) => a == b,
             (Self::Effect(a), Self::Effect(b)) => a == b,
-            (Self::Batch(a), Self::Batch(b)) | (Self::Parallel(a), Self::Parallel(b)) => a == b,
+            (
+                Self::Tracked {
+                    id: id_a,
+                    effect: effect_a,
+                },
+                Self::Tracked {
+                    id: id_b,
+                    effect: effect_b,
+                },
+            ) => id_a == id_b && effect_a == effect_b,
+            (Self::Cancel { id: id_a }, Self::Cancel { id: id_b }) => id_a == id_b,
             _ => false,
         }
     }
@@ -40,8 +88,12 @@ where
         match self {
             Self::Event(e) => f.debug_tuple("Event").field(e).finish(),
             Self::Effect(x) => f.debug_tuple("Effect").field(x).finish(),
-            Self::Batch(v) => f.debug_tuple("Batch").field(v).finish(),
-            Self::Parallel(v) => f.debug_tuple("Parallel").field(v).finish(),
+            Self::Tracked { id, effect } => f
+                .debug_struct("Tracked")
+                .field("id", id)
+                .field("effect", effect)
+                .finish(),
+            Self::Cancel { id } => f.debug_struct("Cancel").field("id", id).finish(),
         }
     }
 }
@@ -131,6 +183,21 @@ impl<Event, Effect> Command<Event, Effect> {
         Self::from_step(CommandStep::Effect(effect.into()))
     }
 
+    /// Creates a command that schedules an effect in a cancellable slot.
+    pub fn track(id: impl IntoCancelId, effect: impl Into<Effect>) -> Self {
+        Self::from_step(CommandStep::Tracked {
+            id: id.into_cancel_id(),
+            effect: effect.into(),
+        })
+    }
+
+    /// Creates a command that cancels the task currently running in `id`.
+    pub fn cancel(id: impl IntoCancelId) -> Self {
+        Self::from_step(CommandStep::Cancel {
+            id: id.into_cancel_id(),
+        })
+    }
+
     /// Creates a command that fires multiple events in order.
     ///
     /// Events are processed sequentially in the order provided. Each event
@@ -139,31 +206,6 @@ impl<Event, Effect> Command<Event, Effect> {
     pub fn events(events: impl IntoIterator<Item = Event>) -> Self {
         let outputs = events.into_iter().map(CommandStep::Event).collect();
         Self { outputs }
-    }
-
-    /// Creates a command that runs multiple effects as a single Batch step.
-    ///
-    /// The Shell dispatches the effects in order. Whether they end up running
-    /// sequentially or concurrently depends on what each effect returns and
-    /// how the registered executors schedule that work.
-    pub fn effects(effects: impl IntoIterator<Item = Effect>) -> Self {
-        Self::sequential(effects)
-    }
-
-    /// Alias for [`Command::effects`] that makes ordering intent explicit.
-    pub fn sequential(effects: impl IntoIterator<Item = Effect>) -> Self {
-        let batch: Vec<Effect> = effects.into_iter().collect();
-        Self::from_step(CommandStep::Batch(batch))
-    }
-
-    /// Creates a command that runs multiple effects with no submission gaps.
-    ///
-    /// Each effect is dispatched without waiting for the previous one to complete. When
-    /// using an executor that supports overlap, the effects can run concurrently. On
-    /// executors that do not, they will still execute in order but without failing.
-    pub fn parallel(effects: impl IntoIterator<Item = Effect>) -> Self {
-        let batch: Vec<Effect> = effects.into_iter().collect();
-        Self::from_step(CommandStep::Parallel(batch))
     }
 
     /// Combines multiple commands into one.
@@ -186,17 +228,8 @@ impl<Event, Effect> Command<Event, Effect> {
     }
 
     /// Returns the total number of steps in this command.
-    ///
-    /// Counts individual events and effects as 1 each. Batch and parallel effects
-    /// contribute their length to the total.
     pub fn len(&self) -> usize {
-        self.outputs
-            .iter()
-            .map(|o| match o {
-                CommandStep::Batch(v) | CommandStep::Parallel(v) => v.len(),
-                CommandStep::Event(_) | CommandStep::Effect(_) => 1,
-            })
-            .sum()
+        self.outputs.len()
     }
 
     /// Transform event and effect types.
@@ -214,12 +247,11 @@ impl<Event, Effect> Command<Event, Effect> {
             .map(|step| match step {
                 CommandStep::Event(event) => CommandStep::Event(fe(event)),
                 CommandStep::Effect(effect) => CommandStep::Effect(fx(effect)),
-                CommandStep::Batch(effects) => {
-                    CommandStep::Batch(effects.into_iter().map(&fx).collect())
-                }
-                CommandStep::Parallel(effects) => {
-                    CommandStep::Parallel(effects.into_iter().map(&fx).collect())
-                }
+                CommandStep::Tracked { id, effect } => CommandStep::Tracked {
+                    id,
+                    effect: fx(effect),
+                },
+                CommandStep::Cancel { id } => CommandStep::Cancel { id },
             })
             .collect();
 
@@ -255,6 +287,27 @@ impl<Event, Effect> Command<Event, Effect> {
     #[inline]
     pub fn and_effect(mut self, effect: impl Into<Effect>) -> Self {
         self.outputs.push(CommandStep::Effect(effect.into()));
+        self
+    }
+
+    /// Chain another tracked effect to this command.
+    #[must_use]
+    #[inline]
+    pub fn and_track(mut self, id: impl IntoCancelId, effect: impl Into<Effect>) -> Self {
+        self.outputs.push(CommandStep::Tracked {
+            id: id.into_cancel_id(),
+            effect: effect.into(),
+        });
+        self
+    }
+
+    /// Chain a cancellation step to this command.
+    #[must_use]
+    #[inline]
+    pub fn and_cancel(mut self, id: impl IntoCancelId) -> Self {
+        self.outputs.push(CommandStep::Cancel {
+            id: id.into_cancel_id(),
+        });
         self
     }
 
@@ -335,7 +388,7 @@ impl<Event, Effect> From<()> for Command<Event, Effect> {
 /// These functions mirror the inherent constructors on [`Command`] but live in a module that can
 /// be glob-imported from the prelude (`use syzygy::prelude::command::*;`) for quick prototyping.
 pub mod builders {
-    use super::Command;
+    use super::{Command, IntoCancelId};
 
     /// Construct a no-op command.
     #[inline]
@@ -367,31 +420,21 @@ pub mod builders {
         Command::effect(effect)
     }
 
-    /// Schedule a batch of effects sequentially.
+    /// Schedule a tracked effect slot.
     #[inline]
     #[must_use]
-    pub fn effects<Event, Effect>(
-        effects: impl IntoIterator<Item = Effect>,
+    pub fn track<Event, Effect>(
+        id: impl IntoCancelId,
+        effect: impl Into<Effect>,
     ) -> Command<Event, Effect> {
-        Command::effects(effects)
+        Command::track(id, effect)
     }
 
-    /// Alias for [`effects`] when you want to spell out intent explicitly.
+    /// Cancel a tracked effect slot.
     #[inline]
     #[must_use]
-    pub fn sequential<Event, Effect>(
-        effects: impl IntoIterator<Item = Effect>,
-    ) -> Command<Event, Effect> {
-        Command::sequential(effects)
-    }
-
-    /// Run effects without submission gaps (executor dependent concurrency).
-    #[inline]
-    #[must_use]
-    pub fn parallel<Event, Effect>(
-        effects: impl IntoIterator<Item = Effect>,
-    ) -> Command<Event, Effect> {
-        Command::parallel(effects)
+    pub fn cancel<Event, Effect>(id: impl IntoCancelId) -> Command<Event, Effect> {
+        Command::cancel(id)
     }
 
     /// Flatten multiple commands into one.
@@ -406,7 +449,7 @@ pub mod builders {
 
 #[cfg(test)]
 mod tests {
-    use super::{Command, CommandStep};
+    use super::{CancelId, Command, CommandStep};
 
     #[derive(Debug, Clone, PartialEq, Eq)]
     enum ChildEvent {
@@ -422,8 +465,6 @@ mod tests {
     enum ChildEffect {
         Load,
         Save,
-        Sync,
-        Flush,
     }
 
     #[derive(Debug, Clone, PartialEq, Eq)]
@@ -469,23 +510,16 @@ mod tests {
     }
 
     #[test]
-    fn map_effect_transforms_batch_and_parallel_steps() {
-        let mapped: Command<ChildEvent, ParentEffect> =
-            Command::sequential([ChildEffect::Load, ChildEffect::Save])
-                .and(Command::parallel([ChildEffect::Sync, ChildEffect::Flush]))
-                .map_effect(ParentEffect::Child);
+    fn map_effect_transforms_multiple_effect_steps() {
+        let mapped: Command<ChildEvent, ParentEffect> = Command::effect(ChildEffect::Load)
+            .and_effect(ChildEffect::Save)
+            .map_effect(ParentEffect::Child);
 
         assert_eq!(
             mapped.into_iter().collect::<Vec<_>>(),
             vec![
-                CommandStep::Batch(vec![
-                    ParentEffect::Child(ChildEffect::Load),
-                    ParentEffect::Child(ChildEffect::Save),
-                ]),
-                CommandStep::Parallel(vec![
-                    ParentEffect::Child(ChildEffect::Sync),
-                    ParentEffect::Child(ChildEffect::Flush),
-                ]),
+                CommandStep::Effect(ParentEffect::Child(ChildEffect::Load)),
+                CommandStep::Effect(ParentEffect::Child(ChildEffect::Save)),
             ]
         );
     }
@@ -497,5 +531,38 @@ mod tests {
 
         assert!(mapped.is_empty());
         assert_eq!(mapped.into_iter().count(), 0);
+    }
+
+    #[test]
+    fn tracked_steps_map_effects_but_keep_slots() {
+        #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+        enum Slot {
+            Active,
+        }
+
+        let mapped: Command<ChildEvent, ParentEffect> =
+            Command::track(Slot::Active, ChildEffect::Load)
+                .and_cancel(Slot::Active)
+                .map_effect(ParentEffect::Child);
+
+        let id = CancelId::new(Slot::Active);
+        assert_eq!(
+            mapped.into_iter().collect::<Vec<_>>(),
+            vec![
+                CommandStep::Tracked {
+                    id,
+                    effect: ParentEffect::Child(ChildEffect::Load),
+                },
+                CommandStep::Cancel { id },
+            ]
+        );
+    }
+
+    #[test]
+    fn cancel_id_preserves_type_identity() {
+        let u32_id = CancelId::new(7_u32);
+        let u64_id = CancelId::new(7_u64);
+
+        assert_ne!(u32_id, u64_id);
     }
 }

@@ -21,7 +21,7 @@ Most software isn't web servers - it's desktop apps, games, CLI tools, IoT devic
 - TEA-first routing — parent event handlers use explicit `match` routing for child domains
 - User-defined effects — No built-in effects; your types, your logic
 - Executor Abstraction — Async, blocking, and resource-blocking executors
-- Batch and Parallel Effect Steps — Parallelism depends on your executor
+- Composable Effect Steps — emit one `Effect` step per side effect you want to launch
 - Error-as-events — Recommended pattern; modeled in your `Event` type
 - Events only need `Send` — `Rc`-backed events are welcome; `Sync` is no longer required
 - Panic hooks — wire executor panics back into your event graph with `with_panic_handler`
@@ -141,13 +141,13 @@ fn on_increment(model: &mut AppModel) -> Command<AppEvent, AppEffect> {
 
 fn on_load_data(model: &mut AppModel) -> Command<AppEvent, AppEffect> {
     model.is_loading = true;
-    cmd::parallel([
-        AppEffect::HttpRequest {
+    cmd::batch([
+        cmd::effect(AppEffect::HttpRequest {
             url: "https://api.example.com/data".to_string(),
-        },
-        AppEffect::Log {
+        }),
+        cmd::effect(AppEffect::Log {
             message: "Loading data…".to_string(),
-        },
+        }),
     ])
 }
 
@@ -284,7 +284,7 @@ let mut runner = Syzygy::builder::<Event, Effect>()
 - Command helpers live in both `command::` and the shorter `cmd::` namespaces—use whichever reads best.
 - `with_panic_handler` transforms executor panics into explicit events so Core stays informed.
 
-> Tip: add `use syzygy::prelude::command;` to import lightweight helpers like `command::event(...)` and `command::parallel([...])` when you prefer DSL-style builders over associated functions.
+> Tip: add `use syzygy::prelude::command;` to import lightweight helpers like `command::event(...)` and `command::batch([...])` when you prefer DSL-style builders over associated functions.
 
 > **Resources are cloned per effect** – use `Arc` (or other cheap-to-clone handles) for expensive dependencies like HTTP clients and DB pools. If you require interior mutability, wrap fields inside your resource struct (e.g. `Arc<Mutex<T>>`).
 
@@ -388,7 +388,7 @@ Command::effect(MyEffect::HttpRequest { url: "https://api.example.com".to_string
 // Send event back to Core immediately
 Command::event(MyEvent::DataLoaded { data: "hello".to_string() })
 
-// Batch effects - run sequentially, no race conditions
+// Emit multiple effects in one command
 Command::batch([
     Command::effect(MyEffect::Log { message: "Starting".to_string() }),
     Command::effect(MyEffect::HttpRequest { url: "https://api.example.com".to_string() }),
@@ -403,19 +403,17 @@ Command::none()
 Commands compose predictably - no magic, no surprises:
 
 ```rust
-// Sequential effects - each waits for the previous
+// Emit multiple effects in one reducer return
 Command::batch([
     Command::effect(Effect::ValidateInput),
     Command::effect(Effect::SaveToDatabase),
     Command::effect(Effect::SendNotification),
 ])
 
-// Parallel effects - use multiple Commands in a batch
-Command::batch([
-    Command::effect(Effect::FetchUserData),
-    Command::effect(Effect::FetchProductData),
-    Command::effect(Effect::FetchOrderData),
-])
+// Model strict ordering through follow-up events
+fn on_validated() -> Command<Event, Effect> {
+    Command::effect(Effect::SaveToDatabase)
+}
 ```
 
 ## Key Concepts

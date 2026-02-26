@@ -238,7 +238,7 @@ where
             Task::Resolved(command) => {
                 self.feed_received_command(command);
             }
-            Task::Once(future) => {
+            Task::Future(future) => {
                 let command = block_on(future);
                 self.feed_received_command(command);
             }
@@ -258,12 +258,10 @@ where
                 CommandStep::Event(event) => {
                     self.send_from_receive(event);
                 }
-                CommandStep::Effect(effect) => {
+                CommandStep::Effect(effect) | CommandStep::Tracked { effect, .. } => {
                     self.pending_effects.push(effect);
                 }
-                CommandStep::Batch(effects) | CommandStep::Parallel(effects) => {
-                    self.pending_effects.extend(effects);
-                }
+                CommandStep::Cancel { .. } => {}
             }
         }
     }
@@ -280,12 +278,10 @@ where
                 CommandStep::Event(event) => {
                     self.pending_events.push_back(event);
                 }
-                CommandStep::Effect(effect) => {
+                CommandStep::Effect(effect) | CommandStep::Tracked { effect, .. } => {
                     self.pending_effects.push(effect);
                 }
-                CommandStep::Batch(effects) | CommandStep::Parallel(effects) => {
-                    self.pending_effects.extend(effects);
-                }
+                CommandStep::Cancel { .. } => {}
             }
         }
     }
@@ -407,8 +403,9 @@ mod tests {
             Event::Start => Command::event(Event::Increment(2)),
             Event::SaveDone => save_done.handle((), ctx),
             Event::EmitMany => Command::effect(Effect::First)
-                .and(Command::sequential([Effect::Second, Effect::Third]))
-                .and(Command::parallel([Effect::Fourth])),
+                .and_effect(Effect::Second)
+                .and_effect(Effect::Third)
+                .and_effect(Effect::Fourth),
             Event::DoubleBorrow => bad_double_borrow.handle((), ctx),
         }
     }
@@ -437,7 +434,7 @@ mod tests {
     }
 
     #[test]
-    fn collects_batch_and_parallel_effects() {
+    fn collects_multiple_effect_steps() {
         let mut store = TestStore::new(Model::default(), dispatch);
 
         store.send(Event::EmitMany);

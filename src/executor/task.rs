@@ -11,7 +11,7 @@ use crate::command::Command;
 pub enum Task<E, X> {
     None,
     Resolved(Command<E, X>),
-    Once(Pin<Box<dyn Future<Output = Command<E, X>> + 'static>>),
+    Future(Pin<Box<dyn Future<Output = Command<E, X>> + 'static>>),
     Stream(Pin<Box<dyn Stream<Item = Command<E, X>> + 'static>>),
 }
 
@@ -36,11 +36,38 @@ where
     }
 
     #[must_use]
+    pub fn future<Fut>(future: Fut) -> Self
+    where
+        Fut: Future<Output = Command<E, X>> + 'static,
+    {
+        Self::Future(Box::pin(future))
+    }
+
+    #[must_use]
     pub fn once<Fut>(future: Fut) -> Self
     where
         Fut: Future<Output = Command<E, X>> + 'static,
     {
-        Self::Once(Box::pin(future))
+        Self::future(future)
+    }
+
+    #[must_use]
+    pub fn blocking<F>(blocking: F) -> Self
+    where
+        F: FnOnce() -> Command<E, X> + Send + 'static,
+        E: Send,
+        X: Send,
+    {
+        Self::future(async move {
+            if compio::runtime::Runtime::try_with_current(|_| ()).is_ok() {
+                match compio::runtime::spawn_blocking(blocking).await {
+                    Ok(command) => command,
+                    Err(panic) => std::panic::resume_unwind(panic),
+                }
+            } else {
+                blocking()
+            }
+        })
     }
 
     #[must_use]
@@ -69,10 +96,10 @@ where
             Self::Resolved(command) => {
                 Task::Resolved(command.map(|event| fe(event), |effect| fx(effect)))
             }
-            Self::Once(future) => {
+            Self::Future(future) => {
                 let fe = Rc::clone(&fe);
                 let fx = Rc::clone(&fx);
-                Task::Once(Box::pin(async move {
+                Task::Future(Box::pin(async move {
                     let command = future.await;
                     command.map(|event| fe(event), |effect| fx(effect))
                 }))

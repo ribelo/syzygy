@@ -12,7 +12,7 @@ This is the map. No marketing. Just how it works and where it will bite you if y
 ### Core (Pure, Sync)
 - Owns the model (your types).
 - `event_handler: fn(Event, &mut Model) -> Command<Event, Effect>`
-- Processes events FIFO. Returns a `Command` (a list of steps: events/effects/batches/parallel).
+- Processes events FIFO. Returns a `Command` (a list of steps: events/effects).
 - Never blocks.
 
 ### Command (Bridge)
@@ -20,8 +20,6 @@ This is the map. No marketing. Just how it works and where it will bite you if y
 - Steps:
   - `Event(E)` – route back to Core immediately
   - `Effect(X)` – queue for the Shell
-  - `Batch(Vec<X>)` – effects dispatched in order (executors decide actual overlap)
-  - `Parallel(Vec<X>)` – dispatch effects without waiting between submissions; real parallelism depends on executors
 
 ### Shell (Impure, Async)
 - Reads `Command` steps and executes effects via the effect handler.
@@ -71,7 +69,7 @@ drive Task on executors
       |
       | route_command(Task output)
       +---------------------------+---------------------------+
-      | events                    | effects / batch / parallel|
+      | events                    | effects                   |
       v                           v
 Core.event_rx                Shell.effect_queue
   (immediate)                   (queued work)
@@ -80,7 +78,7 @@ Core.event_rx                Shell.effect_queue
 What actually happens
 1. Core processes an event and spits out a `Command`.
 2. `CommandStep::Event` values short-circuit straight back into Core’s channel.
-3. `CommandStep::Effect/Batch/Parallel` steps land on the Shell’s effect queue.
+3. `CommandStep::Effect` steps land on the Shell’s effect queue.
 4. Shell pops one effect, calls the effect handler, and gets a `Task`.
 5. The Task either pushes events directly or resolves to another `Command`.
 6. `route_command` splits the Task output using the same rules as step 2/3.
@@ -96,7 +94,7 @@ What actually happens
 
 ### Ordering & Tick Semantics
 - Each call to `Shell::dispatch_command` completes synchronously; events that fall out of the command travel straight back into Core for the *next* tick.
-- Effect steps (`Effect`, `Batch`, `Parallel`) always enqueue in FIFO order. When the bounded effect channel is full, the Shell prefetches one item into a local buffer so the oldest step still executes first.
+- Effect steps (`Effect`) always enqueue in FIFO order. When the bounded effect channel is full, the Shell prefetches one item into a local buffer so the oldest step still executes first.
 - Effect-generated events re-enter Core solely through the channel, preserving determinism—there is no mid-batch re-entry into the current tick.
 - When the effect channel is closed, the Shell now tracks a dropped-step counter so production builds can surface the loss via `Shell::stats()` or tracing.
 
@@ -114,7 +112,8 @@ What actually happens
 
 ## Patterns That Scale
 - Chain complex logic via `Command::events([..])` rather than mutating all at once.
-- Use `Batch` when you need deterministic submission order; use `Parallel` when the work items are independent and your executors can overlap them.
+- Emit multiple `CommandStep::Effect` values when you need to launch multiple effects in one command.
+- Model truly sequential workflows as event chains (`Effect A` completes -> emits event -> handler triggers `Effect B`).
 - Use `SingleThreadExecutor<R>` when a resource explodes under concurrency.
 - Use `async_current` to avoid wiring executors when you already run under `#[tokio::main]`.
 

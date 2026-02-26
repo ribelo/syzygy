@@ -50,7 +50,7 @@ fn save_done(
 
 fn save_to_server(value: i32, url: ServerUrl) -> Task<Event, Effect> {
     let endpoint = url.as_str().to_string();
-    Task::once(async move {
+    Task::future(async move {
         let _ = endpoint;
         Command::event(Event::SaveDone(value))
     })
@@ -108,7 +108,7 @@ mod tests {
                     }
                 }
             }
-            Task::Once(future) => {
+            Task::Future(future) => {
                 let command = futures::executor::block_on(future);
                 for step in command {
                     if let CommandStep::Event(event) = step {

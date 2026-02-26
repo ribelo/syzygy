@@ -232,7 +232,7 @@ mod tests {
             let ctx = EffectContext::new(resources);
             let task = save_to_server.handle(99, &ctx);
             match task {
-                Task::Once(fut) => {
+                Task::Future(fut) => {
                     let cmd = fut.await;
                     let steps: Vec<_> = cmd.into_iter().collect();
                     assert_eq!(steps.len(), 1);
@@ -241,7 +241,7 @@ mod tests {
                         other => panic!("unexpected step: {other:?}"),
                     }
                 }
-                _ => panic!("expected Task::Once"),
+                _ => panic!("expected Task::Future"),
             }
         });
     }

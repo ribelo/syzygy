@@ -1,9 +1,11 @@
+use std::cell::RefCell;
+use std::collections::HashMap;
 use std::rc::Rc;
 
 use futures::stream::StreamExt;
 
 use crate::activity::Activity;
-use crate::command::{Command, CommandStep};
+use crate::command::{CancelId, Command, CommandStep};
 use crate::core::EventSender;
 use crate::dependency::ResourceMap;
 use crate::error::ShellError;
@@ -11,6 +13,8 @@ use crate::executor::Task;
 use crate::extract::EffectContext;
 
 pub(crate) type EffectHandlerFn<E, X> = Rc<dyn Fn(X, &EffectContext) -> Task<E, X>>;
+type TaskHandle = compio::runtime::JoinHandle<()>;
+type ActiveTasks = Rc<RefCell<HashMap<CancelId, TaskHandle>>>;
 
 pub struct Shell<E, X>
 where
@@ -21,6 +25,7 @@ where
     effect_handler: EffectHandlerFn<E, X>,
     resources: ResourceMap,
     activity: Activity,
+    active_tasks: ActiveTasks,
     closed: bool,
 }
 
@@ -39,6 +44,7 @@ where
             effect_handler,
             resources,
             activity: Activity::new(),
+            active_tasks: Rc::new(RefCell::new(HashMap::new())),
             closed: false,
         }
     }
@@ -66,73 +72,33 @@ where
                     .map_err(|_| ShellError::EventChannelClosed)?;
             }
             CommandStep::Effect(effect) => {
-                self.run_effect(effect);
-            }
-            CommandStep::Batch(effects) | CommandStep::Parallel(effects) => {
-                for effect in effects {
-                    self.run_effect(effect);
+                if let Some(handle) = self.run_effect(effect) {
+                    handle.detach();
                 }
+            }
+            CommandStep::Tracked { id, effect } => {
+                cancel_tracked_slot(&self.active_tasks, id);
+                if let Some(handle) = self.run_effect(effect) {
+                    self.active_tasks.borrow_mut().insert(id, handle);
+                }
+            }
+            CommandStep::Cancel { id } => {
+                cancel_tracked_slot(&self.active_tasks, id);
             }
         }
 
         Ok(())
     }
 
-    fn run_effect(&mut self, effect: X) {
-        let ctx = EffectContext::new(self.resources.clone());
-        let task = (self.effect_handler)(effect, &ctx);
-        self.drive_task(task);
-    }
-
-    fn drive_task(&mut self, task: Task<E, X>) {
-        match task {
-            Task::None => {}
-            Task::Resolved(command) => {
-                let _ = self.route_command(command);
-            }
-            Task::Once(future) => {
-                let event_tx = self.event_tx.clone();
-                let effect_handler = Rc::clone(&self.effect_handler);
-                let resources = self.resources.clone();
-                let activity = self.activity.clone();
-                activity.inc();
-
-                compio::runtime::spawn(async move {
-                    let command = future.await;
-                    route_spawned_command(
-                        command,
-                        &event_tx,
-                        &effect_handler,
-                        &resources,
-                        &activity,
-                    );
-                    activity.dec();
-                })
-                .detach();
-            }
-            Task::Stream(stream) => {
-                let event_tx = self.event_tx.clone();
-                let effect_handler = Rc::clone(&self.effect_handler);
-                let resources = self.resources.clone();
-                let activity = self.activity.clone();
-                activity.inc();
-
-                compio::runtime::spawn(async move {
-                    futures::pin_mut!(stream);
-                    while let Some(command) = stream.next().await {
-                        route_spawned_command(
-                            command,
-                            &event_tx,
-                            &effect_handler,
-                            &resources,
-                            &activity,
-                        );
-                    }
-                    activity.dec();
-                })
-                .detach();
-            }
-        }
+    fn run_effect(&mut self, effect: X) -> Option<TaskHandle> {
+        run_effect_task(
+            effect,
+            &self.event_tx,
+            &self.effect_handler,
+            &self.resources,
+            &self.activity,
+            &self.active_tasks,
+        )
     }
 
     pub fn drain(&mut self) -> Result<usize, ShellError> {
@@ -151,9 +117,112 @@ where
 
     pub fn shutdown(&mut self) {
         self.closed = true;
+        self.active_tasks.borrow_mut().clear();
     }
 
     pub fn wait_for_executors(&self) {}
+}
+
+fn cancel_tracked_slot(active_tasks: &ActiveTasks, id: CancelId) {
+    if let Some(task) = active_tasks.borrow_mut().remove(&id) {
+        drop(task);
+    }
+}
+
+fn run_effect_task<E, X>(
+    effect: X,
+    event_tx: &EventSender<E>,
+    effect_handler: &EffectHandlerFn<E, X>,
+    resources: &ResourceMap,
+    activity: &Activity,
+    active_tasks: &ActiveTasks,
+) -> Option<TaskHandle>
+where
+    E: 'static,
+    X: 'static,
+{
+    let ctx = EffectContext::new(resources.clone());
+    let task = effect_handler(effect, &ctx);
+    spawn_task(
+        task,
+        event_tx,
+        effect_handler,
+        resources,
+        activity,
+        active_tasks,
+    )
+}
+
+fn spawn_task<E, X>(
+    task: Task<E, X>,
+    event_tx: &EventSender<E>,
+    effect_handler: &EffectHandlerFn<E, X>,
+    resources: &ResourceMap,
+    activity: &Activity,
+    active_tasks: &ActiveTasks,
+) -> Option<TaskHandle>
+where
+    E: 'static,
+    X: 'static,
+{
+    match task {
+        Task::None => None,
+        Task::Resolved(command) => {
+            route_spawned_command(
+                command,
+                event_tx,
+                effect_handler,
+                resources,
+                activity,
+                active_tasks,
+            );
+            None
+        }
+        Task::Future(future) => {
+            let event_tx = event_tx.clone();
+            let effect_handler = Rc::clone(effect_handler);
+            let resources = resources.clone();
+            let activity = activity.clone();
+            let active_tasks = Rc::clone(active_tasks);
+            activity.inc();
+
+            Some(compio::runtime::spawn(async move {
+                let command = future.await;
+                route_spawned_command(
+                    command,
+                    &event_tx,
+                    &effect_handler,
+                    &resources,
+                    &activity,
+                    &active_tasks,
+                );
+                activity.dec();
+            }))
+        }
+        Task::Stream(stream) => {
+            let event_tx = event_tx.clone();
+            let effect_handler = Rc::clone(effect_handler);
+            let resources = resources.clone();
+            let activity = activity.clone();
+            let active_tasks = Rc::clone(active_tasks);
+            activity.inc();
+
+            Some(compio::runtime::spawn(async move {
+                futures::pin_mut!(stream);
+                while let Some(command) = stream.next().await {
+                    route_spawned_command(
+                        command,
+                        &event_tx,
+                        &effect_handler,
+                        &resources,
+                        &activity,
+                        &active_tasks,
+                    );
+                }
+                activity.dec();
+            }))
+        }
+    }
 }
 
 fn route_spawned_command<E, X>(
@@ -162,6 +231,7 @@ fn route_spawned_command<E, X>(
     effect_handler: &EffectHandlerFn<E, X>,
     resources: &ResourceMap,
     activity: &Activity,
+    active_tasks: &ActiveTasks,
 ) where
     E: 'static,
     X: 'static,
@@ -172,68 +242,33 @@ fn route_spawned_command<E, X>(
                 let _ = event_tx.send(event);
             }
             CommandStep::Effect(effect) => {
-                drive_spawned_effect(effect, event_tx, effect_handler, resources, activity);
-            }
-            CommandStep::Batch(effects) | CommandStep::Parallel(effects) => {
-                for effect in effects {
-                    drive_spawned_effect(effect, event_tx, effect_handler, resources, activity);
+                if let Some(handle) = run_effect_task(
+                    effect,
+                    event_tx,
+                    effect_handler,
+                    resources,
+                    activity,
+                    active_tasks,
+                ) {
+                    handle.detach();
                 }
             }
-        }
-    }
-}
-
-fn drive_spawned_effect<E, X>(
-    effect: X,
-    event_tx: &EventSender<E>,
-    effect_handler: &EffectHandlerFn<E, X>,
-    resources: &ResourceMap,
-    activity: &Activity,
-) where
-    E: 'static,
-    X: 'static,
-{
-    let ctx = EffectContext::new(resources.clone());
-    match effect_handler(effect, &ctx) {
-        Task::None => {}
-        Task::Resolved(command) => {
-            route_spawned_command(command, event_tx, effect_handler, resources, activity);
-        }
-        Task::Once(future) => {
-            let event_tx = event_tx.clone();
-            let effect_handler = Rc::clone(effect_handler);
-            let resources = resources.clone();
-            let activity = activity.clone();
-            activity.inc();
-
-            compio::runtime::spawn(async move {
-                let command = future.await;
-                route_spawned_command(command, &event_tx, &effect_handler, &resources, &activity);
-                activity.dec();
-            })
-            .detach();
-        }
-        Task::Stream(stream) => {
-            let event_tx = event_tx.clone();
-            let effect_handler = Rc::clone(effect_handler);
-            let resources = resources.clone();
-            let activity = activity.clone();
-            activity.inc();
-
-            compio::runtime::spawn(async move {
-                futures::pin_mut!(stream);
-                while let Some(command) = stream.next().await {
-                    route_spawned_command(
-                        command,
-                        &event_tx,
-                        &effect_handler,
-                        &resources,
-                        &activity,
-                    );
+            CommandStep::Tracked { id, effect } => {
+                cancel_tracked_slot(active_tasks, id);
+                if let Some(handle) = run_effect_task(
+                    effect,
+                    event_tx,
+                    effect_handler,
+                    resources,
+                    activity,
+                    active_tasks,
+                ) {
+                    active_tasks.borrow_mut().insert(id, handle);
                 }
-                activity.dec();
-            })
-            .detach();
+            }
+            CommandStep::Cancel { id } => {
+                cancel_tracked_slot(active_tasks, id);
+            }
         }
     }
 }

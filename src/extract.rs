@@ -82,7 +82,7 @@ where
     X: 'static,
 {
     fn handle(&self, payload: P, _ctx: &EffectContext) -> Task<E, X> {
-        Task::once((self)(payload))
+        Task::future((self)(payload))
     }
 }
 
@@ -94,7 +94,7 @@ where
     X: 'static,
 {
     fn handle(&self, _payload: (), _ctx: &EffectContext) -> Task<E, X> {
-        Task::once((self)())
+        Task::future((self)())
     }
 }
 
@@ -151,7 +151,7 @@ macro_rules! impl_effect_handler_future {
             X: 'static,
         {
             fn handle(&self, payload: P, ctx: &EffectContext) -> Task<E, X> {
-                Task::once((self)(payload, $($T::from_context(ctx)),+))
+                Task::future((self)(payload, $($T::from_context(ctx)),+))
             }
         }
     }
@@ -624,11 +624,11 @@ mod tests {
         let ctx = EffectContext::new(resources);
 
         match save.handle("x".to_string(), &ctx) {
-            Task::Once(future) => {
+            Task::Future(future) => {
                 let command = futures::executor::block_on(future);
                 assert_eq!(command.into_iter().count(), 1);
             }
-            _ => panic!("expected Task::Once for async effect handler"),
+            _ => panic!("expected Task::Future for async effect handler"),
         }
     }
 
