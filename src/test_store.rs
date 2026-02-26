@@ -13,7 +13,7 @@ use futures::executor::block_on;
 #[cfg(feature = "shell")]
 use futures::StreamExt;
 
-use crate::command::{Command, CommandStep};
+use crate::command::{CancelId, Command, CommandStep, IntoCancelId};
 use crate::core::Core;
 use crate::dependency::ResourceMap;
 #[cfg(feature = "shell")]
@@ -34,6 +34,12 @@ pub enum Exhaustivity {
     Off,
 }
 
+#[derive(Debug)]
+struct BufferedEffect<X> {
+    id: Option<CancelId>,
+    effect: X,
+}
+
 /// TCA-style synchronous harness for testing event logic.
 ///
 /// The store processes events synchronously, mutates model state through your
@@ -45,7 +51,8 @@ where
 {
     core: Core<E, X, M>,
     pending_events: VecDeque<E>,
-    pending_effects: Vec<X>,
+    pending_effects: Vec<BufferedEffect<X>>,
+    cancelled_slots: Vec<CancelId>,
     max_event_steps: usize,
     exhaustivity: Exhaustivity,
     effects_asserted: bool,
@@ -67,6 +74,7 @@ where
             core,
             pending_events: VecDeque::new(),
             pending_effects: Vec::new(),
+            cancelled_slots: Vec::new(),
             max_event_steps: DEFAULT_MAX_EVENT_STEPS,
             exhaustivity: Exhaustivity::Off,
             effects_asserted: true,
@@ -110,14 +118,17 @@ where
     pub fn send(&mut self, event: E) {
         let send_allowed = self.exhaustivity == Exhaustivity::Off
             || self.effects_asserted
-            || self.pending_effects.is_empty();
+            || (self.pending_effects.is_empty() && self.cancelled_slots.is_empty());
         assert!(
             send_allowed,
-            "must assert effects before sending next event. {} unasserted effects pending.",
-            self.pending_effects.len()
+            "must assert effects before sending next event. {} unasserted outputs pending ({} effects, {} cancellations).",
+            self.pending_effects.len() + self.cancelled_slots.len(),
+            self.pending_effects.len(),
+            self.cancelled_slots.len(),
         );
 
         let effects_before = self.pending_effects.len();
+        let cancelled_before = self.cancelled_slots.len();
         self.pending_events.push_back(event);
 
         let mut processed = 0usize;
@@ -133,8 +144,10 @@ where
             self.route_command(command);
         }
 
-        let emitted_effects = self.pending_effects.len() > effects_before;
-        self.effects_asserted = !emitted_effects;
+        let touched_outputs = self.pending_effects.len() > effects_before
+            || self.cancelled_slots.len() > cancelled_before;
+        self.effects_asserted = !touched_outputs
+            || (self.pending_effects.is_empty() && self.cancelled_slots.is_empty());
     }
 
     pub fn send_assert(&mut self, event: E, update_expected: impl FnOnce(&mut M)) -> &mut Self
@@ -186,8 +199,13 @@ where
 
     /// Drains and returns all buffered effects in emission order.
     pub fn take_effects(&mut self) -> Vec<X> {
-        self.effects_asserted = true;
-        std::mem::take(&mut self.pending_effects)
+        let effects = self
+            .pending_effects
+            .drain(..)
+            .map(|buffered| buffered.effect)
+            .collect();
+        self.effects_asserted = self.pending_effects.is_empty() && self.cancelled_slots.is_empty();
+        effects
     }
 
     /// Assert that buffered effects exactly match `expected` and drain them.
@@ -199,7 +217,52 @@ where
         let expected: Vec<X> = expected.into_iter().collect();
         let actual = self.take_effects();
         assert_eq!(actual, expected, "unexpected emitted effects");
-        self.effects_asserted = true;
+        self.effects_asserted = self.pending_effects.is_empty() && self.cancelled_slots.is_empty();
+    }
+
+    /// Assert and consume a single tracked effect in this test step.
+    pub fn assert_tracked_effect(&mut self, id: impl IntoCancelId, expected: X) -> X
+    where
+        X: std::fmt::Debug + PartialEq,
+    {
+        let id = id.into_cancel_id();
+        let Some(index) = self
+            .pending_effects
+            .iter()
+            .position(|buffered| buffered.id == Some(id))
+        else {
+            panic!(
+                "expected tracked effect in slot {id:?}, but pending tracked slots were {:?}",
+                self.pending_effects
+                    .iter()
+                    .filter_map(|buffered| buffered.id)
+                    .collect::<Vec<_>>()
+            );
+        };
+
+        let buffered = self.pending_effects.remove(index);
+        assert_eq!(
+            buffered.effect, expected,
+            "unexpected tracked effect for slot {id:?}"
+        );
+
+        self.effects_asserted = self.pending_effects.is_empty() && self.cancelled_slots.is_empty();
+        buffered.effect
+    }
+
+    /// Assert and consume the next cancellation slot.
+    pub fn assert_cancelled(&mut self, id: impl IntoCancelId) {
+        let id = id.into_cancel_id();
+        let Some(actual) = self.cancelled_slots.first().copied() else {
+            panic!("expected slot {id:?} to be cancelled, but no cancellations were pending");
+        };
+
+        assert_eq!(
+            actual, id,
+            "expected next cancelled slot to be {id:?}, got {actual:?}"
+        );
+        self.cancelled_slots.remove(0);
+        self.effects_asserted = self.pending_effects.is_empty() && self.cancelled_slots.is_empty();
     }
 
     /// Assert that no effects are currently buffered.
@@ -208,9 +271,13 @@ where
         X: std::fmt::Debug,
     {
         assert!(
-            self.pending_effects.is_empty(),
-            "expected no emitted effects, got {:?}",
+            self.pending_effects.is_empty() && self.cancelled_slots.is_empty(),
+            "expected no emitted effects/cancellations, got effects {:?} and cancelled slots {:?}",
             self.pending_effects
+                .iter()
+                .map(|buffered| &buffered.effect)
+                .collect::<Vec<_>>(),
+            self.cancelled_slots
         );
         self.effects_asserted = true;
     }
@@ -228,7 +295,7 @@ where
             self.drive_received_task(task);
         }
 
-        self.effects_asserted = self.pending_effects.is_empty();
+        self.effects_asserted = self.pending_effects.is_empty() && self.cancelled_slots.is_empty();
     }
 
     #[cfg(feature = "shell")]
@@ -258,10 +325,17 @@ where
                 CommandStep::Event(event) => {
                     self.send_from_receive(event);
                 }
-                CommandStep::Effect(effect) | CommandStep::Tracked { effect, .. } => {
-                    self.pending_effects.push(effect);
+                CommandStep::Effect(effect) => {
+                    self.pending_effects
+                        .push(BufferedEffect { id: None, effect });
                 }
-                CommandStep::Cancel { .. } => {}
+                CommandStep::Tracked { id, effect } => {
+                    self.upsert_tracked_effect(id, effect);
+                }
+                CommandStep::Cancel { id } => {
+                    self.cancel_tracked_effect(id);
+                    self.cancelled_slots.push(id);
+                }
             }
         }
     }
@@ -278,11 +352,43 @@ where
                 CommandStep::Event(event) => {
                     self.pending_events.push_back(event);
                 }
-                CommandStep::Effect(effect) | CommandStep::Tracked { effect, .. } => {
-                    self.pending_effects.push(effect);
+                CommandStep::Effect(effect) => {
+                    self.pending_effects
+                        .push(BufferedEffect { id: None, effect });
                 }
-                CommandStep::Cancel { .. } => {}
+                CommandStep::Tracked { id, effect } => {
+                    self.upsert_tracked_effect(id, effect);
+                }
+                CommandStep::Cancel { id } => {
+                    self.cancel_tracked_effect(id);
+                    self.cancelled_slots.push(id);
+                }
             }
+        }
+    }
+
+    fn upsert_tracked_effect(&mut self, id: CancelId, effect: X) {
+        if let Some(index) = self
+            .pending_effects
+            .iter()
+            .position(|buffered| buffered.id == Some(id))
+        {
+            self.pending_effects.remove(index);
+        }
+
+        self.pending_effects.push(BufferedEffect {
+            id: Some(id),
+            effect,
+        });
+    }
+
+    fn cancel_tracked_effect(&mut self, id: CancelId) {
+        if let Some(index) = self
+            .pending_effects
+            .iter()
+            .position(|buffered| buffered.id == Some(id))
+        {
+            self.pending_effects.remove(index);
         }
     }
 }
@@ -297,13 +403,17 @@ where
             return;
         }
 
-        if self.effects_asserted || self.pending_effects.is_empty() {
+        if self.effects_asserted
+            || (self.pending_effects.is_empty() && self.cancelled_slots.is_empty())
+        {
             return;
         }
 
         let message = format!(
-            "must assert effects before dropping test store. {} unasserted effects pending.",
-            self.pending_effects.len()
+            "must assert effects before dropping test store. {} unasserted outputs pending ({} effects, {} cancellations).",
+            self.pending_effects.len() + self.cancelled_slots.len(),
+            self.pending_effects.len(),
+            self.cancelled_slots.len(),
         );
         eprintln!("{message}");
         assert!(std::thread::panicking(), "{message}");
@@ -362,6 +472,8 @@ mod tests {
         SaveDone,
         EmitMany,
         DoubleBorrow,
+        Track,
+        CancelTracked,
     }
 
     #[derive(Debug, Clone, PartialEq, Eq)]
@@ -371,6 +483,7 @@ mod tests {
         Second,
         Third,
         Fourth,
+        Tracked,
     }
 
     #[derive(Debug, Default, PartialEq, Eq, crate::Model)]
@@ -407,6 +520,8 @@ mod tests {
                 .and_effect(Effect::Third)
                 .and_effect(Effect::Fourth),
             Event::DoubleBorrow => bad_double_borrow.handle((), ctx),
+            Event::Track => Command::track(1_u8, Effect::Tracked),
+            Event::CancelTracked => Command::cancel(1_u8),
         }
     }
 
@@ -503,6 +618,34 @@ mod tests {
         store.send(Event::Increment(1));
 
         assert_eq!(store.pending_effect_count(), 2);
+    }
+
+    #[test]
+    fn tracked_effect_assertion_consumes_slot() {
+        let mut store = TestStore::new(Model::default(), dispatch);
+
+        store.send(Event::Track);
+        store.assert_tracked_effect(1_u8, Effect::Tracked);
+
+        store.assert_no_effects();
+    }
+
+    #[test]
+    fn cancelled_slot_requires_assertion_in_exhaustive_mode() {
+        assert_panic_contains("must assert effects", || {
+            let mut store =
+                TestStore::new(Model::default(), dispatch).with_exhaustivity(Exhaustivity::On);
+            store.send(Event::CancelTracked);
+        });
+    }
+
+    #[test]
+    fn assert_cancelled_consumes_pending_cancellation() {
+        let mut store = TestStore::new(Model::default(), dispatch);
+
+        store.send(Event::CancelTracked);
+        store.assert_cancelled(1_u8);
+        store.assert_no_effects();
     }
 
     #[cfg(feature = "shell")]

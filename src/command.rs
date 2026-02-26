@@ -1,7 +1,7 @@
 use std::any::{Any, TypeId};
-use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 
+use rustc_hash::FxHasher;
 use smallvec::SmallVec;
 
 /// Stable, type-tagged identifier for a cancellable effect slot.
@@ -18,7 +18,7 @@ impl CancelId {
             return *existing;
         }
 
-        let mut hasher = DefaultHasher::new();
+        let mut hasher = FxHasher::default();
         value.hash(&mut hasher);
 
         Self {

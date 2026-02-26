@@ -1,6 +1,4 @@
-use std::cell::Cell;
-#[cfg(debug_assertions)]
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::future::Future;
 
 use futures::Stream;
@@ -195,7 +193,6 @@ impl_effect_handler_stream!(T1, T2, T3, T4);
 pub struct EventContext<M> {
     ptr: *mut M,
     borrowed: Cell<u64>,
-    #[cfg(debug_assertions)]
     borrowed_ranges: RefCell<Vec<(usize, usize)>>,
 }
 
@@ -204,7 +201,6 @@ impl<M> EventContext<M> {
         Self {
             ptr: model as *mut M,
             borrowed: Cell::new(0),
-            #[cfg(debug_assertions)]
             borrowed_ranges: RefCell::new(Vec::new()),
         }
     }
@@ -220,28 +216,29 @@ impl<M> EventContext<M> {
     }
 
     pub fn track_borrow_range(&self, ptr: *mut u8, size: usize, field_name: &str) {
-        #[cfg(debug_assertions)]
-        {
-            let start = ptr as usize;
-            let end = start.checked_add(size).unwrap_or_else(|| {
-                panic!(
-                    "field '{field_name}' produced an overflow while tracking mutable borrow range"
-                )
-            });
-            let mut borrowed_ranges = self.borrowed_ranges.borrow_mut();
+        let start = ptr as usize;
+        let end = start.checked_add(size).unwrap_or_else(|| {
+            panic!("field '{field_name}' produced an overflow while tracking mutable borrow range")
+        });
+        let mut borrowed_ranges = self.borrowed_ranges.borrow_mut();
 
-            for &(borrowed_start, borrowed_end) in borrowed_ranges.iter() {
-                let disjoint = start >= borrowed_end || end <= borrowed_start;
-                assert!(
-                    disjoint,
-                    "field '{field_name}' overlaps already-borrowed mutable region"
-                );
-            }
-
-            borrowed_ranges.push((start, end));
+        for &(borrowed_start, borrowed_end) in borrowed_ranges.iter() {
+            let disjoint = start >= borrowed_end || end <= borrowed_start;
+            assert!(
+                disjoint,
+                "field '{field_name}' overlaps already-borrowed mutable region"
+            );
         }
 
-        let _ = (ptr, size, field_name);
+        borrowed_ranges.push((start, end));
+    }
+
+    pub(crate) fn borrow_guard(&self) -> BorrowGuard<'_, M> {
+        BorrowGuard {
+            ctx: self,
+            borrowed_bits: self.borrowed.get(),
+            borrowed_ranges_len: self.borrowed_ranges.borrow().len(),
+        }
     }
 
     /// # Safety
@@ -260,6 +257,22 @@ impl<M> EventContext<M> {
         H: EventHandler<E, X, (), M, Marker>,
     {
         handler.handle((), self)
+    }
+}
+
+pub(crate) struct BorrowGuard<'a, M> {
+    ctx: &'a EventContext<M>,
+    borrowed_bits: u64,
+    borrowed_ranges_len: usize,
+}
+
+impl<M> Drop for BorrowGuard<'_, M> {
+    fn drop(&mut self) {
+        self.ctx.borrowed.set(self.borrowed_bits);
+        self.ctx
+            .borrowed_ranges
+            .borrow_mut()
+            .truncate(self.borrowed_ranges_len);
     }
 }
 
@@ -318,6 +331,7 @@ macro_rules! impl_event_handler_mut {
             $($T: ExtractMutFrom<M>,)+
         {
             fn handle(&self, payload: P, ctx: &EventContext<M>) -> Command<E, X> {
+                let _borrow_guard = ctx.borrow_guard();
                 (self)(payload, $($T::extract_mut(ctx)),+)
             }
         }
@@ -348,6 +362,7 @@ macro_rules! impl_event_handler_np_mut {
             $($T: ExtractMutFrom<M>,)+
         {
             fn handle(&self, _payload: (), ctx: &EventContext<M>) -> Command<E, X> {
+                let _borrow_guard = ctx.borrow_guard();
                 (self)($($T::extract_mut(ctx)),+)
             }
         }
@@ -545,6 +560,20 @@ mod tests {
     }
 
     #[test]
+    #[should_panic(expected = "overlaps already-borrowed mutable region")]
+    fn track_borrow_range_panics_on_overlap() {
+        let mut model = AppModel {
+            counter: 0,
+            name: String::new(),
+        };
+        let ctx = EventContext::new(&mut model);
+
+        let ptr = std::ptr::addr_of_mut!(model.counter).cast::<u8>();
+        ctx.track_borrow_range(ptr, std::mem::size_of::<i32>(), "counter");
+        ctx.track_borrow_range(ptr, std::mem::size_of::<i32>(), "counter_again");
+    }
+
+    #[test]
     fn event_dispatch_match() {
         fn increment(amount: u32, counter: &mut Counter) -> Command<Event, Effect> {
             let amount = i32::try_from(amount).expect("u32 amount must fit in i32");
@@ -584,6 +613,29 @@ mod tests {
             dispatch(Ev::Rename("new".into()), &ctx);
         }
         assert_eq!(model.name, "new");
+    }
+
+    #[test]
+    fn sequential_mut_handler_calls_can_reborrow_same_field() {
+        fn increment_once(_: (), counter: &mut Counter) -> Command<Event, Effect> {
+            **counter += 1;
+            Command::none()
+        }
+
+        fn dispatch(_: (), ctx: &EventContext<AppModel>) -> Command<Event, Effect> {
+            increment_once
+                .handle((), ctx)
+                .and(increment_once.handle((), ctx))
+        }
+
+        let mut model = AppModel {
+            counter: 0,
+            name: String::new(),
+        };
+        let ctx = EventContext::new(&mut model);
+        let _ = dispatch((), &ctx);
+
+        assert_eq!(model.counter, 2);
     }
 
     // ── Effect handler tests ────────────────────────────────────────

@@ -1,7 +1,7 @@
 use std::collections::VecDeque;
 use std::time::Duration;
 
-use futures::channel::mpsc::{unbounded, UnboundedReceiver, UnboundedSender};
+use crossbeam_channel::{bounded, unbounded, Receiver, RecvTimeoutError, Sender, TrySendError};
 
 use crate::command::Command;
 use crate::error::CoreError;
@@ -11,7 +11,7 @@ pub(crate) type EventHandlerFn<E, X, M> = Box<dyn Fn(E, &EventContext<M>) -> Com
 
 /// Multi-producer sender returned by [`Core::new`].
 pub struct EventSender<E> {
-    inner: UnboundedSender<E>,
+    inner: Sender<E>,
 }
 
 impl<E> Clone for EventSender<E> {
@@ -23,14 +23,12 @@ impl<E> Clone for EventSender<E> {
 }
 
 impl<E> EventSender<E> {
-    fn new(inner: UnboundedSender<E>) -> Self {
+    fn new(inner: Sender<E>) -> Self {
         Self { inner }
     }
 
     pub fn send(&self, event: E) -> Result<(), CoreError> {
-        self.inner
-            .unbounded_send(event)
-            .map_err(|_| CoreError::ChannelClosed)
+        self.inner.try_send(event).map_err(map_send_error)
     }
 
     pub fn try_send(&self, event: E) -> Result<(), CoreError> {
@@ -39,6 +37,13 @@ impl<E> EventSender<E> {
 
     pub fn try_send_event(&self, event: E) -> Result<(), CoreError> {
         self.send(event)
+    }
+}
+
+fn map_send_error<E>(error: TrySendError<E>) -> CoreError {
+    match error {
+        TrySendError::Full(_) => CoreError::ChannelFull,
+        TrySendError::Disconnected(_) => CoreError::ChannelClosed,
     }
 }
 
@@ -52,7 +57,7 @@ where
     model: M,
     event_queue: VecDeque<E>,
     command_buffer: Vec<Command<E, X>>,
-    event_rx: UnboundedReceiver<E>,
+    event_rx: Receiver<E>,
     event_tx: EventSender<E>,
     event_channel_capacity: Option<usize>,
 }
@@ -71,7 +76,10 @@ where
         model: M,
         capacity: Option<usize>,
     ) -> (Self, EventSender<E>) {
-        let (tx, rx) = unbounded();
+        let (tx, rx) = match capacity {
+            Some(capacity) => bounded(capacity),
+            None => unbounded(),
+        };
         let event_tx = EventSender::new(tx);
         let core = Self {
             event_handler,
@@ -92,7 +100,7 @@ where
     }
 
     pub fn process_events(&mut self) -> Vec<Command<E, X>> {
-        while let Ok(Some(event)) = self.event_rx.try_next() {
+        while let Ok(event) = self.event_rx.try_recv() {
             self.event_queue.push_back(event);
         }
 
@@ -134,16 +142,26 @@ where
 
     #[must_use]
     pub fn pending_count(&self) -> usize {
-        self.event_queue.len()
+        self.event_queue.len().saturating_add(self.event_rx.len())
     }
 
     #[must_use]
     pub fn has_pending_events(&self) -> bool {
-        !self.event_queue.is_empty()
+        self.pending_count() > 0
     }
 
-    pub fn wait_for_event(&mut self, _timeout: Duration) -> bool {
-        false
+    pub fn wait_for_event(&mut self, timeout: Duration) -> bool {
+        if !self.event_queue.is_empty() {
+            return true;
+        }
+
+        match self.event_rx.recv_timeout(timeout) {
+            Ok(event) => {
+                self.event_queue.push_back(event);
+                true
+            }
+            Err(RecvTimeoutError::Timeout | RecvTimeoutError::Disconnected) => false,
+        }
     }
 }
 
@@ -156,7 +174,7 @@ where
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Core")
             .field("model", &self.model)
-            .field("pending_events", &self.event_queue.len())
+            .field("pending_events", &self.pending_count())
             .finish_non_exhaustive()
     }
 }

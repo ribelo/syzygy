@@ -75,11 +75,7 @@ where
                     return Ok(());
                 }
 
-                if self.config.idle_sleep.is_zero() {
-                    thread::yield_now();
-                } else {
-                    thread::sleep(self.config.idle_sleep);
-                }
+                park_for_runtime(self.config.idle_sleep);
             }
         }
     }
@@ -91,11 +87,7 @@ where
         while !condition(&self.core, &self.shell) {
             let did_work = self.step()?;
             if !did_work {
-                if self.config.idle_sleep.is_zero() {
-                    thread::yield_now();
-                } else {
-                    thread::sleep(self.config.idle_sleep);
-                }
+                park_for_runtime(self.config.idle_sleep);
             }
         }
 
@@ -165,6 +157,20 @@ where
 
     let shell_work = shell.drain()?;
     Ok(core_work || shell_work > 0)
+}
+
+fn park_for_runtime(idle_sleep: Duration) {
+    if compio::runtime::Runtime::try_with_current(|runtime| runtime.poll_with(Some(idle_sleep)))
+        .is_ok()
+    {
+        return;
+    }
+
+    if idle_sleep.is_zero() {
+        thread::yield_now();
+    } else {
+        thread::sleep(idle_sleep);
+    }
 }
 
 impl<Event, Effect, Model> From<(Core<Event, Effect, Model>, Shell<Event, Effect>)>

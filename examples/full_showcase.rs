@@ -137,6 +137,11 @@ fn dispatch_effect(effect: Effect, ctx: &EffectContext) -> Task<Event, Effect> {
 // -- Main: compio single-threaded runtime --
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let runtime = compio::runtime::Runtime::new()?;
+    runtime.block_on(async { run_showcase() })
+}
+
+fn run_showcase() -> Result<(), Box<dyn std::error::Error>> {
     let mut runner = Syzygy::builder::<Event, Effect>()
         .model(AppState::default())
         .with_resource(ServerUrl("https://api.example.test".to_string()))

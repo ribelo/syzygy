@@ -66,6 +66,11 @@ fn expand_model(input: DeriveInput) -> syn::Result<TokenStream2> {
                         // SAFETY: EventContext stores a valid mutable pointer for the active handler call,
                         // and borrow tracking ensures this field is extracted at most once per handler.
                         let ptr = unsafe { ::core::ptr::addr_of_mut!((*ctx.model_ptr()).#field_ident) };
+                        ctx.track_borrow_range(
+                            ptr.cast::<u8>(),
+                            ::core::mem::size_of::<#field_ty>(),
+                            #field_name,
+                        );
                         // SAFETY: `ptr` points to the extracted field and runtime tracking enforces exclusivity.
                         unsafe { &mut *ptr }
                     }
@@ -103,6 +108,11 @@ fn expand_model(input: DeriveInput) -> syn::Result<TokenStream2> {
                     let ptr = unsafe {
                         ::core::ptr::addr_of_mut!((*ctx.model_ptr()).#field_ident).cast::<Self>()
                     };
+                    ctx.track_borrow_range(
+                        ptr.cast::<u8>(),
+                        ::core::mem::size_of::<#wrapper_ident #ty_generics>(),
+                        #field_name,
+                    );
                     // SAFETY: `track_borrow` ensures unique mutable access for this field in the handler.
                     unsafe { &mut *ptr }
                 }
