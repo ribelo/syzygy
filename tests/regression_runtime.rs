@@ -42,7 +42,7 @@ fn run_until_progresses_async_effects_inside_runtime() {
         Wait,
     }
 
-    #[derive(Debug, Default)]
+    #[derive(Debug, Default, Model)]
     struct Model {
         done: bool,
     }
@@ -51,9 +51,8 @@ fn run_until_progresses_async_effects_inside_runtime() {
         match event {
             Event::Start => Command::effect(Effect::Wait),
             Event::Done => {
-                // SAFETY: EventContext points to the current model for this handler invocation.
-                let model = unsafe { &mut *ctx.model_ptr() };
-                model.done = true;
+                let done = Done::extract_mut(ctx);
+                **done = true;
                 Command::none()
             }
         }
@@ -98,6 +97,7 @@ fn cancelling_tracked_future_returns_shell_to_idle() {
     enum Event {
         Start,
         Stop,
+        StartAndStop,
     }
 
     #[derive(Debug, Clone)]
@@ -109,6 +109,7 @@ fn cancelling_tracked_future_returns_shell_to_idle() {
         match event {
             Event::Start => Command::track(1_u8, Effect::Wait),
             Event::Stop => Command::cancel(1_u8),
+            Event::StartAndStop => Command::track(1_u8, Effect::Wait).and_cancel(1_u8),
         }
     }
 
@@ -140,6 +141,22 @@ fn cancelling_tracked_future_returns_shell_to_idle() {
         assert!(
             runner.shell().is_idle(),
             "shell should be idle after cancellation"
+        );
+
+        let mut same_step_runner = Syzygy::builder::<Event, Effect>()
+            .model(())
+            .event_handler(dispatch)
+            .effect_handler(effects)
+            .build();
+        same_step_runner
+            .core()
+            .try_send_event(Event::StartAndStop)
+            .unwrap();
+        same_step_runner.step().unwrap();
+        compio::runtime::time::sleep(Duration::from_millis(2)).await;
+        assert!(
+            same_step_runner.shell().is_idle(),
+            "shell should be idle when tracked task is cancelled in the same command"
         );
     });
 }
@@ -184,6 +201,64 @@ fn deep_resolved_effect_chain_is_iterative() {
 }
 
 #[test]
+fn spawned_events_are_deferred_when_event_channel_is_full() {
+    #[derive(Debug, Clone)]
+    enum Event {
+        Start,
+        Block,
+        Done,
+    }
+
+    #[derive(Debug, Clone)]
+    enum Effect {
+        AsyncDone,
+    }
+
+    #[derive(Debug, Default, Model)]
+    struct Model {
+        done: bool,
+    }
+
+    fn dispatch(event: Event, ctx: &EventContext<Model>) -> Command<Event, Effect> {
+        match event {
+            Event::Start => Command::event(Event::Block).and_effect(Effect::AsyncDone),
+            Event::Block => Command::none(),
+            Event::Done => {
+                let done = Done::extract_mut(ctx);
+                **done = true;
+                Command::none()
+            }
+        }
+    }
+
+    fn effects(effect: Effect, _ctx: &EffectContext) -> Task<Event, Effect> {
+        match effect {
+            Effect::AsyncDone => Task::once(async { Command::event(Event::Done) }),
+        }
+    }
+
+    let rt = compio::runtime::Runtime::new().expect("compio runtime");
+    rt.block_on(async {
+        let mut runner = Syzygy::builder::<Event, Effect>()
+            .model(Model::default())
+            .event_handler(dispatch)
+            .effect_handler(effects)
+            .with_event_channel_capacity(Some(1))
+            .build();
+
+        runner.core().try_send_event(Event::Start).unwrap();
+        runner.step().unwrap();
+        assert!(!runner.model().done);
+
+        runner.step().unwrap();
+        assert!(!runner.model().done);
+
+        runner.step().unwrap();
+        assert!(runner.model().done);
+    });
+}
+
+#[test]
 fn future_effects_can_resolve_without_compio_runtime() {
     #[derive(Debug, Clone)]
     enum Event {
@@ -196,7 +271,7 @@ fn future_effects_can_resolve_without_compio_runtime() {
         Work,
     }
 
-    #[derive(Debug, Default)]
+    #[derive(Debug, Default, Model)]
     struct Model {
         done: bool,
     }
@@ -205,9 +280,8 @@ fn future_effects_can_resolve_without_compio_runtime() {
         match event {
             Event::Start => Command::effect(Effect::Work),
             Event::Done => {
-                // SAFETY: EventContext points to the current model for this handler invocation.
-                let model = unsafe { &mut *ctx.model_ptr() };
-                model.done = true;
+                let done = Done::extract_mut(ctx);
+                **done = true;
                 Command::none()
             }
         }

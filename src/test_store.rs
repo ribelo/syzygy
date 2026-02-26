@@ -127,11 +127,10 @@ where
             self.cancelled_slots.len(),
         );
 
-        let effects_before = self.pending_effects.len();
-        let cancelled_before = self.cancelled_slots.len();
         self.pending_events.push_back(event);
 
         let mut processed = 0usize;
+        let mut touched_outputs = false;
         while let Some(next) = self.pending_events.pop_front() {
             processed += 1;
             assert!(
@@ -141,11 +140,9 @@ where
             );
 
             let command = self.core.handle_event(next);
-            self.route_command(command);
+            touched_outputs |= self.route_command(command);
         }
 
-        let touched_outputs = self.pending_effects.len() > effects_before
-            || self.cancelled_slots.len() > cancelled_before;
         self.effects_asserted = !touched_outputs
             || (self.pending_effects.is_empty() && self.cancelled_slots.is_empty());
     }
@@ -214,6 +211,16 @@ where
         I: IntoIterator<Item = X>,
         X: std::fmt::Debug + PartialEq,
     {
+        let tracked_slots = self
+            .pending_effects
+            .iter()
+            .filter_map(|buffered| buffered.id)
+            .collect::<Vec<_>>();
+        assert!(
+            tracked_slots.is_empty(),
+            "cannot assert plain effects while tracked effects are pending in slots {tracked_slots:?}; use assert_tracked_effect()"
+        );
+
         let expected: Vec<X> = expected.into_iter().collect();
         let actual = self.take_effects();
         assert_eq!(actual, expected, "unexpected emitted effects");
@@ -263,6 +270,18 @@ where
         );
         self.cancelled_slots.remove(0);
         self.effects_asserted = self.pending_effects.is_empty() && self.cancelled_slots.is_empty();
+    }
+
+    /// Assert that a tracked slot has no pending effect.
+    pub fn assert_slot_empty(&self, id: impl IntoCancelId) {
+        let id = id.into_cancel_id();
+        assert!(
+            !self
+                .pending_effects
+                .iter()
+                .any(|buffered| buffered.id == Some(id)),
+            "expected slot {id:?} to be empty"
+        );
     }
 
     /// Assert that no effects are currently buffered.
@@ -346,25 +365,31 @@ where
         self.send(event);
     }
 
-    fn route_command(&mut self, command: Command<E, X>) {
+    fn route_command(&mut self, command: Command<E, X>) -> bool {
+        let mut touched_outputs = false;
         for step in command {
             match step {
                 CommandStep::Event(event) => {
                     self.pending_events.push_back(event);
                 }
                 CommandStep::Effect(effect) => {
+                    touched_outputs = true;
                     self.pending_effects
                         .push(BufferedEffect { id: None, effect });
                 }
                 CommandStep::Tracked { id, effect } => {
+                    touched_outputs = true;
                     self.upsert_tracked_effect(id, effect);
                 }
                 CommandStep::Cancel { id } => {
+                    touched_outputs = true;
                     self.cancel_tracked_effect(id);
                     self.cancelled_slots.push(id);
                 }
             }
         }
+
+        touched_outputs
     }
 
     fn upsert_tracked_effect(&mut self, id: CancelId, effect: X) {
@@ -374,6 +399,7 @@ where
             .position(|buffered| buffered.id == Some(id))
         {
             self.pending_effects.remove(index);
+            self.cancelled_slots.push(id);
         }
 
         self.pending_effects.push(BufferedEffect {
@@ -628,6 +654,31 @@ mod tests {
         store.assert_tracked_effect(1_u8, Effect::Tracked);
 
         store.assert_no_effects();
+    }
+
+    #[test]
+    fn assert_effects_rejects_tracked_outputs() {
+        let mut store = TestStore::new(Model::default(), dispatch);
+        store.send(Event::Track);
+
+        assert_panic_contains(
+            "cannot assert plain effects while tracked effects are pending",
+            || {
+                store.assert_effects([Effect::Tracked]);
+            },
+        );
+    }
+
+    #[test]
+    fn tracked_overwrite_records_cancellation() {
+        let mut store = TestStore::new(Model::default(), |_event: Event, _ctx| {
+            Command::track(1_u8, Effect::First).and_track(1_u8, Effect::Second)
+        });
+
+        store.send(Event::Track);
+        store.assert_cancelled(1_u8);
+        store.assert_tracked_effect(1_u8, Effect::Second);
+        store.assert_slot_empty(1_u8);
     }
 
     #[test]

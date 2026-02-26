@@ -27,8 +27,12 @@ impl<E> EventSender<E> {
         Self { inner }
     }
 
+    pub(crate) fn try_send_owned(&self, event: E) -> Result<(), TrySendError<E>> {
+        self.inner.try_send(event)
+    }
+
     pub fn send(&self, event: E) -> Result<(), CoreError> {
-        self.inner.try_send(event).map_err(map_send_error)
+        self.try_send_owned(event).map_err(map_send_error)
     }
 
     pub fn try_send(&self, event: E) -> Result<(), CoreError> {

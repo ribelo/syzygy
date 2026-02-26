@@ -802,17 +802,15 @@ mod tests {
     ) -> Command<ScopedAppEvent, ScopedAppEffect> {
         match event {
             ScopedAppEvent::Counter(child_event) => {
-                // SAFETY: EventContext points to the active model for this dispatch.
-                let parent = unsafe { &mut *ctx.model_ptr() };
-                let child_ctx = EventContext::new(&mut parent.counter);
+                let counter = ScopedCounterModel::extract_mut(ctx);
+                let child_ctx = EventContext::new(counter);
                 scoped_counter_dispatch(child_event, &child_ctx)
                     .map_event(ScopedAppEvent::Counter)
                     .map_effect(ScopedAppEffect::Counter)
             }
             ScopedAppEvent::Toggle(child_event) => {
-                // SAFETY: EventContext points to the active model for this dispatch.
-                let parent = unsafe { &mut *ctx.model_ptr() };
-                let child_ctx = EventContext::new(&mut parent.toggle);
+                let toggle = ScopedToggleModel::extract_mut(ctx);
+                let child_ctx = EventContext::new(toggle);
                 scoped_toggle_dispatch(child_event, &child_ctx)
                     .map_event(ScopedAppEvent::Toggle)
                     .map_effect(ScopedAppEffect::Toggle)
@@ -826,12 +824,13 @@ mod tests {
                 amount,
                 title: new_title,
             } => {
-                let title = Title::extract_mut(ctx);
-                **title = new_title;
+                {
+                    let title = Title::extract_mut(ctx);
+                    **title = new_title;
+                }
 
-                // SAFETY: EventContext points to the active model for this dispatch.
-                let parent = unsafe { &mut *ctx.model_ptr() };
-                let child_ctx = EventContext::new(&mut parent.counter);
+                let counter = ScopedCounterModel::extract_mut(ctx);
+                let child_ctx = EventContext::new(counter);
                 scoped_counter_increment
                     .handle(amount, &child_ctx)
                     .map_event(ScopedAppEvent::Counter)

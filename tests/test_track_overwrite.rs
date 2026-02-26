@@ -20,9 +20,11 @@ fn handler(event: Event, _ctx: &EventContext<()>) -> Command<Event, Effect> {
 }
 
 #[test]
-fn overwrite_drops_effect_without_exhaustivity_error() {
+fn overwrite_records_implicit_cancellation_for_exhaustivity() {
     let mut store = TestStore::new((), handler).with_exhaustivity(Exhaustivity::On);
     store.send(Event::EmitTwo);
-    // User only asserts B. Is this allowed? Yes, currently.
+
+    store.assert_cancelled(1);
     store.assert_tracked_effect(1, Effect::B);
+    store.assert_slot_empty(1);
 }

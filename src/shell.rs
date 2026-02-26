@@ -24,6 +24,7 @@ struct ActiveTaskEntry {
 }
 
 type ActiveTasks = Rc<RefCell<HashMap<CancelId, ActiveTaskEntry>>>;
+type DeferredEvents<E> = Rc<RefCell<VecDeque<E>>>;
 
 #[derive(Debug)]
 struct SpawnedTask {
@@ -32,19 +33,35 @@ struct SpawnedTask {
 }
 
 #[derive(Debug)]
-struct ActivityGuard {
+struct TaskLifecycleGuard {
     activity: Activity,
+    active_tasks: ActiveTasks,
+    tracked_slot: Option<CancelId>,
+    tracked_token: Option<u64>,
 }
 
-impl ActivityGuard {
-    fn new(activity: Activity) -> Self {
-        Self { activity }
+impl TaskLifecycleGuard {
+    fn new(
+        activity: Activity,
+        active_tasks: ActiveTasks,
+        tracked_slot: Option<CancelId>,
+        tracked_token: Option<u64>,
+    ) -> Self {
+        Self {
+            activity,
+            active_tasks,
+            tracked_slot,
+            tracked_token,
+        }
     }
 }
 
-impl Drop for ActivityGuard {
+impl Drop for TaskLifecycleGuard {
     fn drop(&mut self) {
         self.activity.dec();
+        if let (Some(id), Some(token)) = (self.tracked_slot, self.tracked_token) {
+            cleanup_tracked_slot_if_current(&self.active_tasks, id, token);
+        }
     }
 }
 
@@ -64,6 +81,7 @@ where
     resources: ResourceMap,
     activity: Activity,
     active_tasks: ActiveTasks,
+    deferred_events: DeferredEvents<E>,
     closed: bool,
 }
 
@@ -83,6 +101,7 @@ where
             resources,
             activity: Activity::new(),
             active_tasks: Rc::new(RefCell::new(HashMap::new())),
+            deferred_events: Rc::new(RefCell::new(VecDeque::new())),
             closed: false,
         }
     }
@@ -99,20 +118,23 @@ where
             &self.resources,
             &self.activity,
             &self.active_tasks,
+            &self.deferred_events,
             true,
         )
     }
 
     pub fn drain(&mut self) -> Result<usize, ShellError> {
-        let mut progressed = 0usize;
+        let mut progressed = flush_deferred_events(&self.event_tx, &self.deferred_events);
         let _ = compio::runtime::Runtime::try_with_current(|runtime| {
-            if runtime.run() {
-                progressed += 1;
-            }
+            let mut ran_work = runtime.run();
 
             if self.activity.load() > 0 {
                 runtime.poll_with(Some(Duration::ZERO));
-                progressed += 1;
+                ran_work |= runtime.run();
+            }
+
+            if ran_work {
+                progressed = progressed.saturating_add(1);
             }
         });
 
@@ -132,13 +154,15 @@ where
     pub fn shutdown(&mut self) {
         self.closed = true;
         self.active_tasks.borrow_mut().clear();
+        self.deferred_events.borrow_mut().clear();
     }
 
     pub fn wait_for_executors(&self) {}
 }
 
 fn cancel_tracked_slot(active_tasks: &ActiveTasks, id: CancelId) {
-    if let Some(entry) = active_tasks.borrow_mut().remove(&id) {
+    let removed_entry = active_tasks.borrow_mut().remove(&id);
+    if let Some(entry) = removed_entry {
         drop(entry.handle);
     }
 }
@@ -152,6 +176,7 @@ fn cleanup_tracked_slot_if_current(active_tasks: &ActiveTasks, id: CancelId, tok
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn route_command_iterative<E, X>(
     initial_command: Command<E, X>,
     event_tx: &EventSender<E>,
@@ -159,6 +184,7 @@ fn route_command_iterative<E, X>(
     resources: &ResourceMap,
     activity: &Activity,
     active_tasks: &ActiveTasks,
+    deferred_events: &DeferredEvents<E>,
     strict_event_send: bool,
 ) -> Result<(), ShellError>
 where
@@ -176,7 +202,17 @@ where
                             .send(event)
                             .map_err(|_| ShellError::EventChannelClosed)?;
                     } else {
-                        let _ = event_tx.send(event);
+                        match event_tx.try_send_owned(event) {
+                            Ok(()) => {}
+                            Err(crossbeam_channel::TrySendError::Full(event)) => {
+                                deferred_events.borrow_mut().push_back(event);
+                            }
+                            Err(crossbeam_channel::TrySendError::Disconnected(_)) => {
+                                report_spawned_event_drop(
+                                    "event channel disconnected while routing spawned event",
+                                );
+                            }
+                        }
                     }
                 }
                 CommandStep::Effect(effect) => {
@@ -188,6 +224,7 @@ where
                         resources,
                         activity,
                         active_tasks,
+                        deferred_events,
                         &mut queue,
                     ) {
                         spawned.handle.detach();
@@ -203,6 +240,7 @@ where
                         resources,
                         activity,
                         active_tasks,
+                        deferred_events,
                         &mut queue,
                     ) {
                         if let Some(token) = spawned.token {
@@ -237,6 +275,7 @@ fn run_effect_task<E, X>(
     resources: &ResourceMap,
     activity: &Activity,
     active_tasks: &ActiveTasks,
+    deferred_events: &DeferredEvents<E>,
     queue: &mut VecDeque<Command<E, X>>,
 ) -> Option<SpawnedTask>
 where
@@ -253,6 +292,7 @@ where
         resources,
         activity,
         active_tasks,
+        deferred_events,
         queue,
     )
 }
@@ -266,6 +306,7 @@ fn spawn_task<E, X>(
     resources: &ResourceMap,
     activity: &Activity,
     active_tasks: &ActiveTasks,
+    deferred_events: &DeferredEvents<E>,
     queue: &mut VecDeque<Command<E, X>>,
 ) -> Option<SpawnedTask>
 where
@@ -291,13 +332,18 @@ where
             let resources = resources.clone();
             let activity = activity.clone();
             let active_tasks = Rc::clone(active_tasks);
+            let deferred_events = Rc::clone(deferred_events);
             let token = tracked_slot.map(|_| next_task_token());
-            let cleanup_slot = tracked_slot;
-            let cleanup_token = token;
             activity.inc();
+            let lifecycle_guard = TaskLifecycleGuard::new(
+                activity.clone(),
+                Rc::clone(&active_tasks),
+                tracked_slot,
+                token,
+            );
 
             let handle = compio::runtime::spawn(async move {
-                let _activity_guard = ActivityGuard::new(activity.clone());
+                let _lifecycle_guard = lifecycle_guard;
                 let command = future.await;
                 route_spawned_command(
                     command,
@@ -306,11 +352,8 @@ where
                     &resources,
                     &activity,
                     &active_tasks,
+                    &deferred_events,
                 );
-
-                if let (Some(id), Some(token)) = (cleanup_slot, cleanup_token) {
-                    cleanup_tracked_slot_if_current(&active_tasks, id, token);
-                }
             });
 
             Some(SpawnedTask { token, handle })
@@ -330,13 +373,18 @@ where
             let resources = resources.clone();
             let activity = activity.clone();
             let active_tasks = Rc::clone(active_tasks);
+            let deferred_events = Rc::clone(deferred_events);
             let token = tracked_slot.map(|_| next_task_token());
-            let cleanup_slot = tracked_slot;
-            let cleanup_token = token;
             activity.inc();
+            let lifecycle_guard = TaskLifecycleGuard::new(
+                activity.clone(),
+                Rc::clone(&active_tasks),
+                tracked_slot,
+                token,
+            );
 
             let handle = compio::runtime::spawn(async move {
-                let _activity_guard = ActivityGuard::new(activity.clone());
+                let _lifecycle_guard = lifecycle_guard;
                 futures::pin_mut!(stream);
                 while let Some(command) = stream.next().await {
                     route_spawned_command(
@@ -346,11 +394,8 @@ where
                         &resources,
                         &activity,
                         &active_tasks,
+                        &deferred_events,
                     );
-                }
-
-                if let (Some(id), Some(token)) = (cleanup_slot, cleanup_token) {
-                    cleanup_tracked_slot_if_current(&active_tasks, id, token);
                 }
             });
 
@@ -366,6 +411,7 @@ fn route_spawned_command<E, X>(
     resources: &ResourceMap,
     activity: &Activity,
     active_tasks: &ActiveTasks,
+    deferred_events: &DeferredEvents<E>,
 ) where
     E: 'static,
     X: 'static,
@@ -377,6 +423,48 @@ fn route_spawned_command<E, X>(
         resources,
         activity,
         active_tasks,
+        deferred_events,
         false,
     );
+}
+
+fn flush_deferred_events<E>(
+    event_tx: &EventSender<E>,
+    deferred_events: &DeferredEvents<E>,
+) -> usize {
+    let mut flushed = 0usize;
+
+    loop {
+        let Some(event) = deferred_events.borrow_mut().pop_front() else {
+            break;
+        };
+
+        match event_tx.try_send_owned(event) {
+            Ok(()) => {
+                flushed = flushed.saturating_add(1);
+            }
+            Err(crossbeam_channel::TrySendError::Full(event)) => {
+                deferred_events.borrow_mut().push_front(event);
+                break;
+            }
+            Err(crossbeam_channel::TrySendError::Disconnected(_)) => {
+                report_spawned_event_drop(
+                    "event channel disconnected while flushing deferred events",
+                );
+                break;
+            }
+        }
+    }
+
+    flushed
+}
+
+fn report_spawned_event_drop(message: &str) {
+    #[cfg(feature = "tracing")]
+    tracing::warn!("{message}");
+
+    #[cfg(not(feature = "tracing"))]
+    {
+        let _ = message;
+    }
 }

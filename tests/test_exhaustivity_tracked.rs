@@ -27,3 +27,14 @@ fn tracked_assertion_drains_effect_for_exhaustivity() {
     store.assert_tracked_effect(1, Effect::MyEffect);
     store.send(Event::Step2);
 }
+
+#[test]
+fn assert_effects_rejects_tracked_effects() {
+    let mut store = TestStore::new((), handler).with_exhaustivity(Exhaustivity::Off);
+    store.send(Event::Step1);
+
+    let message = syzygy::test_store::assert_panic(|| {
+        store.assert_effects([Effect::MyEffect]);
+    });
+    assert!(message.contains("cannot assert plain effects while tracked effects are pending"));
+}
