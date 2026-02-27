@@ -178,16 +178,40 @@ impl_effect_handler_task!(T1);
 impl_effect_handler_task!(T1, T2);
 impl_effect_handler_task!(T1, T2, T3);
 impl_effect_handler_task!(T1, T2, T3, T4);
+impl_effect_handler_task!(T1, T2, T3, T4, T5);
+impl_effect_handler_task!(T1, T2, T3, T4, T5, T6);
+impl_effect_handler_task!(T1, T2, T3, T4, T5, T6, T7);
+impl_effect_handler_task!(T1, T2, T3, T4, T5, T6, T7, T8);
+impl_effect_handler_task!(T1, T2, T3, T4, T5, T6, T7, T8, T9);
+impl_effect_handler_task!(T1, T2, T3, T4, T5, T6, T7, T8, T9, T10);
+impl_effect_handler_task!(T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11);
+impl_effect_handler_task!(T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12);
 
 impl_effect_handler_future!(T1);
 impl_effect_handler_future!(T1, T2);
 impl_effect_handler_future!(T1, T2, T3);
 impl_effect_handler_future!(T1, T2, T3, T4);
+impl_effect_handler_future!(T1, T2, T3, T4, T5);
+impl_effect_handler_future!(T1, T2, T3, T4, T5, T6);
+impl_effect_handler_future!(T1, T2, T3, T4, T5, T6, T7);
+impl_effect_handler_future!(T1, T2, T3, T4, T5, T6, T7, T8);
+impl_effect_handler_future!(T1, T2, T3, T4, T5, T6, T7, T8, T9);
+impl_effect_handler_future!(T1, T2, T3, T4, T5, T6, T7, T8, T9, T10);
+impl_effect_handler_future!(T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11);
+impl_effect_handler_future!(T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12);
 
 impl_effect_handler_stream!(T1);
 impl_effect_handler_stream!(T1, T2);
 impl_effect_handler_stream!(T1, T2, T3);
 impl_effect_handler_stream!(T1, T2, T3, T4);
+impl_effect_handler_stream!(T1, T2, T3, T4, T5);
+impl_effect_handler_stream!(T1, T2, T3, T4, T5, T6);
+impl_effect_handler_stream!(T1, T2, T3, T4, T5, T6, T7);
+impl_effect_handler_stream!(T1, T2, T3, T4, T5, T6, T7, T8);
+impl_effect_handler_stream!(T1, T2, T3, T4, T5, T6, T7, T8, T9);
+impl_effect_handler_stream!(T1, T2, T3, T4, T5, T6, T7, T8, T9, T10);
+impl_effect_handler_stream!(T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11);
+impl_effect_handler_stream!(T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12);
 
 // ── Event side ──────────────────────────────────────────────────────
 
@@ -378,21 +402,49 @@ impl_event_handler!(T1, T2, T3, T4, T5);
 impl_event_handler!(T1, T2, T3, T4, T5, T6);
 impl_event_handler!(T1, T2, T3, T4, T5, T6, T7);
 impl_event_handler!(T1, T2, T3, T4, T5, T6, T7, T8);
+impl_event_handler!(T1, T2, T3, T4, T5, T6, T7, T8, T9);
+impl_event_handler!(T1, T2, T3, T4, T5, T6, T7, T8, T9, T10);
+impl_event_handler!(T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11);
+impl_event_handler!(T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12);
 
 impl_event_handler_mut!(T1);
 impl_event_handler_mut!(T1, T2);
 impl_event_handler_mut!(T1, T2, T3);
 impl_event_handler_mut!(T1, T2, T3, T4);
+impl_event_handler_mut!(T1, T2, T3, T4, T5);
+impl_event_handler_mut!(T1, T2, T3, T4, T5, T6);
+impl_event_handler_mut!(T1, T2, T3, T4, T5, T6, T7);
+impl_event_handler_mut!(T1, T2, T3, T4, T5, T6, T7, T8);
+impl_event_handler_mut!(T1, T2, T3, T4, T5, T6, T7, T8, T9);
+impl_event_handler_mut!(T1, T2, T3, T4, T5, T6, T7, T8, T9, T10);
+impl_event_handler_mut!(T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11);
+impl_event_handler_mut!(T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12);
 
 impl_event_handler_np_owned!(T1);
 impl_event_handler_np_owned!(T1, T2);
 impl_event_handler_np_owned!(T1, T2, T3);
 impl_event_handler_np_owned!(T1, T2, T3, T4);
+impl_event_handler_np_owned!(T1, T2, T3, T4, T5);
+impl_event_handler_np_owned!(T1, T2, T3, T4, T5, T6);
+impl_event_handler_np_owned!(T1, T2, T3, T4, T5, T6, T7);
+impl_event_handler_np_owned!(T1, T2, T3, T4, T5, T6, T7, T8);
+impl_event_handler_np_owned!(T1, T2, T3, T4, T5, T6, T7, T8, T9);
+impl_event_handler_np_owned!(T1, T2, T3, T4, T5, T6, T7, T8, T9, T10);
+impl_event_handler_np_owned!(T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11);
+impl_event_handler_np_owned!(T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12);
 
 impl_event_handler_np_mut!(T1);
 impl_event_handler_np_mut!(T1, T2);
 impl_event_handler_np_mut!(T1, T2, T3);
 impl_event_handler_np_mut!(T1, T2, T3, T4);
+impl_event_handler_np_mut!(T1, T2, T3, T4, T5);
+impl_event_handler_np_mut!(T1, T2, T3, T4, T5, T6);
+impl_event_handler_np_mut!(T1, T2, T3, T4, T5, T6, T7);
+impl_event_handler_np_mut!(T1, T2, T3, T4, T5, T6, T7, T8);
+impl_event_handler_np_mut!(T1, T2, T3, T4, T5, T6, T7, T8, T9);
+impl_event_handler_np_mut!(T1, T2, T3, T4, T5, T6, T7, T8, T9, T10);
+impl_event_handler_np_mut!(T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11);
+impl_event_handler_np_mut!(T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12);
 
 #[cfg(test)]
 mod tests {
@@ -423,6 +475,88 @@ mod tests {
         name: String,
     }
 
+    #[derive(crate::Model)]
+    struct ArityEventModel {
+        a1: i32,
+        a2: i32,
+        a3: i32,
+        a4: i32,
+        a5: i32,
+        a6: i32,
+        a7: i32,
+        a8: i32,
+        a9: i32,
+        a10: i32,
+        a11: i32,
+        a12: i32,
+    }
+
+    #[derive(Clone)]
+    struct R1(u8);
+    #[derive(Clone)]
+    struct R2(u8);
+    #[derive(Clone)]
+    struct R3(u8);
+    #[derive(Clone)]
+    struct R4(u8);
+    #[derive(Clone)]
+    struct R5(u8);
+    #[derive(Clone)]
+    struct R6(u8);
+    #[derive(Clone)]
+    struct R7(u8);
+    #[derive(Clone)]
+    struct R8(u8);
+    #[derive(Clone)]
+    struct R9(u8);
+    #[derive(Clone)]
+    struct R10(u8);
+    #[derive(Clone)]
+    struct R11(u8);
+    #[derive(Clone)]
+    struct R12(u8);
+
+    struct OwnedEventModel;
+
+    #[derive(Clone, Copy)]
+    struct EO1;
+    #[derive(Clone, Copy)]
+    struct EO2;
+    #[derive(Clone, Copy)]
+    struct EO3;
+    #[derive(Clone, Copy)]
+    struct EO4;
+    #[derive(Clone, Copy)]
+    struct EO5;
+    #[derive(Clone, Copy)]
+    struct EO6;
+    #[derive(Clone, Copy)]
+    struct EO7;
+    #[derive(Clone, Copy)]
+    struct EO8;
+    #[derive(Clone, Copy)]
+    struct EO9;
+    #[derive(Clone, Copy)]
+    struct EO10;
+    #[derive(Clone, Copy)]
+    struct EO11;
+    #[derive(Clone, Copy)]
+    struct EO12;
+
+    macro_rules! impl_owned_from_context {
+        ($($T:ty),+ $(,)?) => {
+            $(
+                impl FromEventContext<OwnedEventModel> for $T {
+                    fn from_context(_ctx: &EventContext<OwnedEventModel>) -> Self {
+                        Self
+                    }
+                }
+            )+
+        };
+    }
+
+    impl_owned_from_context!(EO1, EO2, EO3, EO4, EO5, EO6, EO7, EO8, EO9, EO10, EO11, EO12);
+
     // ── Resources (for effect tests) ────────────────────────────────
 
     #[derive(Clone)]
@@ -432,6 +566,23 @@ mod tests {
         fn as_str(&self) -> &str {
             &self.0
         }
+    }
+
+    fn arity_resources() -> ResourceMap {
+        let mut resources = ResourceMap::new();
+        resources.insert(R1(1));
+        resources.insert(R2(2));
+        resources.insert(R3(3));
+        resources.insert(R4(4));
+        resources.insert(R5(5));
+        resources.insert(R6(6));
+        resources.insert(R7(7));
+        resources.insert(R8(8));
+        resources.insert(R9(9));
+        resources.insert(R10(10));
+        resources.insert(R11(11));
+        resources.insert(R12(12));
+        resources
     }
 
     // ── Event handler tests ─────────────────────────────────────────
@@ -639,6 +790,186 @@ mod tests {
         assert_eq!(model.counter, 2);
     }
 
+    #[test]
+    fn event_handler_mut_supports_twelve_extractors() {
+        #[allow(clippy::too_many_arguments)]
+        fn mutate(
+            delta: i32,
+            a1: &mut A1,
+            a2: &mut A2,
+            a3: &mut A3,
+            a4: &mut A4,
+            a5: &mut A5,
+            a6: &mut A6,
+            a7: &mut A7,
+            a8: &mut A8,
+            a9: &mut A9,
+            a10: &mut A10,
+            a11: &mut A11,
+            a12: &mut A12,
+        ) -> Command<Event, Effect> {
+            **a1 += delta;
+            **a2 += delta;
+            **a3 += delta;
+            **a4 += delta;
+            **a5 += delta;
+            **a6 += delta;
+            **a7 += delta;
+            **a8 += delta;
+            **a9 += delta;
+            **a10 += delta;
+            **a11 += delta;
+            **a12 += delta;
+            Command::none()
+        }
+
+        let mut model = ArityEventModel {
+            a1: 0,
+            a2: 0,
+            a3: 0,
+            a4: 0,
+            a5: 0,
+            a6: 0,
+            a7: 0,
+            a8: 0,
+            a9: 0,
+            a10: 0,
+            a11: 0,
+            a12: 0,
+        };
+
+        let ctx = EventContext::new(&mut model);
+        let _ = mutate.handle(3, &ctx);
+
+        assert_eq!(model.a1, 3);
+        assert_eq!(model.a2, 3);
+        assert_eq!(model.a3, 3);
+        assert_eq!(model.a4, 3);
+        assert_eq!(model.a5, 3);
+        assert_eq!(model.a6, 3);
+        assert_eq!(model.a7, 3);
+        assert_eq!(model.a8, 3);
+        assert_eq!(model.a9, 3);
+        assert_eq!(model.a10, 3);
+        assert_eq!(model.a11, 3);
+        assert_eq!(model.a12, 3);
+    }
+
+    #[test]
+    fn event_handler_np_mut_supports_twelve_extractors() {
+        #[allow(clippy::too_many_arguments)]
+        fn mutate(
+            a1: &mut A1,
+            a2: &mut A2,
+            a3: &mut A3,
+            a4: &mut A4,
+            a5: &mut A5,
+            a6: &mut A6,
+            a7: &mut A7,
+            a8: &mut A8,
+            a9: &mut A9,
+            a10: &mut A10,
+            a11: &mut A11,
+            a12: &mut A12,
+        ) -> Command<Event, Effect> {
+            **a1 = 1;
+            **a2 = 2;
+            **a3 = 3;
+            **a4 = 4;
+            **a5 = 5;
+            **a6 = 6;
+            **a7 = 7;
+            **a8 = 8;
+            **a9 = 9;
+            **a10 = 10;
+            **a11 = 11;
+            **a12 = 12;
+            Command::none()
+        }
+
+        let mut model = ArityEventModel {
+            a1: 0,
+            a2: 0,
+            a3: 0,
+            a4: 0,
+            a5: 0,
+            a6: 0,
+            a7: 0,
+            a8: 0,
+            a9: 0,
+            a10: 0,
+            a11: 0,
+            a12: 0,
+        };
+
+        let ctx = EventContext::new(&mut model);
+        let _ = mutate.handle((), &ctx);
+
+        assert_eq!(model.a1, 1);
+        assert_eq!(model.a2, 2);
+        assert_eq!(model.a3, 3);
+        assert_eq!(model.a4, 4);
+        assert_eq!(model.a5, 5);
+        assert_eq!(model.a6, 6);
+        assert_eq!(model.a7, 7);
+        assert_eq!(model.a8, 8);
+        assert_eq!(model.a9, 9);
+        assert_eq!(model.a10, 10);
+        assert_eq!(model.a11, 11);
+        assert_eq!(model.a12, 12);
+    }
+
+    #[test]
+    fn event_handler_owned_supports_twelve_extractors() {
+        #[allow(clippy::too_many_arguments)]
+        fn read(
+            _: (),
+            _a1: EO1,
+            _a2: EO2,
+            _a3: EO3,
+            _a4: EO4,
+            _a5: EO5,
+            _a6: EO6,
+            _a7: EO7,
+            _a8: EO8,
+            _a9: EO9,
+            _a10: EO10,
+            _a11: EO11,
+            _a12: EO12,
+        ) -> Command<Event, Effect> {
+            Command::none()
+        }
+
+        let mut model = OwnedEventModel;
+        let ctx = EventContext::new(&mut model);
+        let _ = read.handle((), &ctx);
+    }
+
+    #[test]
+    fn event_handler_np_owned_supports_twelve_extractors() {
+        #[allow(clippy::too_many_arguments)]
+        fn read(
+            _a1: EO1,
+            _a2: EO2,
+            _a3: EO3,
+            _a4: EO4,
+            _a5: EO5,
+            _a6: EO6,
+            _a7: EO7,
+            _a8: EO8,
+            _a9: EO9,
+            _a10: EO10,
+            _a11: EO11,
+            _a12: EO12,
+        ) -> Command<Event, Effect> {
+            Command::none()
+        }
+
+        let mut model = OwnedEventModel;
+        let ctx = EventContext::new(&mut model);
+        let _ = read.handle((), &ctx);
+    }
+
     // ── Effect handler tests ────────────────────────────────────────
 
     #[test]
@@ -705,6 +1036,141 @@ mod tests {
                 assert_eq!(commands.len(), 2);
             }
             _ => panic!("expected Task::Stream for stream effect handler"),
+        }
+    }
+
+    #[test]
+    fn effect_task_handler_supports_twelve_extractors() {
+        #[allow(clippy::too_many_arguments)]
+        fn run(
+            payload: u8,
+            r1: R1,
+            r2: R2,
+            r3: R3,
+            r4: R4,
+            r5: R5,
+            r6: R6,
+            r7: R7,
+            r8: R8,
+            r9: R9,
+            r10: R10,
+            r11: R11,
+            r12: R12,
+        ) -> Task<Event, Effect> {
+            let sum = payload
+                + r1.0
+                + r2.0
+                + r3.0
+                + r4.0
+                + r5.0
+                + r6.0
+                + r7.0
+                + r8.0
+                + r9.0
+                + r10.0
+                + r11.0
+                + r12.0;
+            assert_eq!(sum, 79);
+            Task::none()
+        }
+
+        let resources = arity_resources();
+        let ctx = EffectContext::new(&resources);
+        let _ = run.handle(1, &ctx);
+    }
+
+    #[test]
+    fn effect_future_handler_supports_twelve_extractors() {
+        #[allow(clippy::too_many_arguments)]
+        async fn run(
+            payload: u8,
+            r1: R1,
+            r2: R2,
+            r3: R3,
+            r4: R4,
+            r5: R5,
+            r6: R6,
+            r7: R7,
+            r8: R8,
+            r9: R9,
+            r10: R10,
+            r11: R11,
+            r12: R12,
+        ) -> Command<Event, Effect> {
+            let sum = payload
+                + r1.0
+                + r2.0
+                + r3.0
+                + r4.0
+                + r5.0
+                + r6.0
+                + r7.0
+                + r8.0
+                + r9.0
+                + r10.0
+                + r11.0
+                + r12.0;
+            assert_eq!(sum, 79);
+            Command::none()
+        }
+
+        let resources = arity_resources();
+        let ctx = EffectContext::new(&resources);
+
+        match run.handle(1, &ctx) {
+            Task::Future(future) => {
+                let command = futures::executor::block_on(future);
+                assert!(command.is_empty());
+            }
+            _ => panic!("expected Task::Future for 12-arg future effect handler"),
+        }
+    }
+
+    #[test]
+    fn effect_stream_handler_supports_twelve_extractors() {
+        #[allow(clippy::too_many_arguments)]
+        fn run(
+            payload: u8,
+            r1: R1,
+            r2: R2,
+            r3: R3,
+            r4: R4,
+            r5: R5,
+            r6: R6,
+            r7: R7,
+            r8: R8,
+            r9: R9,
+            r10: R10,
+            r11: R11,
+            r12: R12,
+        ) -> impl Stream<Item = Command<Event, Effect>> {
+            let sum = payload
+                + r1.0
+                + r2.0
+                + r3.0
+                + r4.0
+                + r5.0
+                + r6.0
+                + r7.0
+                + r8.0
+                + r9.0
+                + r10.0
+                + r11.0
+                + r12.0;
+            assert_eq!(sum, 79);
+            futures::stream::iter([Command::none()])
+        }
+
+        let resources = arity_resources();
+        let ctx = EffectContext::new(&resources);
+
+        match run.handle(1, &ctx) {
+            Task::Stream(stream) => {
+                let commands = futures::executor::block_on(stream.collect::<Vec<_>>());
+                assert_eq!(commands.len(), 1);
+                assert!(commands[0].is_empty());
+            }
+            _ => panic!("expected Task::Stream for 12-arg stream effect handler"),
         }
     }
 
