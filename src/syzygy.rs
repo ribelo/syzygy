@@ -153,10 +153,20 @@ where
     Event: 'static,
     Effect: 'static,
 {
-    let commands = core.process_events();
-    let core_work = !commands.is_empty();
-    for command in commands {
-        shell.dispatch_command(command)?;
+    let mut core_work = false;
+    let mut dispatch_error = None;
+
+    core.process_events_into(|command| {
+        core_work = true;
+        if dispatch_error.is_none() {
+            if let Err(error) = shell.dispatch_command(command) {
+                dispatch_error = Some(error);
+            }
+        }
+    });
+
+    if let Some(error) = dispatch_error {
+        return Err(error);
     }
 
     let shell_work = shell.drain()?;

@@ -1,3 +1,5 @@
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use syzygy::error::CoreError;
@@ -244,6 +246,51 @@ fn run_until_progresses_async_effects_inside_runtime() {
 }
 
 #[test]
+fn spawning_async_effects_does_not_clone_registered_resources() {
+    #[derive(Debug, Clone)]
+    enum Event {
+        Start,
+    }
+
+    #[derive(Debug, Clone)]
+    enum Effect {
+        Work,
+    }
+
+    #[derive(Debug)]
+    struct CloneCounter(Arc<std::sync::atomic::AtomicUsize>);
+
+    impl Clone for CloneCounter {
+        fn clone(&self) -> Self {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Self(Arc::clone(&self.0))
+        }
+    }
+
+    let clone_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+
+    let rt = compio::runtime::Runtime::new().expect("compio runtime");
+    rt.block_on(async {
+        let mut runner = Syzygy::builder::<Event, Effect>()
+            .model(())
+            .with_resource(CloneCounter(Arc::clone(&clone_count)))
+            .event_handler(|event, _ctx| match event {
+                Event::Start => Command::batch((0..128).map(|_| Command::effect(Effect::Work))),
+            })
+            .effect_handler(|effect, _ctx| match effect {
+                Effect::Work => Task::once(async { Command::none() }),
+            })
+            .build();
+
+        runner.core().try_send_event(Event::Start).unwrap();
+        runner.step().unwrap();
+        runner.run().unwrap();
+    });
+
+    assert_eq!(clone_count.load(Ordering::SeqCst), 0);
+}
+
+#[test]
 fn cancelling_tracked_future_returns_shell_to_idle() {
     #[derive(Debug, Clone)]
     enum Event {
@@ -314,6 +361,68 @@ fn cancelling_tracked_future_returns_shell_to_idle() {
 }
 
 #[test]
+fn cancelled_tracked_future_does_not_route_completion_event() {
+    #[derive(Debug, Clone)]
+    enum Event {
+        Start,
+        Stop,
+        Done,
+    }
+
+    #[derive(Debug, Clone)]
+    enum Effect {
+        Wait,
+    }
+
+    #[derive(Debug, Default, Model)]
+    struct Model {
+        done: bool,
+    }
+
+    fn dispatch(event: Event, ctx: &EventContext<Model>) -> Command<Event, Effect> {
+        match event {
+            Event::Start => Command::track(1_u8, Effect::Wait),
+            Event::Stop => Command::cancel(1_u8),
+            Event::Done => {
+                let done = Done::extract_mut(ctx);
+                **done = true;
+                Command::none()
+            }
+        }
+    }
+
+    fn effects(effect: Effect, _ctx: &EffectContext<'_>) -> Task<Event, Effect> {
+        match effect {
+            Effect::Wait => Task::once(async {
+                compio::runtime::time::sleep(Duration::from_millis(30)).await;
+                Command::event(Event::Done)
+            }),
+        }
+    }
+
+    let rt = compio::runtime::Runtime::new().expect("compio runtime");
+    rt.block_on(async {
+        let mut runner = Syzygy::builder::<Event, Effect>()
+            .model(Model::default())
+            .event_handler(dispatch)
+            .effect_handler(effects)
+            .build();
+
+        runner.core().try_send_event(Event::Start).unwrap();
+        runner.step().unwrap();
+
+        runner.core().try_send_event(Event::Stop).unwrap();
+        runner.step().unwrap();
+
+        compio::runtime::time::sleep(Duration::from_millis(80)).await;
+        runner.step().unwrap();
+        runner.step().unwrap();
+
+        assert!(!runner.model().done);
+    });
+}
+
+#[test]
 fn shutdown_blocks_spawned_untracked_command_routing() {
     #[derive(Debug, Clone)]
     enum Event {
@@ -371,6 +480,58 @@ fn shutdown_blocks_spawned_untracked_command_routing() {
             runner.model().ticks,
             0,
             "spawned commands should be ignored after shutdown"
+        );
+    });
+}
+
+#[test]
+fn shutdown_cancels_untracked_async_tasks_without_timeout() {
+    #[derive(Debug, Clone)]
+    enum Event {
+        Start,
+    }
+
+    #[derive(Debug, Clone)]
+    enum Effect {
+        Flush,
+    }
+
+    let finished = Arc::new(AtomicBool::new(false));
+    let finished_in_effect = Arc::clone(&finished);
+
+    let rt = compio::runtime::Runtime::new().expect("compio runtime");
+    rt.block_on(async move {
+        let mut runner = Syzygy::builder::<Event, Effect>()
+            .model(())
+            .event_handler(|event, _ctx| match event {
+                Event::Start => Command::effect(Effect::Flush),
+            })
+            .effect_handler(move |effect, _ctx| {
+                let finished_in_effect = Arc::clone(&finished_in_effect);
+                match effect {
+                    Effect::Flush => Task::once(async move {
+                        compio::runtime::time::sleep(Duration::from_secs(60)).await;
+                        finished_in_effect.store(true, Ordering::SeqCst);
+                        Command::none()
+                    }),
+                }
+            })
+            .build();
+
+        runner.core().try_send_event(Event::Start).unwrap();
+        runner.step().unwrap();
+
+        let shutdown_started = Instant::now();
+        runner.shutdown();
+        let elapsed = shutdown_started.elapsed();
+
+        assert!(
+            elapsed < Duration::from_secs(1),
+            "shutdown should cancel untracked tasks promptly: {elapsed:?}"
+        );
+        assert!(
+            !finished.load(Ordering::SeqCst),
+            "untracked task should be cancelled before completion"
         );
     });
 }

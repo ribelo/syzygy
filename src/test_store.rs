@@ -27,6 +27,12 @@ use crate::extract::EventContext;
 /// Guards tests against accidental infinite event loops.
 const DEFAULT_MAX_EVENT_STEPS: usize = 10_000;
 
+/// Hard cap for stream commands consumed by [`TestStore::receive`].
+///
+/// Keeps tests from deadlocking when a stream is intentionally or accidentally unbounded.
+#[cfg(feature = "shell")]
+const MAX_RECEIVE_STREAM_COMMANDS: usize = 10_000;
+
 /// Controls whether [`TestStore`] enforces effect assertions between sends.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Exhaustivity {
@@ -196,6 +202,16 @@ where
 
     /// Drains and returns all buffered effects in emission order.
     pub fn take_effects(&mut self) -> Vec<X> {
+        let tracked_slots = self
+            .pending_effects
+            .iter()
+            .filter_map(|buffered| buffered.id)
+            .collect::<Vec<_>>();
+        assert!(
+            tracked_slots.is_empty(),
+            "cannot take plain effects while tracked effects are pending in slots {tracked_slots:?}; use assert_tracked_effect()"
+        );
+
         let effects = self
             .pending_effects
             .drain(..)
@@ -308,10 +324,31 @@ where
     where
         H: Fn(X, &EffectContext<'_>) -> Task<E, X>,
     {
+        assert!(
+            compio::runtime::Runtime::try_with_current(|_| ()).is_err(),
+            "TestStore::receive cannot run inside a compio runtime; use receive_async()"
+        );
+
         for effect in self.take_effects() {
             let ctx = EffectContext::new(&self.resources);
             let task = effect_handler(effect, &ctx);
             self.drive_received_task(task);
+        }
+
+        self.effects_asserted = self.pending_effects.is_empty() && self.cancelled_slots.is_empty();
+    }
+
+    /// Async variant of [`receive`](Self::receive) that can safely run inside
+    /// a compio runtime.
+    #[cfg(feature = "shell")]
+    pub async fn receive_async<H>(&mut self, effect_handler: H)
+    where
+        H: Fn(X, &EffectContext<'_>) -> Task<E, X>,
+    {
+        for effect in self.take_effects() {
+            let ctx = EffectContext::new(&self.resources);
+            let task = effect_handler(effect, &ctx);
+            self.drive_received_task_async(task).await;
         }
 
         self.effects_asserted = self.pending_effects.is_empty() && self.cancelled_slots.is_empty();
@@ -329,7 +366,44 @@ where
                 self.feed_received_command(command);
             }
             Task::Stream(stream) => {
-                let commands = block_on(stream.collect::<Vec<_>>());
+                let commands = block_on(
+                    stream
+                        .take(MAX_RECEIVE_STREAM_COMMANDS + 1)
+                        .collect::<Vec<_>>(),
+                );
+                assert!(
+                    commands.len() <= MAX_RECEIVE_STREAM_COMMANDS,
+                    "TestStore::receive reached stream command limit ({MAX_RECEIVE_STREAM_COMMANDS}). This usually means the stream is unbounded; use a finite stream in tests."
+                );
+
+                for command in commands {
+                    self.feed_received_command(command);
+                }
+            }
+        }
+    }
+
+    #[cfg(feature = "shell")]
+    async fn drive_received_task_async(&mut self, task: Task<E, X>) {
+        match task {
+            Task::None => {}
+            Task::Resolved(command) => {
+                self.feed_received_command(command);
+            }
+            Task::Future(future) => {
+                let command = future.await;
+                self.feed_received_command(command);
+            }
+            Task::Stream(stream) => {
+                let commands = stream
+                    .take(MAX_RECEIVE_STREAM_COMMANDS + 1)
+                    .collect::<Vec<_>>()
+                    .await;
+                assert!(
+                    commands.len() <= MAX_RECEIVE_STREAM_COMMANDS,
+                    "TestStore::receive reached stream command limit ({MAX_RECEIVE_STREAM_COMMANDS}). This usually means the stream is unbounded; use a finite stream in tests."
+                );
+
                 for command in commands {
                     self.feed_received_command(command);
                 }
@@ -767,6 +841,67 @@ mod tests {
         assert_eq!(store.state().counter, 3);
         assert_eq!(store.pending_effect_count(), 1);
         store.assert_effects([Effect::Log(3)]);
+    }
+
+    #[cfg(feature = "shell")]
+    #[test]
+    fn receive_panics_for_unbounded_streams() {
+        use futures::stream;
+
+        let mut store = TestStore::new(Model::default(), dispatch);
+
+        store.send(Event::Increment(1));
+        assert_panic_contains("stream command limit", || {
+            store.receive(|_effect, _ctx| Task::stream(stream::repeat(Command::none())));
+        });
+    }
+
+    #[test]
+    fn take_effects_rejects_tracked_outputs() {
+        let mut store = TestStore::new(Model::default(), |_event: Event, _ctx| {
+            Command::<Event, Effect>::track(1_u8, Effect::First)
+        });
+
+        store.send(Event::Track);
+        assert_panic_contains("tracked effects are pending", || {
+            let _ = store.take_effects();
+        });
+    }
+
+    #[cfg(feature = "shell")]
+    #[test]
+    fn receive_panics_inside_compio_runtime() {
+        let rt = compio::runtime::Runtime::new().expect("compio runtime");
+        rt.block_on(async {
+            let mut store = TestStore::new(Model::default(), dispatch);
+            store.send(Event::Increment(1));
+
+            assert_panic_contains("use receive_async", || {
+                store.receive(|_effect, _ctx| Task::none());
+            });
+        });
+    }
+
+    #[cfg(feature = "shell")]
+    #[test]
+    fn receive_async_runs_inside_compio_runtime() {
+        let rt = compio::runtime::Runtime::new().expect("compio runtime");
+        rt.block_on(async {
+            let mut store = TestStore::new(Model::default(), dispatch);
+            store.send(Event::Increment(1));
+
+            store
+                .receive_async(|effect, _ctx| match effect {
+                    Effect::Log(_) => Task::once(async {
+                        compio::runtime::time::sleep(std::time::Duration::from_millis(1)).await;
+                        Command::event(Event::SaveDone)
+                    }),
+                    _ => Task::none(),
+                })
+                .await;
+
+            assert!(store.state().save_completed);
+        });
     }
 
     #[test]

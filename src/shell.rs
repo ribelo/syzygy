@@ -2,7 +2,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, VecDeque};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use futures::stream::StreamExt;
 
@@ -24,6 +24,7 @@ struct ActiveTaskEntry {
 }
 
 type ActiveTasks = Rc<RefCell<HashMap<CancelId, ActiveTaskEntry>>>;
+type UntrackedTasks = Rc<RefCell<Vec<TaskHandle>>>;
 type DeferredEvents<E> = Rc<RefCell<VecDeque<E>>>;
 type ClosedFlag = Rc<Cell<bool>>;
 
@@ -72,6 +73,12 @@ fn next_task_token() -> u64 {
     NEXT_TASK_TOKEN.fetch_add(1, Ordering::Relaxed)
 }
 
+const MAX_DEFERRED_EVENTS: usize = 65_536;
+const DEFERRED_STREAM_BACKPRESSURE_THRESHOLD: usize = 256;
+const DEFERRED_STREAM_BACKPRESSURE_SLEEP: Duration = Duration::from_millis(1);
+const EXECUTOR_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
+const EXECUTOR_POLL_SLICE: Duration = Duration::from_millis(5);
+
 pub struct Shell<E, X>
 where
     E: 'static,
@@ -79,9 +86,10 @@ where
 {
     event_tx: EventSender<E>,
     effect_handler: EffectHandlerFn<E, X>,
-    resources: ResourceMap,
+    resources: Rc<ResourceMap>,
     activity: Activity,
     active_tasks: ActiveTasks,
+    untracked_tasks: UntrackedTasks,
     deferred_events: DeferredEvents<E>,
     closed: ClosedFlag,
 }
@@ -99,9 +107,10 @@ where
         Self {
             event_tx,
             effect_handler,
-            resources,
+            resources: Rc::new(resources),
             activity: Activity::new(),
             active_tasks: Rc::new(RefCell::new(HashMap::new())),
+            untracked_tasks: Rc::new(RefCell::new(Vec::new())),
             deferred_events: Rc::new(RefCell::new(VecDeque::new())),
             closed: Rc::new(Cell::new(false)),
         }
@@ -112,6 +121,8 @@ where
             return Ok(());
         }
 
+        prune_finished_untracked_tasks(&self.untracked_tasks);
+
         route_command_iterative(
             command,
             &self.event_tx,
@@ -119,12 +130,15 @@ where
             &self.resources,
             &self.activity,
             &self.active_tasks,
+            &self.untracked_tasks,
             &self.deferred_events,
             &self.closed,
         )
     }
 
     pub fn drain(&mut self) -> Result<usize, ShellError> {
+        prune_finished_untracked_tasks(&self.untracked_tasks);
+
         let mut progressed = flush_deferred_events(&self.event_tx, &self.deferred_events);
         let _ = compio::runtime::Runtime::try_with_current(|runtime| {
             let mut ran_work = runtime.run();
@@ -138,6 +152,8 @@ where
                 progressed = progressed.saturating_add(1);
             }
         });
+
+        prune_finished_untracked_tasks(&self.untracked_tasks);
 
         Ok(progressed)
     }
@@ -155,10 +171,53 @@ where
     pub fn shutdown(&mut self) {
         self.closed.set(true);
         self.active_tasks.borrow_mut().clear();
+        self.untracked_tasks.borrow_mut().clear();
         self.deferred_events.borrow_mut().clear();
     }
 
-    pub fn wait_for_executors(&self) {}
+    pub fn wait_for_executors(&self) {
+        prune_finished_untracked_tasks(&self.untracked_tasks);
+
+        if self.activity.load() == 0 {
+            return;
+        }
+
+        let deadline = Instant::now()
+            .checked_add(EXECUTOR_SHUTDOWN_TIMEOUT)
+            .unwrap_or_else(Instant::now);
+
+        while self.activity.load() > 0 {
+            prune_finished_untracked_tasks(&self.untracked_tasks);
+
+            let now = Instant::now();
+            if now >= deadline {
+                report_spawned_event_drop("timed out while waiting for executors to drain");
+                break;
+            }
+
+            let remaining = deadline.saturating_duration_since(now);
+            let wait_slice = remaining.min(EXECUTOR_POLL_SLICE);
+
+            if compio::runtime::Runtime::try_with_current(|runtime| {
+                let mut ran_work = runtime.run();
+                if self.activity.load() > 0 {
+                    runtime.poll_with(Some(wait_slice));
+                    ran_work |= runtime.run();
+                }
+                ran_work
+            })
+            .is_ok()
+            {
+                continue;
+            }
+
+            if self.activity.wait_until_zero(wait_slice) {
+                break;
+            }
+        }
+
+        prune_finished_untracked_tasks(&self.untracked_tasks);
+    }
 }
 
 fn cancel_tracked_slot(active_tasks: &ActiveTasks, id: CancelId) {
@@ -177,14 +236,46 @@ fn cleanup_tracked_slot_if_current(active_tasks: &ActiveTasks, id: CancelId, tok
     }
 }
 
+fn tracked_slot_is_current(
+    active_tasks: &ActiveTasks,
+    tracked_slot: Option<CancelId>,
+    tracked_token: Option<u64>,
+) -> bool {
+    match (tracked_slot, tracked_token) {
+        (Some(id), Some(token)) => active_tasks
+            .borrow()
+            .get(&id)
+            .is_some_and(|entry| entry.token == token),
+        (None, None) => true,
+        _ => false,
+    }
+}
+
+fn prune_finished_untracked_tasks(untracked_tasks: &UntrackedTasks) {
+    untracked_tasks
+        .borrow_mut()
+        .retain(|handle| !handle.is_finished());
+}
+
+fn push_deferred_event<E>(deferred_events: &DeferredEvents<E>, event: E) {
+    let mut deferred_events = deferred_events.borrow_mut();
+    if deferred_events.len() >= MAX_DEFERRED_EVENTS {
+        report_spawned_event_drop("dropping deferred event because backlog reached hard limit");
+        return;
+    }
+
+    deferred_events.push_back(event);
+}
+
 #[allow(clippy::too_many_arguments)]
 fn route_command_iterative<E, X>(
     initial_command: Command<E, X>,
     event_tx: &EventSender<E>,
     effect_handler: &EffectHandlerFn<E, X>,
-    resources: &ResourceMap,
+    resources: &Rc<ResourceMap>,
     activity: &Activity,
     active_tasks: &ActiveTasks,
+    untracked_tasks: &UntrackedTasks,
     deferred_events: &DeferredEvents<E>,
     closed: &ClosedFlag,
 ) -> Result<(), ShellError>
@@ -214,11 +305,12 @@ where
                         resources,
                         activity,
                         active_tasks,
+                        untracked_tasks,
                         deferred_events,
                         closed,
                         &mut queue,
                     ) {
-                        spawned.handle.detach();
+                        untracked_tasks.borrow_mut().push(spawned.handle);
                     }
                 }
                 CommandStep::Tracked { id, effect } => {
@@ -231,6 +323,7 @@ where
                         resources,
                         activity,
                         active_tasks,
+                        untracked_tasks,
                         deferred_events,
                         closed,
                         &mut queue,
@@ -244,7 +337,7 @@ where
                                 },
                             );
                         } else {
-                            spawned.handle.detach();
+                            untracked_tasks.borrow_mut().push(spawned.handle);
                         }
                     }
                 }
@@ -264,9 +357,10 @@ fn run_effect_task<E, X>(
     tracked_slot: Option<CancelId>,
     event_tx: &EventSender<E>,
     effect_handler: &EffectHandlerFn<E, X>,
-    resources: &ResourceMap,
+    resources: &Rc<ResourceMap>,
     activity: &Activity,
     active_tasks: &ActiveTasks,
+    untracked_tasks: &UntrackedTasks,
     deferred_events: &DeferredEvents<E>,
     closed: &ClosedFlag,
     queue: &mut VecDeque<Command<E, X>>,
@@ -275,7 +369,7 @@ where
     E: 'static,
     X: 'static,
 {
-    let ctx = EffectContext::new(resources);
+    let ctx = EffectContext::new(resources.as_ref());
     let task = effect_handler(effect, &ctx);
     spawn_task(
         task,
@@ -285,6 +379,7 @@ where
         resources,
         activity,
         active_tasks,
+        untracked_tasks,
         deferred_events,
         closed,
         queue,
@@ -297,9 +392,10 @@ fn spawn_task<E, X>(
     tracked_slot: Option<CancelId>,
     event_tx: &EventSender<E>,
     effect_handler: &EffectHandlerFn<E, X>,
-    resources: &ResourceMap,
+    resources: &Rc<ResourceMap>,
     activity: &Activity,
     active_tasks: &ActiveTasks,
+    untracked_tasks: &UntrackedTasks,
     deferred_events: &DeferredEvents<E>,
     closed: &ClosedFlag,
     queue: &mut VecDeque<Command<E, X>>,
@@ -324,9 +420,10 @@ where
 
             let event_tx = event_tx.clone();
             let effect_handler = Rc::clone(effect_handler);
-            let resources = resources.clone();
+            let resources = Rc::clone(resources);
             let activity = activity.clone();
             let active_tasks = Rc::clone(active_tasks);
+            let untracked_tasks = Rc::clone(untracked_tasks);
             let deferred_events = Rc::clone(deferred_events);
             let closed = Rc::clone(closed);
             let token = tracked_slot.map(|_| next_task_token());
@@ -344,6 +441,11 @@ where
                 if closed.get() {
                     return;
                 }
+
+                if !tracked_slot_is_current(&active_tasks, tracked_slot, token) {
+                    return;
+                }
+
                 route_spawned_command(
                     command,
                     &event_tx,
@@ -351,6 +453,7 @@ where
                     &resources,
                     &activity,
                     &active_tasks,
+                    &untracked_tasks,
                     &deferred_events,
                     &closed,
                 );
@@ -370,9 +473,10 @@ where
 
             let event_tx = event_tx.clone();
             let effect_handler = Rc::clone(effect_handler);
-            let resources = resources.clone();
+            let resources = Rc::clone(resources);
             let activity = activity.clone();
             let active_tasks = Rc::clone(active_tasks);
+            let untracked_tasks = Rc::clone(untracked_tasks);
             let deferred_events = Rc::clone(deferred_events);
             let closed = Rc::clone(closed);
             let token = tracked_slot.map(|_| next_task_token());
@@ -392,6 +496,10 @@ where
                         break;
                     }
 
+                    if !tracked_slot_is_current(&active_tasks, tracked_slot, token) {
+                        break;
+                    }
+
                     route_spawned_command(
                         command,
                         &event_tx,
@@ -399,12 +507,24 @@ where
                         &resources,
                         &activity,
                         &active_tasks,
+                        &untracked_tasks,
                         &deferred_events,
                         &closed,
                     );
 
                     if closed.get() {
                         break;
+                    }
+
+                    if !tracked_slot_is_current(&active_tasks, tracked_slot, token) {
+                        break;
+                    }
+
+                    let backlog = event_tx
+                        .len()
+                        .saturating_add(deferred_events.borrow().len());
+                    if backlog >= DEFERRED_STREAM_BACKPRESSURE_THRESHOLD {
+                        compio::runtime::time::sleep(DEFERRED_STREAM_BACKPRESSURE_SLEEP).await;
                     }
                 }
             });
@@ -419,9 +539,10 @@ fn route_spawned_command<E, X>(
     command: Command<E, X>,
     event_tx: &EventSender<E>,
     effect_handler: &EffectHandlerFn<E, X>,
-    resources: &ResourceMap,
+    resources: &Rc<ResourceMap>,
     activity: &Activity,
     active_tasks: &ActiveTasks,
+    untracked_tasks: &UntrackedTasks,
     deferred_events: &DeferredEvents<E>,
     closed: &ClosedFlag,
 ) where
@@ -439,6 +560,7 @@ fn route_spawned_command<E, X>(
         resources,
         activity,
         active_tasks,
+        untracked_tasks,
         deferred_events,
         closed,
     )
@@ -454,14 +576,14 @@ fn route_event<E>(
     event: E,
 ) -> Result<(), crossbeam_channel::TrySendError<E>> {
     if !deferred_events.borrow().is_empty() {
-        deferred_events.borrow_mut().push_back(event);
+        push_deferred_event(deferred_events, event);
         return Ok(());
     }
 
     match event_tx.try_send_owned(event) {
         Ok(()) => Ok(()),
         Err(crossbeam_channel::TrySendError::Full(event)) => {
-            deferred_events.borrow_mut().push_back(event);
+            push_deferred_event(deferred_events, event);
             Ok(())
         }
         Err(crossbeam_channel::TrySendError::Disconnected(event)) => {

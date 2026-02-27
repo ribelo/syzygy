@@ -11,6 +11,37 @@ use crate::reducer::Reducer;
 use crate::shell::{EffectHandlerFn, Shell};
 use crate::syzygy::{Syzygy, SyzygyConfig};
 
+/// Result of attempting to handle an effect in builder-level composition.
+pub enum EffectRoute<E, X> {
+    Handled(Task<E, X>),
+    Unhandled,
+}
+
+/// Conversion trait for builder effect handlers.
+///
+/// Returning [`Task`] means the effect was handled. Returning
+/// `Option<Task>` allows explicit fallthrough (`None`) in chained handlers.
+pub trait IntoEffectRoute<E, X> {
+    fn into_effect_route(self) -> EffectRoute<E, X>;
+}
+
+impl<E, X> IntoEffectRoute<E, X> for Task<E, X> {
+    fn into_effect_route(self) -> EffectRoute<E, X> {
+        EffectRoute::Handled(self)
+    }
+}
+
+impl<E, X> IntoEffectRoute<E, X> for Option<Task<E, X>> {
+    fn into_effect_route(self) -> EffectRoute<E, X> {
+        match self {
+            Some(task) => EffectRoute::Handled(task),
+            None => EffectRoute::Unhandled,
+        }
+    }
+}
+
+type RoutedEffectHandlerFn<E, X> = Rc<dyn for<'a> Fn(X, &EffectContext<'a>) -> EffectRoute<E, X>>;
+
 pub struct SyzygyBuilder<E, X, M = ()>
 where
     E: 'static,
@@ -108,7 +139,7 @@ where
         let mut configured =
             self.event_handler(move |event, ctx| reducer_feature.reduce(event, ctx));
         configured.effect_handler = Some(Rc::new(move |effect, ctx| {
-            effect_feature.handle_effect(effect, ctx)
+            EffectRoute::Handled(effect_feature.handle_effect(effect, ctx))
         }));
         configured
     }
@@ -120,7 +151,7 @@ where
     Effect: 'static,
 {
     event_handler: EventHandlerFn<Event, Effect, Model>,
-    effect_handler: Option<EffectHandlerFn<Event, Effect>>,
+    effect_handler: Option<RoutedEffectHandlerFn<Event, Effect>>,
     model: Model,
     resources: ResourceMap,
     event_channel_capacity: Option<usize>,
@@ -135,11 +166,40 @@ where
     Model: 'static,
 {
     #[must_use]
-    pub fn effect_handler<H>(mut self, handler: H) -> Self
+    pub fn effect_handler<H, R>(mut self, handler: H) -> Self
     where
-        H: for<'a> Fn(Effect, &EffectContext<'a>) -> Task<Event, Effect> + 'static,
+        H: for<'a> Fn(Effect, &EffectContext<'a>) -> R + 'static,
+        R: IntoEffectRoute<Event, Effect> + 'static,
     {
-        self.effect_handler = Some(Rc::new(handler));
+        assert!(
+            self.effect_handler.is_none(),
+            "effect handler is already configured (likely via .feature()); use .chain_effect_handler() to compose handlers"
+        );
+        self.effect_handler = Some(Rc::new(move |effect, ctx| {
+            handler(effect, ctx).into_effect_route()
+        }));
+        self
+    }
+
+    #[must_use]
+    pub fn chain_effect_handler<H, R>(mut self, handler: H) -> Self
+    where
+        H: for<'a> Fn(Effect, &EffectContext<'a>) -> R + 'static,
+        R: IntoEffectRoute<Event, Effect> + 'static,
+        Effect: Clone,
+    {
+        let chained: RoutedEffectHandlerFn<Event, Effect> =
+            Rc::new(move |effect, ctx| handler(effect, ctx).into_effect_route());
+        self.effect_handler = Some(match self.effect_handler.take() {
+            Some(existing) => {
+                let chained = Rc::clone(&chained);
+                Rc::new(move |effect, ctx| match existing(effect.clone(), ctx) {
+                    EffectRoute::Handled(task) => EffectRoute::Handled(task),
+                    EffectRoute::Unhandled => chained(effect, ctx),
+                })
+            }
+            None => chained,
+        });
         self
     }
 
@@ -197,9 +257,17 @@ where
             self.event_channel_capacity,
         );
 
-        let effect_handler = self
-            .effect_handler
-            .unwrap_or_else(|| Rc::new(|_effect, _ctx: &EffectContext<'_>| Task::none()));
+        let routed_effect_handler = self.effect_handler.unwrap_or_else(|| {
+            Rc::new(|_effect, _ctx: &EffectContext<'_>| EffectRoute::Handled(Task::none()))
+        });
+
+        let effect_handler: EffectHandlerFn<Event, Effect> =
+            Rc::new(
+                move |effect, ctx| match routed_effect_handler(effect, ctx) {
+                    EffectRoute::Handled(task) => task,
+                    EffectRoute::Unhandled => Task::none(),
+                },
+            );
 
         let shell = Shell::new(event_tx, effect_handler, self.resources);
         Syzygy::with_config(core, shell, self.syzygy_config)

@@ -2,6 +2,7 @@ use std::cell::{Cell, RefCell};
 use std::future::Future;
 
 use futures::Stream;
+use smallvec::SmallVec;
 
 use crate::command::Command;
 use crate::dependency::{Resource, ResourceMap};
@@ -193,7 +194,7 @@ impl_effect_handler_stream!(T1, T2, T3, T4);
 pub struct EventContext<M> {
     ptr: *mut M,
     borrowed: Cell<u64>,
-    borrowed_ranges: RefCell<Vec<(usize, usize)>>,
+    borrowed_ranges: RefCell<SmallVec<[(usize, usize); 8]>>,
 }
 
 impl<M> EventContext<M> {
@@ -201,7 +202,7 @@ impl<M> EventContext<M> {
         Self {
             ptr: model as *mut M,
             borrowed: Cell::new(0),
-            borrowed_ranges: RefCell::new(Vec::new()),
+            borrowed_ranges: RefCell::new(SmallVec::new()),
         }
     }
 

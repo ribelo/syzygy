@@ -28,12 +28,13 @@ impl CancelId {
     }
 
     #[must_use]
-    fn map_namespace<Event, Effect, E2, X2>(self) -> Self
+    fn map_namespace_with<Event, Effect, E2, X2, Namespace>(self, namespace: &Namespace) -> Self
     where
         Event: 'static,
         Effect: 'static,
         E2: 'static,
         X2: 'static,
+        Namespace: Hash + 'static,
     {
         let mut hasher = FxHasher::default();
         self.type_id.hash(&mut hasher);
@@ -42,9 +43,11 @@ impl CancelId {
         TypeId::of::<Effect>().hash(&mut hasher);
         TypeId::of::<E2>().hash(&mut hasher);
         TypeId::of::<X2>().hash(&mut hasher);
+        TypeId::of::<Namespace>().hash(&mut hasher);
+        namespace.hash(&mut hasher);
 
         Self {
-            type_id: TypeId::of::<(Event, Effect, E2, X2)>(),
+            type_id: TypeId::of::<(Event, Effect, E2, X2, Namespace)>(),
             hash: hasher.finish(),
         }
     }
@@ -254,12 +257,55 @@ impl<Event, Effect> Command<Event, Effect> {
         self.outputs.len()
     }
 
+    #[must_use]
+    pub(crate) fn has_cancellable_steps(&self) -> bool {
+        self.outputs.iter().any(|step| {
+            matches!(
+                step,
+                CommandStep::Tracked { .. } | CommandStep::Cancel { .. }
+            )
+        })
+    }
+
     /// Transform event and effect types.
     ///
     /// Useful when embedding child commands into parent commands.
+    ///
+    /// This method is only for non-cancellable commands.
+    ///
+    /// If the command contains tracked/cancel steps, this method panics because
+    /// implicit namespacing is ambiguous for repeated sibling instances.
+    /// Use [`Command::map_namespaced`] with an explicit instance key.
     #[must_use]
-    pub fn map<E2, X2>(self, fe: impl Fn(Event) -> E2, fx: impl Fn(Effect) -> X2) -> Command<E2, X2>
+    pub fn map<E2, X2, FE, FX>(self, fe: FE, fx: FX) -> Command<E2, X2>
     where
+        FE: Fn(Event) -> E2,
+        FX: Fn(Effect) -> X2,
+        Event: 'static,
+        Effect: 'static,
+        E2: 'static,
+        X2: 'static,
+    {
+        assert!(
+            !self.has_cancellable_steps(),
+            "Command::map cannot safely namespace tracked/cancel steps; use Command::map_namespaced(namespace, ...)"
+        );
+
+        let namespace = (std::any::type_name::<FE>(), std::any::type_name::<FX>());
+        self.map_namespaced(namespace, fe, fx)
+    }
+
+    /// Transform event/effect types and namespace tracked cancellation slots
+    /// with an explicit instance key.
+    #[must_use]
+    pub fn map_namespaced<Namespace, E2, X2>(
+        self,
+        namespace: Namespace,
+        fe: impl Fn(Event) -> E2,
+        fx: impl Fn(Effect) -> X2,
+    ) -> Command<E2, X2>
+    where
+        Namespace: Hash + 'static,
         Event: 'static,
         Effect: 'static,
         E2: 'static,
@@ -272,11 +318,11 @@ impl<Event, Effect> Command<Event, Effect> {
                 CommandStep::Event(event) => CommandStep::Event(fe(event)),
                 CommandStep::Effect(effect) => CommandStep::Effect(fx(effect)),
                 CommandStep::Tracked { id, effect } => CommandStep::Tracked {
-                    id: id.map_namespace::<Event, Effect, E2, X2>(),
+                    id: id.map_namespace_with::<Event, Effect, E2, X2, _>(&namespace),
                     effect: fx(effect),
                 },
                 CommandStep::Cancel { id } => CommandStep::Cancel {
-                    id: id.map_namespace::<Event, Effect, E2, X2>(),
+                    id: id.map_namespace_with::<Event, Effect, E2, X2, _>(&namespace),
                 },
             })
             .collect();
@@ -579,7 +625,7 @@ mod tests {
         let mapped: Command<ChildEvent, ParentEffect> =
             Command::track(Slot::Active, ChildEffect::Load)
                 .and_cancel(Slot::Active)
-                .map_effect(ParentEffect::Child);
+                .map_namespaced(0_u8, std::convert::identity, ParentEffect::Child);
 
         let steps = mapped.into_iter().collect::<Vec<_>>();
         assert_eq!(steps.len(), 2);
@@ -636,11 +682,80 @@ mod tests {
         }
 
         let a = Command::<ChildEventA, ChildEffectA>::track(Slot::Active, ChildEffectA::Work)
-            .map(ParentEvent::A, ParentEffect::A)
+            .map_namespaced((), ParentEvent::A, ParentEffect::A)
             .into_iter()
             .collect::<Vec<_>>();
         let b = Command::<ChildEventB, ChildEffectB>::track(Slot::Active, ChildEffectB::Work)
-            .map(ParentEvent::B, ParentEffect::B)
+            .map_namespaced((), ParentEvent::B, ParentEffect::B)
+            .into_iter()
+            .collect::<Vec<_>>();
+
+        let a_id = match &a[0] {
+            CommandStep::Tracked { id, .. } => *id,
+            _ => panic!("expected tracked step"),
+        };
+        let b_id = match &b[0] {
+            CommandStep::Tracked { id, .. } => *id,
+            _ => panic!("expected tracked step"),
+        };
+
+        assert_ne!(a_id, b_id);
+    }
+
+    #[test]
+    fn map_panics_for_cancellable_steps_without_explicit_namespace() {
+        #[derive(Debug, Clone, PartialEq, Eq)]
+        struct ChildEvent;
+
+        #[derive(Debug, Clone, PartialEq, Eq)]
+        enum ChildEffect {
+            Work,
+        }
+
+        #[derive(Debug, Clone, PartialEq, Eq)]
+        enum ParentEvent {
+            Child(ChildEvent),
+        }
+
+        #[derive(Debug, Clone, PartialEq, Eq)]
+        enum ParentEffect {
+            Child(ChildEffect),
+        }
+
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = Command::<ChildEvent, ChildEffect>::track(1_u8, ChildEffect::Work)
+                .map(ParentEvent::Child, ParentEffect::Child);
+        }));
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn map_namespaced_disambiguates_identical_child_types() {
+        #[derive(Debug, Clone, PartialEq, Eq)]
+        struct ChildEvent;
+
+        #[derive(Debug, Clone, PartialEq, Eq)]
+        enum ChildEffect {
+            Work,
+        }
+
+        #[derive(Debug, Clone, PartialEq, Eq)]
+        enum ParentEvent {
+            Child(ChildEvent),
+        }
+
+        #[derive(Debug, Clone, PartialEq, Eq)]
+        enum ParentEffect {
+            Child(ChildEffect),
+        }
+
+        let a = Command::<ChildEvent, ChildEffect>::track(1_u8, ChildEffect::Work)
+            .map_namespaced(0_u8, ParentEvent::Child, ParentEffect::Child)
+            .into_iter()
+            .collect::<Vec<_>>();
+        let b = Command::<ChildEvent, ChildEffect>::track(1_u8, ChildEffect::Work)
+            .map_namespaced(1_u8, ParentEvent::Child, ParentEffect::Child)
             .into_iter()
             .collect::<Vec<_>>();
 

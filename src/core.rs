@@ -31,6 +31,11 @@ impl<E> EventSender<E> {
         self.inner.try_send(event)
     }
 
+    #[must_use]
+    pub(crate) fn len(&self) -> usize {
+        self.inner.len()
+    }
+
     pub fn send(&self, event: E) -> Result<(), CoreError> {
         self.try_send_owned(event).map_err(map_send_error)
     }
@@ -60,7 +65,6 @@ where
     event_handler: EventHandlerFn<E, X, M>,
     model: M,
     event_queue: VecDeque<E>,
-    command_buffer: Vec<Command<E, X>>,
     event_rx: Receiver<E>,
     event_tx: EventSender<E>,
     event_channel_capacity: Option<usize>,
@@ -89,7 +93,6 @@ where
             event_handler,
             model,
             event_queue: VecDeque::new(),
-            command_buffer: Vec::new(),
             event_rx: rx,
             event_tx: event_tx.clone(),
             event_channel_capacity: capacity,
@@ -104,16 +107,26 @@ where
     }
 
     pub fn process_events(&mut self) -> Vec<Command<E, X>> {
+        let mut commands = Vec::new();
+        self.process_events_into(|command| commands.push(command));
+        commands
+    }
+
+    pub fn process_events_into<F>(&mut self, mut sink: F) -> usize
+    where
+        F: FnMut(Command<E, X>),
+    {
         while let Ok(event) = self.event_rx.try_recv() {
             self.event_queue.push_back(event);
         }
 
+        let mut emitted = 0usize;
         while let Some(event) = self.event_queue.pop_front() {
-            let command = self.handle_event(event);
-            self.command_buffer.push(command);
+            emitted = emitted.saturating_add(1);
+            sink(self.handle_event(event));
         }
 
-        std::mem::take(&mut self.command_buffer)
+        emitted
     }
 
     #[deprecated(note = "use try_send_event()")]
