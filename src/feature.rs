@@ -18,9 +18,9 @@ pub trait Feature: 'static {
         &self,
         effect: Self::Effect,
         ctx: &EffectContext<'_>,
-    ) -> Task<Self::Event, Self::Effect> {
+    ) -> Option<Task<Self::Event, Self::Effect>> {
         let _ = (effect, ctx);
-        Task::none()
+        None
     }
 }
 

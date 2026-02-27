@@ -74,6 +74,7 @@ fn next_task_token() -> u64 {
 }
 
 const MAX_DEFERRED_EVENTS: usize = 65_536;
+const MAX_INLINE_STREAM_COMMANDS: usize = 10_000;
 const DEFERRED_STREAM_BACKPRESSURE_THRESHOLD: usize = 256;
 const DEFERRED_STREAM_BACKPRESSURE_SLEEP: Duration = Duration::from_millis(1);
 const EXECUTOR_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
@@ -120,8 +121,6 @@ where
         if self.closed.get() {
             return Ok(());
         }
-
-        prune_finished_untracked_tasks(&self.untracked_tasks);
 
         route_command_iterative(
             command,
@@ -170,9 +169,19 @@ where
 
     pub fn shutdown(&mut self) {
         self.closed.set(true);
-        self.active_tasks.borrow_mut().clear();
-        self.untracked_tasks.borrow_mut().clear();
+
+        let tracked_tasks = {
+            let mut active_tasks = self.active_tasks.borrow_mut();
+            std::mem::take(&mut *active_tasks)
+        };
+        let untracked_tasks = {
+            let mut untracked_tasks = self.untracked_tasks.borrow_mut();
+            std::mem::take(&mut *untracked_tasks)
+        };
         self.deferred_events.borrow_mut().clear();
+
+        drop(tracked_tasks);
+        drop(untracked_tasks);
     }
 
     pub fn wait_for_executors(&self) {
@@ -221,7 +230,11 @@ where
 }
 
 fn cancel_tracked_slot(active_tasks: &ActiveTasks, id: CancelId) {
-    let removed_entry = active_tasks.borrow_mut().remove(&id);
+    let removed_entry = {
+        let mut active_tasks = active_tasks.borrow_mut();
+        active_tasks.remove(&id)
+    };
+
     if let Some(entry) = removed_entry {
         drop(entry.handle);
     }
@@ -464,8 +477,18 @@ where
         Task::Stream(stream) => {
             let has_runtime = compio::runtime::Runtime::try_with_current(|_| ()).is_ok();
             if !has_runtime {
-                let commands = futures::executor::block_on(stream.collect::<Vec<_>>());
-                for command in commands {
+                let commands = futures::executor::block_on(
+                    stream
+                        .take(MAX_INLINE_STREAM_COMMANDS + 1)
+                        .collect::<Vec<_>>(),
+                );
+                if commands.len() > MAX_INLINE_STREAM_COMMANDS {
+                    report_spawned_event_drop(
+                        "inline stream command limit reached; dropping remaining commands",
+                    );
+                }
+
+                for command in commands.into_iter().take(MAX_INLINE_STREAM_COMMANDS) {
                     queue.push_back(command);
                 }
                 return None;

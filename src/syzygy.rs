@@ -153,24 +153,13 @@ where
     Event: 'static,
     Effect: 'static,
 {
-    let mut core_work = false;
-    let mut dispatch_error = None;
-
-    core.process_events_into(|command| {
-        core_work = true;
-        if dispatch_error.is_none() {
-            if let Err(error) = shell.dispatch_command(command) {
-                dispatch_error = Some(error);
-            }
-        }
-    });
-
-    if let Some(error) = dispatch_error {
-        return Err(error);
+    if shell.is_closed() {
+        return Ok(false);
     }
 
+    let core_work = core.process_events_try_into(|command| shell.dispatch_command(command))?;
     let shell_work = shell.drain()?;
-    Ok(core_work || shell_work > 0)
+    Ok(core_work > 0 || shell_work > 0)
 }
 
 fn park_for_runtime(idle_sleep: Duration) {

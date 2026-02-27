@@ -140,10 +140,11 @@ where
                 let fx = Rc::clone(&fx);
                 Task::Future(Box::pin(async move {
                     let command = future.await;
-                    assert!(
-                        !(reject_cancellable && command.has_cancellable_steps()),
-                        "Task::map cannot safely namespace tracked/cancel steps; use Task::map_namespaced(namespace, ...)"
-                    );
+                    if reject_cancellable && command.has_cancellable_steps() {
+                        report_map_namespace_violation();
+                        return Command::none();
+                    }
+
                     command.map_namespaced(namespace, |event| fe(event), |effect| fx(effect))
                 }))
             }
@@ -151,10 +152,11 @@ where
                 let fe = Rc::clone(&fe);
                 let fx = Rc::clone(&fx);
                 Task::Stream(Box::pin(stream.map(move |command| {
-                    assert!(
-                        !(reject_cancellable && command.has_cancellable_steps()),
-                        "Task::map cannot safely namespace tracked/cancel steps; use Task::map_namespaced(namespace, ...)"
-                    );
+                    if reject_cancellable && command.has_cancellable_steps() {
+                        report_map_namespace_violation();
+                        return Command::none();
+                    }
+
                     command.map_namespaced(
                         namespace.clone(),
                         |event| fe(event),
@@ -182,8 +184,17 @@ where
     }
 }
 
+fn report_map_namespace_violation() {
+    #[cfg(feature = "tracing")]
+    tracing::error!(
+        "Task::map dropped command with tracked/cancel steps; use Task::map_namespaced(namespace, ...)"
+    );
+}
+
 #[cfg(test)]
 mod tests {
+    use futures::StreamExt;
+
     use super::Task;
     use crate::command::{Command, CommandStep};
 
@@ -239,5 +250,33 @@ mod tests {
         }));
 
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn map_future_drops_cancellable_command_without_panicking() {
+        let mapped = Task::<ChildEvent, ChildEffect>::once(async { Command::cancel(1_u8) })
+            .map(ParentEvent::Child, ParentEffect::Child);
+
+        let command = match mapped {
+            Task::Future(future) => futures::executor::block_on(future),
+            _ => panic!("expected future task"),
+        };
+
+        assert!(command.is_empty());
+    }
+
+    #[test]
+    fn map_stream_drops_cancellable_commands_without_panicking() {
+        let mapped =
+            Task::<ChildEvent, ChildEffect>::stream(futures::stream::iter([Command::cancel(1_u8)]))
+                .map(ParentEvent::Child, ParentEffect::Child);
+
+        let commands = match mapped {
+            Task::Stream(stream) => futures::executor::block_on(stream.collect::<Vec<_>>()),
+            _ => panic!("expected stream task"),
+        };
+
+        assert_eq!(commands.len(), 1);
+        assert!(commands[0].is_empty());
     }
 }

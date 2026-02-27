@@ -139,7 +139,9 @@ where
         let mut configured =
             self.event_handler(move |event, ctx| reducer_feature.reduce(event, ctx));
         configured.effect_handler = Some(Rc::new(move |effect, ctx| {
-            EffectRoute::Handled(effect_feature.handle_effect(effect, ctx))
+            effect_feature
+                .handle_effect(effect, ctx)
+                .into_effect_route()
         }));
         configured
     }

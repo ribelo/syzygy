@@ -112,9 +112,9 @@ where
         commands
     }
 
-    pub fn process_events_into<F>(&mut self, mut sink: F) -> usize
+    pub fn process_events_try_into<F, Error>(&mut self, mut sink: F) -> Result<usize, Error>
     where
-        F: FnMut(Command<E, X>),
+        F: FnMut(Command<E, X>) -> Result<(), Error>,
     {
         while let Ok(event) = self.event_rx.try_recv() {
             self.event_queue.push_back(event);
@@ -122,11 +122,23 @@ where
 
         let mut emitted = 0usize;
         while let Some(event) = self.event_queue.pop_front() {
+            let command = self.handle_event(event);
+            sink(command)?;
             emitted = emitted.saturating_add(1);
-            sink(self.handle_event(event));
         }
 
-        emitted
+        Ok(emitted)
+    }
+
+    pub fn process_events_into<F>(&mut self, mut sink: F) -> usize
+    where
+        F: FnMut(Command<E, X>),
+    {
+        self.process_events_try_into(|command| {
+            sink(command);
+            Ok::<(), ()>(())
+        })
+        .expect("infallible command sink")
     }
 
     #[deprecated(note = "use try_send_event()")]
@@ -193,5 +205,40 @@ where
             .field("model", &self.model)
             .field("pending_events", &self.pending_count())
             .finish_non_exhaustive()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::cell::Cell;
+    use std::rc::Rc;
+
+    use super::Core;
+    use crate::command::Command;
+    use crate::extract::EventContext;
+
+    #[test]
+    fn process_events_try_into_stops_on_sink_error_and_preserves_pending_events() {
+        let handled = Rc::new(Cell::new(0usize));
+        let handled_in_handler = Rc::clone(&handled);
+        let (mut core, tx) = Core::new(
+            Box::new(move |_event: u8, _ctx: &EventContext<()>| {
+                handled_in_handler.set(handled_in_handler.get().saturating_add(1));
+                Command::<u8, ()>::none()
+            }),
+            (),
+        );
+
+        tx.try_send_event(1).unwrap();
+        tx.try_send_event(2).unwrap();
+
+        let result: Result<usize, ()> = core.process_events_try_into(|_command| Err(()));
+
+        assert!(result.is_err());
+        assert_eq!(handled.get(), 1);
+        assert_eq!(core.pending_count(), 1);
+
+        let _ = core.process_events();
+        assert_eq!(handled.get(), 2);
     }
 }

@@ -537,6 +537,58 @@ fn shutdown_cancels_untracked_async_tasks_without_timeout() {
 }
 
 #[test]
+fn shutdown_cancels_tracked_async_tasks_without_refcell_reentrancy_panics() {
+    #[derive(Debug, Clone)]
+    enum Event {
+        Start,
+    }
+
+    #[derive(Debug, Clone)]
+    enum Effect {
+        Flush,
+    }
+
+    let finished = Arc::new(AtomicBool::new(false));
+    let finished_in_effect = Arc::clone(&finished);
+
+    let rt = compio::runtime::Runtime::new().expect("compio runtime");
+    rt.block_on(async move {
+        let mut runner = Syzygy::builder::<Event, Effect>()
+            .model(())
+            .event_handler(|event, _ctx| match event {
+                Event::Start => Command::track("slot", Effect::Flush),
+            })
+            .effect_handler(move |effect, _ctx| {
+                let finished_in_effect = Arc::clone(&finished_in_effect);
+                match effect {
+                    Effect::Flush => Task::once(async move {
+                        compio::runtime::time::sleep(Duration::from_secs(60)).await;
+                        finished_in_effect.store(true, Ordering::SeqCst);
+                        Command::none()
+                    }),
+                }
+            })
+            .build();
+
+        runner.core().try_send_event(Event::Start).unwrap();
+        runner.step().unwrap();
+
+        let shutdown_started = Instant::now();
+        runner.shutdown();
+        let elapsed = shutdown_started.elapsed();
+
+        assert!(
+            elapsed < Duration::from_secs(1),
+            "shutdown should cancel tracked tasks promptly: {elapsed:?}"
+        );
+        assert!(
+            !finished.load(Ordering::SeqCst),
+            "tracked task should be cancelled before completion"
+        );
+    });
+}
+
+#[test]
 fn deep_resolved_effect_chain_is_iterative() {
     #[derive(Debug, Clone)]
     enum Event {

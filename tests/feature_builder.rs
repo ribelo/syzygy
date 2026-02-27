@@ -35,9 +35,13 @@ impl Feature for SampleFeature {
         }
     }
 
-    fn handle_effect(&self, effect: Effect, _ctx: &EffectContext<'_>) -> Task<Event, Effect> {
+    fn handle_effect(
+        &self,
+        effect: Effect,
+        _ctx: &EffectContext<'_>,
+    ) -> Option<Task<Event, Effect>> {
         match effect {
-            Effect::Trigger => Task::send(Event::Done),
+            Effect::Trigger => Some(Task::send(Event::Done)),
         }
     }
 }
@@ -149,4 +153,48 @@ fn chain_effect_handler_supports_explicit_optional_fallthrough() {
     runner.step().unwrap();
 
     assert!(runner.model().done_flag);
+}
+
+#[test]
+fn feature_builder_allows_fallback_handler_for_unhandled_effects() {
+    struct FallbackFeature;
+
+    impl Feature for FallbackFeature {
+        type State = Model;
+        type Event = Event;
+        type Effect = Effect;
+
+        fn reduce(&self, event: Event, ctx: &EventContext<Model>) -> Command<Event, Effect> {
+            match event {
+                Event::Start => Command::effect(Effect::Trigger),
+                Event::Done => {
+                    let done = Done::extract_mut(ctx);
+                    **done = true;
+                    Command::none()
+                }
+            }
+        }
+
+        fn handle_effect(
+            &self,
+            _effect: Effect,
+            _ctx: &EffectContext<'_>,
+        ) -> Option<Task<Event, Effect>> {
+            None
+        }
+    }
+
+    let mut runner = Syzygy::builder::<Event, Effect>()
+        .model(Model::default())
+        .feature(FallbackFeature)
+        .chain_effect_handler(|effect, _ctx| match effect {
+            Effect::Trigger => Task::send(Event::Done),
+        })
+        .build();
+
+    runner.core().try_send_event(Event::Start).unwrap();
+    runner.step().unwrap();
+    runner.step().unwrap();
+
+    assert!(runner.model().done);
 }
