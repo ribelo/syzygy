@@ -301,13 +301,31 @@ impl<M> Drop for BorrowGuard<'_, M> {
     }
 }
 
-pub trait FromEventContext<M> {
-    fn from_context(ctx: &EventContext<M>) -> Self;
+pub trait ExtractFrom<M> {
+    fn extract(ctx: &EventContext<M>) -> &Self;
 }
 
 #[allow(clippy::mut_from_ref)]
 pub trait ExtractMutFrom<M> {
     fn extract_mut(ctx: &EventContext<M>) -> &mut Self;
+}
+
+impl<M> ExtractFrom<M> for M {
+    fn extract(ctx: &EventContext<M>) -> &Self {
+        // SAFETY: EventContext holds a valid pointer to the active model for the current dispatch.
+        unsafe { &*ctx.model_ptr() }
+    }
+}
+
+#[allow(clippy::mut_from_ref)]
+impl<M> ExtractMutFrom<M> for M {
+    fn extract_mut(ctx: &EventContext<M>) -> &mut Self {
+        let ptr = ctx.model_ptr();
+        ctx.track_borrow_range(ptr.cast::<u8>(), ::core::mem::size_of::<M>(), "model");
+        // SAFETY: EventContext stores a valid mutable pointer to the active model and
+        // borrow-range tracking enforces exclusive mutable access during handler execution.
+        unsafe { &mut *ptr }
+    }
 }
 
 pub trait EventHandler<E, X, P, M, Marker>: 'static {
@@ -331,11 +349,12 @@ macro_rules! impl_event_handler {
         #[allow(non_snake_case)]
         impl<E, X, P, M, F, $($T),+> EventHandler<E, X, P, M, ($(Owned<$T>,)+)> for F
         where
-            F: Fn(P, $($T),+) -> Command<E, X> + 'static,
-            $($T: FromEventContext<M>,)+
+            F: for<'a> Fn(P, $(&'a $T),+) -> Command<E, X> + 'static,
+            $($T: ExtractFrom<M>,)+
         {
             fn handle(&self, payload: P, ctx: &EventContext<M>) -> Command<E, X> {
-                (self)(payload, $($T::from_context(ctx)),+)
+                let _borrow_guard = ctx.borrow_guard();
+                (self)(payload, $($T::extract(ctx)),+)
             }
         }
     }
@@ -368,11 +387,12 @@ macro_rules! impl_event_handler_np_owned {
         #[allow(non_snake_case)]
         impl<E, X, M, F, $($T),+> EventHandler<E, X, (), M, EventNP<($(Owned<$T>,)+)>> for F
         where
-            F: Fn($($T),+) -> Command<E, X> + 'static,
-            $($T: FromEventContext<M>,)+
+            F: for<'a> Fn($(&'a $T),+) -> Command<E, X> + 'static,
+            $($T: ExtractFrom<M>,)+
         {
             fn handle(&self, _payload: (), ctx: &EventContext<M>) -> Command<E, X> {
-                (self)($($T::from_context(ctx)),+)
+                let _borrow_guard = ctx.borrow_guard();
+                (self)($($T::extract(ctx)),+)
             }
         }
     }
@@ -515,47 +535,6 @@ mod tests {
     struct R11(u8);
     #[derive(Clone)]
     struct R12(u8);
-
-    struct OwnedEventModel;
-
-    #[derive(Clone, Copy)]
-    struct EO1;
-    #[derive(Clone, Copy)]
-    struct EO2;
-    #[derive(Clone, Copy)]
-    struct EO3;
-    #[derive(Clone, Copy)]
-    struct EO4;
-    #[derive(Clone, Copy)]
-    struct EO5;
-    #[derive(Clone, Copy)]
-    struct EO6;
-    #[derive(Clone, Copy)]
-    struct EO7;
-    #[derive(Clone, Copy)]
-    struct EO8;
-    #[derive(Clone, Copy)]
-    struct EO9;
-    #[derive(Clone, Copy)]
-    struct EO10;
-    #[derive(Clone, Copy)]
-    struct EO11;
-    #[derive(Clone, Copy)]
-    struct EO12;
-
-    macro_rules! impl_owned_from_context {
-        ($($T:ty),+ $(,)?) => {
-            $(
-                impl FromEventContext<OwnedEventModel> for $T {
-                    fn from_context(_ctx: &EventContext<OwnedEventModel>) -> Self {
-                        Self
-                    }
-                }
-            )+
-        };
-    }
-
-    impl_owned_from_context!(EO1, EO2, EO3, EO4, EO5, EO6, EO7, EO8, EO9, EO10, EO11, EO12);
 
     // ── Resources (for effect tests) ────────────────────────────────
 
@@ -924,23 +903,49 @@ mod tests {
         #[allow(clippy::too_many_arguments)]
         fn read(
             _: (),
-            _a1: EO1,
-            _a2: EO2,
-            _a3: EO3,
-            _a4: EO4,
-            _a5: EO5,
-            _a6: EO6,
-            _a7: EO7,
-            _a8: EO8,
-            _a9: EO9,
-            _a10: EO10,
-            _a11: EO11,
-            _a12: EO12,
+            a1: &A1,
+            a2: &A2,
+            a3: &A3,
+            a4: &A4,
+            a5: &A5,
+            a6: &A6,
+            a7: &A7,
+            a8: &A8,
+            a9: &A9,
+            a10: &A10,
+            a11: &A11,
+            a12: &A12,
         ) -> Command<Event, Effect> {
+            let sum = **a1
+                + **a2
+                + **a3
+                + **a4
+                + **a5
+                + **a6
+                + **a7
+                + **a8
+                + **a9
+                + **a10
+                + **a11
+                + **a12;
+            assert_eq!(sum, 78);
             Command::none()
         }
 
-        let mut model = OwnedEventModel;
+        let mut model = ArityEventModel {
+            a1: 1,
+            a2: 2,
+            a3: 3,
+            a4: 4,
+            a5: 5,
+            a6: 6,
+            a7: 7,
+            a8: 8,
+            a9: 9,
+            a10: 10,
+            a11: 11,
+            a12: 12,
+        };
         let ctx = EventContext::new(&mut model);
         let _ = read.handle((), &ctx);
     }
@@ -949,25 +954,117 @@ mod tests {
     fn event_handler_np_owned_supports_twelve_extractors() {
         #[allow(clippy::too_many_arguments)]
         fn read(
-            _a1: EO1,
-            _a2: EO2,
-            _a3: EO3,
-            _a4: EO4,
-            _a5: EO5,
-            _a6: EO6,
-            _a7: EO7,
-            _a8: EO8,
-            _a9: EO9,
-            _a10: EO10,
-            _a11: EO11,
-            _a12: EO12,
+            a1: &A1,
+            a2: &A2,
+            a3: &A3,
+            a4: &A4,
+            a5: &A5,
+            a6: &A6,
+            a7: &A7,
+            a8: &A8,
+            a9: &A9,
+            a10: &A10,
+            a11: &A11,
+            a12: &A12,
         ) -> Command<Event, Effect> {
+            let sum = **a1
+                + **a2
+                + **a3
+                + **a4
+                + **a5
+                + **a6
+                + **a7
+                + **a8
+                + **a9
+                + **a10
+                + **a11
+                + **a12;
+            assert_eq!(sum, 78);
             Command::none()
         }
 
-        let mut model = OwnedEventModel;
+        let mut model = ArityEventModel {
+            a1: 1,
+            a2: 2,
+            a3: 3,
+            a4: 4,
+            a5: 5,
+            a6: 6,
+            a7: 7,
+            a8: 8,
+            a9: 9,
+            a10: 10,
+            a11: 11,
+            a12: 12,
+        };
         let ctx = EventContext::new(&mut model);
         let _ = read.handle((), &ctx);
+    }
+
+    #[test]
+    fn whole_model_can_be_extracted_immutably() {
+        fn read_model(_: (), model: &ArityEventModel) -> Command<Event, Effect> {
+            let sum = model.a1
+                + model.a2
+                + model.a3
+                + model.a4
+                + model.a5
+                + model.a6
+                + model.a7
+                + model.a8
+                + model.a9
+                + model.a10
+                + model.a11
+                + model.a12;
+            assert_eq!(sum, 78);
+            Command::none()
+        }
+
+        let mut model = ArityEventModel {
+            a1: 1,
+            a2: 2,
+            a3: 3,
+            a4: 4,
+            a5: 5,
+            a6: 6,
+            a7: 7,
+            a8: 8,
+            a9: 9,
+            a10: 10,
+            a11: 11,
+            a12: 12,
+        };
+
+        let ctx = EventContext::new(&mut model);
+        let _ = read_model.handle((), &ctx);
+    }
+
+    #[test]
+    fn whole_model_can_be_extracted_mutably() {
+        fn mutate_model(_: (), model: &mut ArityEventModel) -> Command<Event, Effect> {
+            model.a1 = 42;
+            Command::none()
+        }
+
+        let mut model = ArityEventModel {
+            a1: 0,
+            a2: 0,
+            a3: 0,
+            a4: 0,
+            a5: 0,
+            a6: 0,
+            a7: 0,
+            a8: 0,
+            a9: 0,
+            a10: 0,
+            a11: 0,
+            a12: 0,
+        };
+
+        let ctx = EventContext::new(&mut model);
+        let _ = mutate_model.handle((), &ctx);
+
+        assert_eq!(model.a1, 42);
     }
 
     // ── Effect handler tests ────────────────────────────────────────

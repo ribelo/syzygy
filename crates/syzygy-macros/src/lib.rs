@@ -59,6 +59,15 @@ fn expand_model(input: DeriveInput) -> syn::Result<TokenStream2> {
             }
 
             extract_impls.push(quote! {
+                impl #impl_generics syzygy::extract::ExtractFrom<#model_ident #ty_generics> for #field_ty #where_clause {
+                    fn extract(ctx: &syzygy::extract::EventContext<#model_ident #ty_generics>) -> &Self {
+                        // SAFETY: EventContext stores a valid pointer to the active model during dispatch.
+                        let ptr = unsafe { ::core::ptr::addr_of!((*ctx.model_ptr()).#field_ident) };
+                        // SAFETY: `ptr` points to the extracted field for the lifetime of this dispatch step.
+                        unsafe { &*ptr }
+                    }
+                }
+
                 #[allow(clippy::mut_from_ref)]
                 impl #impl_generics syzygy::extract::ExtractMutFrom<#model_ident #ty_generics> for #field_ty #where_clause {
                     fn extract_mut(ctx: &syzygy::extract::EventContext<#model_ident #ty_generics>) -> &mut Self {
@@ -97,6 +106,17 @@ fn expand_model(input: DeriveInput) -> syn::Result<TokenStream2> {
             impl #impl_generics ::core::ops::DerefMut for #wrapper_ident #ty_generics #where_clause {
                 fn deref_mut(&mut self) -> &mut Self::Target {
                     &mut self.0
+                }
+            }
+
+            impl #impl_generics syzygy::extract::ExtractFrom<#model_ident #ty_generics> for #wrapper_ident #ty_generics #where_clause {
+                fn extract(ctx: &syzygy::extract::EventContext<#model_ident #ty_generics>) -> &Self {
+                    // SAFETY: `repr(transparent)` guarantees Wrapper has the same layout as the field type.
+                    let ptr = unsafe {
+                        ::core::ptr::addr_of!((*ctx.model_ptr()).#field_ident).cast::<Self>()
+                    };
+                    // SAFETY: `ptr` points to the wrapped field for the current dispatch lifetime.
+                    unsafe { &*ptr }
                 }
             }
 

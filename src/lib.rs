@@ -29,8 +29,8 @@ pub mod prelude {
     pub use crate::dispatch;
 
     pub use crate::extract::{
-        EffectContext, EffectHandler, EventContext, EventHandler, ExtractMutFrom,
-        FromEffectContext, FromEventContext, FutureEffect, StreamEffect,
+        EffectContext, EffectHandler, EventContext, EventHandler, ExtractFrom, ExtractMutFrom,
+        FromEffectContext, FutureEffect, StreamEffect,
     };
     pub use crate::feature::Feature;
     pub use crate::reducer::{
