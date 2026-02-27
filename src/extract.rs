@@ -219,6 +219,7 @@ pub struct EventContext<M> {
     ptr: *mut M,
     borrowed: Cell<u64>,
     borrowed_ranges: RefCell<SmallVec<[(usize, usize); 8]>>,
+    borrowed_immut_ranges: RefCell<SmallVec<[(usize, usize); 8]>>,
 }
 
 impl<M> EventContext<M> {
@@ -227,6 +228,7 @@ impl<M> EventContext<M> {
             ptr: model as *mut M,
             borrowed: Cell::new(0),
             borrowed_ranges: RefCell::new(SmallVec::new()),
+            borrowed_immut_ranges: RefCell::new(SmallVec::new()),
         }
     }
 
@@ -241,10 +243,7 @@ impl<M> EventContext<M> {
     }
 
     pub fn track_borrow_range(&self, ptr: *mut u8, size: usize, field_name: &str) {
-        let start = ptr as usize;
-        let end = start.checked_add(size).unwrap_or_else(|| {
-            panic!("field '{field_name}' produced an overflow while tracking mutable borrow range")
-        });
+        let (start, end) = tracked_range(ptr as usize, size, field_name, "mutable");
         let mut borrowed_ranges = self.borrowed_ranges.borrow_mut();
 
         for &(borrowed_start, borrowed_end) in borrowed_ranges.iter() {
@@ -255,7 +254,29 @@ impl<M> EventContext<M> {
             );
         }
 
+        for &(borrowed_start, borrowed_end) in self.borrowed_immut_ranges.borrow().iter() {
+            let disjoint = start >= borrowed_end || end <= borrowed_start;
+            assert!(
+                disjoint,
+                "field '{field_name}' overlaps already-borrowed immutable region"
+            );
+        }
+
         borrowed_ranges.push((start, end));
+    }
+
+    pub fn track_immut_borrow_range(&self, ptr: *const u8, size: usize, field_name: &str) {
+        let (start, end) = tracked_range(ptr as usize, size, field_name, "immutable");
+
+        for &(borrowed_start, borrowed_end) in self.borrowed_ranges.borrow().iter() {
+            let disjoint = start >= borrowed_end || end <= borrowed_start;
+            assert!(
+                disjoint,
+                "field '{field_name}' overlaps already-borrowed mutable region"
+            );
+        }
+
+        self.borrowed_immut_ranges.borrow_mut().push((start, end));
     }
 
     pub(crate) fn borrow_guard(&self) -> BorrowGuard<'_, M> {
@@ -263,6 +284,7 @@ impl<M> EventContext<M> {
             ctx: self,
             borrowed_bits: self.borrowed.get(),
             borrowed_ranges_len: self.borrowed_ranges.borrow().len(),
+            borrowed_immut_ranges_len: self.borrowed_immut_ranges.borrow().len(),
         }
     }
 
@@ -285,10 +307,19 @@ impl<M> EventContext<M> {
     }
 }
 
+fn tracked_range(start: usize, size: usize, field_name: &str, kind: &str) -> (usize, usize) {
+    let span = size.max(1);
+    let end = start.checked_add(span).unwrap_or_else(|| {
+        panic!("field '{field_name}' produced an overflow while tracking {kind} borrow range")
+    });
+    (start, end)
+}
+
 pub(crate) struct BorrowGuard<'a, M> {
     ctx: &'a EventContext<M>,
     borrowed_bits: u64,
     borrowed_ranges_len: usize,
+    borrowed_immut_ranges_len: usize,
 }
 
 impl<M> Drop for BorrowGuard<'_, M> {
@@ -298,6 +329,10 @@ impl<M> Drop for BorrowGuard<'_, M> {
             .borrowed_ranges
             .borrow_mut()
             .truncate(self.borrowed_ranges_len);
+        self.ctx
+            .borrowed_immut_ranges
+            .borrow_mut()
+            .truncate(self.borrowed_immut_ranges_len);
     }
 }
 
@@ -312,8 +347,10 @@ pub trait ExtractMutFrom<M> {
 
 impl<M> ExtractFrom<M> for M {
     fn extract(ctx: &EventContext<M>) -> &Self {
+        let ptr = ctx.model_ptr();
+        ctx.track_immut_borrow_range(ptr.cast::<u8>(), ::core::mem::size_of::<M>(), "model");
         // SAFETY: EventContext holds a valid pointer to the active model for the current dispatch.
-        unsafe { &*ctx.model_ptr() }
+        unsafe { &*ptr }
     }
 }
 
@@ -509,6 +546,12 @@ mod tests {
         a10: i32,
         a11: i32,
         a12: i32,
+    }
+
+    #[derive(crate::Model)]
+    struct ZstBoundaryModel {
+        marker: (),
+        _payload: u8,
     }
 
     #[derive(Clone)]
@@ -1065,6 +1108,88 @@ mod tests {
         let _ = mutate_model.handle((), &ctx);
 
         assert_eq!(model.a1, 42);
+    }
+
+    #[test]
+    #[should_panic(expected = "overlaps already-borrowed mutable region")]
+    fn whole_model_mut_then_field_mut_panics() {
+        let mut model = ArityEventModel {
+            a1: 0,
+            a2: 0,
+            a3: 0,
+            a4: 0,
+            a5: 0,
+            a6: 0,
+            a7: 0,
+            a8: 0,
+            a9: 0,
+            a10: 0,
+            a11: 0,
+            a12: 0,
+        };
+
+        let ctx = EventContext::new(&mut model);
+        let _model = <ArityEventModel as ExtractMutFrom<ArityEventModel>>::extract_mut(&ctx);
+        let _field = A1::extract_mut(&ctx);
+    }
+
+    #[test]
+    #[should_panic(expected = "overlaps already-borrowed immutable region")]
+    fn field_immut_then_field_mut_panics() {
+        let mut model = ArityEventModel {
+            a1: 1,
+            a2: 0,
+            a3: 0,
+            a4: 0,
+            a5: 0,
+            a6: 0,
+            a7: 0,
+            a8: 0,
+            a9: 0,
+            a10: 0,
+            a11: 0,
+            a12: 0,
+        };
+
+        let ctx = EventContext::new(&mut model);
+        let _field_ref = A1::extract(&ctx);
+        let _field_mut = A1::extract_mut(&ctx);
+    }
+
+    #[test]
+    #[should_panic(expected = "overlaps already-borrowed immutable region")]
+    fn whole_model_immut_then_whole_model_mut_panics() {
+        let mut model = ArityEventModel {
+            a1: 1,
+            a2: 2,
+            a3: 3,
+            a4: 4,
+            a5: 5,
+            a6: 6,
+            a7: 7,
+            a8: 8,
+            a9: 9,
+            a10: 10,
+            a11: 11,
+            a12: 12,
+        };
+
+        let ctx = EventContext::new(&mut model);
+        let _model_ref = <ArityEventModel as ExtractFrom<ArityEventModel>>::extract(&ctx);
+        let _model_mut = <ArityEventModel as ExtractMutFrom<ArityEventModel>>::extract_mut(&ctx);
+    }
+
+    #[test]
+    #[should_panic(expected = "overlaps already-borrowed mutable region")]
+    fn zst_boundary_overlap_is_rejected() {
+        let mut model = ZstBoundaryModel {
+            marker: (),
+            _payload: 7,
+        };
+
+        let ctx = EventContext::new(&mut model);
+        let _model = <ZstBoundaryModel as ExtractMutFrom<ZstBoundaryModel>>::extract_mut(&ctx);
+        let _marker = Marker::extract_mut(&ctx);
     }
 
     // ── Effect handler tests ────────────────────────────────────────

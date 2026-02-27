@@ -63,6 +63,11 @@ fn expand_model(input: DeriveInput) -> syn::Result<TokenStream2> {
                     fn extract(ctx: &syzygy::extract::EventContext<#model_ident #ty_generics>) -> &Self {
                         // SAFETY: EventContext stores a valid pointer to the active model during dispatch.
                         let ptr = unsafe { ::core::ptr::addr_of!((*ctx.model_ptr()).#field_ident) };
+                        ctx.track_immut_borrow_range(
+                            ptr.cast::<u8>(),
+                            ::core::mem::size_of::<#field_ty>(),
+                            #field_name,
+                        );
                         // SAFETY: `ptr` points to the extracted field for the lifetime of this dispatch step.
                         unsafe { &*ptr }
                     }
@@ -115,6 +120,11 @@ fn expand_model(input: DeriveInput) -> syn::Result<TokenStream2> {
                     let ptr = unsafe {
                         ::core::ptr::addr_of!((*ctx.model_ptr()).#field_ident).cast::<Self>()
                     };
+                    ctx.track_immut_borrow_range(
+                        ptr.cast::<u8>(),
+                        ::core::mem::size_of::<#wrapper_ident #ty_generics>(),
+                        #field_name,
+                    );
                     // SAFETY: `ptr` points to the wrapped field for the current dispatch lifetime.
                     unsafe { &*ptr }
                 }
