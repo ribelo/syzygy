@@ -189,30 +189,6 @@ where
         self
     }
 
-    /// Kept for backward compatibility. Syzygy now always uses compio.
-    #[must_use]
-    pub fn async_executor<T>(self, _executor: T) -> Self {
-        self
-    }
-
-    /// Kept for backward compatibility. Blocking work should be spawned from async effects.
-    #[must_use]
-    pub fn compute_executor<T>(self, _executor: T) -> Self {
-        self
-    }
-
-    /// Kept for backward compatibility. Blocking work should be spawned from async effects.
-    #[must_use]
-    pub fn blocking_executor<T>(self, _executor: T) -> Self {
-        self
-    }
-
-    /// Kept for backward compatibility. No dedicated shell effect queue exists anymore.
-    #[must_use]
-    pub fn with_effect_channel_capacity(self, _capacity: Option<usize>) -> Self {
-        self
-    }
-
     pub fn build(self) -> Syzygy<Event, Effect, Model> {
         let (core, event_tx) = Core::with_event_channel_capacity(
             self.event_handler,
