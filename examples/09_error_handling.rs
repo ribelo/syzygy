@@ -44,7 +44,7 @@ fn handle_event(event: Event, ctx: &EventContext<AppModel>) -> Command<Event, Ef
     match event {
         Event::DoRiskyWork => handle!(do_risky_work, ctx),
         Event::WorkSuccess => handle!(work_success, ctx),
-        Event::WorkFailed(err) => handle!(work_failed, err, ctx),
+        Event::WorkFailed(err) => handle!(work_failed, ctx, err),
     }
 }
 

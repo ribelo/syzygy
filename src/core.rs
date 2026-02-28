@@ -101,17 +101,20 @@ where
         (core, event_tx)
     }
 
+    #[must_use]
     pub fn handle_event(&mut self, event: E) -> Command<E, X> {
         let ctx = EventContext::new(&mut self.model);
         (self.event_handler)(event, &ctx)
     }
 
+    #[must_use]
     pub fn process_events(&mut self) -> Vec<Command<E, X>> {
         let mut commands = Vec::new();
         self.process_events_into(|command| commands.push(command));
         commands
     }
 
+    #[must_use]
     pub fn process_events_try_into<F, Error>(&mut self, mut sink: F) -> Result<usize, Error>
     where
         F: FnMut(Command<E, X>) -> Result<(), Error>,
@@ -130,6 +133,7 @@ where
         Ok(emitted)
     }
 
+    #[must_use]
     pub fn process_events_into<F>(&mut self, mut sink: F) -> usize
     where
         F: FnMut(Command<E, X>),
@@ -165,6 +169,7 @@ where
         &self.model
     }
 
+    #[must_use]
     pub fn model_mut(&mut self) -> &mut M {
         &mut self.model
     }
@@ -179,6 +184,7 @@ where
         self.pending_count() > 0
     }
 
+    #[must_use]
     pub fn wait_for_event(&mut self, timeout: Duration) -> bool {
         if !self.event_queue.is_empty() {
             return true;

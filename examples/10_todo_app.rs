@@ -122,11 +122,11 @@ fn sync_finished(result: Result<(), String>, sync_error: &mut SyncError) -> Comm
 
 fn handle_event(event: Event, ctx: &EventContext<TodoApp>) -> Command<Event, Effect> {
     match event {
-        Event::AddTodo(text) => handle!(add_todo, text, ctx),
-        Event::ToggleTodo(id) => handle!(toggle_todo, id, ctx),
-        Event::DeleteTodo(id) => handle!(delete_todo, id, ctx),
-        Event::SetFilter(f) => handle!(set_filter, f, ctx),
-        Event::SyncFinished(res) => handle!(sync_finished, res, ctx),
+        Event::AddTodo(text) => handle!(add_todo, ctx, text),
+        Event::ToggleTodo(id) => handle!(toggle_todo, ctx, id),
+        Event::DeleteTodo(id) => handle!(delete_todo, ctx, id),
+        Event::SetFilter(f) => handle!(set_filter, ctx, f),
+        Event::SyncFinished(res) => handle!(sync_finished, ctx, res),
     }
 }
 
@@ -148,7 +148,7 @@ fn save(todos: Vec<Todo>) -> Task<Event, Effect> {
 
 fn handle_effect(effect: Effect, ctx: &EffectContext<'_>) -> Task<Event, Effect> {
     match effect {
-        Effect::SaveTodos(todos) => handle!(save, todos, ctx),
+        Effect::SaveTodos(todos) => handle!(save, ctx, todos),
     }
 }
 

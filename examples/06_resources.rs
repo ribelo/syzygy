@@ -29,7 +29,7 @@ fn status_updated(msg: String, status: &mut Status) -> Command<AppEvent, AppEffe
 fn handle_event(event: AppEvent, ctx: &EventContext<AppModel>) -> Command<AppEvent, AppEffect> {
     match event {
         AppEvent::Start => handle!(start, ctx),
-        AppEvent::StatusUpdated(msg) => handle!(status_updated, msg, ctx),
+        AppEvent::StatusUpdated(msg) => handle!(status_updated, ctx, msg),
     }
 }
 

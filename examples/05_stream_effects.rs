@@ -49,8 +49,8 @@ fn timer_finished(_: (), active_timers: &mut ActiveTimers) -> Command<AppEvent, 
 
 fn handle_event(event: AppEvent, ctx: &EventContext<AppModel>) -> Command<AppEvent, AppEffect> {
     match event {
-        AppEvent::StartTimer(id) => handle!(start_timer, id, ctx),
-        AppEvent::StopTimer(id) => handle!(stop_timer, id, ctx),
+        AppEvent::StartTimer(id) => handle!(start_timer, ctx, id),
+        AppEvent::StopTimer(id) => handle!(stop_timer, ctx, id),
         AppEvent::Tick => handle!(tick, ctx),
         AppEvent::TimerFinished => handle!(timer_finished, ctx),
     }
@@ -80,7 +80,7 @@ fn spawn_ticker(id: u32) -> impl futures::Stream<Item = Command<AppEvent, AppEff
 fn handle_effect(effect: AppEffect, ctx: &EffectContext<'_>) -> Task<AppEvent, AppEffect> {
     match effect {
         // `handle!` resolves to `Task::stream(...)` internally
-        AppEffect::SpawnTicker(id) => handle!(spawn_ticker, id, ctx),
+        AppEffect::SpawnTicker(id) => handle!(spawn_ticker, ctx, id),
     }
 }
 

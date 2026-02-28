@@ -83,7 +83,7 @@ fn handle_event(event: Event, ctx: &EventContext<AppModel>) -> Command<Event, Ef
         Event::StartSequence => handle!(start_sequence, ctx),
         Event::LogA => handle!(log_a, ctx),
         Event::LogB => handle!(log_b, ctx),
-        Event::ChildEvent(s) => handle!(log_child_event, s, ctx),
+        Event::ChildEvent(s) => handle!(log_child_event, ctx, s),
     }
 }
 

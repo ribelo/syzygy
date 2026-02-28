@@ -1,119 +1,176 @@
 # Syzygy
 
-Syzygy is a TEA-style runtime for Rust with explicit `Event -> Model -> Command` flow.
-
-It keeps state transitions synchronous and deterministic (`Core`), while executing side effects in a separate `Shell` via declarative `Task`s.
-
-## What Exists Today
-
-- Pure event reducer API (`Fn(Event, &EventContext<Model>) -> Command<Event, Effect>`)
-- Command routing with explicit steps:
-  - `CommandStep::Event`
-  - `CommandStep::Effect`
-  - `CommandStep::Tracked { id, effect }`
-  - `CommandStep::Cancel { id }`
-- Shell-side cancellation slots (`Command::track`, `Command::cancel`)
-- `Task` variants:
-  - `Task::none`
-  - `Task::resolved`
-  - `Task::future` / `Task::once`
-  - `Task::stream`
-  - `Task::blocking`
-- `#[derive(Model)]` extraction wrappers + runtime borrow tracking
-- `TestStore` synchronous harness with exhaustive assertions, including tracked/cancel assertions
-
-## Runtime Model
-
-Syzygy is built around `compio`.
-
-- When a `compio` runtime is active, `Task::future`/`Task::stream` are spawned and polled by the runtime.
-- Without an active `compio` runtime, Syzygy falls back to synchronously resolving plain futures/streams in place.
-- Effects that explicitly depend on `compio` APIs (for example `compio::runtime::time::sleep`) still require an active `compio` runtime.
-
-## Quick Start
+Zero-overhead TEA (The Elm Architecture) for Rust. Pure synchronous state transitions. Explicit async effects. No macros beyond `#[derive(Model)]`.
 
 ```rust
 use syzygy::prelude::*;
 
-#[derive(Debug, Clone)]
-enum Event {
-    Increment,
-}
+#[derive(Model)]
+struct Model { counter: i32 }
 
-#[derive(Debug, Clone)]
-enum Effect {
-    Log,
-}
+#[derive(Clone)]
+enum Event { Increment }
 
-#[derive(Debug, Default, Model)]
+fn update(_: Event, ctx: &EventContext<Model>) -> Command<Event, ()> {
+    **Counter::extract_mut(ctx) += 1;
+    Command::none()
+}
+```
+
+## Quick Start
+
+Add to `Cargo.toml`:
+
+```toml
+[dependencies]
+syzygy = { git = "https://github.com/ribelo/syzygy" }
+```
+
+Run an example:
+
+```bash
+cargo run --example 01_basic_counter
+```
+
+## Core Concepts
+
+| Concept | Purpose | Example |
+|---------|---------|---------|
+| `Model` | Application state | `#[derive(Model)] struct App { count: i32 }` |
+| `Event` | Something that happened | `enum Event { Increment }` |
+| `Effect` | Side-effect to execute | `enum Effect { Save }` |
+| `Command` | Instructions from handler | `Command::event(E)` or `Command::effect(X)` |
+| `Task` | Async execution unit | `Task::future(async { ... })` |
+
+## The TEA Loop
+
+```
+Event -> Handler(&mut Model) -> Command -> Shell -> Task -> Event
+```
+
+1. **Core** receives `Event`, calls handler with mutable model access
+2. Handler returns `Command` (events, effects, or both)
+3. **Shell** routes commands: events loop back to Core, effects spawn Tasks
+4. **Task** executes async work, produces new Events
+
+## Field Extraction
+
+`#[derive(Model)]` generates transparent wrapper types for borrow tracking:
+
+```rust
+#[derive(Model)]
 struct Model {
     counter: i32,
+    #[extract]  // Use type directly, no wrapper
+    settings: Settings,
 }
 
-fn update(event: Event, ctx: &EventContext<Model>) -> Command<Event, Effect> {
-    match event {
-        Event::Increment => {
-            let counter = Counter::extract_mut(ctx);
-            **counter += 1;
-            Command::effect(Effect::Log)
-        }
-    }
-}
+// Wrapper type: double deref
+fn inc(counter: &mut Counter) { **counter += 1; }
 
-fn effects(effect: Effect, _ctx: &EffectContext) -> Task<Event, Effect> {
-    match effect {
-        Effect::Log => Task::none(),
-    }
-}
+// Extracted type: direct access
+fn update(settings: &mut Settings) { settings.theme = Dark; }
 ```
 
-## Builder API
+| Approach | When to Use | Handler Signature |
+|----------|-------------|-------------------|
+| Wrapper (default) | Multiple fields of same type | `&mut Counter` |
+| `#[extract]` | Unique complex types | `&mut Settings` |
+| Whole model | Needs all fields | `&mut Model` |
+
+**Constraint:** 256 fields max per model. Runtime panic on aliasing violations (`&mut T` + `&T` overlap).
+
+## Effects and Tasks
 
 ```rust
-let mut runner = Syzygy::builder::<Event, Effect>()
-    .model(Model::default())
-    .event_handler(update)
-    .effect_handler(effects)
-    .with_event_channel_capacity(Some(256))
-    .with_syzygy_config(SyzygyConfig::default())
-    .build();
+enum Effect { Fetch(String) }
+
+async fn fetch(url: String) -> Command<Event, Effect> {
+    let data = reqwest::get(&url).await.text().await.unwrap();
+    Command::event(Event::Fetched(data))
+}
 ```
 
-Notes:
+| Task Type | Use For | Returns |
+|-----------|---------|---------|
+| `Task::none()` | No side effect | Nothing |
+| `Task::once(async)` | One-shot async | Single event |
+| `Task::stream(impl Stream)` | Ongoing streams | Multiple events |
+| `Task::blocking(fn)` | CPU-intensive work | Single event |
 
-- `with_event_channel_capacity(Some(n))` creates a bounded channel; producers can receive `CoreError::ChannelFull`.
-- `feature(feature_impl)` wires both `Feature::reduce` and `Feature::handle_effect` in one call.
-- Backward-compatibility methods such as `async_executor`, `compute_executor`, `blocking_executor`, and `with_effect_channel_capacity` are currently no-op shims.
-
-## Cancellable Slots
+## Command Composition
 
 ```rust
-// start/restart slot "search"
-Command::track("search", Effect::Fetch)
-
-// cancel slot "search"
-Command::cancel("search")
+Command::effect(Effect::Save)
+    .and_event(Event::Saved)           // Add event
+    .map_event(|e| Event::Child(e))    // Transform
+    .track("save", Effect::Backup)     // Cancellable slot
 ```
 
-`CancelId` is type-tagged. `1_u32` and `1_u64` are different slot IDs.
-When commands are transformed with `map`/`map_event`/`map_effect`, tracked slots are namespaced by the source/target command types to avoid cross-component collisions.
+## Testing
 
-## TestStore Exhaustivity
+```rust
+use syzygy::prelude::*;
 
-`TestStore` supports consumptive assertions:
+let mut store = TestStore::new(Model::default(), update);
+store.send(Event::Increment);
 
-- `assert_effects(...)`
-- `assert_tracked_effect(slot, effect)`
-- `assert_cancelled(slot)`
-- `assert_no_effects()`
+assert_eq!(store.state().counter, 1);
+store.assert_effects([Effect::Save]);
+```
 
-In `Exhaustivity::On`, unasserted outputs (effects or cancellations) panic on next `send` or on drop.
+## Footguns
 
-## Development Gate
+**Aliasing panics at runtime.** This will panic:
+
+```rust
+fn bad(ctx: &EventContext<Model>) {
+    let _ = Model::extract(ctx);        // &Model
+    let _ = Counter::extract_mut(ctx);  // &mut i32 inside Model
+}
+```
+
+**Resource cloning on every effect access.** Expensive resources should be wrapped in `Arc<T>`:
+
+```rust
+#[derive(Clone)]
+struct DbPool(Arc<Pool>);  // Cheap clone
+
+// NOT: struct DbPool(Pool)  // Expensive clone every effect
+```
+
+**256 field limit.** Exceeding this panics at model construction.
+
+**CancelId type-sensitivity.** `1u32` and `1u64` are different slots.
+
+## Development
+
+Quality gate (run before commit):
 
 ```bash
 cargo fmt --all --check && cargo clippy --all-targets -- -D warnings && cargo test
 ```
+
+Run specific example:
+
+```bash
+cargo run --example 10_todo_app
+```
+
+## Examples
+
+| Example | Concepts |
+|---------|----------|
+| `01_basic_counter` | Wrapper types, pure handlers |
+| `02_field_extraction` | `#[extract]` vs wrappers |
+| `03_child_models` | Nested models, dispatch delegation |
+| `04_async_effects` | `Task::future`, loading states |
+| `05_stream_effects` | `Task::stream`, tickers |
+| `06_resources` | Dependency injection |
+| `07_testing` | `TestStore` patterns |
+| `08_command_composition` | `Command::and`, `map_event` |
+| `09_error_handling` | Result/Option in handlers |
+| `10_todo_app` | Full application |
 
 ## License
 

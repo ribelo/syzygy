@@ -55,8 +55,8 @@ fn update_name(name: String, profile: &mut UserProfile) -> Command<AppEvent, App
 
 fn handle_event(event: AppEvent, ctx: &EventContext<AppState>) -> Command<AppEvent, AppEffect> {
     match event {
-        AppEvent::AddPoints(amount) => handle!(add_points, amount, ctx),
-        AppEvent::UpdateName(name) => handle!(update_name, name, ctx),
+        AppEvent::AddPoints(amount) => handle!(add_points, ctx, amount),
+        AppEvent::UpdateName(name) => handle!(update_name, ctx, name),
     }
 }
 

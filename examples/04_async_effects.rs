@@ -48,8 +48,8 @@ fn fetch_error(_err: String, is_loading: &mut IsLoading) -> Command<AppEvent, Ap
 fn handle_event(event: AppEvent, ctx: &EventContext<AppModel>) -> Command<AppEvent, AppEffect> {
     match event {
         AppEvent::FetchData => handle!(fetch_data, ctx),
-        AppEvent::FetchSuccess(payload) => handle!(fetch_success, payload, ctx),
-        AppEvent::FetchError(err) => handle!(fetch_error, err, ctx),
+        AppEvent::FetchSuccess(payload) => handle!(fetch_success, ctx, payload),
+        AppEvent::FetchError(err) => handle!(fetch_error, ctx, err),
     }
 }
 
