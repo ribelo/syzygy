@@ -4,7 +4,9 @@ use proc_macro::TokenStream;
 use proc_macro2::TokenStream as TokenStream2;
 use quote::format_ident;
 use quote::quote;
+use quote::ToTokens;
 use syn::parse_macro_input;
+use syn::Attribute;
 use syn::Data;
 use syn::DeriveInput;
 use syn::Fields;
@@ -21,9 +23,16 @@ pub fn derive_model(input: TokenStream) -> TokenStream {
 }
 
 fn expand_model(input: DeriveInput) -> syn::Result<TokenStream2> {
-    let model_ident = input.ident;
-    let generics = input.generics;
-    let fields = named_fields(&input.data)?;
+    let DeriveInput {
+        ident: model_ident,
+        generics,
+        data,
+        attrs,
+        ..
+    } = input;
+
+    ensure_not_packed(&attrs)?;
+    let fields = named_fields(&data)?;
 
     let mut wrappers = Vec::with_capacity(fields.len());
     let mut extract_impls = Vec::new();
@@ -38,15 +47,6 @@ fn expand_model(input: DeriveInput) -> syn::Result<TokenStream2> {
         let field_name = field_ident.to_string();
         let is_extract = has_extract_attr(field)?;
 
-        tracked_field_count += 1;
-        if tracked_field_count > 64 {
-            return Err(syn::Error::new_spanned(
-                model_ident.clone(),
-                "Model derive supports up to 64 tracked fields for runtime borrow checks",
-            ));
-        }
-        let field_index = (tracked_field_count - 1) as u32;
-
         let (struct_generics, impl_generics, ty_generics, where_clause) = split_generics(&generics);
 
         if is_extract {
@@ -58,33 +58,33 @@ fn expand_model(input: DeriveInput) -> syn::Result<TokenStream2> {
                 ));
             }
 
+            tracked_field_count += 1;
+            if tracked_field_count > 256 {
+                return Err(syn::Error::new_spanned(
+                    model_ident.clone(),
+                    "Model derive supports up to 256 tracked fields for runtime borrow checks",
+                ));
+            }
+            let field_index = (tracked_field_count - 1) as u32;
+
             extract_impls.push(quote! {
-                impl #impl_generics syzygy::extract::ExtractFrom<#model_ident #ty_generics> for #field_ty #where_clause {
+                impl #impl_generics syzygy::extract::Part<#model_ident #ty_generics> for #field_ty #where_clause {
                     fn extract(ctx: &syzygy::extract::EventContext<#model_ident #ty_generics>) -> &Self {
                         // SAFETY: EventContext stores a valid pointer to the active model during dispatch.
                         let ptr = unsafe { ::core::ptr::addr_of!((*ctx.model_ptr()).#field_ident) };
-                        ctx.track_immut_borrow_range(
-                            ptr.cast::<u8>(),
-                            ::core::mem::size_of::<#field_ty>(),
-                            #field_name,
-                        );
+                        ctx.track_field_immut(#field_index, #field_name);
                         // SAFETY: `ptr` points to the extracted field for the lifetime of this dispatch step.
                         unsafe { &*ptr }
                     }
                 }
 
                 #[allow(clippy::mut_from_ref)]
-                impl #impl_generics syzygy::extract::ExtractMutFrom<#model_ident #ty_generics> for #field_ty #where_clause {
+                impl #impl_generics syzygy::extract::PartMut<#model_ident #ty_generics> for #field_ty #where_clause {
                     fn extract_mut(ctx: &syzygy::extract::EventContext<#model_ident #ty_generics>) -> &mut Self {
-                        ctx.track_borrow(#field_index, #field_name);
+                        ctx.track_field_borrow(#field_index, #field_name);
                         // SAFETY: EventContext stores a valid mutable pointer for the active handler call,
                         // and borrow tracking ensures this field is extracted at most once per handler.
                         let ptr = unsafe { ::core::ptr::addr_of_mut!((*ctx.model_ptr()).#field_ident) };
-                        ctx.track_borrow_range(
-                            ptr.cast::<u8>(),
-                            ::core::mem::size_of::<#field_ty>(),
-                            #field_name,
-                        );
                         // SAFETY: `ptr` points to the extracted field and runtime tracking enforces exclusivity.
                         unsafe { &mut *ptr }
                     }
@@ -93,6 +93,15 @@ fn expand_model(input: DeriveInput) -> syn::Result<TokenStream2> {
 
             continue;
         }
+
+        tracked_field_count += 1;
+        if tracked_field_count > 256 {
+            return Err(syn::Error::new_spanned(
+                model_ident.clone(),
+                "Model derive supports up to 256 tracked fields for runtime borrow checks",
+            ));
+        }
+        let field_index = (tracked_field_count - 1) as u32;
 
         let wrapper_ident = field_wrapper_ident(field_ident)?;
 
@@ -114,36 +123,27 @@ fn expand_model(input: DeriveInput) -> syn::Result<TokenStream2> {
                 }
             }
 
-            impl #impl_generics syzygy::extract::ExtractFrom<#model_ident #ty_generics> for #wrapper_ident #ty_generics #where_clause {
+            impl #impl_generics syzygy::extract::Part<#model_ident #ty_generics> for #wrapper_ident #ty_generics #where_clause {
                 fn extract(ctx: &syzygy::extract::EventContext<#model_ident #ty_generics>) -> &Self {
                     // SAFETY: `repr(transparent)` guarantees Wrapper has the same layout as the field type.
                     let ptr = unsafe {
                         ::core::ptr::addr_of!((*ctx.model_ptr()).#field_ident).cast::<Self>()
                     };
-                    ctx.track_immut_borrow_range(
-                        ptr.cast::<u8>(),
-                        ::core::mem::size_of::<#wrapper_ident #ty_generics>(),
-                        #field_name,
-                    );
+                    ctx.track_field_immut(#field_index, #field_name);
                     // SAFETY: `ptr` points to the wrapped field for the current dispatch lifetime.
                     unsafe { &*ptr }
                 }
             }
 
             #[allow(clippy::mut_from_ref)]
-            impl #impl_generics syzygy::extract::ExtractMutFrom<#model_ident #ty_generics> for #wrapper_ident #ty_generics #where_clause {
+            impl #impl_generics syzygy::extract::PartMut<#model_ident #ty_generics> for #wrapper_ident #ty_generics #where_clause {
                 fn extract_mut(ctx: &syzygy::extract::EventContext<#model_ident #ty_generics>) -> &mut Self {
-                    ctx.track_borrow(#field_index, #field_name);
+                    ctx.track_field_borrow(#field_index, #field_name);
                     // SAFETY: `repr(transparent)` guarantees Wrapper has the same layout as the field type.
                     let ptr = unsafe {
                         ::core::ptr::addr_of_mut!((*ctx.model_ptr()).#field_ident).cast::<Self>()
                     };
-                    ctx.track_borrow_range(
-                        ptr.cast::<u8>(),
-                        ::core::mem::size_of::<#wrapper_ident #ty_generics>(),
-                        #field_name,
-                    );
-                    // SAFETY: `track_borrow` ensures unique mutable access for this field in the handler.
+                    // SAFETY: `track_field_borrow` ensures unique mutable access for this field in the handler.
                     unsafe { &mut *ptr }
                 }
             }
@@ -154,6 +154,24 @@ fn expand_model(input: DeriveInput) -> syn::Result<TokenStream2> {
         #(#wrappers)*
         #(#extract_impls)*
     })
+}
+
+fn ensure_not_packed(attrs: &[Attribute]) -> syn::Result<()> {
+    for attr in attrs {
+        if !attr.path().is_ident("repr") {
+            continue;
+        }
+
+        let tokens = attr.meta.to_token_stream().to_string();
+        if tokens.contains("packed") {
+            return Err(syn::Error::new_spanned(
+                attr,
+                "Syzygy #[derive(Model)] prohibits #[repr(packed)] because creating references to packed fields can trigger unaligned-reference UB",
+            ));
+        }
+    }
+
+    Ok(())
 }
 
 fn has_extract_attr(field: &syn::Field) -> syn::Result<bool> {

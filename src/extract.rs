@@ -1,12 +1,11 @@
-use std::cell::{Cell, RefCell};
+use std::cell::Cell;
 use std::future::Future;
 
 use futures::Stream;
-use smallvec::SmallVec;
 
 use crate::command::Command;
-use crate::dependency::{Resource, ResourceMap};
 use crate::executor::Task;
+use crate::resource::{Resource, ResourceMap};
 
 // ── Effect side ─────────────────────────────────────────────────────
 
@@ -27,6 +26,12 @@ impl<'a> EffectContext<'a> {
 }
 
 pub trait FromEffectContext {
+    /// Extracts a value from the [`EffectContext`].
+    ///
+    /// This operation clones the stored resource value from the [`ResourceMap`].
+    /// Prefer storing expensive resources behind shared ownership pointers such
+    /// as `Arc<T>` or `Rc<T>` via `.with_resource(...)` to avoid repeated deep
+    /// clones on effect dispatch.
     fn from_context(ctx: &EffectContext<'_>) -> Self;
 }
 
@@ -217,79 +222,117 @@ impl_effect_handler_stream!(T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12);
 
 pub struct EventContext<M> {
     ptr: *mut M,
-    borrowed: Cell<u64>,
-    borrowed_ranges: RefCell<SmallVec<[(usize, usize); 8]>>,
-    borrowed_immut_ranges: RefCell<SmallVec<[(usize, usize); 8]>>,
+    whole_model_mut: Cell<bool>,
+    whole_model_immut: Cell<u32>,
+    fields_mut: Cell<[u64; 4]>,
+    fields_immut: Cell<[u64; 4]>,
 }
 
 impl<M> EventContext<M> {
     pub(crate) fn new(model: &mut M) -> Self {
         Self {
             ptr: model as *mut M,
-            borrowed: Cell::new(0),
-            borrowed_ranges: RefCell::new(SmallVec::new()),
-            borrowed_immut_ranges: RefCell::new(SmallVec::new()),
+            whole_model_mut: Cell::new(false),
+            whole_model_immut: Cell::new(0),
+            fields_mut: Cell::new([0; 4]),
+            fields_immut: Cell::new([0; 4]),
         }
     }
 
-    pub fn track_borrow(&self, field_index: u32, field_name: &str) {
-        let mask = 1u64 << field_index;
-        let current = self.borrowed.get();
+    pub fn track_field_borrow(&self, field_index: u32, field_name: &str) {
         assert!(
-            current & mask == 0,
+            !self.whole_model_mut.get(),
+            "field '{field_name}' overlaps already-borrowed mutable region"
+        );
+        assert!(
+            self.whole_model_immut.get() == 0,
+            "field '{field_name}' overlaps already-borrowed immutable region"
+        );
+
+        let fields_mut = self.fields_mut.get();
+        assert!(
+            !check_field_bit(fields_mut, field_index, field_name),
             "field '{field_name}' (index {field_index}) already borrowed mutably in this handler"
         );
-        self.borrowed.set(current | mask);
+
+        let fields_immut = self.fields_immut.get();
+        assert!(
+            !check_field_bit(fields_immut, field_index, field_name),
+            "field '{field_name}' overlaps already-borrowed immutable region"
+        );
+
+        self.fields_mut
+            .set(set_field_bit(fields_mut, field_index, field_name));
     }
 
-    pub fn track_borrow_range(&self, ptr: *mut u8, size: usize, field_name: &str) {
-        let (start, end) = tracked_range(ptr as usize, size, field_name, "mutable");
-        let mut borrowed_ranges = self.borrowed_ranges.borrow_mut();
+    pub fn track_field_immut(&self, field_index: u32, field_name: &str) {
+        assert!(
+            !self.whole_model_mut.get(),
+            "field '{field_name}' overlaps already-borrowed mutable region"
+        );
 
-        for &(borrowed_start, borrowed_end) in borrowed_ranges.iter() {
-            let disjoint = start >= borrowed_end || end <= borrowed_start;
-            assert!(
-                disjoint,
-                "field '{field_name}' overlaps already-borrowed mutable region"
-            );
-        }
+        let fields_mut = self.fields_mut.get();
+        assert!(
+            !check_field_bit(fields_mut, field_index, field_name),
+            "field '{field_name}' overlaps already-borrowed mutable region"
+        );
 
-        for &(borrowed_start, borrowed_end) in self.borrowed_immut_ranges.borrow().iter() {
-            let disjoint = start >= borrowed_end || end <= borrowed_start;
-            assert!(
-                disjoint,
-                "field '{field_name}' overlaps already-borrowed immutable region"
-            );
-        }
-
-        borrowed_ranges.push((start, end));
+        let fields_immut = self.fields_immut.get();
+        self.fields_immut
+            .set(set_field_bit(fields_immut, field_index, field_name));
     }
 
-    pub fn track_immut_borrow_range(&self, ptr: *const u8, size: usize, field_name: &str) {
-        let (start, end) = tracked_range(ptr as usize, size, field_name, "immutable");
+    fn track_whole_model_mut(&self) {
+        assert!(
+            !self.whole_model_mut.get(),
+            "field 'model' overlaps already-borrowed mutable region"
+        );
+        assert!(
+            self.whole_model_immut.get() == 0,
+            "field 'model' overlaps already-borrowed immutable region"
+        );
+        assert!(
+            !check_any_field_set(self.fields_mut.get()),
+            "field 'model' overlaps already-borrowed mutable region"
+        );
+        assert!(
+            !check_any_field_set(self.fields_immut.get()),
+            "field 'model' overlaps already-borrowed immutable region"
+        );
 
-        for &(borrowed_start, borrowed_end) in self.borrowed_ranges.borrow().iter() {
-            let disjoint = start >= borrowed_end || end <= borrowed_start;
-            assert!(
-                disjoint,
-                "field '{field_name}' overlaps already-borrowed mutable region"
-            );
-        }
+        self.whole_model_mut.set(true);
+    }
 
-        self.borrowed_immut_ranges.borrow_mut().push((start, end));
+    fn track_whole_model_immut(&self) {
+        assert!(
+            !self.whole_model_mut.get(),
+            "field 'model' overlaps already-borrowed mutable region"
+        );
+        assert!(
+            !check_any_field_set(self.fields_mut.get()),
+            "field 'model' overlaps already-borrowed mutable region"
+        );
+
+        let next = self
+            .whole_model_immut
+            .get()
+            .checked_add(1)
+            .unwrap_or_else(|| panic!("field 'model' exceeded immutable borrow tracking limit"));
+        self.whole_model_immut.set(next);
     }
 
     pub(crate) fn borrow_guard(&self) -> BorrowGuard<'_, M> {
         BorrowGuard {
             ctx: self,
-            borrowed_bits: self.borrowed.get(),
-            borrowed_ranges_len: self.borrowed_ranges.borrow().len(),
-            borrowed_immut_ranges_len: self.borrowed_immut_ranges.borrow().len(),
+            whole_model_mut: self.whole_model_mut.get(),
+            whole_model_immut: self.whole_model_immut.get(),
+            fields_mut: self.fields_mut.get(),
+            fields_immut: self.fields_immut.get(),
         }
     }
 
     /// # Safety
-    /// Caller must have called `track_borrow` for this field first, and the
+    /// Caller must have called `track_field_borrow` for this field first, and the
     /// field offset must be correct for type `T` within `M`.
     pub unsafe fn field_ptr<T>(&self, offset: usize) -> *mut T {
         self.ptr.cast::<u8>().add(offset).cast::<T>()
@@ -299,7 +342,7 @@ impl<M> EventContext<M> {
         self.ptr
     }
 
-    pub fn dispatch<E, X, H, Marker>(&self, handler: H) -> Command<E, X>
+    pub fn handle<E, X, H, Marker>(&self, handler: H) -> Command<E, X>
     where
         H: EventHandler<E, X, (), M, Marker>,
     {
@@ -307,60 +350,74 @@ impl<M> EventContext<M> {
     }
 }
 
-fn tracked_range(start: usize, size: usize, field_name: &str, kind: &str) -> (usize, usize) {
-    let span = size.max(1);
-    let end = start.checked_add(span).unwrap_or_else(|| {
-        panic!("field '{field_name}' produced an overflow while tracking {kind} borrow range")
-    });
-    (start, end)
+fn set_field_bit(mut bits: [u64; 4], field_index: u32, field_name: &str) -> [u64; 4] {
+    let (word, mask) = field_bit(field_index, field_name);
+    bits[word] |= mask;
+    bits
+}
+
+fn check_field_bit(bits: [u64; 4], field_index: u32, field_name: &str) -> bool {
+    let (word, mask) = field_bit(field_index, field_name);
+    bits[word] & mask != 0
+}
+
+fn check_any_field_set(bits: [u64; 4]) -> bool {
+    (bits[0] | bits[1] | bits[2] | bits[3]) != 0
+}
+
+fn field_bit(field_index: u32, field_name: &str) -> (usize, u64) {
+    assert!(
+        field_index < 256,
+        "field '{field_name}' index {field_index} exceeds borrow tracker capacity (256)",
+    );
+
+    let word = (field_index / 64) as usize;
+    let mask = 1u64 << (field_index % 64);
+    (word, mask)
 }
 
 pub(crate) struct BorrowGuard<'a, M> {
     ctx: &'a EventContext<M>,
-    borrowed_bits: u64,
-    borrowed_ranges_len: usize,
-    borrowed_immut_ranges_len: usize,
+    whole_model_mut: bool,
+    whole_model_immut: u32,
+    fields_mut: [u64; 4],
+    fields_immut: [u64; 4],
 }
 
 impl<M> Drop for BorrowGuard<'_, M> {
     fn drop(&mut self) {
-        self.ctx.borrowed.set(self.borrowed_bits);
-        self.ctx
-            .borrowed_ranges
-            .borrow_mut()
-            .truncate(self.borrowed_ranges_len);
-        self.ctx
-            .borrowed_immut_ranges
-            .borrow_mut()
-            .truncate(self.borrowed_immut_ranges_len);
+        self.ctx.whole_model_mut.set(self.whole_model_mut);
+        self.ctx.whole_model_immut.set(self.whole_model_immut);
+        self.ctx.fields_mut.set(self.fields_mut);
+        self.ctx.fields_immut.set(self.fields_immut);
     }
 }
 
-pub trait ExtractFrom<M> {
+pub trait Part<M> {
     fn extract(ctx: &EventContext<M>) -> &Self;
 }
 
 #[allow(clippy::mut_from_ref)]
-pub trait ExtractMutFrom<M> {
+pub trait PartMut<M> {
     fn extract_mut(ctx: &EventContext<M>) -> &mut Self;
 }
 
-impl<M> ExtractFrom<M> for M {
+impl<M> Part<M> for M {
     fn extract(ctx: &EventContext<M>) -> &Self {
         let ptr = ctx.model_ptr();
-        ctx.track_immut_borrow_range(ptr.cast::<u8>(), ::core::mem::size_of::<M>(), "model");
+        ctx.track_whole_model_immut();
         // SAFETY: EventContext holds a valid pointer to the active model for the current dispatch.
         unsafe { &*ptr }
     }
 }
 
 #[allow(clippy::mut_from_ref)]
-impl<M> ExtractMutFrom<M> for M {
+impl<M> PartMut<M> for M {
     fn extract_mut(ctx: &EventContext<M>) -> &mut Self {
         let ptr = ctx.model_ptr();
-        ctx.track_borrow_range(ptr.cast::<u8>(), ::core::mem::size_of::<M>(), "model");
+        ctx.track_whole_model_mut();
         // SAFETY: EventContext stores a valid mutable pointer to the active model and
-        // borrow-range tracking enforces exclusive mutable access during handler execution.
+        // bitmask borrow tracking enforces exclusive mutable access during handler execution.
         unsafe { &mut *ptr }
     }
 }
@@ -381,74 +438,66 @@ where
 #[doc(hidden)]
 pub struct Owned<T>(::core::marker::PhantomData<fn() -> T>);
 
-macro_rules! impl_event_handler {
-    ($($T:ident),+) => {
-        #[allow(non_snake_case)]
-        impl<E, X, P, M, F, $($T),+> EventHandler<E, X, P, M, ($(Owned<$T>,)+)> for F
-        where
-            F: for<'a> Fn(P, $(&'a $T),+) -> Command<E, X> + 'static,
-            $($T: ExtractFrom<M>,)+
-        {
-            fn handle(&self, payload: P, ctx: &EventContext<M>) -> Command<E, X> {
-                let _borrow_guard = ctx.borrow_guard();
-                (self)(payload, $($T::extract(ctx)),+)
-            }
-        }
-    }
-}
-
 #[doc(hidden)]
 pub struct Mut<T>(::core::marker::PhantomData<fn(&mut T)>);
 
 #[doc(hidden)]
 pub struct EventNP<Inner>(::core::marker::PhantomData<fn() -> Inner>);
 
-macro_rules! impl_event_handler_mut {
-    ($($T:ident),+) => {
+macro_rules! impl_event_handler {
+    ($($T:ident),+ $(,)?) => {
         #[allow(non_snake_case)]
-        impl<E, X, P, M, F, $($T),+> EventHandler<E, X, P, M, ($(Mut<$T>,)+)> for F
+        impl<E, X, P, M, F, $($T),+> EventHandler<E, X, P, M, ($(Owned<$T>,)+)> for F
         where
-            F: for<'a> Fn(P, $(&'a mut $T),+) -> Command<E, X> + 'static,
-            $($T: ExtractMutFrom<M>,)+
+            F: for<'a> Fn(P, $(&'a $T),+) -> Command<E, X> + 'static,
+            $($T: Part<M>,)+
         {
             fn handle(&self, payload: P, ctx: &EventContext<M>) -> Command<E, X> {
                 let _borrow_guard = ctx.borrow_guard();
-                (self)(payload, $($T::extract_mut(ctx)),+)
+                (self)(payload, $(<$T as Part<M>>::extract(ctx)),+)
             }
         }
-    }
-}
 
-macro_rules! impl_event_handler_np_owned {
-    ($($T:ident),+) => {
         #[allow(non_snake_case)]
         impl<E, X, M, F, $($T),+> EventHandler<E, X, (), M, EventNP<($(Owned<$T>,)+)>> for F
         where
             F: for<'a> Fn($(&'a $T),+) -> Command<E, X> + 'static,
-            $($T: ExtractFrom<M>,)+
+            $($T: Part<M>,)+
         {
             fn handle(&self, _payload: (), ctx: &EventContext<M>) -> Command<E, X> {
                 let _borrow_guard = ctx.borrow_guard();
-                (self)($($T::extract(ctx)),+)
+                (self)($(<$T as Part<M>>::extract(ctx)),+)
             }
         }
-    }
+    };
 }
 
-macro_rules! impl_event_handler_np_mut {
-    ($($T:ident),+) => {
+macro_rules! impl_event_handler_mut {
+    ($($T:ident),+ $(,)?) => {
+        #[allow(non_snake_case)]
+        impl<E, X, P, M, F, $($T),+> EventHandler<E, X, P, M, ($(Mut<$T>,)+)> for F
+        where
+            F: for<'a> Fn(P, $(&'a mut $T),+) -> Command<E, X> + 'static,
+            $($T: PartMut<M>,)+
+        {
+            fn handle(&self, payload: P, ctx: &EventContext<M>) -> Command<E, X> {
+                let _borrow_guard = ctx.borrow_guard();
+                (self)(payload, $(<$T as PartMut<M>>::extract_mut(ctx)),+)
+            }
+        }
+
         #[allow(non_snake_case)]
         impl<E, X, M, F, $($T),+> EventHandler<E, X, (), M, EventNP<($(Mut<$T>,)+)>> for F
         where
             F: for<'a> Fn($(&'a mut $T),+) -> Command<E, X> + 'static,
-            $($T: ExtractMutFrom<M>,)+
+            $($T: PartMut<M>,)+
         {
             fn handle(&self, _payload: (), ctx: &EventContext<M>) -> Command<E, X> {
                 let _borrow_guard = ctx.borrow_guard();
-                (self)($($T::extract_mut(ctx)),+)
+                (self)($(<$T as PartMut<M>>::extract_mut(ctx)),+)
             }
         }
-    }
+    };
 }
 
 impl_event_handler!(T1);
@@ -476,32 +525,6 @@ impl_event_handler_mut!(T1, T2, T3, T4, T5, T6, T7, T8, T9);
 impl_event_handler_mut!(T1, T2, T3, T4, T5, T6, T7, T8, T9, T10);
 impl_event_handler_mut!(T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11);
 impl_event_handler_mut!(T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12);
-
-impl_event_handler_np_owned!(T1);
-impl_event_handler_np_owned!(T1, T2);
-impl_event_handler_np_owned!(T1, T2, T3);
-impl_event_handler_np_owned!(T1, T2, T3, T4);
-impl_event_handler_np_owned!(T1, T2, T3, T4, T5);
-impl_event_handler_np_owned!(T1, T2, T3, T4, T5, T6);
-impl_event_handler_np_owned!(T1, T2, T3, T4, T5, T6, T7);
-impl_event_handler_np_owned!(T1, T2, T3, T4, T5, T6, T7, T8);
-impl_event_handler_np_owned!(T1, T2, T3, T4, T5, T6, T7, T8, T9);
-impl_event_handler_np_owned!(T1, T2, T3, T4, T5, T6, T7, T8, T9, T10);
-impl_event_handler_np_owned!(T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11);
-impl_event_handler_np_owned!(T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12);
-
-impl_event_handler_np_mut!(T1);
-impl_event_handler_np_mut!(T1, T2);
-impl_event_handler_np_mut!(T1, T2, T3);
-impl_event_handler_np_mut!(T1, T2, T3, T4);
-impl_event_handler_np_mut!(T1, T2, T3, T4, T5);
-impl_event_handler_np_mut!(T1, T2, T3, T4, T5, T6);
-impl_event_handler_np_mut!(T1, T2, T3, T4, T5, T6, T7);
-impl_event_handler_np_mut!(T1, T2, T3, T4, T5, T6, T7, T8);
-impl_event_handler_np_mut!(T1, T2, T3, T4, T5, T6, T7, T8, T9);
-impl_event_handler_np_mut!(T1, T2, T3, T4, T5, T6, T7, T8, T9, T10);
-impl_event_handler_np_mut!(T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11);
-impl_event_handler_np_mut!(T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12);
 
 #[cfg(test)]
 mod tests {
@@ -734,21 +757,45 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "overlaps already-borrowed mutable region")]
-    fn track_borrow_range_panics_on_overlap() {
+    #[should_panic(expected = "already borrowed mutably")]
+    fn track_field_borrow_panics_on_overlap() {
         let mut model = AppModel {
             counter: 0,
             name: String::new(),
         };
         let ctx = EventContext::new(&mut model);
 
-        let ptr = std::ptr::addr_of_mut!(model.counter).cast::<u8>();
-        ctx.track_borrow_range(ptr, std::mem::size_of::<i32>(), "counter");
-        ctx.track_borrow_range(ptr, std::mem::size_of::<i32>(), "counter_again");
+        ctx.track_field_borrow(0, "counter");
+        ctx.track_field_borrow(0, "counter_again");
     }
 
     #[test]
-    fn event_dispatch_match() {
+    fn track_field_borrow_supports_256_indices() {
+        let mut model = AppModel {
+            counter: 0,
+            name: String::new(),
+        };
+        let ctx = EventContext::new(&mut model);
+
+        for index in 0..256 {
+            ctx.track_field_borrow(index, "tracked");
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "exceeds borrow tracker capacity (256)")]
+    fn track_field_borrow_rejects_index_256() {
+        let mut model = AppModel {
+            counter: 0,
+            name: String::new(),
+        };
+        let ctx = EventContext::new(&mut model);
+
+        ctx.track_field_borrow(256, "out_of_bounds");
+    }
+
+    #[test]
+    fn event_handle_match() {
         fn increment(amount: u32, counter: &mut Counter) -> Command<Event, Effect> {
             let amount = i32::try_from(amount).expect("u32 amount must fit in i32");
             **counter += amount;
@@ -766,7 +813,7 @@ mod tests {
             Rename(String),
         }
 
-        let dispatch = |event: Ev, ctx: &EventContext<AppModel>| match event {
+        let handle_event = |event: Ev, ctx: &EventContext<AppModel>| match event {
             Ev::Increment(n) => increment.handle(n, ctx),
             Ev::Rename(s) => rename.handle(s, ctx),
         };
@@ -778,13 +825,13 @@ mod tests {
 
         {
             let ctx = EventContext::new(&mut model);
-            dispatch(Ev::Increment(3), &ctx);
+            handle_event(Ev::Increment(3), &ctx);
         }
         assert_eq!(model.counter, 3);
 
         {
             let ctx = EventContext::new(&mut model);
-            dispatch(Ev::Rename("new".into()), &ctx);
+            handle_event(Ev::Rename("new".into()), &ctx);
         }
         assert_eq!(model.name, "new");
     }
@@ -796,7 +843,7 @@ mod tests {
             Command::none()
         }
 
-        fn dispatch(_: (), ctx: &EventContext<AppModel>) -> Command<Event, Effect> {
+        fn handle_event(_: (), ctx: &EventContext<AppModel>) -> Command<Event, Effect> {
             increment_once
                 .handle((), ctx)
                 .and(increment_once.handle((), ctx))
@@ -807,7 +854,7 @@ mod tests {
             name: String::new(),
         };
         let ctx = EventContext::new(&mut model);
-        let _ = dispatch((), &ctx);
+        let _ = handle_event((), &ctx);
 
         assert_eq!(model.counter, 2);
     }
@@ -1129,8 +1176,31 @@ mod tests {
         };
 
         let ctx = EventContext::new(&mut model);
-        let _model = <ArityEventModel as ExtractMutFrom<ArityEventModel>>::extract_mut(&ctx);
+        let _model = <ArityEventModel as PartMut<ArityEventModel>>::extract_mut(&ctx);
         let _field = A1::extract_mut(&ctx);
+    }
+
+    #[test]
+    #[should_panic(expected = "overlaps already-borrowed mutable region")]
+    fn whole_model_mut_then_field_immut_panics() {
+        let mut model = ArityEventModel {
+            a1: 0,
+            a2: 0,
+            a3: 0,
+            a4: 0,
+            a5: 0,
+            a6: 0,
+            a7: 0,
+            a8: 0,
+            a9: 0,
+            a10: 0,
+            a11: 0,
+            a12: 0,
+        };
+
+        let ctx = EventContext::new(&mut model);
+        let _model = <ArityEventModel as PartMut<ArityEventModel>>::extract_mut(&ctx);
+        let _field = A1::extract(&ctx);
     }
 
     #[test]
@@ -1158,6 +1228,29 @@ mod tests {
 
     #[test]
     #[should_panic(expected = "overlaps already-borrowed immutable region")]
+    fn field_immut_then_whole_model_mut_panics() {
+        let mut model = ArityEventModel {
+            a1: 1,
+            a2: 2,
+            a3: 3,
+            a4: 4,
+            a5: 5,
+            a6: 6,
+            a7: 7,
+            a8: 8,
+            a9: 9,
+            a10: 10,
+            a11: 11,
+            a12: 12,
+        };
+
+        let ctx = EventContext::new(&mut model);
+        let _field_ref = A1::extract(&ctx);
+        let _model_mut = <ArityEventModel as PartMut<ArityEventModel>>::extract_mut(&ctx);
+    }
+
+    #[test]
+    #[should_panic(expected = "overlaps already-borrowed immutable region")]
     fn whole_model_immut_then_whole_model_mut_panics() {
         let mut model = ArityEventModel {
             a1: 1,
@@ -1175,8 +1268,54 @@ mod tests {
         };
 
         let ctx = EventContext::new(&mut model);
-        let _model_ref = <ArityEventModel as ExtractFrom<ArityEventModel>>::extract(&ctx);
-        let _model_mut = <ArityEventModel as ExtractMutFrom<ArityEventModel>>::extract_mut(&ctx);
+        let _model_ref = <ArityEventModel as Part<ArityEventModel>>::extract(&ctx);
+        let _model_mut = <ArityEventModel as PartMut<ArityEventModel>>::extract_mut(&ctx);
+    }
+
+    #[test]
+    #[should_panic(expected = "overlaps already-borrowed mutable region")]
+    fn field_mut_then_whole_model_immut_panics() {
+        let mut model = ArityEventModel {
+            a1: 1,
+            a2: 2,
+            a3: 3,
+            a4: 4,
+            a5: 5,
+            a6: 6,
+            a7: 7,
+            a8: 8,
+            a9: 9,
+            a10: 10,
+            a11: 11,
+            a12: 12,
+        };
+
+        let ctx = EventContext::new(&mut model);
+        let _field_mut = A1::extract_mut(&ctx);
+        let _model_ref = <ArityEventModel as Part<ArityEventModel>>::extract(&ctx);
+    }
+
+    #[test]
+    #[should_panic(expected = "overlaps already-borrowed mutable region")]
+    fn field_mut_then_field_immut_panics() {
+        let mut model = ArityEventModel {
+            a1: 1,
+            a2: 2,
+            a3: 3,
+            a4: 4,
+            a5: 5,
+            a6: 6,
+            a7: 7,
+            a8: 8,
+            a9: 9,
+            a10: 10,
+            a11: 11,
+            a12: 12,
+        };
+
+        let ctx = EventContext::new(&mut model);
+        let _field_mut = A1::extract_mut(&ctx);
+        let _field_ref = A1::extract(&ctx);
     }
 
     #[test]
@@ -1188,14 +1327,14 @@ mod tests {
         };
 
         let ctx = EventContext::new(&mut model);
-        let _model = <ZstBoundaryModel as ExtractMutFrom<ZstBoundaryModel>>::extract_mut(&ctx);
+        let _model = <ZstBoundaryModel as PartMut<ZstBoundaryModel>>::extract_mut(&ctx);
         let _marker = Marker::extract_mut(&ctx);
     }
 
     // ── Effect handler tests ────────────────────────────────────────
 
     #[test]
-    fn effect_dispatch() {
+    fn effect_handle() {
         fn save(data: String, db: DbUrl) -> Task<Event, Effect> {
             assert_eq!(data, "x");
             assert_eq!(db.as_str(), "pg://test");
@@ -1210,11 +1349,11 @@ mod tests {
         let mut resources = ResourceMap::new();
         resources.insert(DbUrl("pg://test".into()));
         let ctx = EffectContext::new(&resources);
-        let dispatch = |effect: Effect, ctx: &EffectContext<'_>| match effect {
+        let handle_effect = |effect: Effect, ctx: &EffectContext<'_>| match effect {
             Effect::Log(msg) => log.handle(msg, ctx),
         };
         let _ = save.handle("x".into(), &ctx);
-        let _ = dispatch(Effect::Log("hi".into()), &ctx);
+        let _ = handle_effect(Effect::Log("hi".into()), &ctx);
     }
 
     #[test]
@@ -1421,7 +1560,7 @@ mod tests {
         Command::effect(ScopedCounterEffect::Log(format!("count={}", **count)))
     }
 
-    fn scoped_counter_dispatch(
+    fn scoped_counter_handle_event(
         event: ScopedCounterEvent,
         ctx: &EventContext<ScopedCounterModel>,
     ) -> Command<ScopedCounterEvent, ScopedCounterEffect> {
@@ -1453,7 +1592,7 @@ mod tests {
         Command::effect(ScopedToggleEffect::Changed(**current))
     }
 
-    fn scoped_toggle_dispatch(
+    fn scoped_toggle_handle_event(
         event: ScopedToggleEvent,
         ctx: &EventContext<ScopedToggleModel>,
     ) -> Command<ScopedToggleEvent, ScopedToggleEffect> {
@@ -1485,7 +1624,7 @@ mod tests {
         Toggle(ScopedToggleEffect),
     }
 
-    fn scoped_app_dispatch(
+    fn scoped_app_handle_event(
         event: ScopedAppEvent,
         ctx: &EventContext<ScopedAppModel>,
     ) -> Command<ScopedAppEvent, ScopedAppEffect> {
@@ -1493,14 +1632,14 @@ mod tests {
             ScopedAppEvent::Counter(child_event) => {
                 let counter = ScopedCounterModel::extract_mut(ctx);
                 let child_ctx = EventContext::new(counter);
-                scoped_counter_dispatch(child_event, &child_ctx)
+                scoped_counter_handle_event(child_event, &child_ctx)
                     .map_event(ScopedAppEvent::Counter)
                     .map_effect(ScopedAppEffect::Counter)
             }
             ScopedAppEvent::Toggle(child_event) => {
                 let toggle = ScopedToggleModel::extract_mut(ctx);
                 let child_ctx = EventContext::new(toggle);
-                scoped_toggle_dispatch(child_event, &child_ctx)
+                scoped_toggle_handle_event(child_event, &child_ctx)
                     .map_event(ScopedAppEvent::Toggle)
                     .map_effect(ScopedAppEffect::Toggle)
             }
@@ -1547,7 +1686,7 @@ mod tests {
         let mut model = ScopedAppModel::default();
         let ctx = EventContext::new(&mut model);
 
-        let _ = scoped_app_dispatch(
+        let _ = scoped_app_handle_event(
             ScopedAppEvent::Counter(ScopedCounterEvent::Increment(4)),
             &ctx,
         );
@@ -1560,7 +1699,7 @@ mod tests {
         let mut model = ScopedAppModel::default();
         let ctx = EventContext::new(&mut model);
 
-        let command = scoped_app_dispatch(
+        let command = scoped_app_handle_event(
             ScopedAppEvent::Counter(ScopedCounterEvent::Increment(2)),
             &ctx,
         );
@@ -1578,7 +1717,7 @@ mod tests {
         let mut model = ScopedAppModel::default();
         let ctx = EventContext::new(&mut model);
 
-        let _ = scoped_app_dispatch(
+        let _ = scoped_app_handle_event(
             ScopedAppEvent::CounterWithRename {
                 amount: 3,
                 title: "scoped".to_string(),
@@ -1596,7 +1735,7 @@ mod tests {
 
         {
             let ctx = EventContext::new(&mut model);
-            let _ = scoped_app_dispatch(
+            let _ = scoped_app_handle_event(
                 ScopedAppEvent::Counter(ScopedCounterEvent::Increment(5)),
                 &ctx,
             );
@@ -1604,7 +1743,8 @@ mod tests {
 
         {
             let ctx = EventContext::new(&mut model);
-            let _ = scoped_app_dispatch(ScopedAppEvent::Toggle(ScopedToggleEvent::Set(true)), &ctx);
+            let _ =
+                scoped_app_handle_event(ScopedAppEvent::Toggle(ScopedToggleEvent::Set(true)), &ctx);
         }
 
         assert_eq!(model.counter.count, 5);
@@ -1612,8 +1752,8 @@ mod tests {
     }
 
     #[test]
-    fn test_store_handles_scoped_parent_dispatch() {
-        let mut store = TestStore::new(ScopedAppModel::default(), scoped_app_dispatch);
+    fn test_store_handles_scoped_parent_handle_event() {
+        let mut store = TestStore::new(ScopedAppModel::default(), scoped_app_handle_event);
 
         store.send(ScopedAppEvent::Counter(ScopedCounterEvent::Increment(3)));
         assert_eq!(store.state().counter.count, 3);

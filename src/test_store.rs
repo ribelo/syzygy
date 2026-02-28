@@ -1,4 +1,4 @@
-//! Synchronous test harness for reducer logic.
+//! Synchronous test harness for event handler logic.
 //!
 //! `TestStore` mirrors the event->state->effect loop in-process, without running
 //! real async effects. Use it to assert state transitions and emitted effects,
@@ -15,14 +15,14 @@ use futures::StreamExt;
 
 use crate::command::{CancelId, Command, CommandStep, IntoCancelId};
 use crate::core::Core;
-use crate::dependency::ResourceMap;
 #[cfg(feature = "shell")]
 use crate::executor::Task;
 #[cfg(feature = "shell")]
 use crate::extract::EffectContext;
 use crate::extract::EventContext;
+use crate::resource::ResourceMap;
 
-/// Default upper bound for reducer steps executed by [`TestStore::send`].
+/// Default upper bound for event handler steps executed by [`TestStore::send`].
 ///
 /// Guards tests against accidental infinite event loops.
 const DEFAULT_MAX_EVENT_STEPS: usize = 10_000;
@@ -70,7 +70,7 @@ where
     E: 'static,
     X: 'static,
 {
-    /// Create a new test store from model state and event dispatcher.
+    /// Create a new test store from model state and event handler.
     pub fn new<H>(model: M, handler: H) -> Self
     where
         H: Fn(E, &EventContext<M>) -> Command<E, X> + 'static,
@@ -110,11 +110,6 @@ where
     pub fn with_resource<T: Clone + 'static>(mut self, resource: T) -> Self {
         self.resources.insert(resource);
         self
-    }
-
-    #[must_use]
-    pub fn with_dependency<T: Clone + 'static>(self, resource: T) -> Self {
-        self.with_resource(resource)
     }
 
     /// Send an event and process all synchronously chained events.
@@ -610,7 +605,7 @@ mod tests {
         Command::none()
     }
 
-    fn dispatch(event: Event, ctx: &EventContext<Model>) -> Command<Event, Effect> {
+    fn handle_event(event: Event, ctx: &EventContext<Model>) -> Command<Event, Effect> {
         match event {
             Event::Increment(amount) => increment.handle(amount, ctx),
             Event::Start => Command::event(Event::Increment(2)),
@@ -627,7 +622,7 @@ mod tests {
 
     #[test]
     fn send_updates_state_and_collects_effects() {
-        let mut store = TestStore::new(Model::default(), dispatch);
+        let mut store = TestStore::new(Model::default(), handle_event);
 
         store.send(Event::Increment(5));
 
@@ -640,7 +635,7 @@ mod tests {
 
     #[test]
     fn send_processes_synchronous_event_chains() {
-        let mut store = TestStore::new(Model::default(), dispatch);
+        let mut store = TestStore::new(Model::default(), handle_event);
 
         store.send(Event::Start);
 
@@ -650,7 +645,7 @@ mod tests {
 
     #[test]
     fn collects_multiple_effect_steps() {
-        let mut store = TestStore::new(Model::default(), dispatch);
+        let mut store = TestStore::new(Model::default(), handle_event);
 
         store.send(Event::EmitMany);
 
@@ -659,7 +654,7 @@ mod tests {
 
     #[test]
     fn assert_panic_helper_captures_borrow_rule_panics() {
-        let mut store = TestStore::new(Model::default(), dispatch);
+        let mut store = TestStore::new(Model::default(), handle_event);
 
         assert_panic_contains("already borrowed mutably", || {
             store.send(Event::DoubleBorrow);
@@ -670,7 +665,7 @@ mod tests {
     fn exhaustive_mode_panics_on_unasserted_effects() {
         assert_panic_contains("must assert effects before sending next event", || {
             let mut store =
-                TestStore::new(Model::default(), dispatch).with_exhaustivity(Exhaustivity::On);
+                TestStore::new(Model::default(), handle_event).with_exhaustivity(Exhaustivity::On);
 
             store.send(Event::Increment(1));
             store.send(Event::Increment(1));
@@ -680,7 +675,7 @@ mod tests {
     #[test]
     fn exhaustive_mode_allows_send_after_assert_effects() {
         let mut store =
-            TestStore::new(Model::default(), dispatch).with_exhaustivity(Exhaustivity::On);
+            TestStore::new(Model::default(), handle_event).with_exhaustivity(Exhaustivity::On);
 
         store.send(Event::Increment(1));
         store.assert_effects([Effect::Log(1)]);
@@ -692,7 +687,7 @@ mod tests {
     #[test]
     fn exhaustive_mode_allows_send_when_no_effects() {
         let mut store =
-            TestStore::new(Model::default(), dispatch).with_exhaustivity(Exhaustivity::On);
+            TestStore::new(Model::default(), handle_event).with_exhaustivity(Exhaustivity::On);
 
         store.send(Event::SaveDone);
         store.send(Event::SaveDone);
@@ -704,7 +699,7 @@ mod tests {
     fn exhaustive_mode_panics_on_drop_with_unasserted_effects() {
         assert_panic_contains("must assert effects before dropping test store", || {
             let mut store =
-                TestStore::new(Model::default(), dispatch).with_exhaustivity(Exhaustivity::On);
+                TestStore::new(Model::default(), handle_event).with_exhaustivity(Exhaustivity::On);
             store.send(Event::Increment(1));
         });
     }
@@ -712,7 +707,7 @@ mod tests {
     #[test]
     fn non_exhaustive_mode_allows_unasserted_effects() {
         let mut store =
-            TestStore::new(Model::default(), dispatch).with_exhaustivity(Exhaustivity::Off);
+            TestStore::new(Model::default(), handle_event).with_exhaustivity(Exhaustivity::Off);
 
         store.send(Event::Increment(1));
         store.send(Event::Increment(1));
@@ -722,7 +717,7 @@ mod tests {
 
     #[test]
     fn tracked_effect_assertion_consumes_slot() {
-        let mut store = TestStore::new(Model::default(), dispatch);
+        let mut store = TestStore::new(Model::default(), handle_event);
 
         store.send(Event::Track);
         store.assert_tracked_effect(1_u8, Effect::Tracked);
@@ -732,7 +727,7 @@ mod tests {
 
     #[test]
     fn assert_effects_rejects_tracked_outputs() {
-        let mut store = TestStore::new(Model::default(), dispatch);
+        let mut store = TestStore::new(Model::default(), handle_event);
         store.send(Event::Track);
 
         assert_panic_contains(
@@ -759,14 +754,14 @@ mod tests {
     fn cancelled_slot_requires_assertion_in_exhaustive_mode() {
         assert_panic_contains("must assert effects", || {
             let mut store =
-                TestStore::new(Model::default(), dispatch).with_exhaustivity(Exhaustivity::On);
+                TestStore::new(Model::default(), handle_event).with_exhaustivity(Exhaustivity::On);
             store.send(Event::CancelTracked);
         });
     }
 
     #[test]
     fn assert_cancelled_consumes_pending_cancellation() {
-        let mut store = TestStore::new(Model::default(), dispatch);
+        let mut store = TestStore::new(Model::default(), handle_event);
 
         store.send(Event::CancelTracked);
         store.assert_cancelled(1_u8);
@@ -776,7 +771,7 @@ mod tests {
     #[cfg(feature = "shell")]
     #[test]
     fn receive_feeds_resolved_task_events_back() {
-        let mut store = TestStore::new(Model::default(), dispatch);
+        let mut store = TestStore::new(Model::default(), handle_event);
 
         store.send(Event::Increment(1));
         store.receive(|effect, _ctx| match effect {
@@ -791,7 +786,7 @@ mod tests {
     #[cfg(feature = "shell")]
     #[test]
     fn receive_feeds_blocking_task_events_back() {
-        let mut store = TestStore::new(Model::default(), dispatch);
+        let mut store = TestStore::new(Model::default(), handle_event);
 
         store.send(Event::Increment(1));
         store.receive(|effect, _ctx| match effect {
@@ -807,7 +802,7 @@ mod tests {
     #[test]
     fn receive_works_with_exhaustive_mode() {
         let mut store =
-            TestStore::new(Model::default(), dispatch).with_exhaustivity(Exhaustivity::On);
+            TestStore::new(Model::default(), handle_event).with_exhaustivity(Exhaustivity::On);
 
         store.send(Event::Increment(1));
         store.receive(|_effect, _ctx| Task::none());
@@ -820,7 +815,7 @@ mod tests {
     #[cfg(feature = "shell")]
     #[test]
     fn receive_handles_task_none() {
-        let mut store = TestStore::new(Model::default(), dispatch);
+        let mut store = TestStore::new(Model::default(), handle_event);
 
         store.send(Event::Increment(2));
         store.receive(|_effect, _ctx| Task::none());
@@ -833,7 +828,7 @@ mod tests {
     #[cfg(feature = "shell")]
     #[test]
     fn receive_cascading_effects_stay_pending() {
-        let mut store = TestStore::new(Model::default(), dispatch);
+        let mut store = TestStore::new(Model::default(), handle_event);
 
         store.send(Event::Increment(1));
         store.receive(|_effect, _ctx| Task::resolved(Command::event(Event::Increment(2))));
@@ -848,7 +843,7 @@ mod tests {
     fn receive_panics_for_unbounded_streams() {
         use futures::stream;
 
-        let mut store = TestStore::new(Model::default(), dispatch);
+        let mut store = TestStore::new(Model::default(), handle_event);
 
         store.send(Event::Increment(1));
         assert_panic_contains("stream command limit", || {
@@ -873,7 +868,7 @@ mod tests {
     fn receive_panics_inside_compio_runtime() {
         let rt = compio::runtime::Runtime::new().expect("compio runtime");
         rt.block_on(async {
-            let mut store = TestStore::new(Model::default(), dispatch);
+            let mut store = TestStore::new(Model::default(), handle_event);
             store.send(Event::Increment(1));
 
             assert_panic_contains("use receive_async", || {
@@ -887,7 +882,7 @@ mod tests {
     fn receive_async_runs_inside_compio_runtime() {
         let rt = compio::runtime::Runtime::new().expect("compio runtime");
         rt.block_on(async {
-            let mut store = TestStore::new(Model::default(), dispatch);
+            let mut store = TestStore::new(Model::default(), handle_event);
             store.send(Event::Increment(1));
 
             store
@@ -906,7 +901,7 @@ mod tests {
 
     #[test]
     fn assert_state_checks_equality() {
-        let mut store = TestStore::new(Model::default(), dispatch);
+        let mut store = TestStore::new(Model::default(), handle_event);
 
         store.send(Event::Increment(3));
 
@@ -918,7 +913,7 @@ mod tests {
 
     #[test]
     fn assert_state_changed_runs_closure() {
-        let mut store = TestStore::new(Model::default(), dispatch);
+        let mut store = TestStore::new(Model::default(), handle_event);
 
         store.send(Event::Increment(4));
 

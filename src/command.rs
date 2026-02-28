@@ -170,7 +170,7 @@ impl<Event, Effect> Command<Event, Effect> {
     ///
     /// # Example
     /// ```
-    /// fn handle_increment(event: Event, model: &mut Model) -> Command<Event, Effect> {
+    /// fn increment(event: Event, model: &mut Model) -> Command<Event, Effect> {
     ///     model.counter += 1;
     ///     Command::none() // Model updated, no side effects needed
     /// }

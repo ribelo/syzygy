@@ -48,7 +48,7 @@ fn bounded_channel_overflow_does_not_crash() {
         seen: usize,
     }
 
-    fn dispatch(event: Event, ctx: &EventContext<Model>) -> Command<Event, Effect> {
+    fn handle_event(event: Event, ctx: &EventContext<Model>) -> Command<Event, Effect> {
         match event {
             Event::Start => Command::event(Event::A).and_event(Event::B),
             Event::A | Event::B => {
@@ -59,14 +59,14 @@ fn bounded_channel_overflow_does_not_crash() {
         }
     }
 
-    fn effects(_effect: Effect, _ctx: &EffectContext<'_>) -> Task<Event, Effect> {
+    fn handle_effect(_effect: Effect, _ctx: &EffectContext<'_>) -> Task<Event, Effect> {
         Task::none()
     }
 
     let mut runner = Syzygy::builder::<Event, Effect>()
         .model(Model::default())
-        .event_handler(dispatch)
-        .effect_handler(effects)
+        .event_handler(handle_event)
+        .effect_handler(handle_effect)
         .with_event_channel_capacity(Some(1))
         .build();
 
@@ -97,7 +97,7 @@ fn deferred_events_preserve_fifo_when_new_commands_arrive() {
         order: Vec<&'static str>,
     }
 
-    fn dispatch(event: Event, ctx: &EventContext<Model>) -> Command<Event, Effect> {
+    fn handle_event(event: Event, ctx: &EventContext<Model>) -> Command<Event, Effect> {
         match event {
             Event::A => Command::none(),
             Event::B => {
@@ -113,14 +113,14 @@ fn deferred_events_preserve_fifo_when_new_commands_arrive() {
         }
     }
 
-    fn effects(_effect: Effect, _ctx: &EffectContext<'_>) -> Task<Event, Effect> {
+    fn handle_effect(_effect: Effect, _ctx: &EffectContext<'_>) -> Task<Event, Effect> {
         Task::none()
     }
 
     let mut runner = Syzygy::builder::<Event, Effect>()
         .model(Model::default())
-        .event_handler(dispatch)
-        .effect_handler(effects)
+        .event_handler(handle_event)
+        .effect_handler(handle_effect)
         .with_event_channel_capacity(Some(1))
         .build();
 
@@ -156,18 +156,18 @@ fn run_until_exits_when_shell_is_closed() {
     #[derive(Debug, Clone)]
     enum Effect {}
 
-    fn dispatch(_event: Event, _ctx: &EventContext<()>) -> Command<Event, Effect> {
+    fn handle_event(_event: Event, _ctx: &EventContext<()>) -> Command<Event, Effect> {
         Command::none()
     }
 
-    fn effects(_effect: Effect, _ctx: &EffectContext<'_>) -> Task<Event, Effect> {
+    fn handle_effect(_effect: Effect, _ctx: &EffectContext<'_>) -> Task<Event, Effect> {
         Task::none()
     }
 
     let mut runner = Syzygy::builder::<Event, Effect>()
         .model(())
-        .event_handler(dispatch)
-        .effect_handler(effects)
+        .event_handler(handle_event)
+        .effect_handler(handle_effect)
         .build();
 
     let _ = Event::Ping;
@@ -201,7 +201,7 @@ fn run_until_progresses_async_effects_inside_runtime() {
         done: bool,
     }
 
-    fn dispatch(event: Event, ctx: &EventContext<Model>) -> Command<Event, Effect> {
+    fn handle_event(event: Event, ctx: &EventContext<Model>) -> Command<Event, Effect> {
         match event {
             Event::Start => Command::effect(Effect::Wait),
             Event::Done => {
@@ -212,7 +212,7 @@ fn run_until_progresses_async_effects_inside_runtime() {
         }
     }
 
-    fn effects(effect: Effect, _ctx: &EffectContext<'_>) -> Task<Event, Effect> {
+    fn handle_effect(effect: Effect, _ctx: &EffectContext<'_>) -> Task<Event, Effect> {
         match effect {
             Effect::Wait => Task::once(async {
                 compio::runtime::time::sleep(Duration::from_millis(1)).await;
@@ -225,8 +225,8 @@ fn run_until_progresses_async_effects_inside_runtime() {
     rt.block_on(async {
         let mut runner = Syzygy::builder::<Event, Effect>()
             .model(Model::default())
-            .event_handler(dispatch)
-            .effect_handler(effects)
+            .event_handler(handle_event)
+            .effect_handler(handle_effect)
             .with_syzygy_config(SyzygyConfig::default().idle_sleep(Duration::from_millis(1)))
             .build();
 
@@ -304,7 +304,7 @@ fn cancelling_tracked_future_returns_shell_to_idle() {
         Wait,
     }
 
-    fn dispatch(event: Event, _ctx: &EventContext<()>) -> Command<Event, Effect> {
+    fn handle_event(event: Event, _ctx: &EventContext<()>) -> Command<Event, Effect> {
         match event {
             Event::Start => Command::track(1_u8, Effect::Wait),
             Event::Stop => Command::cancel(1_u8),
@@ -312,7 +312,7 @@ fn cancelling_tracked_future_returns_shell_to_idle() {
         }
     }
 
-    fn effects(effect: Effect, _ctx: &EffectContext<'_>) -> Task<Event, Effect> {
+    fn handle_effect(effect: Effect, _ctx: &EffectContext<'_>) -> Task<Event, Effect> {
         match effect {
             Effect::Wait => Task::once(async {
                 compio::runtime::time::sleep(Duration::from_secs(60)).await;
@@ -325,8 +325,8 @@ fn cancelling_tracked_future_returns_shell_to_idle() {
     rt.block_on(async {
         let mut runner = Syzygy::builder::<Event, Effect>()
             .model(())
-            .event_handler(dispatch)
-            .effect_handler(effects)
+            .event_handler(handle_event)
+            .effect_handler(handle_effect)
             .build();
 
         runner.core().try_send_event(Event::Start).unwrap();
@@ -344,8 +344,8 @@ fn cancelling_tracked_future_returns_shell_to_idle() {
 
         let mut same_step_runner = Syzygy::builder::<Event, Effect>()
             .model(())
-            .event_handler(dispatch)
-            .effect_handler(effects)
+            .event_handler(handle_event)
+            .effect_handler(handle_effect)
             .build();
         same_step_runner
             .core()
@@ -379,7 +379,7 @@ fn cancelled_tracked_future_does_not_route_completion_event() {
         done: bool,
     }
 
-    fn dispatch(event: Event, ctx: &EventContext<Model>) -> Command<Event, Effect> {
+    fn handle_event(event: Event, ctx: &EventContext<Model>) -> Command<Event, Effect> {
         match event {
             Event::Start => Command::track(1_u8, Effect::Wait),
             Event::Stop => Command::cancel(1_u8),
@@ -391,7 +391,7 @@ fn cancelled_tracked_future_does_not_route_completion_event() {
         }
     }
 
-    fn effects(effect: Effect, _ctx: &EffectContext<'_>) -> Task<Event, Effect> {
+    fn handle_effect(effect: Effect, _ctx: &EffectContext<'_>) -> Task<Event, Effect> {
         match effect {
             Effect::Wait => Task::once(async {
                 compio::runtime::time::sleep(Duration::from_millis(30)).await;
@@ -404,8 +404,8 @@ fn cancelled_tracked_future_does_not_route_completion_event() {
     rt.block_on(async {
         let mut runner = Syzygy::builder::<Event, Effect>()
             .model(Model::default())
-            .event_handler(dispatch)
-            .effect_handler(effects)
+            .event_handler(handle_event)
+            .effect_handler(handle_effect)
             .build();
 
         runner.core().try_send_event(Event::Start).unwrap();
@@ -440,7 +440,7 @@ fn shutdown_blocks_spawned_untracked_command_routing() {
         ticks: usize,
     }
 
-    fn dispatch(event: Event, ctx: &EventContext<Model>) -> Command<Event, Effect> {
+    fn handle_event(event: Event, ctx: &EventContext<Model>) -> Command<Event, Effect> {
         match event {
             Event::Start => Command::effect(Effect::Loop),
             Event::Tick => {
@@ -451,7 +451,7 @@ fn shutdown_blocks_spawned_untracked_command_routing() {
         }
     }
 
-    fn effects(effect: Effect, _ctx: &EffectContext<'_>) -> Task<Event, Effect> {
+    fn handle_effect(effect: Effect, _ctx: &EffectContext<'_>) -> Task<Event, Effect> {
         match effect {
             Effect::Loop => Task::once(async {
                 compio::runtime::time::sleep(Duration::from_millis(2)).await;
@@ -464,8 +464,8 @@ fn shutdown_blocks_spawned_untracked_command_routing() {
     rt.block_on(async {
         let mut runner = Syzygy::builder::<Event, Effect>()
             .model(Model::default())
-            .event_handler(dispatch)
-            .effect_handler(effects)
+            .event_handler(handle_event)
+            .effect_handler(handle_effect)
             .build();
 
         runner.core().try_send_event(Event::Start).unwrap();
@@ -602,13 +602,13 @@ fn deep_resolved_effect_chain_is_iterative() {
 
     const DEPTH: u32 = 20_000;
 
-    fn dispatch(event: Event, _ctx: &EventContext<()>) -> Command<Event, Effect> {
+    fn handle_event(event: Event, _ctx: &EventContext<()>) -> Command<Event, Effect> {
         match event {
             Event::Start => Command::effect(Effect::Loop(DEPTH)),
         }
     }
 
-    fn effects(effect: Effect, _ctx: &EffectContext<'_>) -> Task<Event, Effect> {
+    fn handle_effect(effect: Effect, _ctx: &EffectContext<'_>) -> Task<Event, Effect> {
         match effect {
             Effect::Loop(0) => Task::none(),
             Effect::Loop(n) => Task::resolved(Command::effect(Effect::Loop(n - 1))),
@@ -617,8 +617,8 @@ fn deep_resolved_effect_chain_is_iterative() {
 
     let mut runner = Syzygy::builder::<Event, Effect>()
         .model(())
-        .event_handler(dispatch)
-        .effect_handler(effects)
+        .event_handler(handle_event)
+        .effect_handler(handle_effect)
         .build();
 
     runner.core().try_send_event(Event::Start).unwrap();
@@ -646,7 +646,7 @@ fn spawned_events_are_deferred_when_event_channel_is_full() {
         done: bool,
     }
 
-    fn dispatch(event: Event, ctx: &EventContext<Model>) -> Command<Event, Effect> {
+    fn handle_event(event: Event, ctx: &EventContext<Model>) -> Command<Event, Effect> {
         match event {
             Event::Start => Command::event(Event::Block).and_effect(Effect::AsyncDone),
             Event::Block => Command::none(),
@@ -658,7 +658,7 @@ fn spawned_events_are_deferred_when_event_channel_is_full() {
         }
     }
 
-    fn effects(effect: Effect, _ctx: &EffectContext<'_>) -> Task<Event, Effect> {
+    fn handle_effect(effect: Effect, _ctx: &EffectContext<'_>) -> Task<Event, Effect> {
         match effect {
             Effect::AsyncDone => Task::once(async { Command::event(Event::Done) }),
         }
@@ -668,8 +668,8 @@ fn spawned_events_are_deferred_when_event_channel_is_full() {
     rt.block_on(async {
         let mut runner = Syzygy::builder::<Event, Effect>()
             .model(Model::default())
-            .event_handler(dispatch)
-            .effect_handler(effects)
+            .event_handler(handle_event)
+            .effect_handler(handle_effect)
             .with_event_channel_capacity(Some(1))
             .build();
 
@@ -703,7 +703,7 @@ fn future_effects_can_resolve_without_compio_runtime() {
         done: bool,
     }
 
-    fn dispatch(event: Event, ctx: &EventContext<Model>) -> Command<Event, Effect> {
+    fn handle_event(event: Event, ctx: &EventContext<Model>) -> Command<Event, Effect> {
         match event {
             Event::Start => Command::effect(Effect::Work),
             Event::Done => {
@@ -714,7 +714,7 @@ fn future_effects_can_resolve_without_compio_runtime() {
         }
     }
 
-    fn effects(effect: Effect, _ctx: &EffectContext<'_>) -> Task<Event, Effect> {
+    fn handle_effect(effect: Effect, _ctx: &EffectContext<'_>) -> Task<Event, Effect> {
         match effect {
             Effect::Work => Task::once(async { Command::event(Event::Done) }),
         }
@@ -722,8 +722,8 @@ fn future_effects_can_resolve_without_compio_runtime() {
 
     let mut runner = Syzygy::builder::<Event, Effect>()
         .model(Model::default())
-        .event_handler(dispatch)
-        .effect_handler(effects)
+        .event_handler(handle_event)
+        .effect_handler(handle_effect)
         .build();
 
     runner.core().try_send_event(Event::Start).unwrap();

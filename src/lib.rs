@@ -1,12 +1,10 @@
 pub mod activity;
 pub mod command;
 pub mod core;
-pub mod dependency;
 pub mod error;
 pub mod extract;
-pub mod feature;
 pub mod macros;
-pub mod reducer;
+pub mod resource;
 pub mod test_store;
 
 pub use syzygy_macros::Model;
@@ -25,17 +23,12 @@ pub mod prelude {
     pub use crate::command::{CancelId, Command, CommandStep, IntoCancelId};
 
     pub use crate::core::{Core, EventSender};
-    pub use crate::dependency::{Resource, ResourceMap};
-    pub use crate::dispatch;
+    pub use crate::handle;
+    pub use crate::resource::{Resource, ResourceMap};
 
     pub use crate::extract::{
-        EffectContext, EffectHandler, EventContext, EventHandler, ExtractFrom, ExtractMutFrom,
-        FromEffectContext, FutureEffect, StreamEffect,
-    };
-    pub use crate::feature::Feature;
-    pub use crate::reducer::{
-        combine, BoxedReducer, Combine, Combined, DebugReducer, OnChange, Reduce, Reducer,
-        ReducerExt,
+        EffectContext, EffectHandler, EventContext, EventHandler, FromEffectContext, FutureEffect,
+        Part, PartMut, StreamEffect,
     };
     pub use crate::test_store::{assert_panic, assert_panic_contains, Exhaustivity, TestStore};
     pub use syzygy_macros::Model;

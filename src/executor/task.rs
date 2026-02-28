@@ -88,7 +88,17 @@ where
         X2: 'static,
     {
         let namespace = (std::any::type_name::<FE>(), std::any::type_name::<FX>());
-        self.map_impl(namespace, Rc::new(fe), Rc::new(fx), true)
+        match self {
+            Self::None => Task::None,
+            Self::Resolved(command) => {
+                assert!(
+                    !command.has_cancellable_steps(),
+                    "Task::map cannot safely namespace tracked/cancel steps; use Task::map_namespaced(namespace, ...)"
+                );
+                Task::Resolved(command.map_namespaced(namespace, fe, fx))
+            }
+            _ => self.map_impl(namespace, Rc::new(fe), Rc::new(fx), true),
+        }
     }
 
     #[must_use]
@@ -105,7 +115,11 @@ where
         E2: 'static,
         X2: 'static,
     {
-        self.map_impl(namespace, Rc::new(fe), Rc::new(fx), false)
+        match self {
+            Self::None => Task::None,
+            Self::Resolved(command) => Task::Resolved(command.map_namespaced(namespace, fe, fx)),
+            _ => self.map_impl(namespace, Rc::new(fe), Rc::new(fx), false),
+        }
     }
 
     fn map_impl<Namespace, E2, X2, FE, FX>(

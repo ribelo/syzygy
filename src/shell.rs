@@ -9,10 +9,10 @@ use futures::stream::StreamExt;
 use crate::activity::Activity;
 use crate::command::{CancelId, Command, CommandStep};
 use crate::core::EventSender;
-use crate::dependency::ResourceMap;
 use crate::error::ShellError;
 use crate::executor::Task;
 use crate::extract::EffectContext;
+use crate::resource::ResourceMap;
 
 pub(crate) type EffectHandlerFn<E, X> = Rc<dyn for<'a> Fn(X, &EffectContext<'a>) -> Task<E, X>>;
 type TaskHandle = compio::runtime::JoinHandle<()>;
@@ -93,6 +93,7 @@ where
     untracked_tasks: UntrackedTasks,
     deferred_events: DeferredEvents<E>,
     closed: ClosedFlag,
+    queue: VecDeque<Command<E, X>>,
 }
 
 impl<E, X> Shell<E, X>
@@ -114,6 +115,7 @@ where
             untracked_tasks: Rc::new(RefCell::new(Vec::new())),
             deferred_events: Rc::new(RefCell::new(VecDeque::new())),
             closed: Rc::new(Cell::new(false)),
+            queue: VecDeque::new(),
         }
     }
 
@@ -122,8 +124,11 @@ where
             return Ok(());
         }
 
+        self.queue.clear();
+        self.queue.push_back(command);
+
         route_command_iterative(
-            command,
+            &mut self.queue,
             &self.event_tx,
             &self.effect_handler,
             &self.resources,
@@ -282,7 +287,7 @@ fn push_deferred_event<E>(deferred_events: &DeferredEvents<E>, event: E) {
 
 #[allow(clippy::too_many_arguments)]
 fn route_command_iterative<E, X>(
-    initial_command: Command<E, X>,
+    queue: &mut VecDeque<Command<E, X>>,
     event_tx: &EventSender<E>,
     effect_handler: &EffectHandlerFn<E, X>,
     resources: &Rc<ResourceMap>,
@@ -296,8 +301,6 @@ where
     E: 'static,
     X: 'static,
 {
-    let mut queue = VecDeque::from([initial_command]);
-
     while let Some(command) = queue.pop_front() {
         if closed.get() {
             return Ok(());
@@ -321,7 +324,7 @@ where
                         untracked_tasks,
                         deferred_events,
                         closed,
-                        &mut queue,
+                        queue,
                     ) {
                         untracked_tasks.borrow_mut().push(spawned.handle);
                     }
@@ -339,7 +342,7 @@ where
                         untracked_tasks,
                         deferred_events,
                         closed,
-                        &mut queue,
+                        queue,
                     ) {
                         if let Some(token) = spawned.token {
                             active_tasks.borrow_mut().insert(
@@ -576,8 +579,11 @@ fn route_spawned_command<E, X>(
         return;
     }
 
+    let mut queue = VecDeque::new();
+    queue.push_back(command);
+
     if route_command_iterative(
-        command,
+        &mut queue,
         event_tx,
         effect_handler,
         resources,

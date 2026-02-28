@@ -3,11 +3,9 @@ use std::rc::Rc;
 
 use crate::command::Command;
 use crate::core::{Core, EventHandlerFn};
-use crate::dependency::ResourceMap;
 use crate::executor::Task;
 use crate::extract::{EffectContext, EventContext};
-use crate::feature::Feature;
-use crate::reducer::Reducer;
+use crate::resource::ResourceMap;
 use crate::shell::{EffectHandlerFn, Shell};
 use crate::syzygy::{Syzygy, SyzygyConfig};
 
@@ -99,11 +97,6 @@ where
     }
 
     #[must_use]
-    pub fn with_dependency<T: Clone + 'static>(self, resource: T) -> Self {
-        self.with_resource(resource)
-    }
-
-    #[must_use]
     pub fn event_handler<H>(self, handler: H) -> ConfiguredBuilder<Event, Effect, Model>
     where
         H: Fn(Event, &EventContext<Model>) -> Command<Event, Effect> + 'static,
@@ -117,33 +110,6 @@ where
             syzygy_config: SyzygyConfig::default(),
             _marker: PhantomData,
         }
-    }
-
-    #[must_use]
-    pub fn reducer<R>(self, reducer: R) -> ConfiguredBuilder<Event, Effect, Model>
-    where
-        R: Reducer<State = Model, Event = Event, Effect = Effect> + 'static,
-    {
-        self.event_handler(move |event, ctx| reducer.reduce(event, ctx))
-    }
-
-    #[must_use]
-    pub fn feature<F>(self, feature: F) -> ConfiguredBuilder<Event, Effect, Model>
-    where
-        F: Feature<State = Model, Event = Event, Effect = Effect> + 'static,
-    {
-        let feature = Rc::new(feature);
-        let reducer_feature = Rc::clone(&feature);
-        let effect_feature = Rc::clone(&feature);
-
-        let mut configured =
-            self.event_handler(move |event, ctx| reducer_feature.reduce(event, ctx));
-        configured.effect_handler = Some(Rc::new(move |effect, ctx| {
-            effect_feature
-                .handle_effect(effect, ctx)
-                .into_effect_route()
-        }));
-        configured
     }
 }
 
@@ -175,7 +141,7 @@ where
     {
         assert!(
             self.effect_handler.is_none(),
-            "effect handler is already configured (likely via .feature()); use .chain_effect_handler() to compose handlers"
+            "effect handler is already configured; use .chain_effect_handler() to compose handlers"
         );
         self.effect_handler = Some(Rc::new(move |effect, ctx| {
             handler(effect, ctx).into_effect_route()
@@ -209,11 +175,6 @@ where
     pub fn with_resource<T: Clone + 'static>(mut self, resource: T) -> Self {
         self.resources.insert(resource);
         self
-    }
-
-    #[must_use]
-    pub fn with_dependency<T: Clone + 'static>(self, resource: T) -> Self {
-        self.with_resource(resource)
     }
 
     #[must_use]

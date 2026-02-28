@@ -1,100 +1,184 @@
 # Syzygy Architecture
 
-This document describes the current implementation, not planned APIs.
+System shape and invariants. For 3am incident response.
 
-## Flow
+## Scope
+
+**In scope:** Synchronous state machine with explicit async effect boundaries.
+
+**Non-goals:**
+- General actor framework (use actix)
+- Distributed consensus
+- Hot code reloading
+- Persistent state management (user implements)
+
+## Invariants (Non-Negotiable)
+
+1. **Single-threaded Core.** All state transitions happen on one thread. No `Send` bound on `Model`.
+2. **No aliasing.** `&mut Model` and `&Field` to overlapping memory is impossible. Runtime panic on violation.
+3. **Explicit effects.** All I/O must go through `Effect -> Task`. Handlers are pure.
+4. **FIFO event ordering.** Events processed in arrival order. No prioritization.
+5. **Bounded resource growth.** 256 fields per model. Bounded event channel (configurable).
+
+## Component Diagram
 
 ```
-Event -> Core(update) -> Command steps -> Shell -> Task execution -> Event
+┌─────────────┐     Event      ┌─────────────┐
+│   External  │───────────────>│    Core     │
+│   Sources   │                │             │
+└─────────────┘                │  ┌───────┐  │
+                               │  │ Model │  │
+                               │  └───────┘  │
+                               └──────┬──────┘
+                                      │ Command
+                                      ▼
+                               ┌─────────────┐
+                               │    Shell    │
+                               │             │
+                               │ ┌─────────┐ │
+                               │ │  Queue  │ │
+                               │ └─────────┘ │
+                               └──────┬──────┘
+                                      │ Task
+                                      ▼
+                               ┌─────────────┐
+                               │   Runtime   │
+                               │  (compio)   │
+                               └─────────────┘
 ```
 
-- `Core` owns model state and runs event handlers synchronously.
-- Event handlers return `Command<Event, Effect>`.
-- `Shell` interprets command steps and executes effects.
+## Data Flow
 
-## Core
+### Event Path (Synchronous)
 
-`Core` responsibilities:
+1. `Core::try_send_event(Event)` pushes to channel
+2. `step()` drains channel, calls `handler(event, ctx)`
+3. Handler returns `Command` (events + effects)
+4. Events immediately re-enqueued to channel
+5. Effects passed to Shell
 
-- Hold model
-- Drain inbound event channel
-- Process events FIFO
-- Return produced commands
+### Effect Path (Asynchronous)
 
-Channel behavior:
+1. Shell receives `CommandStep::Effect(X)`
+2. Looks up handler, calls `handler(effect, ctx)`
+3. Returns `Task`:
+   - `Task::None`: nothing happens
+   - `Task::Resolved(cmd)`: command executed synchronously
+   - `Task::Future(fut)`: spawned to compio runtime
+   - `Task::Stream(s)`: spawned, each item processed
+4. Task completion produces `Command`, loops back to Core
 
-- `with_event_channel_capacity(None)` uses an unbounded channel.
-- `with_event_channel_capacity(Some(n))` uses a bounded channel.
-- Sending to a full bounded channel returns `CoreError::ChannelFull`.
+## Module Dependencies
 
-## Command Steps
+```
+lib.rs
+├── core.rs           # Event processing, no async
+├── shell.rs          # Command routing, task management
+├── command.rs        # Command/step types
+├── extract.rs        # EventContext, borrow tracking
+├── executor/
+│   └── task.rs       # Task variants
+└── builder.rs        # Syzygy::builder()
+```
 
-- `Event(E)`: routed back to Core
-- `Effect(X)`: execute effect handler
-- `Tracked { id, effect }`: run effect in cancellation slot; previous slot task is cancelled/replaced
-- `Cancel { id }`: cancel currently tracked task in slot
+**Dependency rule:** `core` does not depend on `shell`. `shell` depends on `core`.
 
-`CancelId` is type-aware (`TypeId + hash`). Different Rust types with same value are different IDs.
-Command mapping (`map`/`map_event`/`map_effect`) additionally namespaces tracked slots by source/target command types to prevent sibling collisions in composed trees.
+## Borrow Tracking
 
-## Shell
+```rust
+EventContext {
+    ptr: *mut Model,
+    whole_model_mut: Cell<bool>,
+    whole_model_immut: Cell<u32>,
+    fields_mut: Cell<[u64; 4]>,      // 256 bits
+    fields_immut: Cell<[u64; 4]>,   // 256 bits
+}
+```
 
-`Shell` routes command steps and tracks asynchronous activity.
+**Algorithm:**
+- Field index `i` maps to bit `i % 64` in word `i / 64`
+- Set bit on borrow, check overlap, panic if collision
+- `BorrowGuard` snapshots state, restores on drop
 
-Key guarantees:
+**Complexity:** O(1) per borrow. No heap allocation.
 
-- Activity counter is guard-based (decrements on completion or cancellation)
-- Tracked slot cleanup uses generation tokens to avoid ABA deletion races
-- Spawned command routing is iterative (queue-based), preventing recursive stack growth
-- Tracked task cancellation drops only the current slot entry
+## Cancellation Slots
 
-## Task Execution
+```rust
+Command::track(id, effect)  // Start/replace slot
+Command::cancel(id)         // Stop slot
+```
 
-`Task` variants:
+**Semantics:**
+- Slot holds one task. New `track` drops old task.
+- `CancelId` is `TypeId + hash(value)`. `1u32` ≠ `1u64`.
+- Command mapping namespaces slots: `A::track(1)` and `B::track(1)` are distinct after `map_effect`.
 
-- `None`
-- `Resolved(Command)`
-- `Future(Future<Output = Command>)`
-- `Stream(Stream<Item = Command>)`
+**ABA Protection:** Generation token per slot entry. Prevents "cancel wrong task" race.
 
-Execution strategy:
+## Error Handling
 
-- With active `compio` runtime: futures/streams are spawned and polled asynchronously.
-- Without active runtime: plain futures/streams are resolved synchronously as fallback.
-- Effects that directly use `compio` runtime facilities still require active runtime context.
+| Layer | Error Type | Response |
+|-------|------------|----------|
+| Event handler | Panic | Crash (deliberate: logic bug) |
+| Effect handler | Panic | Crash (deliberate: setup bug) |
+| Channel send | `CoreError::ChannelFull` | Return to caller (bounded) or block (unbounded) |
+| Async task | `Command::event(ErrorEvent)` | User-defined recovery |
 
-## Runner (`Syzygy`)
+**No automatic retry.** Failed effects produce events; user decides.
 
-`step()`:
+## Performance
 
-1. Core processes queued events
-2. Shell dispatches resulting commands
-3. Shell drains runtime once
+| Operation | Complexity | Notes |
+|-----------|------------|-------|
+| Event dispatch | O(1) | Direct call, no allocation |
+| Field borrow | O(1) | Bitmask check |
+| Command routing | O(n) steps | Iterates command steps |
+| Task spawn | O(1) | compio runtime |
+| Cancellation | O(1) | Slot map lookup |
 
-`run()` and `run_until(...)`:
+**Memory:**
+- `EventContext`: 40 bytes (stack)
+- `Command`: SmallVec (no alloc for ≤4 steps)
+- `Shell` queue: Reused VecDeque (amortized zero alloc)
 
-- Loop over `step()`
-- If idle work is pending, park through `compio` runtime polling when available
-- Fall back to thread sleep/yield only when no runtime is active
+## Operational Notes
 
-## EventContext Safety
+**Logs:** None internal. User adds tracing in handlers.
 
-`EventContext` uses runtime borrow tracking for mutable extraction:
+**Metrics:** None internal. User increments counters in handlers.
 
-- field-bit tracking for duplicate mutable extraction
-- byte-range overlap tracking for aliasing violations
-- borrow state guard restores tracking state per handler call, enabling safe sequential composition
+**State location:** User owns `Model`. Syzygy holds during `step()`.
 
-This preserves soundness of unsafe extraction paths while allowing composed reducer calls.
+**Shutdown:** Drop `Syzygy`. Pending tasks cancelled. No graceful drain.
 
-## TestStore
+## Testing Strategy
 
-`TestStore` mirrors Core behavior in-process and buffers outputs for assertions.
+| Component | Tool | Pattern |
+|-----------|------|---------|
+| Pure handlers | `TestStore` | Send events, assert state |
+| Effects | `TestStore::receive_async` | Mock effect responses |
+| Integration | `Syzygy::builder()` | Full stack with mock resources |
 
-Tracked/cancel semantics are modeled explicitly:
+**Determinism:** `TestStore` executes synchronously. Async effects mocked.
 
-- tracked effects are slot-aware and replace prior slot effect
-- cancellations remove pending tracked effect for that slot
-- exhaustive mode requires asserting both effects and cancellations
+## File Locations
 
-Assertions are consumptive (drain-on-assert), enabling deterministic, explicit test traces.
+| File | Purpose |
+|------|---------|
+| `src/core.rs` | Event processing |
+| `src/shell.rs` | Command routing, task lifecycle |
+| `src/extract.rs` | Borrow tracking, `EventContext` |
+| `src/command.rs` | `Command`, `CommandStep` |
+| `src/executor/task.rs` | `Task` variants |
+| `examples/` | 10 progressive tutorials |
+
+## When It Breaks
+
+**"already borrowed mutably" panic:** Handler tried to borrow same field twice, or mixed `&Model` with `&mut Field`. Fix: Remove duplicate borrow or use scoped extraction.
+
+**"exceeds borrow tracker capacity (256)":** Model has >256 fields. Fix: Split into nested models with `#[extract]`.
+
+**"Resource not found":** Effect handler requested resource not registered. Fix: Add `.with_resource()` during build.
+
+**Channel full:** Bounded channel overflow. Fix: Increase capacity or add backpressure.

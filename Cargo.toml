@@ -21,11 +21,43 @@ path = "src/lib.rs"
 doctest = false
 
 [[example]]
-name = "counter_with_save"
+name = "01_basic_counter"
 required-features = ["shell"]
 
 [[example]]
-name = "full_showcase"
+name = "02_field_extraction"
+required-features = ["shell"]
+
+[[example]]
+name = "03_child_models"
+required-features = ["shell"]
+
+[[example]]
+name = "04_async_effects"
+required-features = ["shell"]
+
+[[example]]
+name = "05_stream_effects"
+required-features = ["shell"]
+
+[[example]]
+name = "06_resources"
+required-features = ["shell"]
+
+[[example]]
+name = "07_testing"
+required-features = ["shell"]
+
+[[example]]
+name = "08_command_composition"
+required-features = ["shell"]
+
+[[example]]
+name = "09_error_handling"
+required-features = ["shell"]
+
+[[example]]
+name = "10_todo_app"
 required-features = ["shell"]
 
 [features]
@@ -35,36 +67,25 @@ examples = ["shell"]
 tracing = ["dep:tracing"]
 
 [dependencies]
-# Core dependencies
 thiserror = "2.0"
 futures = { version = "0.3", optional = true }
 smallvec = "1.13"
 rustc-hash = "2.0"
 crossbeam-channel = "0.5"
 compio = { version = "0.18", features = ["runtime", "macros", "time"] }
-
-# Tracing dependencies
 tracing = { version = "0.1", optional = true }
 syzygy-macros = { path = "crates/syzygy-macros" }
 
 [dev-dependencies]
 futures = "0.3"
 
-
 [lints.clippy]
 all = { level = "warn", priority = -2 }
-
-# restriction
 dbg_macro = "warn"
 todo = "warn"
 unimplemented = "warn"
-
-# I like the explicitness of this rule as it removes confusion around `clone`.
-# This increases readability, avoids `clone` mindlessly and heap allocating on accident.
 clone_on_ref_ptr = "warn"
-
-# These two are mutually exclusive, I like `mod.rs` files for better fuzzy searches on module entries.
-self_named_module_files = "warn"         # "-Wclippy::mod_module_files"
+self_named_module_files = "warn"
 empty_drop = "warn"
 empty_structs_with_brackets = "warn"
 exit = "warn"
@@ -75,34 +96,14 @@ rc_mutex = "warn"
 rest_pat_in_fully_bound_structs = "warn"
 unnecessary_safety_comment = "warn"
 undocumented_unsafe_blocks = "warn"
-
-# I want to write the best Rust code so pedantic is enabled.
-# We should only disable rules globally if they are either false positives, chaotic, or does not make sense.
 pedantic = { level = "warn", priority = -1 }
-
-# Allowed rules
-# pedantic
-# This rule is too pedantic, I don't want to force this because naming things are hard.
 module_name_repetitions = "allow"
 similar-names = "allow"
-
-# All triggers are mostly ignored in this codebase, so this is ignored globally.
 struct_excessive_bools = "allow"
 too_many_lines = "allow"
 doc_markdown = "allow"
-
-# Domain-specific: Events are consumed by exactly one handler and often need their data moved
-# to Commands, making pass-by-value more efficient than borrow+clone patterns.
 needless_pass_by_value = "allow"
-
-# nursery
-# `const` functions do not make sense for our project because this is not a `const` library.
-# This rule also confuses new comers and forces them to add `const` blindlessly without any reason.
 missing_const_for_fn = "allow"
 missing_errors_doc = "allow"
 missing_panics_doc = "allow"
-
 multiple_bound_locations = "allow"
-
-
-
