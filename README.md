@@ -1,6 +1,6 @@
 # Syzygy
 
-Zero-overhead TEA (The Elm Architecture) for Rust. Pure synchronous state transitions. Explicit async effects. No macros beyond `#[derive(Model)]`.
+Zero-overhead TEA (The Elm Architecture) for Rust. Pure synchronous state transitions. Explicit async effects.
 
 ```rust
 use syzygy::prelude::*;
@@ -11,9 +11,14 @@ struct Model { counter: i32 }
 #[derive(Clone)]
 enum Event { Increment }
 
-fn update(_: Event, ctx: &EventContext<Model>) -> Command<Event, ()> {
-    **Counter::extract_mut(ctx) += 1;
-    Command::none()
+fn inc(counter: &mut Counter) {
+    **counter += 1;
+}
+
+fn handle_event(event: Event, ctx: &EventContext<Model>) -> Command<Event, ()> {
+    match event {
+        Event::Increment => handle!(inc, ctx),
+    }
 }
 ```
 
@@ -41,6 +46,43 @@ cargo run --example 01_basic_counter
 | `Effect` | Side-effect to execute | `enum Effect { Save }` |
 | `Command` | Instructions from handler | `Command::event(E)` or `Command::effect(X)` |
 | `Task` | Async execution unit | `Task::future(async { ... })` |
+| `handle!` | Call handler with context | `handle!(increment, ctx, amount)` |
+| `emit` | Send event to Core | `core.emit(Event::Tick)` |
+
+## The `handle!` Macro
+
+The `handle!` macro connects event data to handler functions:
+
+```rust
+fn handle_event(event: Event, ctx: &EventContext<Model>) -> Command<Event, Effect> {
+    match event {
+        // No payload: handle!(handler, ctx)
+        Event::Tick => handle!(tick, ctx),
+        
+        // Single payload: handle!(handler, ctx, payload)
+        Event::Increment(n) => handle!(add, ctx, n),
+        
+        // Multiple payloads: handle!(handler, ctx, arg1, arg2, ...)
+        Event::CreateUser(name, age) => handle!(create_user, ctx, name, age),
+    }
+}
+```
+
+Handler signatures use extracted field types:
+
+```rust
+// Wrapper type - double deref to access inner value
+fn add(n: i32, counter: &mut Counter) -> Command<Event, Effect> {
+    **counter += n;
+    Command::none()
+}
+
+// #[model(part)] - direct access
+fn update(config: &mut Config) -> Command<Event, Effect> {
+    config.version += 1;
+    Command::none()
+}
+```
 
 ## The TEA Loop
 
@@ -61,7 +103,7 @@ Event -> Handler(&mut Model) -> Command -> Shell -> Task -> Event
 #[derive(Model)]
 struct Model {
     counter: i32,
-    #[extract]  // Use type directly, no wrapper
+    #[model(part)]  // Use type directly, no wrapper
     settings: Settings,
 }
 
@@ -75,8 +117,10 @@ fn update(settings: &mut Settings) { settings.theme = Dark; }
 | Approach | When to Use | Handler Signature |
 |----------|-------------|-------------------|
 | Wrapper (default) | Multiple fields of same type | `&mut Counter` |
-| `#[extract]` | Unique complex types | `&mut Settings` |
+| `#[model(part)]` | Unique complex types | `&mut Settings` |
 | Whole model | Needs all fields | `&mut Model` |
+
+`#[model(direct)]` is accepted as an alias for `#[model(part)]`.
 
 **Constraint:** 256 fields max per model. Runtime panic on aliasing violations (`&mut T` + `&T` overlap).
 
@@ -112,12 +156,14 @@ Command::effect(Effect::Save)
 ```rust
 use syzygy::prelude::*;
 
-let mut store = TestStore::new(Model::default(), update);
-store.send(Event::Increment);
+let mut store = TestStore::new(Model::default(), handle_event);
+store.emit(Event::Increment);
 
 assert_eq!(store.state().counter, 1);
 store.assert_effects([Effect::Save]);
 ```
+
+**Note:** `emit()` is fire-and-forget (returns `()`). Use `try_send()` if you need to handle channel errors explicitly.
 
 ## Footguns
 
@@ -162,7 +208,7 @@ cargo run --example 10_todo_app
 | Example | Concepts |
 |---------|----------|
 | `01_basic_counter` | Wrapper types, pure handlers |
-| `02_field_extraction` | `#[extract]` vs wrappers |
+| `02_field_extraction` | `#[model(part)]` vs wrappers |
 | `03_child_models` | Nested models, dispatch delegation |
 | `04_async_effects` | `Task::future`, loading states |
 | `05_stream_effects` | `Task::stream`, tickers |
