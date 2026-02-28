@@ -36,16 +36,14 @@ impl<E> EventSender<E> {
         self.inner.len()
     }
 
-    pub fn send(&self, event: E) -> Result<(), CoreError> {
+    pub fn try_send(&self, event: E) -> Result<(), CoreError> {
         self.try_send_owned(event).map_err(map_send_error)
     }
 
-    pub fn try_send(&self, event: E) -> Result<(), CoreError> {
-        self.send(event)
-    }
-
-    pub fn try_send_event(&self, event: E) -> Result<(), CoreError> {
-        self.send(event)
+    pub fn emit(&self, event: E) {
+        if let Err(error) = self.try_send(event) {
+            report_emit_error(error);
+        }
     }
 }
 
@@ -54,6 +52,23 @@ fn map_send_error<E>(error: TrySendError<E>) -> CoreError {
         TrySendError::Full(_) => CoreError::ChannelFull,
         TrySendError::Disconnected(_) => CoreError::ChannelClosed,
     }
+}
+
+fn report_emit_error(error: CoreError) {
+    match error {
+        CoreError::ChannelClosed => report_emit_disconnected(),
+        CoreError::ChannelFull => report_emit_full(),
+    }
+}
+
+fn report_emit_disconnected() {
+    #[cfg(feature = "tracing")]
+    tracing::debug!("dropping emitted event because event channel is disconnected");
+}
+
+fn report_emit_full() {
+    #[cfg(feature = "tracing")]
+    tracing::warn!("dropping emitted event because event channel is full");
 }
 
 /// Core handles synchronous event processing and owns the model.
@@ -76,7 +91,7 @@ where
     X: 'static,
 {
     pub fn new(event_handler: EventHandlerFn<E, X, M>, model: M) -> (Self, EventSender<E>) {
-        Self::with_event_channel_capacity(event_handler, model, None)
+        Self::with_event_channel_capacity(event_handler, model, Some(128))
     }
 
     pub fn with_event_channel_capacity(
@@ -114,7 +129,6 @@ where
         commands
     }
 
-    #[must_use]
     pub fn process_events_try_into<F, Error>(&mut self, mut sink: F) -> Result<usize, Error>
     where
         F: FnMut(Command<E, X>) -> Result<(), Error>,
@@ -133,7 +147,6 @@ where
         Ok(emitted)
     }
 
-    #[must_use]
     pub fn process_events_into<F>(&mut self, mut sink: F) -> usize
     where
         F: FnMut(Command<E, X>),
@@ -145,13 +158,12 @@ where
         .expect("infallible command sink")
     }
 
-    #[deprecated(note = "use try_send_event()")]
-    pub fn send_event(&self, event: E) {
-        let _ = self.try_send_event(event);
+    pub fn try_send(&self, event: E) -> Result<(), CoreError> {
+        self.event_tx.try_send(event)
     }
 
-    pub fn try_send_event(&self, event: E) -> Result<(), CoreError> {
-        self.event_tx.try_send_event(event)
+    pub fn emit(&self, event: E) {
+        self.event_tx.emit(event);
     }
 
     #[must_use]
@@ -235,8 +247,8 @@ mod tests {
             (),
         );
 
-        tx.try_send_event(1).unwrap();
-        tx.try_send_event(2).unwrap();
+        tx.emit(1);
+        tx.emit(2);
 
         let result: Result<usize, ()> = core.process_events_try_into(|_command| Err(()));
 
