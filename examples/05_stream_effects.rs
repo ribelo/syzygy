@@ -69,7 +69,7 @@ fn spawn_ticker(id: u32) -> impl futures::Stream<Item = Command<AppEvent, AppEff
     ])
     .then(move |cmd| async move {
         println!("Timer {id} tick emitted.");
-        compio::runtime::time::sleep(Duration::from_millis(5)).await;
+        syzygy::runtime::sleep(Duration::from_millis(5)).await;
         cmd
     })
     .chain(stream::once(async {
@@ -87,8 +87,7 @@ fn handle_effect(effect: AppEffect, ctx: &EffectContext<'_>) -> Task<AppEvent, A
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let _ = AppEvent::StopTimer(0);
 
-    let runtime = compio::runtime::Runtime::new()?;
-    runtime.block_on(async {
+    syzygy::runtime::block_on(async {
         let mut app = Syzygy::builder::<AppEvent, AppEffect>()
             .model(AppModel::default())
             .event_handler(handle_event)
@@ -96,11 +95,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .build();
 
         // Start multiple tickers concurrently
-        app.core().try_send_event(AppEvent::StartTimer(1))?;
-        app.core().try_send_event(AppEvent::StartTimer(2))?;
+        app.core().try_send(AppEvent::StartTimer(1))?;
+        app.core().try_send(AppEvent::StartTimer(2))?;
 
-        // Let them run until both timers finish
-        app.run_until(|core, _| core.model().active_timers == 0)?;
+        // Let them run until both timers finish.
+        app.run_until_async(|core, _| core.model().active_timers == 0)
+            .await?;
 
         println!("Total ticks: {}", app.model().ticks);
         // 2 timers, 3 ticks each = 6 ticks

@@ -43,7 +43,7 @@ System shape and invariants. For 3am incident response.
                                       ▼
                                ┌─────────────┐
                                │   Runtime   │
-                               │  (compio)   │
+                               │ (pluggable) │
                                └─────────────┘
 ```
 
@@ -64,7 +64,7 @@ System shape and invariants. For 3am incident response.
 3. Returns `Task`:
    - `Task::None`: nothing happens
    - `Task::Resolved(cmd)`: command executed synchronously
-   - `Task::Future(fut)`: spawned to compio runtime
+   - `Task::Future(fut)`: spawned on configured runtime backend
    - `Task::Stream(s)`: spawned, each item processed
 4. Task completion produces `Command`, loops back to Core
 
@@ -134,7 +134,7 @@ Command::cancel(id)         // Stop slot
 | Event dispatch | O(1) | Direct call, no allocation |
 | Field borrow | O(1) | Bitmask check |
 | Command routing | O(n) steps | Iterates command steps |
-| Task spawn | O(1) | compio runtime |
+| Task spawn | O(1) | configured runtime backend |
 | Cancellation | O(1) | Slot map lookup |
 
 **Memory:**
@@ -177,7 +177,7 @@ Command::cancel(id)         // Stop slot
 
 **"already borrowed mutably" panic:** Handler tried to borrow same field twice, or mixed `&Model` with `&mut Field`. Fix: Remove duplicate borrow or use scoped extraction.
 
-**"exceeds borrow tracker capacity (256)":** Model has >256 fields. Fix: Split into nested models with `#[extract]`.
+**"exceeds borrow tracker capacity (256)":** Model has >256 fields. Fix: Split into nested models with `#[model(part)]`.
 
 **"Resource not found":** Effect handler requested resource not registered. Fix: Add `.with_resource()` during build.
 

@@ -15,7 +15,7 @@ use crate::extract::EffectContext;
 use crate::resource::ResourceMap;
 
 pub(crate) type EffectHandlerFn<E, X> = Rc<dyn for<'a> Fn(X, &EffectContext<'a>) -> Task<E, X>>;
-type TaskHandle = compio::runtime::JoinHandle<()>;
+type TaskHandle = crate::runtime::JoinHandle<()>;
 
 #[derive(Debug)]
 struct ActiveTaskEntry {
@@ -144,18 +144,43 @@ where
         prune_finished_untracked_tasks(&self.untracked_tasks);
 
         let mut progressed = flush_deferred_events(&self.event_tx, &self.deferred_events);
-        let _ = compio::runtime::Runtime::try_with_current(|runtime| {
-            let mut ran_work = runtime.run();
+        let _ = crate::runtime::try_with_current(|| {
+            let mut ran_work = crate::runtime::run();
 
             if self.activity.load() > 0 {
-                runtime.poll_with(Some(Duration::ZERO));
-                ran_work |= runtime.run();
+                crate::runtime::poll_with(Some(Duration::ZERO));
+                ran_work |= crate::runtime::run();
             }
 
             if ran_work {
                 progressed = progressed.saturating_add(1);
             }
         });
+
+        prune_finished_untracked_tasks(&self.untracked_tasks);
+
+        Ok(progressed)
+    }
+
+    pub async fn drain_async(&mut self) -> Result<usize, ShellError> {
+        prune_finished_untracked_tasks(&self.untracked_tasks);
+
+        let mut progressed = flush_deferred_events(&self.event_tx, &self.deferred_events);
+        let _ = crate::runtime::try_with_current(|| {
+            if crate::runtime::run() {
+                progressed = progressed.saturating_add(1);
+            }
+        });
+
+        let in_runtime = crate::runtime::try_with_current(|| ()).is_ok();
+        if self.activity.load() > 0 && in_runtime {
+            crate::runtime::yield_now().await;
+            let _ = crate::runtime::try_with_current(|| {
+                if crate::runtime::run() {
+                    progressed = progressed.saturating_add(1);
+                }
+            });
+        }
 
         prune_finished_untracked_tasks(&self.untracked_tasks);
 
@@ -212,17 +237,22 @@ where
             let remaining = deadline.saturating_duration_since(now);
             let wait_slice = remaining.min(EXECUTOR_POLL_SLICE);
 
-            if compio::runtime::Runtime::try_with_current(|runtime| {
-                let mut ran_work = runtime.run();
+            let in_runtime = crate::runtime::try_with_current(|| ()).is_ok();
+            if in_runtime {
+                let mut ran_work = crate::runtime::run();
                 if self.activity.load() > 0 {
-                    runtime.poll_with(Some(wait_slice));
-                    ran_work |= runtime.run();
+                    crate::runtime::poll_with(Some(wait_slice));
+                    ran_work |= crate::runtime::run();
                 }
-                ran_work
-            })
-            .is_ok()
-            {
-                continue;
+
+                if ran_work || crate::runtime::supports_sync_driving() {
+                    continue;
+                }
+
+                report_spawned_event_drop(
+                    "cannot synchronously drive cooperative runtime while waiting for executors",
+                );
+                break;
             }
 
             if self.activity.wait_until_zero(wait_slice) {
@@ -427,9 +457,9 @@ where
             None
         }
         Task::Future(future) => {
-            let has_runtime = compio::runtime::Runtime::try_with_current(|_| ()).is_ok();
+            let has_runtime = crate::runtime::try_with_current(|| ()).is_ok();
             if !has_runtime {
-                let command = futures::executor::block_on(future);
+                let command = crate::runtime::block_on(future);
                 queue.push_back(command);
                 return None;
             }
@@ -451,7 +481,7 @@ where
                 token,
             );
 
-            let handle = compio::runtime::spawn(async move {
+            let handle = crate::runtime::spawn(async move {
                 let _lifecycle_guard = lifecycle_guard;
                 let command = future.await;
                 if closed.get() {
@@ -478,13 +508,14 @@ where
             Some(SpawnedTask { token, handle })
         }
         Task::Stream(stream) => {
-            let has_runtime = compio::runtime::Runtime::try_with_current(|_| ()).is_ok();
+            let has_runtime = crate::runtime::try_with_current(|| ()).is_ok();
             if !has_runtime {
-                let commands = futures::executor::block_on(
+                let commands = crate::runtime::block_on(async {
                     stream
                         .take(MAX_INLINE_STREAM_COMMANDS + 1)
-                        .collect::<Vec<_>>(),
-                );
+                        .collect::<Vec<_>>()
+                        .await
+                });
                 if commands.len() > MAX_INLINE_STREAM_COMMANDS {
                     report_spawned_event_drop(
                         "inline stream command limit reached; dropping remaining commands",
@@ -514,7 +545,7 @@ where
                 token,
             );
 
-            let handle = compio::runtime::spawn(async move {
+            let handle = crate::runtime::spawn(async move {
                 let _lifecycle_guard = lifecycle_guard;
                 futures::pin_mut!(stream);
                 while let Some(command) = stream.next().await {
@@ -550,7 +581,7 @@ where
                         .len()
                         .saturating_add(deferred_events.borrow().len());
                     if backlog >= DEFERRED_STREAM_BACKPRESSURE_THRESHOLD {
-                        compio::runtime::time::sleep(DEFERRED_STREAM_BACKPRESSURE_SLEEP).await;
+                        crate::runtime::sleep(DEFERRED_STREAM_BACKPRESSURE_SLEEP).await;
                     }
                 }
             });

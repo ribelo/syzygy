@@ -61,8 +61,10 @@ name = "10_todo_app"
 required-features = ["shell"]
 
 [features]
-default = ["shell"]
+default = ["shell", "rt-compio"]
 shell = ["dep:futures"]
+rt-compio = ["dep:compio"]
+rt-tokio = ["dep:tokio"]
 examples = ["shell"]
 tracing = ["dep:tracing"]
 
@@ -72,7 +74,8 @@ futures = { version = "0.3", optional = true }
 smallvec = "1.13"
 rustc-hash = "2.0"
 crossbeam-channel = "0.5"
-compio = { version = "0.18", features = ["runtime", "macros", "time"] }
+compio = { version = "0.18", features = ["runtime", "macros", "time"], optional = true }
+tokio = { version = "1.35", features = ["rt", "time", "macros", "sync"], optional = true }
 tracing = { version = "0.1", optional = true }
 syzygy-macros = { path = "crates/syzygy-macros" }
 

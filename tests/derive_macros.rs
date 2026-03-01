@@ -82,18 +82,18 @@ fn derive_model_works_in_runtime() {
         })
         .build();
 
-    runner.core().try_send_event(Event::Increment(3)).unwrap();
+    runner.core().try_send(Event::Increment(3)).unwrap();
     runner.step().unwrap();
     assert_eq!(runner.model().counter, 3);
 
     runner
         .core()
-        .try_send_event(Event::Rename("next".into()))
+        .try_send(Event::Rename("next".into()))
         .unwrap();
     runner.step().unwrap();
     assert_eq!(runner.model().display_name, "next");
 
-    runner.core().try_send_event(Event::TriggerSave).unwrap();
+    runner.core().try_send(Event::TriggerSave).unwrap();
     runner.step().unwrap();
 }
 
@@ -118,7 +118,7 @@ fn derive_model_tracks_runtime_borrows() {
         .build();
 
     assert_panic_contains("already borrowed mutably", || {
-        runner.core().try_send_event(Event::DoubleBorrow).unwrap();
+        runner.core().try_send(Event::DoubleBorrow).unwrap();
         let _ = runner.step();
     });
 }
@@ -203,16 +203,13 @@ fn derive_model_extract_attribute_projects_child_models() {
         })
         .build();
 
-    runner
-        .core()
-        .try_send_event(ExtractEvent::Increment(4))
-        .unwrap();
+    runner.core().try_send(ExtractEvent::Increment(4)).unwrap();
     runner.step().unwrap();
     assert_eq!(runner.model().counter.value, 5);
 
     runner
         .core()
-        .try_send_event(ExtractEvent::UpdateChildren)
+        .try_send(ExtractEvent::UpdateChildren)
         .unwrap();
     runner.step().unwrap();
     assert_eq!(runner.model().counter.value, 15);
@@ -220,7 +217,7 @@ fn derive_model_extract_attribute_projects_child_models() {
 
     runner
         .core()
-        .try_send_event(ExtractEvent::Rename("updated".to_string()))
+        .try_send(ExtractEvent::Rename("updated".to_string()))
         .unwrap();
     runner.step().unwrap();
     assert_eq!(runner.model().title, "updated");
@@ -248,10 +245,7 @@ fn derive_model_extract_attribute_detects_double_borrow() {
         .build();
 
     assert_panic_contains("already borrowed mutably", || {
-        runner
-            .core()
-            .try_send_event(ExtractEvent::DoubleBorrow)
-            .unwrap();
+        runner.core().try_send(ExtractEvent::DoubleBorrow).unwrap();
         let _ = runner.step();
     });
 }

@@ -62,8 +62,8 @@ fn handle_event(event: AppEvent, ctx: &EventContext<AppModel>) -> Command<AppEve
 /// Handlers must return a `Command` containing the events to trigger after the
 /// async operation completes.
 async fn make_http_request((): ()) -> Command<AppEvent, AppEffect> {
-    // Simulate a network delay using compio's sleep
-    compio::runtime::time::sleep(Duration::from_millis(10)).await;
+    // Simulate a network delay using the configured async runtime
+    syzygy::runtime::sleep(Duration::from_millis(10)).await;
 
     // Simulate a successful response
     // (In a real app, you would match on `Result` and map `Ok`/`Err` to events)
@@ -84,24 +84,24 @@ fn handle_effect(effect: AppEffect, ctx: &EffectContext<'_>) -> Task<AppEvent, A
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // ## Why block_on?
-    // Async effects require an asynchronous runtime. Since Syzygy relies on `compio`,
-    // we initialize a runtime and block on our application logic.
-    let runtime = compio::runtime::Runtime::new()?;
-    runtime.block_on(async {
+    // Async effects require an asynchronous runtime. Syzygy exposes a runtime-agnostic
+    // helper that selects the configured backend (`rt-compio` or `rt-tokio`).
+    syzygy::runtime::block_on(async {
         let mut app = Syzygy::builder::<AppEvent, AppEffect>()
             .model(AppModel::default())
             .event_handler(handle_event)
             .effect_handler(handle_effect)
             .build();
 
-        app.core().try_send_event(AppEvent::FetchData)?;
-        app.step()?; // Processes the FetchData event, updating is_loading
+        app.core().try_send(AppEvent::FetchData)?;
+        app.step_async().await?; // Processes FetchData and updates is_loading
 
         assert!(app.model().is_loading);
         println!("App is currently loading data...");
 
-        // Run until the loading state flips back, meaning the async task resolved
-        app.run_until(|core, _| !core.model().is_loading)?;
+        // Run until the loading state flips back, meaning the async task resolved.
+        app.run_until_async(|core, _| !core.model().is_loading)
+            .await?;
 
         println!("Data: {:?}", app.model().data);
         Ok::<(), Box<dyn std::error::Error>>(())

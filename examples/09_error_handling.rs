@@ -77,7 +77,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .effect_handler(handle_effect)
         .build();
 
-    runner.core().try_send_event(Event::DoRiskyWork)?;
+    runner.core().try_send(Event::DoRiskyWork)?;
 
     // We step to trigger the effect.
     runner.step()?;

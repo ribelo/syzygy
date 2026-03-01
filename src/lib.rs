@@ -14,6 +14,8 @@ pub mod builder;
 #[cfg(feature = "shell")]
 pub mod executor;
 #[cfg(feature = "shell")]
+pub mod runtime;
+#[cfg(feature = "shell")]
 pub mod shell;
 #[cfg(feature = "shell")]
 pub mod syzygy;

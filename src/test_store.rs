@@ -9,8 +9,6 @@ use std::collections::VecDeque;
 use std::panic::{self, AssertUnwindSafe};
 
 #[cfg(feature = "shell")]
-use futures::executor::block_on;
-#[cfg(feature = "shell")]
 use futures::StreamExt;
 
 use crate::command::{CancelId, Command, CommandStep, IntoCancelId};
@@ -320,8 +318,8 @@ where
         H: Fn(X, &EffectContext<'_>) -> Task<E, X>,
     {
         assert!(
-            compio::runtime::Runtime::try_with_current(|_| ()).is_err(),
-            "TestStore::receive cannot run inside a compio runtime; use receive_async()"
+            crate::runtime::try_with_current(|| ()).is_err(),
+            "TestStore::receive cannot run inside an async runtime; use receive_async()"
         );
 
         for effect in self.take_effects() {
@@ -334,7 +332,7 @@ where
     }
 
     /// Async variant of [`receive`](Self::receive) that can safely run inside
-    /// a compio runtime.
+    /// an async runtime.
     #[cfg(feature = "shell")]
     pub async fn receive_async<H>(&mut self, effect_handler: H)
     where
@@ -357,15 +355,16 @@ where
                 self.feed_received_command(command);
             }
             Task::Future(future) => {
-                let command = block_on(future);
+                let command = crate::runtime::block_on(future);
                 self.feed_received_command(command);
             }
             Task::Stream(stream) => {
-                let commands = block_on(
+                let commands = crate::runtime::block_on(async {
                     stream
                         .take(MAX_RECEIVE_STREAM_COMMANDS + 1)
-                        .collect::<Vec<_>>(),
-                );
+                        .collect::<Vec<_>>()
+                        .await
+                });
                 assert!(
                     commands.len() <= MAX_RECEIVE_STREAM_COMMANDS,
                     "TestStore::receive reached stream command limit ({MAX_RECEIVE_STREAM_COMMANDS}). This usually means the stream is unbounded; use a finite stream in tests."
@@ -865,9 +864,8 @@ mod tests {
 
     #[cfg(feature = "shell")]
     #[test]
-    fn receive_panics_inside_compio_runtime() {
-        let rt = compio::runtime::Runtime::new().expect("compio runtime");
-        rt.block_on(async {
+    fn receive_panics_inside_async_runtime() {
+        crate::runtime::block_on(async {
             let mut store = TestStore::new(Model::default(), handle_event);
             store.send(Event::Increment(1));
 
@@ -879,16 +877,15 @@ mod tests {
 
     #[cfg(feature = "shell")]
     #[test]
-    fn receive_async_runs_inside_compio_runtime() {
-        let rt = compio::runtime::Runtime::new().expect("compio runtime");
-        rt.block_on(async {
+    fn receive_async_runs_inside_async_runtime() {
+        crate::runtime::block_on(async {
             let mut store = TestStore::new(Model::default(), handle_event);
             store.send(Event::Increment(1));
 
             store
                 .receive_async(|effect, _ctx| match effect {
                     Effect::Log(_) => Task::once(async {
-                        compio::runtime::time::sleep(std::time::Duration::from_millis(1)).await;
+                        crate::runtime::sleep(std::time::Duration::from_millis(1)).await;
                         Command::event(Event::SaveDone)
                     }),
                     _ => Task::none(),

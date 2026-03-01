@@ -89,7 +89,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .build();
 
     app.core()
-        .try_send_event(AppEvent::ChildMsg(CounterEvent::Increment))?;
+        .try_send(AppEvent::ChildMsg(CounterEvent::Increment))?;
 
     // Process the event
     app.step()?;

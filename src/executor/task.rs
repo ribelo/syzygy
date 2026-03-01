@@ -60,11 +60,8 @@ where
         X: Send,
     {
         Self::future(async move {
-            if compio::runtime::Runtime::try_with_current(|_| ()).is_ok() {
-                match compio::runtime::spawn_blocking(blocking).await {
-                    Ok(command) => command,
-                    Err(panic) => std::panic::resume_unwind(panic),
-                }
+            if crate::runtime::try_with_current(|| ()).is_ok() {
+                crate::runtime::await_blocking(crate::runtime::spawn_blocking(blocking)).await
             } else {
                 blocking()
             }

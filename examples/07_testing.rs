@@ -94,8 +94,7 @@ mod tests {
 
     #[test]
     fn async_receive_pattern() {
-        let runtime = compio::runtime::Runtime::new().unwrap();
-        runtime.block_on(async {
+        syzygy::runtime::block_on(async {
             let mut store = TestStore::new(AppModel::default(), handle_event);
 
             store.send(AppEvent::Save);

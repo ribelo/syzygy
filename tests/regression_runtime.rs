@@ -15,7 +15,7 @@ fn bounded_event_channel_surfaces_channel_full() {
 
     let mut saw_full = false;
     for n in 0..10_000 {
-        match tx.try_send_event(n) {
+        match tx.try_send(n) {
             Ok(()) => {}
             Err(CoreError::ChannelFull) => {
                 saw_full = true;
@@ -70,7 +70,7 @@ fn bounded_channel_overflow_does_not_crash() {
         .with_event_channel_capacity(Some(1))
         .build();
 
-    runner.core().try_send_event(Event::Start).unwrap();
+    runner.core().try_send(Event::Start).unwrap();
     runner
         .step()
         .expect("bounded overflow should defer events instead of failing");
@@ -215,14 +215,13 @@ fn run_until_progresses_async_effects_inside_runtime() {
     fn handle_effect(effect: Effect, _ctx: &EffectContext<'_>) -> Task<Event, Effect> {
         match effect {
             Effect::Wait => Task::once(async {
-                compio::runtime::time::sleep(Duration::from_millis(1)).await;
+                syzygy::runtime::sleep(Duration::from_millis(1)).await;
                 Command::event(Event::Done)
             }),
         }
     }
 
-    let rt = compio::runtime::Runtime::new().expect("compio runtime");
-    rt.block_on(async {
+    syzygy::runtime::block_on(async {
         let mut runner = Syzygy::builder::<Event, Effect>()
             .model(Model::default())
             .event_handler(handle_event)
@@ -230,10 +229,11 @@ fn run_until_progresses_async_effects_inside_runtime() {
             .with_syzygy_config(SyzygyConfig::default().idle_sleep(Duration::from_millis(1)))
             .build();
 
-        runner.core().try_send_event(Event::Start).unwrap();
+        runner.core().try_send(Event::Start).unwrap();
         let started = Instant::now();
         runner
-            .run_until(|core, _shell| core.model().done)
+            .run_until_async(|core, _shell| core.model().done)
+            .await
             .expect("run_until should complete");
 
         assert!(runner.model().done);
@@ -269,8 +269,7 @@ fn spawning_async_effects_does_not_clone_registered_resources() {
 
     let clone_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
 
-    let rt = compio::runtime::Runtime::new().expect("compio runtime");
-    rt.block_on(async {
+    syzygy::runtime::block_on(async {
         let mut runner = Syzygy::builder::<Event, Effect>()
             .model(())
             .with_resource(CloneCounter(Arc::clone(&clone_count)))
@@ -282,9 +281,9 @@ fn spawning_async_effects_does_not_clone_registered_resources() {
             })
             .build();
 
-        runner.core().try_send_event(Event::Start).unwrap();
-        runner.step().unwrap();
-        runner.run().unwrap();
+        runner.core().try_send(Event::Start).unwrap();
+        runner.step_async().await.unwrap();
+        runner.run_async().await.unwrap();
     });
 
     assert_eq!(clone_count.load(Ordering::SeqCst), 0);
@@ -315,27 +314,26 @@ fn cancelling_tracked_future_returns_shell_to_idle() {
     fn handle_effect(effect: Effect, _ctx: &EffectContext<'_>) -> Task<Event, Effect> {
         match effect {
             Effect::Wait => Task::once(async {
-                compio::runtime::time::sleep(Duration::from_secs(60)).await;
+                syzygy::runtime::sleep(Duration::from_secs(60)).await;
                 Command::none()
             }),
         }
     }
 
-    let rt = compio::runtime::Runtime::new().expect("compio runtime");
-    rt.block_on(async {
+    syzygy::runtime::block_on(async {
         let mut runner = Syzygy::builder::<Event, Effect>()
             .model(())
             .event_handler(handle_event)
             .effect_handler(handle_effect)
             .build();
 
-        runner.core().try_send_event(Event::Start).unwrap();
-        runner.step().unwrap();
+        runner.core().try_send(Event::Start).unwrap();
+        runner.step_async().await.unwrap();
         assert!(!runner.shell().is_idle());
 
-        runner.core().try_send_event(Event::Stop).unwrap();
-        runner.step().unwrap();
-        compio::runtime::time::sleep(Duration::from_millis(2)).await;
+        runner.core().try_send(Event::Stop).unwrap();
+        runner.step_async().await.unwrap();
+        syzygy::runtime::sleep(Duration::from_millis(2)).await;
 
         assert!(
             runner.shell().is_idle(),
@@ -349,10 +347,10 @@ fn cancelling_tracked_future_returns_shell_to_idle() {
             .build();
         same_step_runner
             .core()
-            .try_send_event(Event::StartAndStop)
+            .try_send(Event::StartAndStop)
             .unwrap();
-        same_step_runner.step().unwrap();
-        compio::runtime::time::sleep(Duration::from_millis(2)).await;
+        same_step_runner.step_async().await.unwrap();
+        syzygy::runtime::sleep(Duration::from_millis(2)).await;
         assert!(
             same_step_runner.shell().is_idle(),
             "shell should be idle when tracked task is cancelled in the same command"
@@ -394,29 +392,28 @@ fn cancelled_tracked_future_does_not_route_completion_event() {
     fn handle_effect(effect: Effect, _ctx: &EffectContext<'_>) -> Task<Event, Effect> {
         match effect {
             Effect::Wait => Task::once(async {
-                compio::runtime::time::sleep(Duration::from_millis(30)).await;
+                syzygy::runtime::sleep(Duration::from_millis(30)).await;
                 Command::event(Event::Done)
             }),
         }
     }
 
-    let rt = compio::runtime::Runtime::new().expect("compio runtime");
-    rt.block_on(async {
+    syzygy::runtime::block_on(async {
         let mut runner = Syzygy::builder::<Event, Effect>()
             .model(Model::default())
             .event_handler(handle_event)
             .effect_handler(handle_effect)
             .build();
 
-        runner.core().try_send_event(Event::Start).unwrap();
-        runner.step().unwrap();
+        runner.core().try_send(Event::Start).unwrap();
+        runner.step_async().await.unwrap();
 
-        runner.core().try_send_event(Event::Stop).unwrap();
-        runner.step().unwrap();
+        runner.core().try_send(Event::Stop).unwrap();
+        runner.step_async().await.unwrap();
 
-        compio::runtime::time::sleep(Duration::from_millis(80)).await;
-        runner.step().unwrap();
-        runner.step().unwrap();
+        syzygy::runtime::sleep(Duration::from_millis(80)).await;
+        runner.step_async().await.unwrap();
+        runner.step_async().await.unwrap();
 
         assert!(!runner.model().done);
     });
@@ -454,27 +451,26 @@ fn shutdown_blocks_spawned_untracked_command_routing() {
     fn handle_effect(effect: Effect, _ctx: &EffectContext<'_>) -> Task<Event, Effect> {
         match effect {
             Effect::Loop => Task::once(async {
-                compio::runtime::time::sleep(Duration::from_millis(2)).await;
+                syzygy::runtime::sleep(Duration::from_millis(2)).await;
                 Command::event(Event::Tick)
             }),
         }
     }
 
-    let rt = compio::runtime::Runtime::new().expect("compio runtime");
-    rt.block_on(async {
+    syzygy::runtime::block_on(async {
         let mut runner = Syzygy::builder::<Event, Effect>()
             .model(Model::default())
             .event_handler(handle_event)
             .effect_handler(handle_effect)
             .build();
 
-        runner.core().try_send_event(Event::Start).unwrap();
-        runner.step().unwrap();
+        runner.core().try_send(Event::Start).unwrap();
+        runner.step_async().await.unwrap();
         runner.shutdown();
 
-        compio::runtime::time::sleep(Duration::from_millis(8)).await;
-        runner.step().unwrap();
-        runner.step().unwrap();
+        syzygy::runtime::sleep(Duration::from_millis(8)).await;
+        runner.step_async().await.unwrap();
+        runner.step_async().await.unwrap();
 
         assert_eq!(
             runner.model().ticks,
@@ -499,8 +495,7 @@ fn shutdown_cancels_untracked_async_tasks_without_timeout() {
     let finished = Arc::new(AtomicBool::new(false));
     let finished_in_effect = Arc::clone(&finished);
 
-    let rt = compio::runtime::Runtime::new().expect("compio runtime");
-    rt.block_on(async move {
+    syzygy::runtime::block_on(async move {
         let mut runner = Syzygy::builder::<Event, Effect>()
             .model(())
             .event_handler(|event, _ctx| match event {
@@ -510,7 +505,7 @@ fn shutdown_cancels_untracked_async_tasks_without_timeout() {
                 let finished_in_effect = Arc::clone(&finished_in_effect);
                 match effect {
                     Effect::Flush => Task::once(async move {
-                        compio::runtime::time::sleep(Duration::from_secs(60)).await;
+                        syzygy::runtime::sleep(Duration::from_secs(60)).await;
                         finished_in_effect.store(true, Ordering::SeqCst);
                         Command::none()
                     }),
@@ -518,8 +513,8 @@ fn shutdown_cancels_untracked_async_tasks_without_timeout() {
             })
             .build();
 
-        runner.core().try_send_event(Event::Start).unwrap();
-        runner.step().unwrap();
+        runner.core().try_send(Event::Start).unwrap();
+        runner.step_async().await.unwrap();
 
         let shutdown_started = Instant::now();
         runner.shutdown();
@@ -551,8 +546,7 @@ fn shutdown_cancels_tracked_async_tasks_without_refcell_reentrancy_panics() {
     let finished = Arc::new(AtomicBool::new(false));
     let finished_in_effect = Arc::clone(&finished);
 
-    let rt = compio::runtime::Runtime::new().expect("compio runtime");
-    rt.block_on(async move {
+    syzygy::runtime::block_on(async move {
         let mut runner = Syzygy::builder::<Event, Effect>()
             .model(())
             .event_handler(|event, _ctx| match event {
@@ -562,7 +556,7 @@ fn shutdown_cancels_tracked_async_tasks_without_refcell_reentrancy_panics() {
                 let finished_in_effect = Arc::clone(&finished_in_effect);
                 match effect {
                     Effect::Flush => Task::once(async move {
-                        compio::runtime::time::sleep(Duration::from_secs(60)).await;
+                        syzygy::runtime::sleep(Duration::from_secs(60)).await;
                         finished_in_effect.store(true, Ordering::SeqCst);
                         Command::none()
                     }),
@@ -570,8 +564,8 @@ fn shutdown_cancels_tracked_async_tasks_without_refcell_reentrancy_panics() {
             })
             .build();
 
-        runner.core().try_send_event(Event::Start).unwrap();
-        runner.step().unwrap();
+        runner.core().try_send(Event::Start).unwrap();
+        runner.step_async().await.unwrap();
 
         let shutdown_started = Instant::now();
         runner.shutdown();
@@ -621,7 +615,7 @@ fn deep_resolved_effect_chain_is_iterative() {
         .effect_handler(handle_effect)
         .build();
 
-    runner.core().try_send_event(Event::Start).unwrap();
+    runner.core().try_send(Event::Start).unwrap();
     runner.step().unwrap();
 
     assert!(runner.shell().is_idle());
@@ -664,8 +658,7 @@ fn spawned_events_are_deferred_when_event_channel_is_full() {
         }
     }
 
-    let rt = compio::runtime::Runtime::new().expect("compio runtime");
-    rt.block_on(async {
+    syzygy::runtime::block_on(async {
         let mut runner = Syzygy::builder::<Event, Effect>()
             .model(Model::default())
             .event_handler(handle_event)
@@ -673,20 +666,20 @@ fn spawned_events_are_deferred_when_event_channel_is_full() {
             .with_event_channel_capacity(Some(1))
             .build();
 
-        runner.core().try_send_event(Event::Start).unwrap();
-        runner.step().unwrap();
+        runner.core().try_send(Event::Start).unwrap();
+        runner.step_async().await.unwrap();
         assert!(!runner.model().done);
 
-        runner.step().unwrap();
+        runner.step_async().await.unwrap();
         assert!(!runner.model().done);
 
-        runner.step().unwrap();
+        runner.step_async().await.unwrap();
         assert!(runner.model().done);
     });
 }
 
 #[test]
-fn future_effects_can_resolve_without_compio_runtime() {
+fn future_effects_can_resolve_without_async_runtime() {
     #[derive(Debug, Clone)]
     enum Event {
         Start,
@@ -726,7 +719,7 @@ fn future_effects_can_resolve_without_compio_runtime() {
         .effect_handler(handle_effect)
         .build();
 
-    runner.core().try_send_event(Event::Start).unwrap();
+    runner.core().try_send(Event::Start).unwrap();
     runner.step().unwrap();
     runner.step().unwrap();
 

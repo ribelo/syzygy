@@ -93,7 +93,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .event_handler(handle_event)
         .build();
 
-    runner.core().try_send_event(Event::StartSequence)?;
+    runner.core().try_send(Event::StartSequence)?;
 
     // Process StartSequence
     runner.step()?;

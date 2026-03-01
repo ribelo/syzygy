@@ -1818,14 +1818,11 @@ mod tests {
             .effect_handler(|_effect: Fx, _ctx: &EffectContext<'_>| Task::<Ev, Fx>::none())
             .build();
 
-        runner.core().try_send_event(Ev::Increment(7)).unwrap();
+        runner.core().try_send(Ev::Increment(7)).unwrap();
         runner.step().unwrap();
         assert_eq!(runner.model().counter, 7);
 
-        runner
-            .core()
-            .try_send_event(Ev::Rename("hello".into()))
-            .unwrap();
+        runner.core().try_send(Ev::Rename("hello".into())).unwrap();
         runner.step().unwrap();
         assert_eq!(runner.model().name, "hello");
     }

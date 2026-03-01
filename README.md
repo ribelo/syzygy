@@ -37,6 +37,21 @@ Run an example:
 cargo run --example 01_basic_counter
 ```
 
+## Runtime Backends
+
+Syzygy shell execution is runtime-agnostic via Cargo features:
+
+- Default: `rt-compio`
+- Optional: `rt-tokio`
+
+```toml
+# default (compio)
+syzygy = { git = "https://github.com/ribelo/syzygy" }
+
+# tokio backend
+syzygy = { git = "https://github.com/ribelo/syzygy", default-features = false, features = ["shell", "rt-tokio"] }
+```
+
 ## Core Concepts
 
 | Concept | Purpose | Example |
