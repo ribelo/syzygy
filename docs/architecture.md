@@ -68,6 +68,8 @@ System shape and invariants. For 3am incident response.
    - `Task::Stream(s)`: spawned, each item processed
 4. Task completion produces `Command`, loops back to Core
 
+Shell progression is synchronous. There is no async `drain`/`step` API; async is confined to effect execution.
+
 ## Module Dependencies
 
 ```

@@ -80,23 +80,6 @@ where
         }
     }
 
-    pub async fn run_async(&mut self) -> Result<(), ShellError> {
-        loop {
-            let did_work = self.step_async().await?;
-            if self.shell.is_closed() {
-                return Ok(());
-            }
-
-            if !did_work {
-                if self.shell.is_idle() {
-                    return Ok(());
-                }
-
-                park_for_runtime_async(self.config.idle_sleep).await;
-            }
-        }
-    }
-
     pub fn run_until<F>(&mut self, mut condition: F) -> Result<(), ShellError>
     where
         F: FnMut(&Core<Event, Effect, Model>, &Shell<Event, Effect>) -> bool,
@@ -109,24 +92,6 @@ where
 
             if !did_work {
                 park_for_runtime(self.config.idle_sleep);
-            }
-        }
-
-        Ok(())
-    }
-
-    pub async fn run_until_async<F>(&mut self, mut condition: F) -> Result<(), ShellError>
-    where
-        F: FnMut(&Core<Event, Effect, Model>, &Shell<Event, Effect>) -> bool,
-    {
-        while !condition(&self.core, &self.shell) {
-            let did_work = self.step_async().await?;
-            if self.shell.is_closed() {
-                return Ok(());
-            }
-
-            if !did_work {
-                park_for_runtime_async(self.config.idle_sleep).await;
             }
         }
 
@@ -175,10 +140,6 @@ where
         step_core_shell(&mut self.core, &mut self.shell)
     }
 
-    pub async fn step_async(&mut self) -> Result<bool, ShellError> {
-        step_core_shell_async(&mut self.core, &mut self.shell).await
-    }
-
     pub fn split(self) -> (Core<Event, Effect, Model>, Shell<Event, Effect>) {
         (self.core, self.shell)
     }
@@ -201,40 +162,10 @@ where
     Ok(core_work > 0 || shell_work > 0)
 }
 
-pub async fn step_core_shell_async<Event, Effect, Model>(
-    core: &mut Core<Event, Effect, Model>,
-    shell: &mut Shell<Event, Effect>,
-) -> Result<bool, ShellError>
-where
-    Event: 'static,
-    Effect: 'static,
-{
-    if shell.is_closed() {
-        return Ok(false);
-    }
-
-    let core_work = core.process_events_try_into(|command| shell.dispatch_command(command))?;
-    let shell_work = shell.drain_async().await?;
-    Ok(core_work > 0 || shell_work > 0)
-}
-
 fn park_for_runtime(idle_sleep: Duration) {
     let in_runtime = crate::runtime::try_with_current(|| ()).is_ok();
     if in_runtime && crate::runtime::supports_sync_driving() {
         crate::runtime::poll_with(Some(idle_sleep));
-        return;
-    }
-
-    if idle_sleep.is_zero() {
-        thread::yield_now();
-    } else {
-        thread::sleep(idle_sleep);
-    }
-}
-
-async fn park_for_runtime_async(idle_sleep: Duration) {
-    if crate::runtime::try_with_current(|| ()).is_ok() {
-        crate::runtime::sleep(idle_sleep).await;
         return;
     }
 

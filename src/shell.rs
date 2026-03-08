@@ -162,31 +162,6 @@ where
         Ok(progressed)
     }
 
-    pub async fn drain_async(&mut self) -> Result<usize, ShellError> {
-        prune_finished_untracked_tasks(&self.untracked_tasks);
-
-        let mut progressed = flush_deferred_events(&self.event_tx, &self.deferred_events);
-        let _ = crate::runtime::try_with_current(|| {
-            if crate::runtime::run() {
-                progressed = progressed.saturating_add(1);
-            }
-        });
-
-        let in_runtime = crate::runtime::try_with_current(|| ()).is_ok();
-        if self.activity.load() > 0 && in_runtime {
-            crate::runtime::yield_now().await;
-            let _ = crate::runtime::try_with_current(|| {
-                if crate::runtime::run() {
-                    progressed = progressed.saturating_add(1);
-                }
-            });
-        }
-
-        prune_finished_untracked_tasks(&self.untracked_tasks);
-
-        Ok(progressed)
-    }
-
     #[must_use]
     pub fn is_idle(&self) -> bool {
         self.activity.load() == 0

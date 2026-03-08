@@ -186,7 +186,7 @@ fn run_until_exits_when_shell_is_closed() {
 }
 
 #[test]
-fn run_until_progresses_async_effects_inside_runtime() {
+fn run_until_progresses_async_effects() {
     #[derive(Debug, Clone)]
     enum Event {
         Start,
@@ -223,28 +223,25 @@ fn run_until_progresses_async_effects_inside_runtime() {
         }
     }
 
-    syzygy::runtime::block_on(async {
-        let mut runner = Syzygy::builder::<Event, Effect>()
-            .model(Model::default())
-            .event_handler(handle_event)
-            .effect_handler(handle_effect)
-            .with_syzygy_config(SyzygyConfig::default().idle_sleep(Duration::from_millis(1)))
-            .build();
+    let mut runner = Syzygy::builder::<Event, Effect>()
+        .model(Model::default())
+        .event_handler(handle_event)
+        .effect_handler(handle_effect)
+        .with_syzygy_config(SyzygyConfig::default().idle_sleep(Duration::from_millis(1)))
+        .build();
 
-        runner.core().try_send(Event::Start).unwrap();
-        let started = Instant::now();
-        runner
-            .run_until_async(|core, _shell| core.model().done)
-            .await
-            .expect("run_until should complete");
+    runner.core().try_send(Event::Start).unwrap();
+    let started = Instant::now();
+    runner
+        .run_until(|core, _shell| core.model().done)
+        .expect("run_until should complete");
 
-        assert!(runner.model().done);
-        assert!(
-            started.elapsed() < Duration::from_secs(1),
-            "run_until took too long: {:?}",
-            started.elapsed()
-        );
-    });
+    assert!(runner.model().done);
+    assert!(
+        started.elapsed() < Duration::from_secs(1),
+        "run_until took too long: {:?}",
+        started.elapsed()
+    );
 }
 
 #[test]
@@ -284,8 +281,8 @@ fn spawning_async_effects_does_not_clone_registered_resources() {
             .build();
 
         runner.core().try_send(Event::Start).unwrap();
-        runner.step_async().await.unwrap();
-        runner.run_async().await.unwrap();
+        runner.step().unwrap();
+        runner.run().unwrap();
     });
 
     assert_eq!(clone_count.load(Ordering::SeqCst), 0);
@@ -330,11 +327,11 @@ fn cancelling_tracked_future_returns_shell_to_idle() {
             .build();
 
         runner.core().try_send(Event::Start).unwrap();
-        runner.step_async().await.unwrap();
+        runner.step().unwrap();
         assert!(!runner.shell().is_idle());
 
         runner.core().try_send(Event::Stop).unwrap();
-        runner.step_async().await.unwrap();
+        runner.step().unwrap();
         syzygy::runtime::sleep(Duration::from_millis(2)).await;
 
         assert!(
@@ -351,7 +348,7 @@ fn cancelling_tracked_future_returns_shell_to_idle() {
             .core()
             .try_send(Event::StartAndStop)
             .unwrap();
-        same_step_runner.step_async().await.unwrap();
+        same_step_runner.step().unwrap();
         syzygy::runtime::sleep(Duration::from_millis(2)).await;
         assert!(
             same_step_runner.shell().is_idle(),
@@ -408,14 +405,14 @@ fn cancelled_tracked_future_does_not_route_completion_event() {
             .build();
 
         runner.core().try_send(Event::Start).unwrap();
-        runner.step_async().await.unwrap();
+        runner.step().unwrap();
 
         runner.core().try_send(Event::Stop).unwrap();
-        runner.step_async().await.unwrap();
+        runner.step().unwrap();
 
         syzygy::runtime::sleep(Duration::from_millis(80)).await;
-        runner.step_async().await.unwrap();
-        runner.step_async().await.unwrap();
+        runner.step().unwrap();
+        runner.step().unwrap();
 
         assert!(!runner.model().done);
     });
@@ -467,12 +464,12 @@ fn shutdown_blocks_spawned_untracked_command_routing() {
             .build();
 
         runner.core().try_send(Event::Start).unwrap();
-        runner.step_async().await.unwrap();
+        runner.step().unwrap();
         runner.shutdown();
 
         syzygy::runtime::sleep(Duration::from_millis(8)).await;
-        runner.step_async().await.unwrap();
-        runner.step_async().await.unwrap();
+        runner.step().unwrap();
+        runner.step().unwrap();
 
         assert_eq!(
             runner.model().ticks,
@@ -516,7 +513,7 @@ fn shutdown_cancels_untracked_async_tasks_without_timeout() {
             .build();
 
         runner.core().try_send(Event::Start).unwrap();
-        runner.step_async().await.unwrap();
+        runner.step().unwrap();
 
         let shutdown_started = Instant::now();
         runner.shutdown();
@@ -567,7 +564,7 @@ fn shutdown_cancels_tracked_async_tasks_without_refcell_reentrancy_panics() {
             .build();
 
         runner.core().try_send(Event::Start).unwrap();
-        runner.step_async().await.unwrap();
+        runner.step().unwrap();
 
         let shutdown_started = Instant::now();
         runner.shutdown();
@@ -669,13 +666,13 @@ fn spawned_events_are_deferred_when_event_channel_is_full() {
             .build();
 
         runner.core().try_send(Event::Start).unwrap();
-        runner.step_async().await.unwrap();
+        runner.step().unwrap();
         assert!(!runner.model().done);
 
-        runner.step_async().await.unwrap();
+        runner.step().unwrap();
         assert!(!runner.model().done);
 
-        runner.step_async().await.unwrap();
+        runner.step().unwrap();
         assert!(runner.model().done);
     });
 }

@@ -83,27 +83,17 @@ fn handle_effect(effect: AppEffect, ctx: &EffectContext<'_>) -> Task<AppEvent, A
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // ## Why block_on?
-    // Async effects require an asynchronous runtime. Syzygy exposes a runtime-agnostic
-    // helper that selects the configured backend (`rt-compio` or `rt-tokio`).
-    syzygy::runtime::block_on(async {
-        let mut app = Syzygy::builder::<AppEvent, AppEffect>()
-            .model(AppModel::default())
-            .event_handler(handle_event)
-            .effect_handler(handle_effect)
-            .build();
+    let mut app = Syzygy::builder::<AppEvent, AppEffect>()
+        .model(AppModel::default())
+        .event_handler(handle_event)
+        .effect_handler(handle_effect)
+        .build();
 
-        app.core().try_send(AppEvent::FetchData)?;
-        app.step_async().await?; // Processes FetchData and updates is_loading
+    app.core().try_send(AppEvent::FetchData)?;
 
-        assert!(app.model().is_loading);
-        println!("App is currently loading data...");
+    // Syzygy owns progression synchronously; effects remain async internally.
+    app.run_until(|core, _| core.model().data.is_some())?;
 
-        // Run until the loading state flips back, meaning the async task resolved.
-        app.run_until_async(|core, _| !core.model().is_loading)
-            .await?;
-
-        println!("Data: {:?}", app.model().data);
-        Ok::<(), Box<dyn std::error::Error>>(())
-    })
+    println!("Data: {:?}", app.model().data);
+    Ok(())
 }

@@ -87,25 +87,22 @@ fn handle_effect(effect: AppEffect, ctx: &EffectContext<'_>) -> Task<AppEvent, A
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let _ = AppEvent::StopTimer(0);
 
-    syzygy::runtime::block_on(async {
-        let mut app = Syzygy::builder::<AppEvent, AppEffect>()
-            .model(AppModel::default())
-            .event_handler(handle_event)
-            .effect_handler(handle_effect)
-            .build();
+    let mut app = Syzygy::builder::<AppEvent, AppEffect>()
+        .model(AppModel::default())
+        .event_handler(handle_event)
+        .effect_handler(handle_effect)
+        .build();
 
-        // Start multiple tickers concurrently
-        app.core().try_send(AppEvent::StartTimer(1))?;
-        app.core().try_send(AppEvent::StartTimer(2))?;
+    // Start multiple tickers concurrently
+    app.core().try_send(AppEvent::StartTimer(1))?;
+    app.core().try_send(AppEvent::StartTimer(2))?;
 
-        // Let them run until both timers finish.
-        app.run_until_async(|core, _| core.model().active_timers == 0)
-            .await?;
+    // Let them run until both timers finish.
+    app.run_until(|core, _| core.model().active_timers == 0)?;
 
-        println!("Total ticks: {}", app.model().ticks);
-        // 2 timers, 3 ticks each = 6 ticks
-        assert_eq!(app.model().ticks, 6);
+    println!("Total ticks: {}", app.model().ticks);
+    // 2 timers, 3 ticks each = 6 ticks
+    assert_eq!(app.model().ticks, 6);
 
-        Ok::<(), Box<dyn std::error::Error>>(())
-    })
+    Ok(())
 }
