@@ -1,3 +1,5 @@
+use std::cell::RefCell;
+use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -676,6 +678,30 @@ fn spawned_events_are_deferred_when_event_channel_is_full() {
         runner.step_async().await.unwrap();
         assert!(runner.model().done);
     });
+}
+
+#[test]
+fn runtime_yield_now_reschedules_the_current_task() {
+    let order = Rc::new(RefCell::new(Vec::new()));
+    let order_for_runtime = Rc::clone(&order);
+
+    syzygy::runtime::block_on(async move {
+        let order_for_task = Rc::clone(&order_for_runtime);
+        let handle = syzygy::runtime::spawn(async move {
+            order_for_task.borrow_mut().push("other");
+        });
+
+        order_for_runtime.borrow_mut().push("before");
+        syzygy::runtime::yield_now().await;
+        order_for_runtime.borrow_mut().push("after");
+
+        match handle.await {
+            Ok(()) => {}
+            Err(panic) => std::panic::resume_unwind(panic),
+        }
+    });
+
+    assert_eq!(order.borrow().as_slice(), ["before", "other", "after"]);
 }
 
 #[test]

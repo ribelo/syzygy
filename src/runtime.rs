@@ -8,7 +8,8 @@ compile_error!("a runtime feature must be enabled: `rt-compio` or `rt-tokio`");
 
 #[cfg(feature = "rt-compio")]
 mod imp {
-    use std::future::Future;
+    use std::future::{poll_fn, Future};
+    use std::task::Poll;
     use std::time::Duration;
 
     pub type JoinHandle<T> = compio::runtime::JoinHandle<T>;
@@ -40,7 +41,20 @@ mod imp {
     }
 
     pub async fn yield_now() {
-        sleep(Duration::ZERO).await;
+        // compio does not expose a first-class yield primitive. A zero-duration
+        // timer completes immediately, so explicitly self-wake once to
+        // requeue this task behind other ready tasks.
+        let mut yielded = false;
+        poll_fn(move |cx| {
+            if yielded {
+                Poll::Ready(())
+            } else {
+                yielded = true;
+                cx.waker().wake_by_ref();
+                Poll::Pending
+            }
+        })
+        .await;
     }
 
     #[allow(clippy::result_unit_err)]
