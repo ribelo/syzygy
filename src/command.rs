@@ -1,68 +1,101 @@
-use std::any::{Any, TypeId};
 use std::hash::{Hash, Hasher};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Weak};
 
-use rustc_hash::FxHasher;
 use smallvec::SmallVec;
 
-/// Stable, type-tagged identifier for a cancellable effect slot.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct CancelId {
-    type_id: TypeId,
-    hash: u64,
+static NEXT_TASK_LEASE_ID: AtomicU64 = AtomicU64::new(1);
+
+#[derive(Debug)]
+struct TaskLeaseState {
+    id: u64,
 }
 
-impl CancelId {
+/// Ownership token for abortable work.
+///
+/// As long as at least one clone of a `TaskLease` exists, the associated
+/// abortable task is allowed to keep running. Once the last owner disappears,
+/// the shell cancels the task on the next `drain`/`step` cycle.
+#[derive(Clone)]
+pub struct TaskLease {
+    inner: Arc<TaskLeaseState>,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct TaskLeaseWeak {
+    id: u64,
+    inner: Weak<TaskLeaseState>,
+}
+
+impl TaskLeaseWeak {
     #[must_use]
-    pub fn new<T: Hash + 'static>(value: T) -> Self {
-        if let Some(existing) = (&value as &dyn Any).downcast_ref::<Self>() {
-            return *existing;
-        }
+    pub(crate) fn id(&self) -> u64 {
+        self.id
+    }
 
-        let mut hasher = FxHasher::default();
-        value.hash(&mut hasher);
+    #[must_use]
+    pub(crate) fn has_owner(&self) -> bool {
+        self.inner.strong_count() > 0
+    }
+}
 
+impl TaskLease {
+    #[must_use]
+    pub fn new() -> Self {
+        let id = NEXT_TASK_LEASE_ID.fetch_add(1, Ordering::Relaxed);
         Self {
-            type_id: TypeId::of::<T>(),
-            hash: hasher.finish(),
+            inner: Arc::new(TaskLeaseState { id }),
         }
     }
 
     #[must_use]
-    fn map_namespace_with<Event, Effect, E2, X2, Namespace>(self, namespace: &Namespace) -> Self
-    where
-        Event: 'static,
-        Effect: 'static,
-        E2: 'static,
-        X2: 'static,
-        Namespace: Hash + 'static,
-    {
-        let mut hasher = FxHasher::default();
-        self.type_id.hash(&mut hasher);
-        self.hash.hash(&mut hasher);
-        TypeId::of::<Event>().hash(&mut hasher);
-        TypeId::of::<Effect>().hash(&mut hasher);
-        TypeId::of::<E2>().hash(&mut hasher);
-        TypeId::of::<X2>().hash(&mut hasher);
-        TypeId::of::<Namespace>().hash(&mut hasher);
-        namespace.hash(&mut hasher);
+    pub fn cancel_command<Event, Effect>(&self) -> Command<Event, Effect> {
+        Command::cancel(self)
+    }
 
-        Self {
-            type_id: TypeId::of::<(Event, Effect, E2, X2, Namespace)>(),
-            hash: hasher.finish(),
+    #[must_use]
+    pub(crate) fn id(&self) -> u64 {
+        self.inner.id
+    }
+
+    #[must_use]
+    pub(crate) fn downgrade(&self) -> TaskLeaseWeak {
+        TaskLeaseWeak {
+            id: self.id(),
+            inner: Arc::downgrade(&self.inner),
         }
     }
 }
 
-pub trait IntoCancelId {
-    fn into_cancel_id(self) -> CancelId;
+impl Default for TaskLease {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
-impl<T> IntoCancelId for T
-where
-    T: Hash + 'static,
-{
-    fn into_cancel_id(self) -> CancelId {
-        CancelId::new(self)
+impl std::fmt::Debug for TaskLease {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TaskLease").field("id", &self.id()).finish()
+    }
+}
+
+impl PartialEq for TaskLease {
+    fn eq(&self, other: &Self) -> bool {
+        self.id() == other.id()
+    }
+}
+
+impl Eq for TaskLease {}
+
+impl Hash for TaskLease {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.id().hash(state);
+    }
+}
+
+impl From<&TaskLease> for TaskLease {
+    fn from(value: &TaskLease) -> Self {
+        value.clone()
     }
 }
 
@@ -75,8 +108,8 @@ where
 pub enum CommandStep<Event, Effect> {
     Event(Event),
     Effect(Effect),
-    Tracked { id: CancelId, effect: Effect },
-    Cancel { id: CancelId },
+    Abortable { lease: TaskLease, effect: Effect },
+    Cancel { lease: TaskLease },
 }
 
 impl<Event, Effect> PartialEq for CommandStep<Event, Effect>
@@ -89,16 +122,18 @@ where
             (Self::Event(a), Self::Event(b)) => a == b,
             (Self::Effect(a), Self::Effect(b)) => a == b,
             (
-                Self::Tracked {
-                    id: id_a,
+                Self::Abortable {
+                    lease: lease_a,
                     effect: effect_a,
                 },
-                Self::Tracked {
-                    id: id_b,
+                Self::Abortable {
+                    lease: lease_b,
                     effect: effect_b,
                 },
-            ) => id_a == id_b && effect_a == effect_b,
-            (Self::Cancel { id: id_a }, Self::Cancel { id: id_b }) => id_a == id_b,
+            ) => lease_a == lease_b && effect_a == effect_b,
+            (Self::Cancel { lease: lease_a }, Self::Cancel { lease: lease_b }) => {
+                lease_a == lease_b
+            }
             _ => false,
         }
     }
@@ -113,12 +148,12 @@ where
         match self {
             Self::Event(e) => f.debug_tuple("Event").field(e).finish(),
             Self::Effect(x) => f.debug_tuple("Effect").field(x).finish(),
-            Self::Tracked { id, effect } => f
-                .debug_struct("Tracked")
-                .field("id", id)
+            Self::Abortable { lease, effect } => f
+                .debug_struct("Abortable")
+                .field("lease", lease)
                 .field("effect", effect)
                 .finish(),
-            Self::Cancel { id } => f.debug_struct("Cancel").field("id", id).finish(),
+            Self::Cancel { lease } => f.debug_struct("Cancel").field("lease", lease).finish(),
         }
     }
 }
@@ -208,18 +243,18 @@ impl<Event, Effect> Command<Event, Effect> {
         Self::from_step(CommandStep::Effect(effect.into()))
     }
 
-    /// Creates a command that schedules an effect in a cancellable slot.
-    pub fn track(id: impl IntoCancelId, effect: impl Into<Effect>) -> Self {
-        Self::from_step(CommandStep::Tracked {
-            id: id.into_cancel_id(),
+    /// Creates a command that schedules an abortable effect under `lease`.
+    pub fn abortable(lease: impl Into<TaskLease>, effect: impl Into<Effect>) -> Self {
+        Self::from_step(CommandStep::Abortable {
+            lease: lease.into(),
             effect: effect.into(),
         })
     }
 
-    /// Creates a command that cancels the task currently running in `id`.
-    pub fn cancel(id: impl IntoCancelId) -> Self {
+    /// Creates a command that cancels the abortable task owned by `lease`.
+    pub fn cancel(lease: impl Into<TaskLease>) -> Self {
         Self::from_step(CommandStep::Cancel {
-            id: id.into_cancel_id(),
+            lease: lease.into(),
         })
     }
 
@@ -257,59 +292,14 @@ impl<Event, Effect> Command<Event, Effect> {
         self.outputs.len()
     }
 
-    #[must_use]
-    pub(crate) fn has_cancellable_steps(&self) -> bool {
-        self.outputs.iter().any(|step| {
-            matches!(
-                step,
-                CommandStep::Tracked { .. } | CommandStep::Cancel { .. }
-            )
-        })
-    }
-
     /// Transform event and effect types.
     ///
     /// Useful when embedding child commands into parent commands.
-    ///
-    /// This method is only for non-cancellable commands.
-    ///
-    /// If the command contains tracked/cancel steps, this method panics because
-    /// implicit namespacing is ambiguous for repeated sibling instances.
-    /// Use [`Command::map_namespaced`] with an explicit instance key.
     #[must_use]
     pub fn map<E2, X2, FE, FX>(self, fe: FE, fx: FX) -> Command<E2, X2>
     where
         FE: Fn(Event) -> E2,
         FX: Fn(Effect) -> X2,
-        Event: 'static,
-        Effect: 'static,
-        E2: 'static,
-        X2: 'static,
-    {
-        assert!(
-            !self.has_cancellable_steps(),
-            "Command::map cannot safely namespace tracked/cancel steps; use Command::map_namespaced(namespace, ...)"
-        );
-
-        let namespace = (std::any::type_name::<FE>(), std::any::type_name::<FX>());
-        self.map_namespaced(namespace, fe, fx)
-    }
-
-    /// Transform event/effect types and namespace tracked cancellation slots
-    /// with an explicit instance key.
-    #[must_use]
-    pub fn map_namespaced<Namespace, E2, X2>(
-        self,
-        namespace: Namespace,
-        fe: impl Fn(Event) -> E2,
-        fx: impl Fn(Effect) -> X2,
-    ) -> Command<E2, X2>
-    where
-        Namespace: Hash + 'static,
-        Event: 'static,
-        Effect: 'static,
-        E2: 'static,
-        X2: 'static,
     {
         let outputs = self
             .outputs
@@ -317,13 +307,11 @@ impl<Event, Effect> Command<Event, Effect> {
             .map(|step| match step {
                 CommandStep::Event(event) => CommandStep::Event(fe(event)),
                 CommandStep::Effect(effect) => CommandStep::Effect(fx(effect)),
-                CommandStep::Tracked { id, effect } => CommandStep::Tracked {
-                    id: id.map_namespace_with::<Event, Effect, E2, X2, _>(&namespace),
+                CommandStep::Abortable { lease, effect } => CommandStep::Abortable {
+                    lease,
                     effect: fx(effect),
                 },
-                CommandStep::Cancel { id } => CommandStep::Cancel {
-                    id: id.map_namespace_with::<Event, Effect, E2, X2, _>(&namespace),
-                },
+                CommandStep::Cancel { lease } => CommandStep::Cancel { lease },
             })
             .collect();
 
@@ -372,12 +360,12 @@ impl<Event, Effect> Command<Event, Effect> {
         self
     }
 
-    /// Chain another tracked effect to this command.
+    /// Chain another abortable effect to this command.
     #[must_use]
     #[inline]
-    pub fn and_track(mut self, id: impl IntoCancelId, effect: impl Into<Effect>) -> Self {
-        self.outputs.push(CommandStep::Tracked {
-            id: id.into_cancel_id(),
+    pub fn and_abortable(mut self, lease: impl Into<TaskLease>, effect: impl Into<Effect>) -> Self {
+        self.outputs.push(CommandStep::Abortable {
+            lease: lease.into(),
             effect: effect.into(),
         });
         self
@@ -386,9 +374,9 @@ impl<Event, Effect> Command<Event, Effect> {
     /// Chain a cancellation step to this command.
     #[must_use]
     #[inline]
-    pub fn and_cancel(mut self, id: impl IntoCancelId) -> Self {
+    pub fn and_cancel(mut self, lease: impl Into<TaskLease>) -> Self {
         self.outputs.push(CommandStep::Cancel {
-            id: id.into_cancel_id(),
+            lease: lease.into(),
         });
         self
     }
@@ -470,7 +458,7 @@ impl<Event, Effect> From<()> for Command<Event, Effect> {
 /// These functions mirror the inherent constructors on [`Command`] but live in a module that can
 /// be glob-imported from the prelude (`use syzygy::prelude::command::*;`) for quick prototyping.
 pub mod builders {
-    use super::{Command, IntoCancelId};
+    use super::{Command, TaskLease};
 
     /// Construct a no-op command.
     #[inline]
@@ -502,21 +490,21 @@ pub mod builders {
         Command::effect(effect)
     }
 
-    /// Schedule a tracked effect slot.
+    /// Schedule an abortable effect under a task lease.
     #[inline]
     #[must_use]
-    pub fn track<Event, Effect>(
-        id: impl IntoCancelId,
+    pub fn abortable<Event, Effect>(
+        lease: impl Into<TaskLease>,
         effect: impl Into<Effect>,
     ) -> Command<Event, Effect> {
-        Command::track(id, effect)
+        Command::abortable(lease, effect)
     }
 
-    /// Cancel a tracked effect slot.
+    /// Cancel an abortable effect lease.
     #[inline]
     #[must_use]
-    pub fn cancel<Event, Effect>(id: impl IntoCancelId) -> Command<Event, Effect> {
-        Command::cancel(id)
+    pub fn cancel<Event, Effect>(lease: impl Into<TaskLease>) -> Command<Event, Effect> {
+        Command::cancel(lease)
     }
 
     /// Flatten multiple commands into one.
@@ -531,7 +519,7 @@ pub mod builders {
 
 #[cfg(test)]
 mod tests {
-    use super::{CancelId, Command, CommandStep};
+    use super::{Command, CommandStep, TaskLease};
 
     #[derive(Debug, Clone, PartialEq, Eq)]
     enum ChildEvent {
@@ -616,166 +604,68 @@ mod tests {
     }
 
     #[test]
-    fn tracked_steps_map_effects_are_namespaced_consistently() {
-        #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-        enum Slot {
-            Active,
-        }
-
+    fn abortable_steps_map_effects_without_namespace_changes() {
+        let lease = TaskLease::new();
         let mapped: Command<ChildEvent, ParentEffect> =
-            Command::track(Slot::Active, ChildEffect::Load)
-                .and_cancel(Slot::Active)
-                .map_namespaced(0_u8, std::convert::identity, ParentEffect::Child);
+            Command::abortable(&lease, ChildEffect::Load)
+                .and_cancel(&lease)
+                .map(std::convert::identity, ParentEffect::Child);
 
         let steps = mapped.into_iter().collect::<Vec<_>>();
         assert_eq!(steps.len(), 2);
 
         match (&steps[0], &steps[1]) {
             (
-                CommandStep::Tracked {
-                    id: tracked_id,
+                CommandStep::Abortable {
+                    lease: abortable_lease,
                     effect,
                 },
-                CommandStep::Cancel { id: cancel_id },
+                CommandStep::Cancel {
+                    lease: cancelled_lease,
+                },
             ) => {
                 assert_eq!(*effect, ParentEffect::Child(ChildEffect::Load));
-                assert_eq!(tracked_id, cancel_id);
-                assert_ne!(*tracked_id, CancelId::new(Slot::Active));
+                assert_eq!(abortable_lease, &lease);
+                assert_eq!(cancelled_lease, &lease);
             }
-            _ => panic!("expected tracked + cancel steps"),
+            _ => panic!("expected abortable + cancel steps"),
         }
     }
 
     #[test]
-    fn map_namespaces_tracked_slots_across_component_boundaries() {
-        #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-        enum Slot {
-            Active,
-        }
+    fn different_leases_remain_distinct_after_mapping() {
+        let first = TaskLease::new();
+        let second = TaskLease::new();
 
-        #[derive(Debug, Clone, PartialEq, Eq)]
-        struct ChildEventA;
-
-        #[derive(Debug, Clone, PartialEq, Eq)]
-        struct ChildEventB;
-
-        #[derive(Debug, Clone, PartialEq, Eq)]
-        enum ChildEffectA {
-            Work,
-        }
-
-        #[derive(Debug, Clone, PartialEq, Eq)]
-        enum ChildEffectB {
-            Work,
-        }
-
-        #[derive(Debug, Clone, PartialEq, Eq)]
-        enum ParentEvent {
-            A(ChildEventA),
-            B(ChildEventB),
-        }
-
-        #[derive(Debug, Clone, PartialEq, Eq)]
-        enum ParentEffect {
-            A(ChildEffectA),
-            B(ChildEffectB),
-        }
-
-        let a = Command::<ChildEventA, ChildEffectA>::track(Slot::Active, ChildEffectA::Work)
-            .map_namespaced((), ParentEvent::A, ParentEffect::A)
-            .into_iter()
-            .collect::<Vec<_>>();
-        let b = Command::<ChildEventB, ChildEffectB>::track(Slot::Active, ChildEffectB::Work)
-            .map_namespaced((), ParentEvent::B, ParentEffect::B)
-            .into_iter()
-            .collect::<Vec<_>>();
-
-        let a_id = match &a[0] {
-            CommandStep::Tracked { id, .. } => *id,
-            _ => panic!("expected tracked step"),
-        };
-        let b_id = match &b[0] {
-            CommandStep::Tracked { id, .. } => *id,
-            _ => panic!("expected tracked step"),
-        };
-
-        assert_ne!(a_id, b_id);
-    }
-
-    #[test]
-    fn map_panics_for_cancellable_steps_without_explicit_namespace() {
-        #[derive(Debug, Clone, PartialEq, Eq)]
-        struct ChildEvent;
-
-        #[derive(Debug, Clone, PartialEq, Eq)]
-        enum ChildEffect {
-            Work,
-        }
-
-        #[derive(Debug, Clone, PartialEq, Eq)]
-        enum ParentEvent {
-            Child(ChildEvent),
-        }
-
-        #[derive(Debug, Clone, PartialEq, Eq)]
-        enum ParentEffect {
-            Child(ChildEffect),
-        }
-
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let _ = Command::<ChildEvent, ChildEffect>::track(1_u8, ChildEffect::Work)
+        let first_command: Command<ParentEvent, ParentEffect> =
+            Command::abortable(&first, ChildEffect::Load)
                 .map(ParentEvent::Child, ParentEffect::Child);
-        }));
+        let second_command: Command<ParentEvent, ParentEffect> =
+            Command::abortable(&second, ChildEffect::Load)
+                .map(ParentEvent::Child, ParentEffect::Child);
 
-        assert!(result.is_err());
+        let Some(CommandStep::Abortable {
+            lease: first_lease, ..
+        }) = first_command.into_iter().next()
+        else {
+            panic!("expected abortable step");
+        };
+        let Some(CommandStep::Abortable {
+            lease: second_lease,
+            ..
+        }) = second_command.into_iter().next()
+        else {
+            panic!("expected abortable step");
+        };
+
+        assert_ne!(first_lease, second_lease);
     }
 
     #[test]
-    fn map_namespaced_disambiguates_identical_child_types() {
-        #[derive(Debug, Clone, PartialEq, Eq)]
-        struct ChildEvent;
+    fn task_lease_new_is_unique() {
+        let first = TaskLease::new();
+        let second = TaskLease::new();
 
-        #[derive(Debug, Clone, PartialEq, Eq)]
-        enum ChildEffect {
-            Work,
-        }
-
-        #[derive(Debug, Clone, PartialEq, Eq)]
-        enum ParentEvent {
-            Child(ChildEvent),
-        }
-
-        #[derive(Debug, Clone, PartialEq, Eq)]
-        enum ParentEffect {
-            Child(ChildEffect),
-        }
-
-        let a = Command::<ChildEvent, ChildEffect>::track(1_u8, ChildEffect::Work)
-            .map_namespaced(0_u8, ParentEvent::Child, ParentEffect::Child)
-            .into_iter()
-            .collect::<Vec<_>>();
-        let b = Command::<ChildEvent, ChildEffect>::track(1_u8, ChildEffect::Work)
-            .map_namespaced(1_u8, ParentEvent::Child, ParentEffect::Child)
-            .into_iter()
-            .collect::<Vec<_>>();
-
-        let a_id = match &a[0] {
-            CommandStep::Tracked { id, .. } => *id,
-            _ => panic!("expected tracked step"),
-        };
-        let b_id = match &b[0] {
-            CommandStep::Tracked { id, .. } => *id,
-            _ => panic!("expected tracked step"),
-        };
-
-        assert_ne!(a_id, b_id);
-    }
-
-    #[test]
-    fn cancel_id_preserves_type_identity() {
-        let u32_id = CancelId::new(7_u32);
-        let u64_id = CancelId::new(7_u64);
-
-        assert_ne!(u32_id, u64_id);
+        assert_ne!(first, second);
     }
 }

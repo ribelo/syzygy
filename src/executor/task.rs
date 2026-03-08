@@ -1,5 +1,4 @@
 use std::future::Future;
-use std::hash::Hash;
 use std::pin::Pin;
 use std::rc::Rc;
 
@@ -87,35 +86,8 @@ where
         let namespace = (std::any::type_name::<FE>(), std::any::type_name::<FX>());
         match self {
             Self::None => Task::None,
-            Self::Resolved(command) => {
-                assert!(
-                    !command.has_cancellable_steps(),
-                    "Task::map cannot safely namespace tracked/cancel steps; use Task::map_namespaced(namespace, ...)"
-                );
-                Task::Resolved(command.map_namespaced(namespace, fe, fx))
-            }
-            _ => self.map_impl(namespace, Rc::new(fe), Rc::new(fx), true),
-        }
-    }
-
-    #[must_use]
-    pub fn map_namespaced<Namespace, E2, X2, FE, FX>(
-        self,
-        namespace: Namespace,
-        fe: FE,
-        fx: FX,
-    ) -> Task<E2, X2>
-    where
-        Namespace: Hash + Clone + 'static,
-        FE: Fn(E) -> E2 + 'static,
-        FX: Fn(X) -> X2 + 'static,
-        E2: 'static,
-        X2: 'static,
-    {
-        match self {
-            Self::None => Task::None,
-            Self::Resolved(command) => Task::Resolved(command.map_namespaced(namespace, fe, fx)),
-            _ => self.map_impl(namespace, Rc::new(fe), Rc::new(fx), false),
+            Self::Resolved(command) => Task::Resolved(command.map(fe, fx)),
+            _ => self.map_impl(namespace, Rc::new(fe), Rc::new(fx)),
         }
     }
 
@@ -124,10 +96,9 @@ where
         namespace: Namespace,
         fe: Rc<FE>,
         fx: Rc<FX>,
-        reject_cancellable: bool,
     ) -> Task<E2, X2>
     where
-        Namespace: Hash + Clone + 'static,
+        Namespace: Clone + 'static,
         FE: Fn(E) -> E2 + 'static,
         FX: Fn(X) -> X2 + 'static,
         E2: 'static,
@@ -136,43 +107,23 @@ where
         match self {
             Self::None => Task::None,
             Self::Resolved(command) => {
-                assert!(
-                    !(reject_cancellable && command.has_cancellable_steps()),
-                    "Task::map cannot safely namespace tracked/cancel steps; use Task::map_namespaced(namespace, ...)"
-                );
-                Task::Resolved(command.map_namespaced(
-                    namespace,
-                    |event| fe(event),
-                    |effect| fx(effect),
-                ))
+                Task::Resolved(command.map(|event| fe(event), |effect| fx(effect)))
             }
             Self::Future(future) => {
                 let fe = Rc::clone(&fe);
                 let fx = Rc::clone(&fx);
                 Task::Future(Box::pin(async move {
                     let command = future.await;
-                    if reject_cancellable && command.has_cancellable_steps() {
-                        report_map_namespace_violation();
-                        return Command::none();
-                    }
-
-                    command.map_namespaced(namespace, |event| fe(event), |effect| fx(effect))
+                    let _ = namespace;
+                    command.map(|event| fe(event), |effect| fx(effect))
                 }))
             }
             Self::Stream(stream) => {
                 let fe = Rc::clone(&fe);
                 let fx = Rc::clone(&fx);
                 Task::Stream(Box::pin(stream.map(move |command| {
-                    if reject_cancellable && command.has_cancellable_steps() {
-                        report_map_namespace_violation();
-                        return Command::none();
-                    }
-
-                    command.map_namespaced(
-                        namespace.clone(),
-                        |event| fe(event),
-                        |effect| fx(effect),
-                    )
+                    let _ = namespace.clone();
+                    command.map(|event| fe(event), |effect| fx(effect))
                 })))
             }
         }
@@ -193,13 +144,6 @@ where
     {
         self.map(std::convert::identity, f)
     }
-}
-
-fn report_map_namespace_violation() {
-    #[cfg(feature = "tracing")]
-    tracing::error!(
-        "Task::map dropped command with tracked/cancel steps; use Task::map_namespaced(namespace, ...)"
-    );
 }
 
 #[cfg(test)]
@@ -226,46 +170,38 @@ mod tests {
     }
 
     #[test]
-    fn map_namespaced_keeps_task_and_command_cancel_ids_aligned() {
-        let tracked = Command::<ChildEvent, ChildEffect>::track(1_u8, ChildEffect)
-            .map_namespaced(9_u8, ParentEvent::Child, ParentEffect::Child)
+    fn map_keeps_abortable_task_and_command_leases_aligned() {
+        let lease = crate::command::TaskLease::new();
+        let abortable = Command::<ChildEvent, ChildEffect>::abortable(&lease, ChildEffect)
+            .map(ParentEvent::Child, ParentEffect::Child)
             .into_iter()
             .collect::<Vec<_>>();
 
-        let cancel_task = Task::<ChildEvent, ChildEffect>::resolved(Command::cancel(1_u8))
-            .map_namespaced(9_u8, ParentEvent::Child, ParentEffect::Child);
+        let cancel_task = Task::<ChildEvent, ChildEffect>::resolved(Command::cancel(&lease))
+            .map(ParentEvent::Child, ParentEffect::Child);
 
         let cancel = match cancel_task {
             Task::Resolved(command) => command.into_iter().collect::<Vec<_>>(),
             _ => panic!("expected resolved task"),
         };
 
-        let tracked_id = match &tracked[0] {
-            CommandStep::Tracked { id, .. } => *id,
-            _ => panic!("expected tracked command"),
+        let abortable_lease = match &abortable[0] {
+            CommandStep::Abortable { lease, .. } => lease.clone(),
+            _ => panic!("expected abortable command"),
         };
 
-        let cancel_id = match &cancel[0] {
-            CommandStep::Cancel { id } => *id,
+        let cancel_lease = match &cancel[0] {
+            CommandStep::Cancel { lease } => lease.clone(),
             _ => panic!("expected cancel command"),
         };
 
-        assert_eq!(tracked_id, cancel_id);
+        assert_eq!(abortable_lease, cancel_lease);
     }
 
     #[test]
-    fn map_panics_for_cancellable_steps_without_namespace() {
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let _ = Task::<ChildEvent, ChildEffect>::resolved(Command::cancel(1_u8))
-                .map(ParentEvent::Child, ParentEffect::Child);
-        }));
-
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn map_future_drops_cancellable_command_without_panicking() {
-        let mapped = Task::<ChildEvent, ChildEffect>::once(async { Command::cancel(1_u8) })
+    fn map_future_keeps_abortable_commands() {
+        let lease = crate::command::TaskLease::new();
+        let mapped = Task::<ChildEvent, ChildEffect>::once(async move { Command::cancel(&lease) })
             .map(ParentEvent::Child, ParentEffect::Child);
 
         let command = match mapped {
@@ -273,14 +209,19 @@ mod tests {
             _ => panic!("expected future task"),
         };
 
-        assert!(command.is_empty());
+        let steps = command.into_iter().collect::<Vec<_>>();
+        assert_eq!(steps.len(), 1);
+        assert!(matches!(steps[0], CommandStep::Cancel { .. }));
     }
 
     #[test]
-    fn map_stream_drops_cancellable_commands_without_panicking() {
+    fn map_stream_keeps_abortable_commands() {
+        let lease = crate::command::TaskLease::new();
         let mapped =
-            Task::<ChildEvent, ChildEffect>::stream(futures::stream::iter([Command::cancel(1_u8)]))
-                .map(ParentEvent::Child, ParentEffect::Child);
+            Task::<ChildEvent, ChildEffect>::stream(futures::stream::iter([Command::cancel(
+                &lease,
+            )]))
+            .map(ParentEvent::Child, ParentEffect::Child);
 
         let commands = match mapped {
             Task::Stream(stream) => futures::executor::block_on(stream.collect::<Vec<_>>()),
@@ -288,6 +229,8 @@ mod tests {
         };
 
         assert_eq!(commands.len(), 1);
-        assert!(commands[0].is_empty());
+        let steps = commands[0].clone().into_iter().collect::<Vec<_>>();
+        assert_eq!(steps.len(), 1);
+        assert!(matches!(steps[0], CommandStep::Cancel { .. }));
     }
 }

@@ -1,4 +1,6 @@
-use syzygy::command::Command;
+use std::sync::OnceLock;
+
+use syzygy::command::{Command, TaskLease};
 use syzygy::extract::EventContext;
 use syzygy::test_store::{Exhaustivity, TestStore};
 
@@ -13,9 +15,14 @@ pub enum Effect {
     B,
 }
 
+fn lease() -> TaskLease {
+    static LEASE: OnceLock<TaskLease> = OnceLock::new();
+    LEASE.get_or_init(TaskLease::new).clone()
+}
+
 fn handler(event: Event, _ctx: &EventContext<()>) -> Command<Event, Effect> {
     match event {
-        Event::EmitTwo => Command::track(1, Effect::A).and_track(1, Effect::B),
+        Event::EmitTwo => Command::abortable(lease(), Effect::A).and_abortable(lease(), Effect::B),
     }
 }
 
@@ -24,7 +31,7 @@ fn overwrite_records_implicit_cancellation_for_exhaustivity() {
     let mut store = TestStore::new((), handler).with_exhaustivity(Exhaustivity::On);
     store.send(Event::EmitTwo);
 
-    store.assert_cancelled(1);
-    store.assert_tracked_effect(1, Effect::B);
-    store.assert_slot_empty(1);
+    store.assert_cancelled(lease());
+    store.assert_abortable_effect(lease(), Effect::B);
+    store.assert_lease_empty(lease());
 }

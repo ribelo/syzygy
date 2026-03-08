@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 use futures::stream::StreamExt;
 
 use crate::activity::Activity;
-use crate::command::{CancelId, Command, CommandStep};
+use crate::command::{Command, CommandStep, TaskLease, TaskLeaseWeak};
 use crate::core::EventSender;
 use crate::error::ShellError;
 use crate::executor::Task;
@@ -19,17 +19,20 @@ type TaskHandle = crate::runtime::JoinHandle<()>;
 
 #[derive(Debug)]
 struct ActiveTaskEntry {
+    owner: TaskLeaseWeak,
     token: u64,
     handle: TaskHandle,
 }
 
-type ActiveTasks = Rc<RefCell<HashMap<CancelId, ActiveTaskEntry>>>;
+type ActiveTasks = Rc<RefCell<HashMap<u64, ActiveTaskEntry>>>;
 type UntrackedTasks = Rc<RefCell<Vec<TaskHandle>>>;
 type DeferredEvents<E> = Rc<RefCell<VecDeque<E>>>;
 type ClosedFlag = Rc<Cell<bool>>;
 
 #[derive(Debug)]
 struct SpawnedTask {
+    lease_id: Option<u64>,
+    owner: Option<TaskLeaseWeak>,
     token: Option<u64>,
     handle: TaskHandle,
 }
@@ -38,22 +41,22 @@ struct SpawnedTask {
 struct TaskLifecycleGuard {
     activity: Activity,
     active_tasks: ActiveTasks,
-    tracked_slot: Option<CancelId>,
-    tracked_token: Option<u64>,
+    lease_id: Option<u64>,
+    token: Option<u64>,
 }
 
 impl TaskLifecycleGuard {
     fn new(
         activity: Activity,
         active_tasks: ActiveTasks,
-        tracked_slot: Option<CancelId>,
-        tracked_token: Option<u64>,
+        lease_id: Option<u64>,
+        token: Option<u64>,
     ) -> Self {
         Self {
             activity,
             active_tasks,
-            tracked_slot,
-            tracked_token,
+            lease_id,
+            token,
         }
     }
 }
@@ -61,8 +64,8 @@ impl TaskLifecycleGuard {
 impl Drop for TaskLifecycleGuard {
     fn drop(&mut self) {
         self.activity.dec();
-        if let (Some(id), Some(token)) = (self.tracked_slot, self.tracked_token) {
-            cleanup_tracked_slot_if_current(&self.active_tasks, id, token);
+        if let (Some(lease_id), Some(token)) = (self.lease_id, self.token) {
+            cleanup_active_task_if_current(&self.active_tasks, lease_id, token);
         }
     }
 }
@@ -124,6 +127,7 @@ where
             return Ok(());
         }
 
+        prune_orphaned_active_tasks(&self.active_tasks);
         self.queue.clear();
         self.queue.push_back(command);
 
@@ -141,6 +145,7 @@ where
     }
 
     pub fn drain(&mut self) -> Result<usize, ShellError> {
+        prune_orphaned_active_tasks(&self.active_tasks);
         prune_finished_untracked_tasks(&self.untracked_tasks);
 
         let mut progressed = flush_deferred_events(&self.event_tx, &self.deferred_events);
@@ -157,6 +162,7 @@ where
             }
         });
 
+        prune_orphaned_active_tasks(&self.active_tasks);
         prune_finished_untracked_tasks(&self.untracked_tasks);
 
         Ok(progressed)
@@ -175,7 +181,7 @@ where
     pub fn shutdown(&mut self) {
         self.closed.set(true);
 
-        let tracked_tasks = {
+        let active_tasks = {
             let mut active_tasks = self.active_tasks.borrow_mut();
             std::mem::take(&mut *active_tasks)
         };
@@ -185,11 +191,12 @@ where
         };
         self.deferred_events.borrow_mut().clear();
 
-        drop(tracked_tasks);
+        drop(active_tasks);
         drop(untracked_tasks);
     }
 
     pub fn wait_for_executors(&self) {
+        prune_orphaned_active_tasks(&self.active_tasks);
         prune_finished_untracked_tasks(&self.untracked_tasks);
 
         if self.activity.load() == 0 {
@@ -201,6 +208,7 @@ where
             .unwrap_or_else(Instant::now);
 
         while self.activity.load() > 0 {
+            prune_orphaned_active_tasks(&self.active_tasks);
             prune_finished_untracked_tasks(&self.untracked_tasks);
 
             let now = Instant::now();
@@ -235,14 +243,15 @@ where
             }
         }
 
+        prune_orphaned_active_tasks(&self.active_tasks);
         prune_finished_untracked_tasks(&self.untracked_tasks);
     }
 }
 
-fn cancel_tracked_slot(active_tasks: &ActiveTasks, id: CancelId) {
+fn cancel_active_task(active_tasks: &ActiveTasks, lease_id: u64) {
     let removed_entry = {
         let mut active_tasks = active_tasks.borrow_mut();
-        active_tasks.remove(&id)
+        active_tasks.remove(&lease_id)
     };
 
     if let Some(entry) = removed_entry {
@@ -250,8 +259,9 @@ fn cancel_tracked_slot(active_tasks: &ActiveTasks, id: CancelId) {
     }
 }
 
-fn cleanup_tracked_slot_if_current(active_tasks: &ActiveTasks, id: CancelId, token: u64) {
-    if let std::collections::hash_map::Entry::Occupied(entry) = active_tasks.borrow_mut().entry(id)
+fn cleanup_active_task_if_current(active_tasks: &ActiveTasks, lease_id: u64, token: u64) {
+    if let std::collections::hash_map::Entry::Occupied(entry) =
+        active_tasks.borrow_mut().entry(lease_id)
     {
         if entry.get().token == token {
             entry.remove();
@@ -259,18 +269,46 @@ fn cleanup_tracked_slot_if_current(active_tasks: &ActiveTasks, id: CancelId, tok
     }
 }
 
-fn tracked_slot_is_current(
+fn active_task_is_current(
     active_tasks: &ActiveTasks,
-    tracked_slot: Option<CancelId>,
-    tracked_token: Option<u64>,
+    lease_id: Option<u64>,
+    token: Option<u64>,
 ) -> bool {
-    match (tracked_slot, tracked_token) {
-        (Some(id), Some(token)) => active_tasks
+    match (lease_id, token) {
+        (Some(lease_id), Some(token)) => active_tasks
             .borrow()
-            .get(&id)
+            .get(&lease_id)
             .is_some_and(|entry| entry.token == token),
         (None, None) => true,
         _ => false,
+    }
+}
+
+fn abortable_task_is_alive(
+    active_tasks: &ActiveTasks,
+    owner: Option<&TaskLeaseWeak>,
+    lease_id: Option<u64>,
+    token: Option<u64>,
+) -> bool {
+    let owner_alive = match owner {
+        Some(owner) => owner.has_owner(),
+        None => true,
+    };
+    owner_alive && active_task_is_current(active_tasks, lease_id, token)
+}
+
+fn prune_orphaned_active_tasks(active_tasks: &ActiveTasks) {
+    let orphaned = {
+        let active_tasks = active_tasks.borrow();
+        active_tasks
+            .values()
+            .filter(|entry| !entry.owner.has_owner())
+            .map(|entry| entry.owner.id())
+            .collect::<Vec<_>>()
+    };
+
+    for lease_id in orphaned {
+        cancel_active_task(active_tasks, lease_id);
     }
 }
 
@@ -334,11 +372,11 @@ where
                         untracked_tasks.borrow_mut().push(spawned.handle);
                     }
                 }
-                CommandStep::Tracked { id, effect } => {
-                    cancel_tracked_slot(active_tasks, id);
+                CommandStep::Abortable { lease, effect } => {
+                    cancel_active_task(active_tasks, lease.id());
                     if let Some(spawned) = run_effect_task(
                         effect,
-                        Some(id),
+                        Some(lease),
                         event_tx,
                         effect_handler,
                         resources,
@@ -349,10 +387,13 @@ where
                         closed,
                         queue,
                     ) {
-                        if let Some(token) = spawned.token {
+                        if let (Some(lease_id), Some(owner), Some(token)) =
+                            (spawned.lease_id, spawned.owner, spawned.token)
+                        {
                             active_tasks.borrow_mut().insert(
-                                id,
+                                lease_id,
                                 ActiveTaskEntry {
+                                    owner,
                                     token,
                                     handle: spawned.handle,
                                 },
@@ -362,8 +403,8 @@ where
                         }
                     }
                 }
-                CommandStep::Cancel { id } => {
-                    cancel_tracked_slot(active_tasks, id);
+                CommandStep::Cancel { lease } => {
+                    cancel_active_task(active_tasks, lease.id());
                 }
             }
         }
@@ -375,7 +416,7 @@ where
 #[allow(clippy::too_many_arguments)]
 fn run_effect_task<E, X>(
     effect: X,
-    tracked_slot: Option<CancelId>,
+    lease: Option<TaskLease>,
     event_tx: &EventSender<E>,
     effect_handler: &EffectHandlerFn<E, X>,
     resources: &Rc<ResourceMap>,
@@ -394,7 +435,7 @@ where
     let task = effect_handler(effect, &ctx);
     spawn_task(
         task,
-        tracked_slot,
+        lease,
         event_tx,
         effect_handler,
         resources,
@@ -410,7 +451,7 @@ where
 #[allow(clippy::too_many_arguments)]
 fn spawn_task<E, X>(
     task: Task<E, X>,
-    tracked_slot: Option<CancelId>,
+    lease: Option<TaskLease>,
     event_tx: &EventSender<E>,
     effect_handler: &EffectHandlerFn<E, X>,
     resources: &Rc<ResourceMap>,
@@ -425,6 +466,10 @@ where
     E: 'static,
     X: 'static,
 {
+    let lease_id = lease.as_ref().map(TaskLease::id);
+    let owner = lease.as_ref().map(TaskLease::downgrade);
+    drop(lease);
+
     match task {
         Task::None => None,
         Task::Resolved(command) => {
@@ -432,6 +477,10 @@ where
             None
         }
         Task::Future(future) => {
+            if owner.as_ref().is_some_and(|owner| !owner.has_owner()) {
+                return None;
+            }
+
             let has_runtime = crate::runtime::try_with_current(|| ()).is_ok();
             if !has_runtime {
                 let command = crate::runtime::block_on(future);
@@ -447,12 +496,13 @@ where
             let untracked_tasks = Rc::clone(untracked_tasks);
             let deferred_events = Rc::clone(deferred_events);
             let closed = Rc::clone(closed);
-            let token = tracked_slot.map(|_| next_task_token());
+            let token = lease_id.map(|_| next_task_token());
+            let owner_for_task = owner.clone();
             activity.inc();
             let lifecycle_guard = TaskLifecycleGuard::new(
                 activity.clone(),
                 Rc::clone(&active_tasks),
-                tracked_slot,
+                lease_id,
                 token,
             );
 
@@ -463,7 +513,8 @@ where
                     return;
                 }
 
-                if !tracked_slot_is_current(&active_tasks, tracked_slot, token) {
+                if !abortable_task_is_alive(&active_tasks, owner_for_task.as_ref(), lease_id, token)
+                {
                     return;
                 }
 
@@ -480,9 +531,18 @@ where
                 );
             });
 
-            Some(SpawnedTask { token, handle })
+            Some(SpawnedTask {
+                lease_id,
+                owner,
+                token,
+                handle,
+            })
         }
         Task::Stream(stream) => {
+            if owner.as_ref().is_some_and(|owner| !owner.has_owner()) {
+                return None;
+            }
+
             let has_runtime = crate::runtime::try_with_current(|| ()).is_ok();
             if !has_runtime {
                 let commands = crate::runtime::block_on(async {
@@ -511,12 +571,13 @@ where
             let untracked_tasks = Rc::clone(untracked_tasks);
             let deferred_events = Rc::clone(deferred_events);
             let closed = Rc::clone(closed);
-            let token = tracked_slot.map(|_| next_task_token());
+            let token = lease_id.map(|_| next_task_token());
+            let owner_for_task = owner.clone();
             activity.inc();
             let lifecycle_guard = TaskLifecycleGuard::new(
                 activity.clone(),
                 Rc::clone(&active_tasks),
-                tracked_slot,
+                lease_id,
                 token,
             );
 
@@ -528,7 +589,12 @@ where
                         break;
                     }
 
-                    if !tracked_slot_is_current(&active_tasks, tracked_slot, token) {
+                    if !abortable_task_is_alive(
+                        &active_tasks,
+                        owner_for_task.as_ref(),
+                        lease_id,
+                        token,
+                    ) {
                         break;
                     }
 
@@ -548,7 +614,12 @@ where
                         break;
                     }
 
-                    if !tracked_slot_is_current(&active_tasks, tracked_slot, token) {
+                    if !abortable_task_is_alive(
+                        &active_tasks,
+                        owner_for_task.as_ref(),
+                        lease_id,
+                        token,
+                    ) {
                         break;
                     }
 
@@ -561,7 +632,12 @@ where
                 }
             });
 
-            Some(SpawnedTask { token, handle })
+            Some(SpawnedTask {
+                lease_id,
+                owner,
+                token,
+                handle,
+            })
         }
     }
 }

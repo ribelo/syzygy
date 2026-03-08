@@ -1,4 +1,6 @@
-use syzygy::command::Command;
+use std::sync::OnceLock;
+
+use syzygy::command::{Command, TaskLease};
 use syzygy::extract::EventContext;
 use syzygy::test_store::{assert_panic_contains, Exhaustivity, TestStore};
 
@@ -10,9 +12,14 @@ pub enum Event {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Effect {}
 
+fn lease() -> TaskLease {
+    static LEASE: OnceLock<TaskLease> = OnceLock::new();
+    LEASE.get_or_init(TaskLease::new).clone()
+}
+
 fn handler(event: Event, _ctx: &EventContext<()>) -> Command<Event, Effect> {
     match event {
-        Event::Cancel => Command::cancel(1),
+        Event::Cancel => Command::cancel(lease()),
     }
 }
 

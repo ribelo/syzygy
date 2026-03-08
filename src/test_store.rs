@@ -11,7 +11,7 @@ use std::panic::{self, AssertUnwindSafe};
 #[cfg(feature = "shell")]
 use futures::StreamExt;
 
-use crate::command::{CancelId, Command, CommandStep, IntoCancelId};
+use crate::command::{Command, CommandStep, TaskLease};
 use crate::core::Core;
 #[cfg(feature = "shell")]
 use crate::executor::Task;
@@ -40,7 +40,7 @@ pub enum Exhaustivity {
 
 #[derive(Debug)]
 struct BufferedEffect<X> {
-    id: Option<CancelId>,
+    lease: Option<TaskLease>,
     effect: X,
 }
 
@@ -56,7 +56,7 @@ where
     core: Core<E, X, M>,
     pending_events: VecDeque<E>,
     pending_effects: Vec<BufferedEffect<X>>,
-    cancelled_slots: Vec<CancelId>,
+    cancelled_leases: Vec<TaskLease>,
     max_event_steps: usize,
     exhaustivity: Exhaustivity,
     effects_asserted: bool,
@@ -78,7 +78,7 @@ where
             core,
             pending_events: VecDeque::new(),
             pending_effects: Vec::new(),
-            cancelled_slots: Vec::new(),
+            cancelled_leases: Vec::new(),
             max_event_steps: DEFAULT_MAX_EVENT_STEPS,
             exhaustivity: Exhaustivity::Off,
             effects_asserted: true,
@@ -117,13 +117,13 @@ where
     pub fn send(&mut self, event: E) {
         let send_allowed = self.exhaustivity == Exhaustivity::Off
             || self.effects_asserted
-            || (self.pending_effects.is_empty() && self.cancelled_slots.is_empty());
+            || (self.pending_effects.is_empty() && self.cancelled_leases.is_empty());
         assert!(
             send_allowed,
             "must assert effects before sending next event. {} unasserted outputs pending ({} effects, {} cancellations).",
-            self.pending_effects.len() + self.cancelled_slots.len(),
+            self.pending_effects.len() + self.cancelled_leases.len(),
             self.pending_effects.len(),
-            self.cancelled_slots.len(),
+            self.cancelled_leases.len(),
         );
 
         self.pending_events.push_back(event);
@@ -143,7 +143,7 @@ where
         }
 
         self.effects_asserted = !touched_outputs
-            || (self.pending_effects.is_empty() && self.cancelled_slots.is_empty());
+            || (self.pending_effects.is_empty() && self.cancelled_leases.is_empty());
     }
 
     pub fn send_assert(&mut self, event: E, update_expected: impl FnOnce(&mut M)) -> &mut Self
@@ -195,14 +195,14 @@ where
 
     /// Drains and returns all buffered effects in emission order.
     pub fn take_effects(&mut self) -> Vec<X> {
-        let tracked_slots = self
+        let abortable_leases = self
             .pending_effects
             .iter()
-            .filter_map(|buffered| buffered.id)
+            .filter_map(|buffered| buffered.lease.clone())
             .collect::<Vec<_>>();
         assert!(
-            tracked_slots.is_empty(),
-            "cannot take plain effects while tracked effects are pending in slots {tracked_slots:?}; use assert_tracked_effect()"
+            abortable_leases.is_empty(),
+            "cannot take plain effects while abortable effects are pending in leases {abortable_leases:?}; use assert_abortable_effect()"
         );
 
         let effects = self
@@ -210,7 +210,7 @@ where
             .drain(..)
             .map(|buffered| buffered.effect)
             .collect();
-        self.effects_asserted = self.pending_effects.is_empty() && self.cancelled_slots.is_empty();
+        self.effects_asserted = self.pending_effects.is_empty() && self.cancelled_leases.is_empty();
         effects
     }
 
@@ -220,38 +220,38 @@ where
         I: IntoIterator<Item = X>,
         X: std::fmt::Debug + PartialEq,
     {
-        let tracked_slots = self
+        let abortable_leases = self
             .pending_effects
             .iter()
-            .filter_map(|buffered| buffered.id)
+            .filter_map(|buffered| buffered.lease.clone())
             .collect::<Vec<_>>();
         assert!(
-            tracked_slots.is_empty(),
-            "cannot assert plain effects while tracked effects are pending in slots {tracked_slots:?}; use assert_tracked_effect()"
+            abortable_leases.is_empty(),
+            "cannot assert plain effects while abortable effects are pending in leases {abortable_leases:?}; use assert_abortable_effect()"
         );
 
         let expected: Vec<X> = expected.into_iter().collect();
         let actual = self.take_effects();
         assert_eq!(actual, expected, "unexpected emitted effects");
-        self.effects_asserted = self.pending_effects.is_empty() && self.cancelled_slots.is_empty();
+        self.effects_asserted = self.pending_effects.is_empty() && self.cancelled_leases.is_empty();
     }
 
-    /// Assert and consume a single tracked effect in this test step.
-    pub fn assert_tracked_effect(&mut self, id: impl IntoCancelId, expected: X) -> X
+    /// Assert and consume a single abortable effect in this test step.
+    pub fn assert_abortable_effect(&mut self, lease: impl Into<TaskLease>, expected: X) -> X
     where
         X: std::fmt::Debug + PartialEq,
     {
-        let id = id.into_cancel_id();
+        let lease = lease.into();
         let Some(index) = self
             .pending_effects
             .iter()
-            .position(|buffered| buffered.id == Some(id))
+            .position(|buffered| buffered.lease.as_ref() == Some(&lease))
         else {
             panic!(
-                "expected tracked effect in slot {id:?}, but pending tracked slots were {:?}",
+                "expected abortable effect in lease {lease:?}, but pending abortable leases were {:?}",
                 self.pending_effects
                     .iter()
-                    .filter_map(|buffered| buffered.id)
+                    .filter_map(|buffered| buffered.lease.clone())
                     .collect::<Vec<_>>()
             );
         };
@@ -259,38 +259,51 @@ where
         let buffered = self.pending_effects.remove(index);
         assert_eq!(
             buffered.effect, expected,
-            "unexpected tracked effect for slot {id:?}"
+            "unexpected abortable effect for lease {lease:?}"
         );
 
-        self.effects_asserted = self.pending_effects.is_empty() && self.cancelled_slots.is_empty();
+        self.effects_asserted = self.pending_effects.is_empty() && self.cancelled_leases.is_empty();
         buffered.effect
     }
 
-    /// Assert and consume the next cancellation slot.
-    pub fn assert_cancelled(&mut self, id: impl IntoCancelId) {
-        let id = id.into_cancel_id();
-        let Some(actual) = self.cancelled_slots.first().copied() else {
-            panic!("expected slot {id:?} to be cancelled, but no cancellations were pending");
+    /// Backwards-compatible alias for [`assert_abortable_effect`](Self::assert_abortable_effect).
+    pub fn assert_tracked_effect(&mut self, lease: impl Into<TaskLease>, expected: X) -> X
+    where
+        X: std::fmt::Debug + PartialEq,
+    {
+        self.assert_abortable_effect(lease, expected)
+    }
+
+    /// Assert and consume the next cancellation lease.
+    pub fn assert_cancelled(&mut self, lease: impl Into<TaskLease>) {
+        let lease = lease.into();
+        let Some(actual) = self.cancelled_leases.first().cloned() else {
+            panic!("expected lease {lease:?} to be cancelled, but no cancellations were pending");
         };
 
         assert_eq!(
-            actual, id,
-            "expected next cancelled slot to be {id:?}, got {actual:?}"
+            actual, lease,
+            "expected next cancelled lease to be {lease:?}, got {actual:?}"
         );
-        self.cancelled_slots.remove(0);
-        self.effects_asserted = self.pending_effects.is_empty() && self.cancelled_slots.is_empty();
+        self.cancelled_leases.remove(0);
+        self.effects_asserted = self.pending_effects.is_empty() && self.cancelled_leases.is_empty();
     }
 
-    /// Assert that a tracked slot has no pending effect.
-    pub fn assert_slot_empty(&self, id: impl IntoCancelId) {
-        let id = id.into_cancel_id();
+    /// Assert that an abortable lease has no pending effect.
+    pub fn assert_lease_empty(&self, lease: impl Into<TaskLease>) {
+        let lease = lease.into();
         assert!(
             !self
                 .pending_effects
                 .iter()
-                .any(|buffered| buffered.id == Some(id)),
-            "expected slot {id:?} to be empty"
+                .any(|buffered| buffered.lease.as_ref() == Some(&lease)),
+            "expected lease {lease:?} to be empty"
         );
+    }
+
+    /// Backwards-compatible alias for [`assert_lease_empty`](Self::assert_lease_empty).
+    pub fn assert_slot_empty(&self, lease: impl Into<TaskLease>) {
+        self.assert_lease_empty(lease);
     }
 
     /// Assert that no effects are currently buffered.
@@ -299,13 +312,13 @@ where
         X: std::fmt::Debug,
     {
         assert!(
-            self.pending_effects.is_empty() && self.cancelled_slots.is_empty(),
-            "expected no emitted effects/cancellations, got effects {:?} and cancelled slots {:?}",
+            self.pending_effects.is_empty() && self.cancelled_leases.is_empty(),
+            "expected no emitted effects/cancellations, got effects {:?} and cancelled leases {:?}",
             self.pending_effects
                 .iter()
                 .map(|buffered| &buffered.effect)
                 .collect::<Vec<_>>(),
-            self.cancelled_slots
+            self.cancelled_leases
         );
         self.effects_asserted = true;
     }
@@ -328,7 +341,7 @@ where
             self.drive_received_task(task);
         }
 
-        self.effects_asserted = self.pending_effects.is_empty() && self.cancelled_slots.is_empty();
+        self.effects_asserted = self.pending_effects.is_empty() && self.cancelled_leases.is_empty();
     }
 
     /// Async variant of [`receive`](Self::receive) that can safely run inside
@@ -344,7 +357,7 @@ where
             self.drive_received_task_async(task).await;
         }
 
-        self.effects_asserted = self.pending_effects.is_empty() && self.cancelled_slots.is_empty();
+        self.effects_asserted = self.pending_effects.is_empty() && self.cancelled_leases.is_empty();
     }
 
     #[cfg(feature = "shell")]
@@ -413,15 +426,17 @@ where
                     self.send_from_receive(event);
                 }
                 CommandStep::Effect(effect) => {
-                    self.pending_effects
-                        .push(BufferedEffect { id: None, effect });
+                    self.pending_effects.push(BufferedEffect {
+                        lease: None,
+                        effect,
+                    });
                 }
-                CommandStep::Tracked { id, effect } => {
-                    self.upsert_tracked_effect(id, effect);
+                CommandStep::Abortable { lease, effect } => {
+                    self.upsert_abortable_effect(lease, effect);
                 }
-                CommandStep::Cancel { id } => {
-                    self.cancel_tracked_effect(id);
-                    self.cancelled_slots.push(id);
+                CommandStep::Cancel { lease } => {
+                    self.cancel_abortable_effect(&lease);
+                    self.cancelled_leases.push(lease);
                 }
             }
         }
@@ -442,17 +457,19 @@ where
                 }
                 CommandStep::Effect(effect) => {
                     touched_outputs = true;
-                    self.pending_effects
-                        .push(BufferedEffect { id: None, effect });
+                    self.pending_effects.push(BufferedEffect {
+                        lease: None,
+                        effect,
+                    });
                 }
-                CommandStep::Tracked { id, effect } => {
+                CommandStep::Abortable { lease, effect } => {
                     touched_outputs = true;
-                    self.upsert_tracked_effect(id, effect);
+                    self.upsert_abortable_effect(lease, effect);
                 }
-                CommandStep::Cancel { id } => {
+                CommandStep::Cancel { lease } => {
                     touched_outputs = true;
-                    self.cancel_tracked_effect(id);
-                    self.cancelled_slots.push(id);
+                    self.cancel_abortable_effect(&lease);
+                    self.cancelled_leases.push(lease);
                 }
             }
         }
@@ -460,27 +477,27 @@ where
         touched_outputs
     }
 
-    fn upsert_tracked_effect(&mut self, id: CancelId, effect: X) {
+    fn upsert_abortable_effect(&mut self, lease: TaskLease, effect: X) {
         if let Some(index) = self
             .pending_effects
             .iter()
-            .position(|buffered| buffered.id == Some(id))
+            .position(|buffered| buffered.lease.as_ref() == Some(&lease))
         {
             self.pending_effects.remove(index);
-            self.cancelled_slots.push(id);
+            self.cancelled_leases.push(lease.clone());
         }
 
         self.pending_effects.push(BufferedEffect {
-            id: Some(id),
+            lease: Some(lease),
             effect,
         });
     }
 
-    fn cancel_tracked_effect(&mut self, id: CancelId) {
+    fn cancel_abortable_effect(&mut self, lease: &TaskLease) {
         if let Some(index) = self
             .pending_effects
             .iter()
-            .position(|buffered| buffered.id == Some(id))
+            .position(|buffered| buffered.lease.as_ref() == Some(lease))
         {
             self.pending_effects.remove(index);
         }
@@ -498,16 +515,16 @@ where
         }
 
         if self.effects_asserted
-            || (self.pending_effects.is_empty() && self.cancelled_slots.is_empty())
+            || (self.pending_effects.is_empty() && self.cancelled_leases.is_empty())
         {
             return;
         }
 
         let message = format!(
             "must assert effects before dropping test store. {} unasserted outputs pending ({} effects, {} cancellations).",
-            self.pending_effects.len() + self.cancelled_slots.len(),
+            self.pending_effects.len() + self.cancelled_leases.len(),
             self.pending_effects.len(),
-            self.cancelled_slots.len(),
+            self.cancelled_leases.len(),
         );
         eprintln!("{message}");
         assert!(std::thread::panicking(), "{message}");
@@ -553,8 +570,11 @@ fn panic_payload_to_string(payload: Box<dyn Any + Send>) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::OnceLock;
+
     use super::*;
     use crate as syzygy;
+    use crate::command::TaskLease;
     #[cfg(feature = "shell")]
     use crate::executor::Task;
     use crate::extract::EventHandler;
@@ -586,6 +606,11 @@ mod tests {
         save_completed: bool,
     }
 
+    fn tracked_lease() -> TaskLease {
+        static LEASE: OnceLock<TaskLease> = OnceLock::new();
+        LEASE.get_or_init(TaskLease::new).clone()
+    }
+
     fn increment(amount: i32, counter: &mut Counter) -> Command<Event, Effect> {
         **counter += amount;
         Command::effect(Effect::Log(**counter))
@@ -614,8 +639,8 @@ mod tests {
                 .and_effect(Effect::Third)
                 .and_effect(Effect::Fourth),
             Event::DoubleBorrow => bad_double_borrow.handle((), ctx),
-            Event::Track => Command::track(1_u8, Effect::Tracked),
-            Event::CancelTracked => Command::cancel(1_u8),
+            Event::Track => Command::abortable(tracked_lease(), Effect::Tracked),
+            Event::CancelTracked => Command::cancel(tracked_lease()),
         }
     }
 
@@ -719,7 +744,7 @@ mod tests {
         let mut store = TestStore::new(Model::default(), handle_event);
 
         store.send(Event::Track);
-        store.assert_tracked_effect(1_u8, Effect::Tracked);
+        store.assert_abortable_effect(tracked_lease(), Effect::Tracked);
 
         store.assert_no_effects();
     }
@@ -730,7 +755,7 @@ mod tests {
         store.send(Event::Track);
 
         assert_panic_contains(
-            "cannot assert plain effects while tracked effects are pending",
+            "cannot assert plain effects while abortable effects are pending",
             || {
                 store.assert_effects([Effect::Tracked]);
             },
@@ -740,13 +765,14 @@ mod tests {
     #[test]
     fn tracked_overwrite_records_cancellation() {
         let mut store = TestStore::new(Model::default(), |_event: Event, _ctx| {
-            Command::track(1_u8, Effect::First).and_track(1_u8, Effect::Second)
+            let lease = tracked_lease();
+            Command::abortable(&lease, Effect::First).and_abortable(&lease, Effect::Second)
         });
 
         store.send(Event::Track);
-        store.assert_cancelled(1_u8);
-        store.assert_tracked_effect(1_u8, Effect::Second);
-        store.assert_slot_empty(1_u8);
+        store.assert_cancelled(tracked_lease());
+        store.assert_abortable_effect(tracked_lease(), Effect::Second);
+        store.assert_lease_empty(tracked_lease());
     }
 
     #[test]
@@ -763,7 +789,7 @@ mod tests {
         let mut store = TestStore::new(Model::default(), handle_event);
 
         store.send(Event::CancelTracked);
-        store.assert_cancelled(1_u8);
+        store.assert_cancelled(tracked_lease());
         store.assert_no_effects();
     }
 
@@ -853,11 +879,11 @@ mod tests {
     #[test]
     fn take_effects_rejects_tracked_outputs() {
         let mut store = TestStore::new(Model::default(), |_event: Event, _ctx| {
-            Command::<Event, Effect>::track(1_u8, Effect::First)
+            Command::<Event, Effect>::abortable(tracked_lease(), Effect::First)
         });
 
         store.send(Event::Track);
-        assert_panic_contains("tracked effects are pending", || {
+        assert_panic_contains("abortable effects are pending", || {
             let _ = store.take_effects();
         });
     }

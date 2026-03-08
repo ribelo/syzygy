@@ -160,10 +160,12 @@ async fn fetch(url: String) -> Command<Event, Effect> {
 ## Command Composition
 
 ```rust
+let save = TaskLease::new();
+
 Command::effect(Effect::Save)
     .and_event(Event::Saved)           // Add event
     .map_event(|e| Event::Child(e))    // Transform
-    .track("save", Effect::Backup)     // Cancellable slot
+    .and_abortable(save.clone(), Effect::Backup)
 ```
 
 ## Testing
@@ -202,7 +204,7 @@ struct DbPool(Arc<Pool>);  // Cheap clone
 
 **256 field limit.** Exceeding this panics at model construction.
 
-**CancelId type-sensitivity.** `1u32` and `1u64` are different slots.
+**Abortable work needs an owner.** If you schedule an abortable effect with a `TaskLease` and do not retain the lease in state, the shell will cancel it on the next `step`/`drain` cycle.
 
 ## Development
 

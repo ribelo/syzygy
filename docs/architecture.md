@@ -104,17 +104,18 @@ EventContext {
 
 **Complexity:** O(1) per borrow. No heap allocation.
 
-## Cancellation Slots
+## Abortable Task Ownership
 
 ```rust
-Command::track(id, effect)  // Start/replace slot
-Command::cancel(id)         // Stop slot
+let lease = TaskLease::new();
+Command::abortable(lease.clone(), effect) // Start/replace lease-owned task
+Command::cancel(lease)                    // Explicit stop
 ```
 
 **Semantics:**
-- Slot holds one task. New `track` drops old task.
-- `CancelId` is `TypeId + hash(value)`. `1u32` ≠ `1u64`.
-- Command mapping namespaces slots: `A::track(1)` and `B::track(1)` are distinct after `map_effect`.
+- A lease owns at most one abortable task. New `abortable` with the same lease drops the old task.
+- The shell also cancels abortable work when the last owner of the lease disappears.
+- Lease identity is unique, so command/task mapping does not need cancellation-specific namespacing.
 
 **ABA Protection:** Generation token per slot entry. Prevents "cancel wrong task" race.
 

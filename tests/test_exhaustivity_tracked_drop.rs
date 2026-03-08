@@ -1,4 +1,6 @@
-use syzygy::command::Command;
+use std::sync::OnceLock;
+
+use syzygy::command::{Command, TaskLease};
 use syzygy::extract::EventContext;
 use syzygy::test_store::{Exhaustivity, TestStore};
 
@@ -12,9 +14,14 @@ pub enum Effect {
     MyEffect,
 }
 
+fn lease() -> TaskLease {
+    static LEASE: OnceLock<TaskLease> = OnceLock::new();
+    LEASE.get_or_init(TaskLease::new).clone()
+}
+
 fn handler(event: Event, _ctx: &EventContext<()>) -> Command<Event, Effect> {
     match event {
-        Event::Step1 => Command::track(1, Effect::MyEffect),
+        Event::Step1 => Command::abortable(lease(), Effect::MyEffect),
     }
 }
 
@@ -22,5 +29,5 @@ fn handler(event: Event, _ctx: &EventContext<()>) -> Command<Event, Effect> {
 fn tracked_assertion_prevents_drop_panic_when_slot_drained() {
     let mut store = TestStore::new((), handler).with_exhaustivity(Exhaustivity::On);
     store.send(Event::Step1);
-    store.assert_tracked_effect(1, Effect::MyEffect);
+    store.assert_abortable_effect(lease(), Effect::MyEffect);
 }

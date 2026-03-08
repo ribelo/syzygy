@@ -4,6 +4,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use futures::{stream, StreamExt};
 use syzygy::error::CoreError;
 use syzygy::prelude::*;
 
@@ -289,7 +290,7 @@ fn spawning_async_effects_does_not_clone_registered_resources() {
 }
 
 #[test]
-fn cancelling_tracked_future_returns_shell_to_idle() {
+fn cancelling_abortable_future_returns_shell_to_idle() {
     #[derive(Debug, Clone)]
     enum Event {
         Start,
@@ -302,14 +303,6 @@ fn cancelling_tracked_future_returns_shell_to_idle() {
         Wait,
     }
 
-    fn handle_event(event: Event, _ctx: &EventContext<()>) -> Command<Event, Effect> {
-        match event {
-            Event::Start => Command::track(1_u8, Effect::Wait),
-            Event::Stop => Command::cancel(1_u8),
-            Event::StartAndStop => Command::track(1_u8, Effect::Wait).and_cancel(1_u8),
-        }
-    }
-
     fn handle_effect(effect: Effect, _ctx: &EffectContext<'_>) -> Task<Event, Effect> {
         match effect {
             Effect::Wait => Task::once(async {
@@ -320,9 +313,19 @@ fn cancelling_tracked_future_returns_shell_to_idle() {
     }
 
     syzygy::runtime::block_on(async {
+        let lease = TaskLease::new();
         let mut runner = Syzygy::builder::<Event, Effect>()
             .model(())
-            .event_handler(handle_event)
+            .event_handler({
+                let lease = lease.clone();
+                move |event, _ctx| match event {
+                    Event::Start => Command::abortable(&lease, Effect::Wait),
+                    Event::Stop => Command::cancel(&lease),
+                    Event::StartAndStop => {
+                        Command::abortable(&lease, Effect::Wait).and_cancel(&lease)
+                    }
+                }
+            })
             .effect_handler(handle_effect)
             .build();
 
@@ -339,9 +342,18 @@ fn cancelling_tracked_future_returns_shell_to_idle() {
             "shell should be idle after cancellation"
         );
 
+        let same_step_lease = TaskLease::new();
         let mut same_step_runner = Syzygy::builder::<Event, Effect>()
             .model(())
-            .event_handler(handle_event)
+            .event_handler({
+                let same_step_lease = same_step_lease.clone();
+                move |event, _ctx| match event {
+                    Event::Start => Command::abortable(&same_step_lease, Effect::Wait),
+                    Event::Stop => Command::cancel(&same_step_lease),
+                    Event::StartAndStop => Command::abortable(&same_step_lease, Effect::Wait)
+                        .and_cancel(&same_step_lease),
+                }
+            })
             .effect_handler(handle_effect)
             .build();
         same_step_runner
@@ -352,13 +364,13 @@ fn cancelling_tracked_future_returns_shell_to_idle() {
         syzygy::runtime::sleep(Duration::from_millis(2)).await;
         assert!(
             same_step_runner.shell().is_idle(),
-            "shell should be idle when tracked task is cancelled in the same command"
+            "shell should be idle when abortable task is cancelled in the same command"
         );
     });
 }
 
 #[test]
-fn cancelled_tracked_future_does_not_route_completion_event() {
+fn cancelled_abortable_future_does_not_route_completion_event() {
     #[derive(Debug, Clone)]
     enum Event {
         Start,
@@ -376,10 +388,81 @@ fn cancelled_tracked_future_does_not_route_completion_event() {
         done: bool,
     }
 
+    fn handle_effect(effect: Effect, _ctx: &EffectContext<'_>) -> Task<Event, Effect> {
+        match effect {
+            Effect::Wait => Task::once(async {
+                syzygy::runtime::sleep(Duration::from_millis(30)).await;
+                Command::event(Event::Done)
+            }),
+        }
+    }
+
+    syzygy::runtime::block_on(async {
+        let lease = TaskLease::new();
+        let mut runner = Syzygy::builder::<Event, Effect>()
+            .model(Model::default())
+            .event_handler({
+                let lease = lease.clone();
+                move |event, ctx| match event {
+                    Event::Start => Command::abortable(&lease, Effect::Wait),
+                    Event::Stop => Command::cancel(&lease),
+                    Event::Done => {
+                        let done = Done::extract_mut(ctx);
+                        **done = true;
+                        Command::none()
+                    }
+                }
+            })
+            .effect_handler(handle_effect)
+            .build();
+
+        runner.core().try_send(Event::Start).unwrap();
+        runner.step().unwrap();
+
+        runner.core().try_send(Event::Stop).unwrap();
+        runner.step().unwrap();
+
+        syzygy::runtime::sleep(Duration::from_millis(80)).await;
+        runner.step().unwrap();
+        runner.step().unwrap();
+
+        assert!(!runner.model().done);
+    });
+}
+
+#[test]
+fn dropping_abortable_lease_cancels_running_future() {
+    #[derive(Debug, Clone)]
+    enum Event {
+        Start,
+        DropLease,
+        Done,
+    }
+
+    #[derive(Debug, Clone)]
+    enum Effect {
+        Wait,
+    }
+
+    #[derive(Debug, Default, Model)]
+    struct Model {
+        lease: Option<TaskLease>,
+        done: bool,
+    }
+
     fn handle_event(event: Event, ctx: &EventContext<Model>) -> Command<Event, Effect> {
         match event {
-            Event::Start => Command::track(1_u8, Effect::Wait),
-            Event::Stop => Command::cancel(1_u8),
+            Event::Start => {
+                let lease = TaskLease::new();
+                let current = Lease::extract_mut(ctx);
+                **current = Some(lease.clone());
+                Command::abortable(lease, Effect::Wait)
+            }
+            Event::DropLease => {
+                let current = Lease::extract_mut(ctx);
+                **current = None;
+                Command::none()
+            }
             Event::Done => {
                 let done = Done::extract_mut(ctx);
                 **done = true;
@@ -406,15 +489,102 @@ fn cancelled_tracked_future_does_not_route_completion_event() {
 
         runner.core().try_send(Event::Start).unwrap();
         runner.step().unwrap();
+        assert!(!runner.shell().is_idle());
 
-        runner.core().try_send(Event::Stop).unwrap();
+        runner.core().try_send(Event::DropLease).unwrap();
         runner.step().unwrap();
 
         syzygy::runtime::sleep(Duration::from_millis(80)).await;
         runner.step().unwrap();
         runner.step().unwrap();
 
+        assert!(
+            runner.shell().is_idle(),
+            "shell should be idle after abortable lease ownership disappears"
+        );
         assert!(!runner.model().done);
+    });
+}
+
+#[test]
+fn dropping_abortable_lease_cancels_running_stream() {
+    #[derive(Debug, Clone)]
+    enum Event {
+        Start,
+        DropLease,
+        Tick,
+    }
+
+    #[derive(Debug, Clone)]
+    enum Effect {
+        Watch,
+    }
+
+    #[derive(Debug, Default, Model)]
+    struct Model {
+        lease: Option<TaskLease>,
+        ticks: usize,
+    }
+
+    fn handle_event(event: Event, ctx: &EventContext<Model>) -> Command<Event, Effect> {
+        match event {
+            Event::Start => {
+                let lease = TaskLease::new();
+                let current = Lease::extract_mut(ctx);
+                **current = Some(lease.clone());
+                Command::abortable(lease, Effect::Watch)
+            }
+            Event::DropLease => {
+                let current = Lease::extract_mut(ctx);
+                **current = None;
+                Command::none()
+            }
+            Event::Tick => {
+                let ticks = Ticks::extract_mut(ctx);
+                **ticks += 1;
+                Command::none()
+            }
+        }
+    }
+
+    fn handle_effect(effect: Effect, _ctx: &EffectContext<'_>) -> Task<Event, Effect> {
+        match effect {
+            Effect::Watch => Task::stream(
+                stream::once(async {
+                    syzygy::runtime::sleep(Duration::from_millis(30)).await;
+                    Command::event(Event::Tick)
+                })
+                .chain(stream::once(async {
+                    syzygy::runtime::sleep(Duration::from_millis(30)).await;
+                    Command::event(Event::Tick)
+                })),
+            ),
+        }
+    }
+
+    syzygy::runtime::block_on(async {
+        let mut runner = Syzygy::builder::<Event, Effect>()
+            .model(Model::default())
+            .event_handler(handle_event)
+            .effect_handler(handle_effect)
+            .build();
+
+        runner.core().try_send(Event::Start).unwrap();
+        runner.step().unwrap();
+        assert!(!runner.shell().is_idle());
+
+        runner.core().try_send(Event::DropLease).unwrap();
+        runner.step().unwrap();
+
+        syzygy::runtime::sleep(Duration::from_millis(80)).await;
+        runner.step().unwrap();
+        runner.step().unwrap();
+
+        assert!(
+            runner.shell().is_idle(),
+            "shell should be idle after abortable stream ownership disappears"
+        );
+        assert_eq!(runner.model().ticks, 0);
     });
 }
 
@@ -531,7 +701,7 @@ fn shutdown_cancels_untracked_async_tasks_without_timeout() {
 }
 
 #[test]
-fn shutdown_cancels_tracked_async_tasks_without_refcell_reentrancy_panics() {
+fn shutdown_cancels_abortable_async_tasks_without_refcell_reentrancy_panics() {
     #[derive(Debug, Clone)]
     enum Event {
         Start,
@@ -546,10 +716,14 @@ fn shutdown_cancels_tracked_async_tasks_without_refcell_reentrancy_panics() {
     let finished_in_effect = Arc::clone(&finished);
 
     syzygy::runtime::block_on(async move {
+        let lease = TaskLease::new();
         let mut runner = Syzygy::builder::<Event, Effect>()
             .model(())
-            .event_handler(|event, _ctx| match event {
-                Event::Start => Command::track("slot", Effect::Flush),
+            .event_handler({
+                let lease = lease.clone();
+                move |event, _ctx| match event {
+                    Event::Start => Command::abortable(&lease, Effect::Flush),
+                }
             })
             .effect_handler(move |effect, _ctx| {
                 let finished_in_effect = Arc::clone(&finished_in_effect);
@@ -572,11 +746,11 @@ fn shutdown_cancels_tracked_async_tasks_without_refcell_reentrancy_panics() {
 
         assert!(
             elapsed < Duration::from_secs(1),
-            "shutdown should cancel tracked tasks promptly: {elapsed:?}"
+            "shutdown should cancel abortable tasks promptly: {elapsed:?}"
         );
         assert!(
             !finished.load(Ordering::SeqCst),
-            "tracked task should be cancelled before completion"
+            "abortable task should be cancelled before completion"
         );
     });
 }
