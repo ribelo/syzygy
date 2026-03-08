@@ -16,7 +16,7 @@ use futures::StreamExt;
 use crate::command::{Command, CommandStep, TaskLease};
 use crate::core::Core;
 #[cfg(feature = "shell")]
-use crate::executor::Task;
+use crate::executor::{BlockingCancelToken, Task};
 #[cfg(feature = "shell")]
 use crate::extract::EffectContext;
 use crate::extract::EventContext;
@@ -384,6 +384,19 @@ where
                     self.feed_received_command(command);
                 }
             }
+            Task::Blocking(task) => {
+                let runtime = crate::runtime::Runtime::new().unwrap();
+                let command = runtime.block_on(task.into_future(runtime.clone()));
+                self.feed_received_command(command);
+            }
+            Task::BlockingCooperative(task) => {
+                let runtime = crate::runtime::Runtime::new().unwrap();
+                let command =
+                    runtime.block_on(task.into_future(runtime.clone(), BlockingCancelToken::new()));
+                if let Some(command) = command {
+                    self.feed_received_command(command);
+                }
+            }
         }
     }
 
@@ -409,6 +422,19 @@ where
                 );
 
                 for command in commands {
+                    self.feed_received_command(command);
+                }
+            }
+            Task::Blocking(task) => {
+                let runtime = crate::runtime::Runtime::new().unwrap();
+                let command = runtime.block_on(task.into_future(runtime.clone()));
+                self.feed_received_command(command);
+            }
+            Task::BlockingCooperative(task) => {
+                let runtime = crate::runtime::Runtime::new().unwrap();
+                let command =
+                    runtime.block_on(task.into_future(runtime.clone(), BlockingCancelToken::new()));
+                if let Some(command) = command {
                     self.feed_received_command(command);
                 }
             }
@@ -812,7 +838,7 @@ mod tests {
 
         store.send(Event::Increment(1));
         store.receive(|effect, _ctx| match effect {
-            Effect::Log(_) => Task::once(async { Command::event(Event::SaveDone) }),
+            Effect::Log(_) => Task::blocking(|| Command::event(Event::SaveDone)),
             _ => Task::none(),
         });
 

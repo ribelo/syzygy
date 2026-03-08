@@ -2,7 +2,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, VecDeque};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use futures::stream::StreamExt;
 
@@ -10,12 +10,59 @@ use crate::activity::Activity;
 use crate::command::{Command, CommandStep, TaskLease, TaskLeaseWeak};
 use crate::core::EventSender;
 use crate::error::ShellError;
-use crate::executor::Task;
+use crate::executor::{BlockingCancelToken, Task};
 use crate::extract::EffectContext;
 use crate::resource::ResourceMap;
 
 pub(crate) type EffectHandlerFn<E, X> = Rc<dyn for<'a> Fn(X, &EffectContext<'a>) -> Task<E, X>>;
-type TaskHandle = crate::runtime::JoinHandle<()>;
+
+#[derive(Debug)]
+enum TaskHandleKind {
+    AbortOnDrop,
+    WaitForCompletion { cancel: Option<BlockingCancelToken> },
+}
+
+#[derive(Debug)]
+struct TaskHandle {
+    join: crate::runtime::JoinHandle<()>,
+    kind: TaskHandleKind,
+}
+
+impl TaskHandle {
+    fn abort_on_drop(join: crate::runtime::JoinHandle<()>) -> Self {
+        Self {
+            join,
+            kind: TaskHandleKind::AbortOnDrop,
+        }
+    }
+
+    fn wait_for_completion(
+        join: crate::runtime::JoinHandle<()>,
+        cancel: Option<BlockingCancelToken>,
+    ) -> Self {
+        Self {
+            join,
+            kind: TaskHandleKind::WaitForCompletion { cancel },
+        }
+    }
+
+    #[must_use]
+    fn is_finished(&self) -> bool {
+        self.join.is_finished()
+    }
+
+    fn request_cancel(self) -> Option<Self> {
+        match &self.kind {
+            TaskHandleKind::AbortOnDrop => None,
+            TaskHandleKind::WaitForCompletion { cancel } => {
+                if let Some(cancel) = cancel {
+                    cancel.cancel();
+                }
+                Some(self)
+            }
+        }
+    }
+}
 
 #[derive(Debug)]
 struct ActiveTaskEntry {
@@ -27,6 +74,7 @@ struct ActiveTaskEntry {
 type ActiveTasks = Rc<RefCell<HashMap<u64, ActiveTaskEntry>>>;
 type UntrackedTasks = Rc<RefCell<Vec<TaskHandle>>>;
 type DeferredEvents<E> = Rc<RefCell<VecDeque<E>>>;
+type PendingErrors = Rc<RefCell<VecDeque<ShellError>>>;
 type ClosedFlag = Rc<Cell<bool>>;
 type ProgressEpoch = Rc<Cell<u64>>;
 
@@ -86,7 +134,6 @@ const MAX_DEFERRED_EVENTS: usize = 65_536;
 const MAX_INLINE_STREAM_COMMANDS: usize = 10_000;
 const DEFERRED_STREAM_BACKPRESSURE_THRESHOLD: usize = 256;
 const DEFERRED_STREAM_BACKPRESSURE_SLEEP: Duration = Duration::from_millis(1);
-const EXECUTOR_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 const EXECUTOR_POLL_SLICE: Duration = Duration::from_millis(5);
 
 pub struct Shell<E, X>
@@ -102,6 +149,7 @@ where
     active_tasks: ActiveTasks,
     untracked_tasks: UntrackedTasks,
     deferred_events: DeferredEvents<E>,
+    pending_errors: PendingErrors,
     closed: ClosedFlag,
     progress_epoch: ProgressEpoch,
     queue: VecDeque<Command<E, X>>,
@@ -127,6 +175,7 @@ where
             active_tasks: Rc::new(RefCell::new(HashMap::new())),
             untracked_tasks: Rc::new(RefCell::new(Vec::new())),
             deferred_events: Rc::new(RefCell::new(VecDeque::new())),
+            pending_errors: Rc::new(RefCell::new(VecDeque::new())),
             closed: Rc::new(Cell::new(false)),
             progress_epoch: Rc::new(Cell::new(0)),
             queue: VecDeque::new(),
@@ -137,8 +186,11 @@ where
         if self.closed.get() {
             return Ok(());
         }
+        if let Some(err) = take_pending_error(&self.pending_errors) {
+            return Err(err);
+        }
 
-        prune_orphaned_active_tasks(&self.active_tasks);
+        prune_orphaned_active_tasks(&self.active_tasks, &self.untracked_tasks);
         self.queue.clear();
         self.queue.push_back(command);
 
@@ -152,13 +204,24 @@ where
             &self.active_tasks,
             &self.untracked_tasks,
             &self.deferred_events,
+            &self.pending_errors,
             &self.closed,
             &self.progress_epoch,
-        )
+        )?;
+
+        if let Some(err) = take_pending_error(&self.pending_errors) {
+            return Err(err);
+        }
+
+        Ok(())
     }
 
     pub fn drain(&mut self) -> Result<usize, ShellError> {
-        prune_orphaned_active_tasks(&self.active_tasks);
+        if let Some(err) = take_pending_error(&self.pending_errors) {
+            return Err(err);
+        }
+
+        prune_orphaned_active_tasks(&self.active_tasks, &self.untracked_tasks);
         prune_finished_untracked_tasks(&self.untracked_tasks);
 
         let progress_before = self.progress_epoch.get();
@@ -172,7 +235,7 @@ where
         progressed =
             progressed.saturating_add(flush_deferred_events(&self.event_tx, &self.deferred_events));
 
-        prune_orphaned_active_tasks(&self.active_tasks);
+        prune_orphaned_active_tasks(&self.active_tasks, &self.untracked_tasks);
         prune_finished_untracked_tasks(&self.untracked_tasks);
 
         let activity_after = self.activity.load();
@@ -181,6 +244,10 @@ where
             || self.progress_epoch.get() != progress_before
             || activity_after != activity_before
             || deferred_after != deferred_before;
+
+        if let Some(err) = take_pending_error(&self.pending_errors) {
+            return Err(err);
+        }
 
         Ok(usize::from(made_progress))
     }
@@ -197,53 +264,26 @@ where
 
     pub fn shutdown(&mut self) {
         self.closed.set(true);
-
-        let active_tasks = {
-            let mut active_tasks = self.active_tasks.borrow_mut();
-            std::mem::take(&mut *active_tasks)
-        };
-        let untracked_tasks = {
-            let mut untracked_tasks = self.untracked_tasks.borrow_mut();
-            std::mem::take(&mut *untracked_tasks)
-        };
         self.deferred_events.borrow_mut().clear();
-
-        drop(active_tasks);
-        drop(untracked_tasks);
+        drain_active_tasks_for_shutdown(&self.active_tasks, &self.untracked_tasks);
+        request_shutdown_for_untracked_tasks(&self.untracked_tasks);
     }
 
     pub fn wait_for_executors(&self) {
-        prune_orphaned_active_tasks(&self.active_tasks);
+        prune_orphaned_active_tasks(&self.active_tasks, &self.untracked_tasks);
         prune_finished_untracked_tasks(&self.untracked_tasks);
 
         if self.activity.load() == 0 {
             return;
         }
 
-        let deadline = Instant::now()
-            .checked_add(EXECUTOR_SHUTDOWN_TIMEOUT)
-            .unwrap_or_else(Instant::now);
-
         while self.activity.load() > 0 {
-            prune_orphaned_active_tasks(&self.active_tasks);
+            prune_orphaned_active_tasks(&self.active_tasks, &self.untracked_tasks);
             prune_finished_untracked_tasks(&self.untracked_tasks);
-
-            let now = Instant::now();
-            if now >= deadline {
-                report_spawned_event_drop("timed out while waiting for executors to drain");
-                break;
-            }
-
-            let remaining = deadline.saturating_duration_since(now);
-            let wait_slice = remaining.min(EXECUTOR_POLL_SLICE);
-            self.runtime.park(wait_slice);
-
-            if self.activity.load() == 0 {
-                break;
-            }
+            self.runtime.park(EXECUTOR_POLL_SLICE);
         }
 
-        prune_orphaned_active_tasks(&self.active_tasks);
+        prune_orphaned_active_tasks(&self.active_tasks, &self.untracked_tasks);
         prune_finished_untracked_tasks(&self.untracked_tasks);
     }
 
@@ -252,14 +292,20 @@ where
     }
 }
 
-fn cancel_active_task(active_tasks: &ActiveTasks, lease_id: u64) {
+fn keep_task_after_cancel(untracked_tasks: &UntrackedTasks, handle: TaskHandle) {
+    if let Some(handle) = handle.request_cancel() {
+        untracked_tasks.borrow_mut().push(handle);
+    }
+}
+
+fn cancel_active_task(active_tasks: &ActiveTasks, untracked_tasks: &UntrackedTasks, lease_id: u64) {
     let removed_entry = {
         let mut active_tasks = active_tasks.borrow_mut();
         active_tasks.remove(&lease_id)
     };
 
     if let Some(entry) = removed_entry {
-        drop(entry.handle);
+        keep_task_after_cancel(untracked_tasks, entry.handle);
     }
 }
 
@@ -301,7 +347,7 @@ fn abortable_task_is_alive(
     owner_alive && active_task_is_current(active_tasks, lease_id, token)
 }
 
-fn prune_orphaned_active_tasks(active_tasks: &ActiveTasks) {
+fn prune_orphaned_active_tasks(active_tasks: &ActiveTasks, untracked_tasks: &UntrackedTasks) {
     let orphaned = {
         let active_tasks = active_tasks.borrow();
         active_tasks
@@ -312,7 +358,7 @@ fn prune_orphaned_active_tasks(active_tasks: &ActiveTasks) {
     };
 
     for lease_id in orphaned {
-        cancel_active_task(active_tasks, lease_id);
+        cancel_active_task(active_tasks, untracked_tasks, lease_id);
     }
 }
 
@@ -320,6 +366,34 @@ fn prune_finished_untracked_tasks(untracked_tasks: &UntrackedTasks) {
     untracked_tasks
         .borrow_mut()
         .retain(|handle| !handle.is_finished());
+}
+
+fn take_pending_error(pending_errors: &PendingErrors) -> Option<ShellError> {
+    pending_errors.borrow_mut().pop_front()
+}
+
+fn drain_active_tasks_for_shutdown(active_tasks: &ActiveTasks, untracked_tasks: &UntrackedTasks) {
+    let drained = {
+        let mut active_tasks = active_tasks.borrow_mut();
+        std::mem::take(&mut *active_tasks)
+    };
+
+    for entry in drained.into_values() {
+        keep_task_after_cancel(untracked_tasks, entry.handle);
+    }
+}
+
+fn request_shutdown_for_untracked_tasks(untracked_tasks: &UntrackedTasks) {
+    let drained = {
+        let mut untracked_tasks = untracked_tasks.borrow_mut();
+        std::mem::take(&mut *untracked_tasks)
+    };
+
+    let kept = drained
+        .into_iter()
+        .filter_map(TaskHandle::request_cancel)
+        .collect::<Vec<_>>();
+    untracked_tasks.borrow_mut().extend(kept);
 }
 
 fn push_deferred_event<E>(deferred_events: &DeferredEvents<E>, event: E) {
@@ -343,6 +417,7 @@ fn route_command_iterative<E, X>(
     active_tasks: &ActiveTasks,
     untracked_tasks: &UntrackedTasks,
     deferred_events: &DeferredEvents<E>,
+    pending_errors: &PendingErrors,
     closed: &ClosedFlag,
     progress_epoch: &ProgressEpoch,
 ) -> Result<(), ShellError>
@@ -373,17 +448,21 @@ where
                         active_tasks,
                         untracked_tasks,
                         deferred_events,
+                        pending_errors,
                         closed,
                         progress_epoch,
                         queue,
-                    ) {
+                    )? {
                         untracked_tasks.borrow_mut().push(spawned.handle);
                     }
                 }
                 CommandStep::Abortable { lease, effect } => {
-                    cancel_active_task(active_tasks, lease.id());
-                    if let Some(spawned) = run_effect_task(
-                        effect,
+                    let ctx = EffectContext::new(resources.as_ref());
+                    let task = effect_handler(effect, &ctx);
+                    cancel_blocking_abortable_task(&task)?;
+                    cancel_active_task(active_tasks, untracked_tasks, lease.id());
+                    if let Some(spawned) = spawn_task(
+                        task,
                         Some(lease),
                         event_tx,
                         effect_handler,
@@ -393,10 +472,11 @@ where
                         active_tasks,
                         untracked_tasks,
                         deferred_events,
+                        pending_errors,
                         closed,
                         progress_epoch,
                         queue,
-                    ) {
+                    )? {
                         if let (Some(lease_id), Some(owner), Some(token)) =
                             (spawned.lease_id, spawned.owner, spawned.token)
                         {
@@ -414,7 +494,7 @@ where
                     }
                 }
                 CommandStep::Cancel { lease } => {
-                    cancel_active_task(active_tasks, lease.id());
+                    cancel_active_task(active_tasks, untracked_tasks, lease.id());
                 }
             }
         }
@@ -435,10 +515,11 @@ fn run_effect_task<E, X>(
     active_tasks: &ActiveTasks,
     untracked_tasks: &UntrackedTasks,
     deferred_events: &DeferredEvents<E>,
+    pending_errors: &PendingErrors,
     closed: &ClosedFlag,
     progress_epoch: &ProgressEpoch,
     queue: &mut VecDeque<Command<E, X>>,
-) -> Option<SpawnedTask>
+) -> Result<Option<SpawnedTask>, ShellError>
 where
     E: 'static,
     X: 'static,
@@ -456,6 +537,7 @@ where
         active_tasks,
         untracked_tasks,
         deferred_events,
+        pending_errors,
         closed,
         progress_epoch,
         queue,
@@ -474,10 +556,11 @@ fn spawn_task<E, X>(
     active_tasks: &ActiveTasks,
     untracked_tasks: &UntrackedTasks,
     deferred_events: &DeferredEvents<E>,
+    pending_errors: &PendingErrors,
     closed: &ClosedFlag,
     progress_epoch: &ProgressEpoch,
     queue: &mut VecDeque<Command<E, X>>,
-) -> Option<SpawnedTask>
+) -> Result<Option<SpawnedTask>, ShellError>
 where
     E: 'static,
     X: 'static,
@@ -487,14 +570,14 @@ where
     drop(lease);
 
     match task {
-        Task::None => None,
+        Task::None => Ok(None),
         Task::Resolved(command) => {
             queue.push_back(command);
-            None
+            Ok(None)
         }
         Task::Future(future) => {
             if owner.as_ref().is_some_and(|owner| !owner.has_owner()) {
-                return None;
+                return Ok(None);
             }
 
             let runtime = runtime.clone();
@@ -505,6 +588,7 @@ where
             let active_tasks = Rc::clone(active_tasks);
             let untracked_tasks = Rc::clone(untracked_tasks);
             let deferred_events = Rc::clone(deferred_events);
+            let pending_errors = Rc::clone(pending_errors);
             let closed = Rc::clone(closed);
             let progress_epoch = Rc::clone(progress_epoch);
             let token = lease_id.map(|_| next_task_token());
@@ -540,21 +624,22 @@ where
                     &active_tasks,
                     &untracked_tasks,
                     &deferred_events,
+                    &pending_errors,
                     &closed,
                     &progress_epoch,
                 );
             });
 
-            Some(SpawnedTask {
+            Ok(Some(SpawnedTask {
                 lease_id,
                 owner,
                 token,
-                handle,
-            })
+                handle: TaskHandle::abort_on_drop(handle),
+            }))
         }
         Task::Stream(stream) => {
             if owner.as_ref().is_some_and(|owner| !owner.has_owner()) {
-                return None;
+                return Ok(None);
             }
 
             let runtime = runtime.clone();
@@ -565,6 +650,7 @@ where
             let active_tasks = Rc::clone(active_tasks);
             let untracked_tasks = Rc::clone(untracked_tasks);
             let deferred_events = Rc::clone(deferred_events);
+            let pending_errors = Rc::clone(pending_errors);
             let closed = Rc::clone(closed);
             let progress_epoch = Rc::clone(progress_epoch);
             let token = lease_id.map(|_| next_task_token());
@@ -614,6 +700,7 @@ where
                         &active_tasks,
                         &untracked_tasks,
                         &deferred_events,
+                        &pending_errors,
                         &closed,
                         &progress_epoch,
                     );
@@ -640,13 +727,140 @@ where
                 }
             });
 
-            Some(SpawnedTask {
+            Ok(Some(SpawnedTask {
                 lease_id,
                 owner,
                 token,
-                handle,
-            })
+                handle: TaskHandle::abort_on_drop(handle),
+            }))
         }
+        Task::Blocking(task) => {
+            if owner.is_some() {
+                return Err(ShellError::AbortableBlockingTask);
+            }
+
+            let runtime = runtime.clone();
+            let future = task.into_future(runtime.clone());
+            let event_tx = event_tx.clone();
+            let effect_handler = Rc::clone(effect_handler);
+            let resources = Rc::clone(resources);
+            let activity = activity.clone();
+            let active_tasks = Rc::clone(active_tasks);
+            let untracked_tasks = Rc::clone(untracked_tasks);
+            let deferred_events = Rc::clone(deferred_events);
+            let pending_errors = Rc::clone(pending_errors);
+            let closed = Rc::clone(closed);
+            let progress_epoch = Rc::clone(progress_epoch);
+            activity.inc();
+            let lifecycle_guard =
+                TaskLifecycleGuard::new(activity.clone(), Rc::clone(&active_tasks), None, None);
+
+            let runtime_for_task = runtime.clone();
+            let handle = runtime.spawn(async move {
+                let _lifecycle_guard = lifecycle_guard;
+                let command = future.await;
+                if closed.get() {
+                    return;
+                }
+
+                route_spawned_command(
+                    command,
+                    &event_tx,
+                    &effect_handler,
+                    &runtime_for_task,
+                    &resources,
+                    &activity,
+                    &active_tasks,
+                    &untracked_tasks,
+                    &deferred_events,
+                    &pending_errors,
+                    &closed,
+                    &progress_epoch,
+                );
+            });
+
+            Ok(Some(SpawnedTask {
+                lease_id: None,
+                owner: None,
+                token: None,
+                handle: TaskHandle::wait_for_completion(handle, None),
+            }))
+        }
+        Task::BlockingCooperative(task) => {
+            if owner.as_ref().is_some_and(|owner| !owner.has_owner()) {
+                return Ok(None);
+            }
+
+            let runtime = runtime.clone();
+            let cancel = BlockingCancelToken::new();
+            let future = task.into_future(runtime.clone(), cancel.clone());
+            let event_tx = event_tx.clone();
+            let effect_handler = Rc::clone(effect_handler);
+            let resources = Rc::clone(resources);
+            let activity = activity.clone();
+            let active_tasks = Rc::clone(active_tasks);
+            let untracked_tasks = Rc::clone(untracked_tasks);
+            let deferred_events = Rc::clone(deferred_events);
+            let pending_errors = Rc::clone(pending_errors);
+            let closed = Rc::clone(closed);
+            let progress_epoch = Rc::clone(progress_epoch);
+            let token = lease_id.map(|_| next_task_token());
+            let owner_for_task = owner.clone();
+            activity.inc();
+            let lifecycle_guard = TaskLifecycleGuard::new(
+                activity.clone(),
+                Rc::clone(&active_tasks),
+                lease_id,
+                token,
+            );
+
+            let runtime_for_task = runtime.clone();
+            let handle = runtime.spawn(async move {
+                let _lifecycle_guard = lifecycle_guard;
+                let command = future.await;
+                if closed.get() {
+                    return;
+                }
+
+                if !abortable_task_is_alive(&active_tasks, owner_for_task.as_ref(), lease_id, token)
+                {
+                    return;
+                }
+
+                let Some(command) = command else {
+                    return;
+                };
+
+                route_spawned_command(
+                    command,
+                    &event_tx,
+                    &effect_handler,
+                    &runtime_for_task,
+                    &resources,
+                    &activity,
+                    &active_tasks,
+                    &untracked_tasks,
+                    &deferred_events,
+                    &pending_errors,
+                    &closed,
+                    &progress_epoch,
+                );
+            });
+
+            Ok(Some(SpawnedTask {
+                lease_id,
+                owner,
+                token,
+                handle: TaskHandle::wait_for_completion(handle, Some(cancel)),
+            }))
+        }
+    }
+}
+
+fn cancel_blocking_abortable_task<E, X>(task: &Task<E, X>) -> Result<(), ShellError> {
+    match task {
+        Task::Blocking(_) => Err(ShellError::AbortableBlockingTask),
+        _ => Ok(()),
     }
 }
 
@@ -661,6 +875,7 @@ fn route_spawned_command<E, X>(
     active_tasks: &ActiveTasks,
     untracked_tasks: &UntrackedTasks,
     deferred_events: &DeferredEvents<E>,
+    pending_errors: &PendingErrors,
     closed: &ClosedFlag,
     progress_epoch: &ProgressEpoch,
 ) where
@@ -676,7 +891,7 @@ fn route_spawned_command<E, X>(
     let mut queue = VecDeque::new();
     queue.push_back(command);
 
-    if route_command_iterative(
+    match route_command_iterative(
         &mut queue,
         event_tx,
         effect_handler,
@@ -686,12 +901,14 @@ fn route_spawned_command<E, X>(
         active_tasks,
         untracked_tasks,
         deferred_events,
+        pending_errors,
         closed,
         progress_epoch,
-    )
-    .is_err()
-    {
-        report_spawned_event_drop("event channel disconnected while routing spawned command");
+    ) {
+        Ok(()) => {}
+        Err(err) => {
+            pending_errors.borrow_mut().push_back(err);
+        }
     }
 }
 

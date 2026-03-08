@@ -33,6 +33,10 @@ pub enum ShellError {
     #[error("Runtime initialization failed: {0}")]
     RuntimeInitializationFailed(String),
 
+    /// Abortable blocking work must use cooperative cancellation
+    #[error("abortable effect resolved to Task::blocking; use Task::blocking_cooperative for lease-owned blocking work")]
+    AbortableBlockingTask,
+
     /// Command execution failed
     #[error("Command execution failed: {0}")]
     CommandExecutionFailed(String),

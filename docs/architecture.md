@@ -66,6 +66,8 @@ System shape and invariants. For 3am incident response.
    - `Task::Resolved(cmd)`: command executed synchronously
    - `Task::Future(fut)`: spawned on configured runtime backend
    - `Task::Stream(s)`: spawned, each item processed
+   - `Task::Blocking(f)`: shell-owned blocking work, shutdown waits for completion
+   - `Task::BlockingCooperative(f)`: blocking work with cooperative cancellation
 4. Task completion produces `Command`, loops back to Core
 
 Shell progression is synchronous. There is no async `drain`/`step` API; async is confined to effect execution.
@@ -115,6 +117,7 @@ Command::cancel(lease)                    // Explicit stop
 **Semantics:**
 - A lease owns at most one abortable task. New `abortable` with the same lease drops the old task.
 - The shell also cancels abortable work when the last owner of the lease disappears.
+- Lease-owned blocking work must be cooperative. `Task::blocking` is rejected for abortable effects; use `Task::blocking_cooperative` and check the `BlockingCancelToken`.
 - Mapping abortable child commands/tasks is explicit. Plain `map` rejects abortable steps; `TaskLeaseScope` remaps leases when a caller intentionally embeds child abortable work into a parent domain.
 
 **ABA Protection:** Generation token per slot entry. Prevents "cancel wrong task" race.

@@ -41,6 +41,16 @@ mod imp {
             }
         }
 
+        pub fn spawn_blocking<F, T>(&self, work: F) -> JoinHandle<T>
+        where
+            F: FnOnce() -> T + Send + 'static,
+            T: Send + 'static,
+        {
+            JoinHandle {
+                inner: Some(self.inner.spawn_blocking(work)),
+            }
+        }
+
         pub fn drive_ready(&self) {
             self.inner.enter(|| {
                 let _ = self.inner.run();
@@ -176,6 +186,16 @@ mod imp {
         {
             JoinHandle {
                 inner: Some(self.inner.local_set.spawn_local(future)),
+            }
+        }
+
+        pub fn spawn_blocking<F, T>(&self, work: F) -> JoinHandle<T>
+        where
+            F: FnOnce() -> T + Send + 'static,
+            T: Send + 'static,
+        {
+            JoinHandle {
+                inner: Some(self.inner.runtime.spawn_blocking(work)),
             }
         }
 

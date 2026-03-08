@@ -914,3 +914,285 @@ fn future_effects_resolve_on_syzygys_owned_runtime() {
 
     assert!(runner.model().done);
 }
+
+#[test]
+fn blocking_effects_resolve_on_syzygys_owned_runtime() {
+    #[derive(Debug, Clone)]
+    enum Event {
+        Start,
+        Done,
+    }
+
+    #[derive(Debug, Clone)]
+    enum Effect {
+        Work,
+    }
+
+    #[derive(Debug, Default, Model)]
+    struct Model {
+        done: bool,
+    }
+
+    fn handle_event(event: Event, ctx: &EventContext<Model>) -> Command<Event, Effect> {
+        match event {
+            Event::Start => Command::effect(Effect::Work),
+            Event::Done => {
+                let done = Done::extract_mut(ctx);
+                **done = true;
+                Command::none()
+            }
+        }
+    }
+
+    fn handle_effect(effect: Effect, _ctx: &EffectContext<'_>) -> Task<Event, Effect> {
+        match effect {
+            Effect::Work => Task::blocking(|| {
+                std::thread::sleep(Duration::from_millis(5));
+                Command::event(Event::Done)
+            }),
+        }
+    }
+
+    let mut runner = Syzygy::builder::<Event, Effect>()
+        .model(Model::default())
+        .event_handler(handle_event)
+        .effect_handler(handle_effect)
+        .build()
+        .unwrap();
+
+    runner.core().try_send(Event::Start).unwrap();
+    runner.step().unwrap();
+    runner.run().unwrap();
+
+    assert!(runner.model().done);
+}
+
+#[test]
+fn cooperative_blocking_task_cancels_on_explicit_abort() {
+    #[derive(Debug, Clone)]
+    enum Event {
+        Start,
+        Stop,
+        Done,
+    }
+
+    #[derive(Debug, Clone)]
+    enum Effect {
+        Work,
+    }
+
+    #[derive(Debug, Default, Model)]
+    struct Model {
+        done: bool,
+    }
+
+    let cancelled = Arc::new(AtomicBool::new(false));
+    let cancelled_in_effect = Arc::clone(&cancelled);
+    let lease = TaskLease::new();
+
+    let mut runner = Syzygy::builder::<Event, Effect>()
+        .model(Model::default())
+        .event_handler({
+            let lease = lease.clone();
+            move |event, ctx| match event {
+                Event::Start => Command::abortable(&lease, Effect::Work),
+                Event::Stop => Command::cancel(&lease),
+                Event::Done => {
+                    let done = Done::extract_mut(ctx);
+                    **done = true;
+                    Command::none()
+                }
+            }
+        })
+        .effect_handler(move |effect, _ctx| {
+            let cancelled_in_effect = Arc::clone(&cancelled_in_effect);
+            match effect {
+                Effect::Work => Task::blocking_cooperative(move |cancel| {
+                    for _ in 0..100 {
+                        if cancel.is_cancelled() {
+                            cancelled_in_effect.store(true, Ordering::SeqCst);
+                            return None;
+                        }
+                        std::thread::sleep(Duration::from_millis(1));
+                    }
+
+                    Some(Command::event(Event::Done))
+                }),
+            }
+        })
+        .build()
+        .unwrap();
+
+    runner.core().try_send(Event::Start).unwrap();
+    runner.step().unwrap();
+    runner.core().try_send(Event::Stop).unwrap();
+    runner.step().unwrap();
+    runner.run_until(|_, shell| shell.is_idle()).unwrap();
+
+    assert!(cancelled.load(Ordering::SeqCst));
+    assert!(!runner.model().done);
+}
+
+#[test]
+fn cooperative_blocking_task_cancels_when_lease_owner_drops() {
+    #[derive(Debug, Clone)]
+    enum Event {
+        Start,
+        DropLease,
+        Done,
+    }
+
+    #[derive(Debug, Clone)]
+    enum Effect {
+        Work,
+    }
+
+    #[derive(Debug, Default, Model)]
+    struct Model {
+        lease: Option<TaskLease>,
+        done: bool,
+    }
+
+    fn handle_event(event: Event, ctx: &EventContext<Model>) -> Command<Event, Effect> {
+        match event {
+            Event::Start => {
+                let lease = TaskLease::new();
+                let current = Lease::extract_mut(ctx);
+                **current = Some(lease.clone());
+                Command::abortable(lease, Effect::Work)
+            }
+            Event::DropLease => {
+                let current = Lease::extract_mut(ctx);
+                **current = None;
+                Command::none()
+            }
+            Event::Done => {
+                let done = Done::extract_mut(ctx);
+                **done = true;
+                Command::none()
+            }
+        }
+    }
+
+    let cancelled = Arc::new(AtomicBool::new(false));
+    let cancelled_in_effect = Arc::clone(&cancelled);
+
+    let mut runner = Syzygy::builder::<Event, Effect>()
+        .model(Model::default())
+        .event_handler(handle_event)
+        .effect_handler(move |effect, _ctx| {
+            let cancelled_in_effect = Arc::clone(&cancelled_in_effect);
+            match effect {
+                Effect::Work => Task::blocking_cooperative(move |cancel| {
+                    for _ in 0..100 {
+                        if cancel.is_cancelled() {
+                            cancelled_in_effect.store(true, Ordering::SeqCst);
+                            return None;
+                        }
+                        std::thread::sleep(Duration::from_millis(1));
+                    }
+
+                    Some(Command::event(Event::Done))
+                }),
+            }
+        })
+        .build()
+        .unwrap();
+
+    runner.core().try_send(Event::Start).unwrap();
+    runner.step().unwrap();
+    runner.core().try_send(Event::DropLease).unwrap();
+    runner.step().unwrap();
+    runner.run_until(|_, shell| shell.is_idle()).unwrap();
+
+    assert!(cancelled.load(Ordering::SeqCst));
+    assert!(!runner.model().done);
+}
+
+#[test]
+fn shutdown_waits_for_non_abortable_blocking_tasks() {
+    #[derive(Debug, Clone)]
+    enum Event {
+        Start,
+    }
+
+    #[derive(Debug, Clone)]
+    enum Effect {
+        Work,
+    }
+
+    let finished = Arc::new(AtomicBool::new(false));
+    let finished_in_effect = Arc::clone(&finished);
+
+    let mut runner = Syzygy::builder::<Event, Effect>()
+        .model(())
+        .event_handler(|event, _ctx| match event {
+            Event::Start => Command::effect(Effect::Work),
+        })
+        .effect_handler(move |effect, _ctx| {
+            let finished_in_effect = Arc::clone(&finished_in_effect);
+            match effect {
+                Effect::Work => Task::blocking(move || {
+                    std::thread::sleep(Duration::from_millis(20));
+                    finished_in_effect.store(true, Ordering::SeqCst);
+                    Command::none()
+                }),
+            }
+        })
+        .build()
+        .unwrap();
+
+    runner.core().try_send(Event::Start).unwrap();
+    runner.step().unwrap();
+
+    let shutdown_started = Instant::now();
+    runner.shutdown();
+
+    assert!(finished.load(Ordering::SeqCst));
+    assert!(
+        shutdown_started.elapsed() >= Duration::from_millis(20),
+        "shutdown should wait for non-abortable blocking work to finish"
+    );
+}
+
+#[test]
+fn spawned_abortable_blocking_violation_surfaces_as_shell_error() {
+    #[derive(Debug, Clone)]
+    enum Event {
+        Start,
+    }
+
+    #[derive(Debug, Clone)]
+    enum Effect {
+        Bootstrap,
+        Invalid,
+    }
+
+    fn handle_event(event: Event, _ctx: &EventContext<()>) -> Command<Event, Effect> {
+        match event {
+            Event::Start => Command::effect(Effect::Bootstrap),
+        }
+    }
+
+    fn handle_effect(effect: Effect, _ctx: &EffectContext<'_>) -> Task<Event, Effect> {
+        match effect {
+            Effect::Bootstrap => Task::once(async {
+                let lease = TaskLease::new();
+                Command::abortable(lease, Effect::Invalid)
+            }),
+            Effect::Invalid => Task::blocking(Command::none),
+        }
+    }
+
+    let mut runner = Syzygy::builder::<Event, Effect>()
+        .model(())
+        .event_handler(handle_event)
+        .effect_handler(handle_effect)
+        .build()
+        .unwrap();
+
+    runner.core().try_send(Event::Start).unwrap();
+    let err = runner.step().unwrap_err();
+
+    assert_eq!(err, ShellError::AbortableBlockingTask);
+}

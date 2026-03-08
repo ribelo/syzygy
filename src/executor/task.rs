@@ -1,18 +1,175 @@
 use std::future::Future;
 use std::pin::Pin;
 use std::rc::Rc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 use futures::Stream;
 use futures::StreamExt;
 
 use crate::command::{Command, TaskLeaseScope};
 
+type BoxFutureCommand<E, X> = Pin<Box<dyn Future<Output = Command<E, X>> + 'static>>;
+type BoxOptionalFutureCommand<E, X> =
+    Pin<Box<dyn Future<Output = Option<Command<E, X>>> + 'static>>;
+type BoxStreamCommand<E, X> = Pin<Box<dyn Stream<Item = Command<E, X>> + 'static>>;
+type BlockingSpawner<E, X> = Box<dyn FnOnce(crate::runtime::Runtime) -> BoxFutureCommand<E, X>>;
+type CooperativeBlockingSpawner<E, X> =
+    Box<dyn FnOnce(crate::runtime::Runtime, BlockingCancelToken) -> BoxOptionalFutureCommand<E, X>>;
+
+#[derive(Clone, Debug, Default)]
+pub struct BlockingCancelToken {
+    inner: Arc<AtomicBool>,
+}
+
+impl BlockingCancelToken {
+    #[must_use]
+    pub(crate) fn new() -> Self {
+        Self::default()
+    }
+
+    #[must_use]
+    pub fn is_cancelled(&self) -> bool {
+        self.inner.load(Ordering::Relaxed)
+    }
+
+    pub(crate) fn cancel(&self) {
+        self.inner.store(true, Ordering::Relaxed);
+    }
+}
+
+pub struct BlockingTask<E, X> {
+    spawn: BlockingSpawner<E, X>,
+}
+
+impl<E, X> BlockingTask<E, X>
+where
+    E: 'static,
+    X: 'static,
+{
+    fn new<F>(work: F) -> Self
+    where
+        F: FnOnce() -> Command<E, X> + Send + 'static,
+        E: Send,
+        X: Send,
+    {
+        Self {
+            spawn: Box::new(move |runtime| {
+                Box::pin(async move {
+                    let handle = runtime.spawn_blocking(work);
+                    match handle.await {
+                        Ok(command) => command,
+                        Err(panic) => std::panic::resume_unwind(panic),
+                    }
+                })
+            }),
+        }
+    }
+
+    pub(crate) fn into_future(self, runtime: crate::runtime::Runtime) -> BoxFutureCommand<E, X> {
+        (self.spawn)(runtime)
+    }
+
+    fn map<E2, X2, FE, FX>(
+        self,
+        scope: Option<TaskLeaseScope>,
+        fe: Rc<FE>,
+        fx: Rc<FX>,
+    ) -> BlockingTask<E2, X2>
+    where
+        FE: Fn(E) -> E2 + 'static,
+        FX: Fn(X) -> X2 + 'static,
+        E2: 'static,
+        X2: 'static,
+    {
+        BlockingTask {
+            spawn: Box::new(move |runtime| {
+                let future = self.into_future(runtime);
+                let scope = scope.clone();
+                let fe = Rc::clone(&fe);
+                let fx = Rc::clone(&fx);
+                Box::pin(async move {
+                    let command = future.await;
+                    map_command(command, scope.as_ref(), &fe, &fx)
+                })
+            }),
+        }
+    }
+}
+
+pub struct CooperativeBlockingTask<E, X> {
+    spawn: CooperativeBlockingSpawner<E, X>,
+}
+
+impl<E, X> CooperativeBlockingTask<E, X>
+where
+    E: 'static,
+    X: 'static,
+{
+    fn new<F>(work: F) -> Self
+    where
+        F: FnOnce(BlockingCancelToken) -> Option<Command<E, X>> + Send + 'static,
+        E: Send,
+        X: Send,
+    {
+        Self {
+            spawn: Box::new(move |runtime, cancel| {
+                Box::pin(async move {
+                    let cancel_for_task = cancel.clone();
+                    let handle = runtime.spawn_blocking(move || work(cancel_for_task));
+                    match handle.await {
+                        Ok(command) => command,
+                        Err(panic) => std::panic::resume_unwind(panic),
+                    }
+                })
+            }),
+        }
+    }
+
+    pub(crate) fn into_future(
+        self,
+        runtime: crate::runtime::Runtime,
+        cancel: BlockingCancelToken,
+    ) -> BoxOptionalFutureCommand<E, X> {
+        (self.spawn)(runtime, cancel)
+    }
+
+    fn map<E2, X2, FE, FX>(
+        self,
+        scope: Option<TaskLeaseScope>,
+        fe: Rc<FE>,
+        fx: Rc<FX>,
+    ) -> CooperativeBlockingTask<E2, X2>
+    where
+        FE: Fn(E) -> E2 + 'static,
+        FX: Fn(X) -> X2 + 'static,
+        E2: 'static,
+        X2: 'static,
+    {
+        CooperativeBlockingTask {
+            spawn: Box::new(move |runtime, cancel| {
+                let future = self.into_future(runtime, cancel);
+                let scope = scope.clone();
+                let fe = Rc::clone(&fe);
+                let fx = Rc::clone(&fx);
+                Box::pin(async move {
+                    future
+                        .await
+                        .map(|command| map_command(command, scope.as_ref(), &fe, &fx))
+                })
+            }),
+        }
+    }
+}
+
 /// Declarative unit of work returned by effect handlers.
 pub enum Task<E, X> {
     None,
     Resolved(Command<E, X>),
-    Future(Pin<Box<dyn Future<Output = Command<E, X>> + 'static>>),
-    Stream(Pin<Box<dyn Stream<Item = Command<E, X>> + 'static>>),
+    Future(BoxFutureCommand<E, X>),
+    Stream(BoxStreamCommand<E, X>),
+    Blocking(BlockingTask<E, X>),
+    BlockingCooperative(CooperativeBlockingTask<E, X>),
 }
 
 impl<E, X> Task<E, X>
@@ -57,6 +214,26 @@ where
         S: Stream<Item = Command<E, X>> + 'static,
     {
         Self::Stream(Box::pin(stream))
+    }
+
+    #[must_use]
+    pub fn blocking<F>(work: F) -> Self
+    where
+        F: FnOnce() -> Command<E, X> + Send + 'static,
+        E: Send,
+        X: Send,
+    {
+        Self::Blocking(BlockingTask::new(work))
+    }
+
+    #[must_use]
+    pub fn blocking_cooperative<F>(work: F) -> Self
+    where
+        F: FnOnce(BlockingCancelToken) -> Option<Command<E, X>> + Send + 'static,
+        E: Send,
+        X: Send,
+    {
+        Self::BlockingCooperative(CooperativeBlockingTask::new(work))
     }
 
     #[must_use]
@@ -117,25 +294,19 @@ where
                 let scope = scope.clone();
                 Task::Future(Box::pin(async move {
                     let command = future.await;
-                    match scope {
-                        Some(scope) => {
-                            command.map_scoped(&scope, |event| fe(event), |effect| fx(effect))
-                        }
-                        None => command.map(|event| fe(event), |effect| fx(effect)),
-                    }
+                    map_command(command, scope.as_ref(), &fe, &fx)
                 }))
             }
             Self::Stream(stream) => {
                 let fe = Rc::clone(&fe);
                 let fx = Rc::clone(&fx);
                 let scope = scope.clone();
-                Task::Stream(Box::pin(stream.map(move |command| match &scope {
-                    Some(scope) => {
-                        command.map_scoped(scope, |event| fe(event), |effect| fx(effect))
-                    }
-                    None => command.map(|event| fe(event), |effect| fx(effect)),
-                })))
+                Task::Stream(Box::pin(
+                    stream.map(move |command| map_command(command, scope.as_ref(), &fe, &fx)),
+                ))
             }
+            Self::Blocking(task) => Task::Blocking(task.map(scope, fe, fx)),
+            Self::BlockingCooperative(task) => Task::BlockingCooperative(task.map(scope, fe, fx)),
         }
     }
 
@@ -156,11 +327,27 @@ where
     }
 }
 
+fn map_command<E, X, E2, X2, FE, FX>(
+    command: Command<E, X>,
+    scope: Option<&TaskLeaseScope>,
+    fe: &Rc<FE>,
+    fx: &Rc<FX>,
+) -> Command<E2, X2>
+where
+    FE: Fn(E) -> E2 + 'static,
+    FX: Fn(X) -> X2 + 'static,
+{
+    match scope {
+        Some(scope) => command.map_scoped(scope, |event| fe(event), |effect| fx(effect)),
+        None => command.map(|event| fe(event), |effect| fx(effect)),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use futures::StreamExt;
 
-    use super::Task;
+    use super::{BlockingCancelToken, Task};
     use crate::command::{Command, CommandStep, TaskLeaseScope};
     use crate::test_store::assert_panic_contains;
 
@@ -262,5 +449,52 @@ mod tests {
         let steps = commands[0].clone().into_iter().collect::<Vec<_>>();
         assert_eq!(steps.len(), 1);
         assert!(matches!(steps[0], CommandStep::Cancel { .. }));
+    }
+
+    #[test]
+    fn blocking_task_maps_commands() {
+        let mapped = Task::<ChildEvent, ChildEffect>::blocking(|| Command::event(ChildEvent))
+            .map(ParentEvent::Child, ParentEffect::Child);
+
+        let command = match mapped {
+            Task::Blocking(task) => {
+                let runtime = crate::runtime::Runtime::new().unwrap();
+                runtime.block_on(task.into_future(runtime.clone()))
+            }
+            _ => panic!("expected blocking task"),
+        };
+
+        let steps = command.into_iter().collect::<Vec<_>>();
+        assert_eq!(steps.len(), 1);
+        assert!(matches!(
+            steps[0],
+            CommandStep::Event(ParentEvent::Child(_))
+        ));
+    }
+
+    #[test]
+    fn blocking_cooperative_task_maps_commands() {
+        let mapped = Task::<ChildEvent, ChildEffect>::blocking_cooperative(
+            |_cancel: BlockingCancelToken| Some(Command::event(ChildEvent)),
+        )
+        .map(ParentEvent::Child, ParentEffect::Child);
+
+        let command = match mapped {
+            Task::BlockingCooperative(task) => {
+                let runtime = crate::runtime::Runtime::new().unwrap();
+                runtime.block_on(task.into_future(runtime.clone(), BlockingCancelToken::new()))
+            }
+            _ => panic!("expected cooperative blocking task"),
+        };
+
+        let steps = command
+            .expect("expected command")
+            .into_iter()
+            .collect::<Vec<_>>();
+        assert_eq!(steps.len(), 1);
+        assert!(matches!(
+            steps[0],
+            CommandStep::Event(ParentEvent::Child(_))
+        ));
     }
 }

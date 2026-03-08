@@ -60,7 +60,7 @@ syzygy = { git = "https://github.com/ribelo/syzygy", default-features = false, f
 | `Event` | Something that happened | `enum Event { Increment }` |
 | `Effect` | Side-effect to execute | `enum Effect { Save }` |
 | `Command` | Instructions from handler | `Command::event(E)` or `Command::effect(X)` |
-| `Task` | Async execution unit | `Task::future(async { ... })` |
+| `Task` | Effect execution unit | `Task::future(async { ... })` |
 | `handle!` | Call handler with context | `handle!(increment, ctx, amount)` |
 | `emit` | Send event to Core | `core.emit(Event::Tick)` |
 
@@ -155,6 +155,8 @@ async fn fetch(url: String) -> Command<Event, Effect> {
 | `Task::none()` | No side effect | Nothing |
 | `Task::once(async)` | One-shot async | Single event |
 | `Task::stream(impl Stream)` | Ongoing streams | Multiple events |
+| `Task::blocking(|| ...)` | Non-abortable blocking work | Single command |
+| `Task::blocking_cooperative(|cancel| ...)` | Lease-owned blocking work | `Option<Command>` |
 
 ## Command Composition
 
@@ -206,6 +208,8 @@ struct DbPool(Arc<Pool>);  // Cheap clone
 **Abortable work needs an owner.** If you schedule an abortable effect with a `TaskLease` and do not retain the lease in state, the shell will cancel it on the next `step`/`drain` cycle.
 
 **Abortable command/task mapping is explicit.** Plain `Command::map` / `Task::map` reject abortable steps. Use `TaskLeaseScope` when you intentionally remap child abortable work into a parent domain.
+
+**Blocking work is split on purpose.** `Task::blocking` is non-abortable and shutdown waits for it to finish. Lease-owned blocking work must use `Task::blocking_cooperative`; returning plain `Task::blocking` from an abortable effect is a `ShellError`.
 
 ## Development
 

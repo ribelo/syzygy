@@ -23,3 +23,11 @@ Q: How should abortable work be modeled?
 A: Use lease-owned abortable effects, not raw cancel IDs and not imperative runtime handles.
 
 Reason: `Effect` must stay a description, but raw `track/cancel` IDs make it easy for the app to lose ownership knowledge while the shell still runs background work. `TaskLease` keeps ownership explicit in app state, lets commands stay declarative (`Command::abortable` / `Command::cancel`), and allows the shell to cancel work safely when explicit cancel, replacement, owner loss, or shutdown happens. Mapping abortable commands/tasks across boundaries must stay explicit too: plain `Command::map` / `Task::map` reject abortable steps, and `TaskLeaseScope` is required when a caller intentionally remaps child abortable work into a parent domain.
+
+## 2026-03-08
+
+Q: How should blocking work fit the lease-owned abortable task model?
+
+A: Split it explicitly. `Task::blocking` is non-abortable blocking work, while lease-owned blocking work must use `Task::blocking_cooperative` with a `BlockingCancelToken`.
+
+Reason: Runtime blocking threads cannot honestly support hard abort once started. Pretending otherwise would make `Command::abortable` lie about what cancellation means. The correct contract is: plain blocking work runs to completion and shutdown waits for it, while abortable blocking work must cooperatively observe cancellation and return `None` when cancelled. If an abortable effect resolves to plain `Task::blocking`, the shell returns `ShellError::AbortableBlockingTask` instead of silently accepting dishonest semantics.
