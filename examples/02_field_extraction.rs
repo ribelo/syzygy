@@ -64,7 +64,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut app = Syzygy::builder::<AppEvent, AppEffect>()
         .model(AppState::default())
         .event_handler(handle_event)
-        .build();
+        .build()?;
 
     app.core().try_send(AppEvent::UpdateName("Alice".into()))?;
     app.core().try_send(AppEvent::AddPoints(100))?;

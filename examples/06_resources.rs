@@ -95,7 +95,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_resource(DatabasePool::new())
         .event_handler(handle_event)
         .effect_handler(handle_effect)
-        .build();
+        .build()?;
 
     app.core().try_send(AppEvent::Start)?;
     app.step()?;

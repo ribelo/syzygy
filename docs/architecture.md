@@ -115,7 +115,7 @@ Command::cancel(lease)                    // Explicit stop
 **Semantics:**
 - A lease owns at most one abortable task. New `abortable` with the same lease drops the old task.
 - The shell also cancels abortable work when the last owner of the lease disappears.
-- Lease identity is unique, so command/task mapping does not need cancellation-specific namespacing.
+- Mapping abortable child commands/tasks is explicit. Plain `map` rejects abortable steps; `TaskLeaseScope` remaps leases when a caller intentionally embeds child abortable work into a parent domain.
 
 **ABA Protection:** Generation token per slot entry. Prevents "cancel wrong task" race.
 

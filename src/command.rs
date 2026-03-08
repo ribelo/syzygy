@@ -1,14 +1,36 @@
+use std::cell::RefCell;
 use std::hash::{Hash, Hasher};
+use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Weak};
 
+use rustc_hash::FxHashMap;
 use smallvec::SmallVec;
 
 static NEXT_TASK_LEASE_ID: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Debug)]
+struct TaskLeaseOwner;
+
+#[derive(Debug, Clone)]
+enum TaskLeaseOwnerRef {
+    Strong(Arc<TaskLeaseOwner>),
+    Weak(Weak<TaskLeaseOwner>),
+}
+
+impl TaskLeaseOwnerRef {
+    fn downgrade(&self) -> Weak<TaskLeaseOwner> {
+        match self {
+            Self::Strong(owner) => Arc::downgrade(owner),
+            Self::Weak(owner) => Weak::clone(owner),
+        }
+    }
+}
+
+#[derive(Debug)]
 struct TaskLeaseState {
     id: u64,
+    owner: TaskLeaseOwnerRef,
 }
 
 /// Ownership token for abortable work.
@@ -21,10 +43,15 @@ pub struct TaskLease {
     inner: Arc<TaskLeaseState>,
 }
 
+#[derive(Clone, Debug, Default)]
+pub struct TaskLeaseScope {
+    leases: Rc<RefCell<FxHashMap<u64, TaskLease>>>,
+}
+
 #[derive(Clone, Debug)]
 pub(crate) struct TaskLeaseWeak {
     id: u64,
-    inner: Weak<TaskLeaseState>,
+    owner: Weak<TaskLeaseOwner>,
 }
 
 impl TaskLeaseWeak {
@@ -35,16 +62,38 @@ impl TaskLeaseWeak {
 
     #[must_use]
     pub(crate) fn has_owner(&self) -> bool {
-        self.inner.strong_count() > 0
+        self.owner.strong_count() > 0
+    }
+}
+
+impl TaskLeaseScope {
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    #[must_use]
+    fn remap(&self, lease: &TaskLease) -> TaskLease {
+        if let Some(mapped) = self.leases.borrow().get(&lease.id()).cloned() {
+            return mapped;
+        }
+
+        let mapped = TaskLease::borrowed(lease.owner_weak());
+        self.leases.borrow_mut().insert(lease.id(), mapped.clone());
+        mapped
     }
 }
 
 impl TaskLease {
     #[must_use]
     pub fn new() -> Self {
+        let owner = Arc::new(TaskLeaseOwner);
         let id = NEXT_TASK_LEASE_ID.fetch_add(1, Ordering::Relaxed);
         Self {
-            inner: Arc::new(TaskLeaseState { id }),
+            inner: Arc::new(TaskLeaseState {
+                id,
+                owner: TaskLeaseOwnerRef::Strong(owner),
+            }),
         }
     }
 
@@ -62,7 +111,23 @@ impl TaskLease {
     pub(crate) fn downgrade(&self) -> TaskLeaseWeak {
         TaskLeaseWeak {
             id: self.id(),
-            inner: Arc::downgrade(&self.inner),
+            owner: self.owner_weak(),
+        }
+    }
+
+    #[must_use]
+    fn owner_weak(&self) -> Weak<TaskLeaseOwner> {
+        self.inner.owner.downgrade()
+    }
+
+    #[must_use]
+    fn borrowed(owner: Weak<TaskLeaseOwner>) -> Self {
+        let id = NEXT_TASK_LEASE_ID.fetch_add(1, Ordering::Relaxed);
+        Self {
+            inner: Arc::new(TaskLeaseState {
+                id,
+                owner: TaskLeaseOwnerRef::Weak(owner),
+            }),
         }
     }
 }
@@ -292,11 +357,41 @@ impl<Event, Effect> Command<Event, Effect> {
         self.outputs.len()
     }
 
+    #[must_use]
+    pub(crate) fn has_abortable_steps(&self) -> bool {
+        self.outputs.iter().any(|step| {
+            matches!(
+                step,
+                CommandStep::Abortable { .. } | CommandStep::Cancel { .. }
+            )
+        })
+    }
+
     /// Transform event and effect types.
     ///
     /// Useful when embedding child commands into parent commands.
     #[must_use]
     pub fn map<E2, X2, FE, FX>(self, fe: FE, fx: FX) -> Command<E2, X2>
+    where
+        FE: Fn(Event) -> E2,
+        FX: Fn(Effect) -> X2,
+    {
+        assert!(
+            !self.has_abortable_steps(),
+            "Command::map cannot safely remap abortable steps; use Command::map_scoped(scope, ...)"
+        );
+
+        self.map_scoped(&TaskLeaseScope::new(), fe, fx)
+    }
+
+    /// Transform event/effect types and explicitly remap abortable task leases.
+    #[must_use]
+    pub fn map_scoped<E2, X2, FE, FX>(
+        self,
+        scope: &TaskLeaseScope,
+        fe: FE,
+        fx: FX,
+    ) -> Command<E2, X2>
     where
         FE: Fn(Event) -> E2,
         FX: Fn(Effect) -> X2,
@@ -308,10 +403,12 @@ impl<Event, Effect> Command<Event, Effect> {
                 CommandStep::Event(event) => CommandStep::Event(fe(event)),
                 CommandStep::Effect(effect) => CommandStep::Effect(fx(effect)),
                 CommandStep::Abortable { lease, effect } => CommandStep::Abortable {
-                    lease,
+                    lease: scope.remap(&lease),
                     effect: fx(effect),
                 },
-                CommandStep::Cancel { lease } => CommandStep::Cancel { lease },
+                CommandStep::Cancel { lease } => CommandStep::Cancel {
+                    lease: scope.remap(&lease),
+                },
             })
             .collect();
 
@@ -519,7 +616,8 @@ pub mod builders {
 
 #[cfg(test)]
 mod tests {
-    use super::{Command, CommandStep, TaskLease};
+    use super::{Command, CommandStep, TaskLease, TaskLeaseScope};
+    use crate::test_store::assert_panic_contains;
 
     #[derive(Debug, Clone, PartialEq, Eq)]
     enum ChildEvent {
@@ -604,12 +702,25 @@ mod tests {
     }
 
     #[test]
-    fn abortable_steps_map_effects_without_namespace_changes() {
+    fn map_rejects_abortable_steps_without_explicit_scope() {
         let lease = TaskLease::new();
+
+        assert_panic_contains("Command::map cannot safely remap abortable steps", || {
+            let _mapped: Command<ChildEvent, ParentEffect> =
+                Command::abortable(&lease, ChildEffect::Load)
+                    .and_cancel(&lease)
+                    .map(std::convert::identity, ParentEffect::Child);
+        });
+    }
+
+    #[test]
+    fn scoped_mapping_keeps_abortable_and_cancel_leases_aligned() {
+        let lease = TaskLease::new();
+        let scope = TaskLeaseScope::new();
         let mapped: Command<ChildEvent, ParentEffect> =
             Command::abortable(&lease, ChildEffect::Load)
                 .and_cancel(&lease)
-                .map(std::convert::identity, ParentEffect::Child);
+                .map_scoped(&scope, std::convert::identity, ParentEffect::Child);
 
         let steps = mapped.into_iter().collect::<Vec<_>>();
         assert_eq!(steps.len(), 2);
@@ -625,24 +736,26 @@ mod tests {
                 },
             ) => {
                 assert_eq!(*effect, ParentEffect::Child(ChildEffect::Load));
-                assert_eq!(abortable_lease, &lease);
-                assert_eq!(cancelled_lease, &lease);
+                assert_eq!(abortable_lease, cancelled_lease);
+                assert_ne!(abortable_lease, &lease);
             }
             _ => panic!("expected abortable + cancel steps"),
         }
     }
 
     #[test]
-    fn different_leases_remain_distinct_after_mapping() {
-        let first = TaskLease::new();
-        let second = TaskLease::new();
+    fn distinct_scopes_disambiguate_reused_abortable_commands() {
+        let lease = TaskLease::new();
+        let child = Command::<ChildEvent, ChildEffect>::abortable(&lease, ChildEffect::Load);
 
+        let first_scope = TaskLeaseScope::new();
+        let second_scope = TaskLeaseScope::new();
         let first_command: Command<ParentEvent, ParentEffect> =
-            Command::abortable(&first, ChildEffect::Load)
-                .map(ParentEvent::Child, ParentEffect::Child);
+            child
+                .clone()
+                .map_scoped(&first_scope, ParentEvent::Child, ParentEffect::Child);
         let second_command: Command<ParentEvent, ParentEffect> =
-            Command::abortable(&second, ChildEffect::Load)
-                .map(ParentEvent::Child, ParentEffect::Child);
+            child.map_scoped(&second_scope, ParentEvent::Child, ParentEffect::Child);
 
         let Some(CommandStep::Abortable {
             lease: first_lease, ..
@@ -659,6 +772,8 @@ mod tests {
         };
 
         assert_ne!(first_lease, second_lease);
+        assert_ne!(first_lease, lease);
+        assert_ne!(second_lease, lease);
     }
 
     #[test]

@@ -74,7 +74,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut app = Syzygy::builder::<AppEvent, AppEffect>()
         .model(AppModel::default())
         .event_handler(handle_event)
-        .build();
+        .build()?;
 
     // ## Running the application
     // We can inject events manually using the core channel.

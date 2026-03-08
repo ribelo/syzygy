@@ -91,7 +91,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut runner = Syzygy::builder::<Event, Effect>()
         .model(AppModel::default())
         .event_handler(handle_event)
-        .build();
+        .build()?;
 
     runner.core().try_send(Event::StartSequence)?;
 

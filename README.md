@@ -155,7 +155,6 @@ async fn fetch(url: String) -> Command<Event, Effect> {
 | `Task::none()` | No side effect | Nothing |
 | `Task::once(async)` | One-shot async | Single event |
 | `Task::stream(impl Stream)` | Ongoing streams | Multiple events |
-| `Task::blocking(fn)` | CPU-intensive work | Single event |
 
 ## Command Composition
 
@@ -205,6 +204,8 @@ struct DbPool(Arc<Pool>);  // Cheap clone
 **256 field limit.** Exceeding this panics at model construction.
 
 **Abortable work needs an owner.** If you schedule an abortable effect with a `TaskLease` and do not retain the lease in state, the shell will cancel it on the next `step`/`drain` cycle.
+
+**Abortable command/task mapping is explicit.** Plain `Command::map` / `Task::map` reject abortable steps. Use `TaskLeaseScope` when you intentionally remap child abortable work into a parent domain.
 
 ## Development
 

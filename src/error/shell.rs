@@ -29,6 +29,10 @@ pub enum ShellError {
     #[error("Task spawn failed: {0}")]
     TaskSpawnFailed(String),
 
+    /// Runtime initialization failed
+    #[error("Runtime initialization failed: {0}")]
+    RuntimeInitializationFailed(String),
+
     /// Command execution failed
     #[error("Command execution failed: {0}")]
     CommandExecutionFailed(String),

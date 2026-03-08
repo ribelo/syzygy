@@ -1,4 +1,4 @@
-//! Pluggable async runtime abstractions used by shell execution.
+//! Owned async runtime abstractions used by shell execution.
 
 #[cfg(all(feature = "rt-compio", feature = "rt-tokio"))]
 compile_error!("features `rt-compio` and `rt-tokio` are mutually exclusive");
@@ -8,31 +8,106 @@ compile_error!("a runtime feature must be enabled: `rt-compio` or `rt-tokio`");
 
 #[cfg(feature = "rt-compio")]
 mod imp {
+    use std::any::Any;
     use std::future::{poll_fn, Future};
-    use std::task::Poll;
+    use std::io;
+    use std::pin::Pin;
+    use std::rc::Rc;
+    use std::task::{Context, Poll};
     use std::time::Duration;
 
-    pub type JoinHandle<T> = compio::runtime::JoinHandle<T>;
-
-    pub fn spawn<F>(future: F) -> JoinHandle<F::Output>
-    where
-        F: Future + 'static,
-    {
-        compio::runtime::spawn(future)
+    #[derive(Clone)]
+    pub struct Runtime {
+        inner: Rc<compio::runtime::Runtime>,
     }
 
-    pub fn spawn_blocking<F, T>(blocking: F) -> JoinHandle<T>
-    where
-        F: FnOnce() -> T + Send + 'static,
-        T: Send + 'static,
-    {
-        compio::runtime::spawn_blocking(blocking)
+    pub struct JoinHandle<T> {
+        inner: Option<compio::runtime::JoinHandle<T>>,
     }
 
-    pub async fn await_blocking<T>(handle: JoinHandle<T>) -> T {
-        match handle.await {
-            Ok(result) => result,
-            Err(panic) => std::panic::resume_unwind(panic),
+    impl Runtime {
+        pub fn new() -> io::Result<Self> {
+            Ok(Self {
+                inner: Rc::new(compio::runtime::Runtime::new()?),
+            })
+        }
+
+        pub fn spawn<F>(&self, future: F) -> JoinHandle<F::Output>
+        where
+            F: Future + 'static,
+        {
+            JoinHandle {
+                inner: Some(self.inner.spawn(future)),
+            }
+        }
+
+        pub fn drive_ready(&self) {
+            self.inner.enter(|| {
+                let _ = self.inner.run();
+                self.inner.poll_with(Some(Duration::ZERO));
+                let _ = self.inner.run();
+            });
+        }
+
+        pub fn park(&self, duration: Duration) {
+            self.inner.enter(|| {
+                self.inner.poll_with(Some(duration));
+                let _ = self.inner.run();
+            });
+        }
+
+        pub fn block_on<F>(&self, future: F) -> F::Output
+        where
+            F: Future,
+        {
+            self.inner.block_on(future)
+        }
+    }
+
+    impl<T> JoinHandle<T> {
+        #[must_use]
+        pub fn is_finished(&self) -> bool {
+            self.inner
+                .as_ref()
+                .map_or(true, compio::runtime::JoinHandle::is_finished)
+        }
+    }
+
+    impl<T> Drop for JoinHandle<T> {
+        fn drop(&mut self) {
+            let _ = self.inner.take();
+        }
+    }
+
+    impl<T> Future for JoinHandle<T> {
+        type Output = Result<T, Box<dyn Any + Send + 'static>>;
+
+        fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+            let Some(handle) = self.inner.as_mut() else {
+                panic!("compio join handle polled after completion");
+            };
+
+            match Pin::new(handle).poll(cx) {
+                Poll::Ready(result) => {
+                    let _ = self.inner.take();
+                    Poll::Ready(result)
+                }
+                Poll::Pending => Poll::Pending,
+            }
+        }
+    }
+
+    impl<T> std::fmt::Debug for JoinHandle<T> {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.debug_struct("JoinHandle")
+                .field("finished", &self.is_finished())
+                .finish_non_exhaustive()
+        }
+    }
+
+    impl std::fmt::Debug for Runtime {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.debug_struct("Runtime").finish_non_exhaustive()
         }
     }
 
@@ -41,9 +116,6 @@ mod imp {
     }
 
     pub async fn yield_now() {
-        // compio does not expose a first-class yield primitive. A zero-duration
-        // timer completes immediately, so explicitly self-wake once to
-        // requeue this task behind other ready tasks.
         let mut yielded = false;
         poll_fn(move |cx| {
             if yielded {
@@ -56,52 +128,79 @@ mod imp {
         })
         .await;
     }
-
-    #[allow(clippy::result_unit_err)]
-    pub fn try_with_current<F, R>(f: F) -> Result<R, ()>
-    where
-        F: FnOnce() -> R,
-    {
-        compio::runtime::Runtime::try_with_current(|_| f()).map_err(|_| ())
-    }
-
-    #[must_use]
-    pub fn supports_sync_driving() -> bool {
-        true
-    }
-
-    #[must_use]
-    pub fn run() -> bool {
-        compio::runtime::Runtime::try_with_current(compio::runtime::Runtime::run).unwrap_or(false)
-    }
-
-    pub fn poll_with(duration: Option<Duration>) {
-        let _ = compio::runtime::Runtime::try_with_current(|runtime| runtime.poll_with(duration));
-    }
-
-    pub fn block_on<F>(future: F) -> F::Output
-    where
-        F: Future,
-    {
-        compio::runtime::Runtime::new()
-            .expect("failed to create compio runtime")
-            .block_on(future)
-    }
 }
 
 #[cfg(feature = "rt-tokio")]
 mod imp {
     use std::future::Future;
+    use std::io;
     use std::pin::Pin;
+    use std::rc::Rc;
     use std::task::{Context, Poll};
     use std::time::Duration;
 
     #[derive(Debug)]
     struct TaskCancelled;
 
+    struct RuntimeState {
+        runtime: tokio::runtime::Runtime,
+        local_set: tokio::task::LocalSet,
+    }
+
+    #[derive(Clone)]
+    pub struct Runtime {
+        inner: Rc<RuntimeState>,
+    }
+
     #[derive(Debug)]
     pub struct JoinHandle<T> {
         inner: Option<tokio::task::JoinHandle<T>>,
+    }
+
+    impl Runtime {
+        pub fn new() -> io::Result<Self> {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()?;
+            let local_set = tokio::task::LocalSet::new();
+
+            Ok(Self {
+                inner: Rc::new(RuntimeState { runtime, local_set }),
+            })
+        }
+
+        pub fn spawn<F>(&self, future: F) -> JoinHandle<F::Output>
+        where
+            F: Future + 'static,
+            F::Output: 'static,
+        {
+            JoinHandle {
+                inner: Some(self.inner.local_set.spawn_local(future)),
+            }
+        }
+
+        pub fn drive_ready(&self) {
+            self.block_on(async {
+                tokio::task::yield_now().await;
+            });
+        }
+
+        pub fn park(&self, duration: Duration) {
+            self.block_on(async move {
+                if duration.is_zero() {
+                    tokio::task::yield_now().await;
+                } else {
+                    tokio::time::sleep(duration).await;
+                }
+            });
+        }
+
+        pub fn block_on<F>(&self, future: F) -> F::Output
+        where
+            F: Future,
+        {
+            self.inner.local_set.block_on(&self.inner.runtime, future)
+        }
     }
 
     impl<T> Drop for JoinHandle<T> {
@@ -116,14 +215,17 @@ mod imp {
         type Output = Result<T, Box<dyn std::any::Any + Send + 'static>>;
 
         fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-            let handle = self
-                .inner
-                .as_mut()
-                .expect("tokio join handle polled after completion");
+            let Some(handle) = self.inner.as_mut() else {
+                panic!("tokio join handle polled after completion");
+            };
 
             match Pin::new(handle).poll(cx) {
-                Poll::Ready(Ok(result)) => Poll::Ready(Ok(result)),
+                Poll::Ready(Ok(result)) => {
+                    let _ = self.inner.take();
+                    Poll::Ready(Ok(result))
+                }
                 Poll::Ready(Err(err)) => {
+                    let _ = self.inner.take();
                     if err.is_panic() {
                         Poll::Ready(Err(err.into_panic()))
                     } else {
@@ -144,30 +246,9 @@ mod imp {
         }
     }
 
-    pub fn spawn<F>(future: F) -> JoinHandle<F::Output>
-    where
-        F: Future + 'static,
-        F::Output: 'static,
-    {
-        JoinHandle {
-            inner: Some(tokio::task::spawn_local(future)),
-        }
-    }
-
-    pub fn spawn_blocking<F, T>(blocking: F) -> JoinHandle<T>
-    where
-        F: FnOnce() -> T + Send + 'static,
-        T: Send + 'static,
-    {
-        JoinHandle {
-            inner: Some(tokio::task::spawn_blocking(blocking)),
-        }
-    }
-
-    pub async fn await_blocking<T>(handle: JoinHandle<T>) -> T {
-        match handle.await {
-            Ok(result) => result,
-            Err(panic) => std::panic::resume_unwind(panic),
+    impl std::fmt::Debug for Runtime {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.debug_struct("Runtime").finish_non_exhaustive()
         }
     }
 
@@ -177,42 +258,6 @@ mod imp {
 
     pub async fn yield_now() {
         tokio::task::yield_now().await;
-    }
-
-    #[allow(clippy::result_unit_err)]
-    pub fn try_with_current<F, R>(f: F) -> Result<R, ()>
-    where
-        F: FnOnce() -> R,
-    {
-        if tokio::runtime::Handle::try_current().is_ok() {
-            Ok(f())
-        } else {
-            Err(())
-        }
-    }
-
-    #[must_use]
-    pub fn supports_sync_driving() -> bool {
-        false
-    }
-
-    #[must_use]
-    pub fn run() -> bool {
-        false
-    }
-
-    pub fn poll_with(_duration: Option<Duration>) {}
-
-    pub fn block_on<F>(future: F) -> F::Output
-    where
-        F: Future,
-    {
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .expect("failed to create tokio runtime");
-        let local_set = tokio::task::LocalSet::new();
-        local_set.block_on(&runtime, future)
     }
 }
 

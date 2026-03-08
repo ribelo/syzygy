@@ -71,7 +71,8 @@ fn bounded_channel_overflow_does_not_crash() {
         .event_handler(handle_event)
         .effect_handler(handle_effect)
         .with_event_channel_capacity(Some(1))
-        .build();
+        .build()
+        .unwrap();
 
     runner.core().try_send(Event::Start).unwrap();
     runner
@@ -125,7 +126,8 @@ fn deferred_events_preserve_fifo_when_new_commands_arrive() {
         .event_handler(handle_event)
         .effect_handler(handle_effect)
         .with_event_channel_capacity(Some(1))
-        .build();
+        .build()
+        .unwrap();
 
     runner
         .shell_mut()
@@ -171,7 +173,8 @@ fn run_until_exits_when_shell_is_closed() {
         .model(())
         .event_handler(handle_event)
         .effect_handler(handle_effect)
-        .build();
+        .build()
+        .unwrap();
 
     let _ = Event::Ping;
     runner.shutdown();
@@ -229,7 +232,8 @@ fn run_until_progresses_async_effects() {
         .event_handler(handle_event)
         .effect_handler(handle_effect)
         .with_syzygy_config(SyzygyConfig::default().idle_sleep(Duration::from_millis(1)))
-        .build();
+        .build()
+        .unwrap();
 
     runner.core().try_send(Event::Start).unwrap();
     let started = Instant::now();
@@ -269,22 +273,21 @@ fn spawning_async_effects_does_not_clone_registered_resources() {
 
     let clone_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
 
-    syzygy::runtime::block_on(async {
-        let mut runner = Syzygy::builder::<Event, Effect>()
-            .model(())
-            .with_resource(CloneCounter(Arc::clone(&clone_count)))
-            .event_handler(|event, _ctx| match event {
-                Event::Start => Command::batch((0..128).map(|_| Command::effect(Effect::Work))),
-            })
-            .effect_handler(|effect, _ctx| match effect {
-                Effect::Work => Task::once(async { Command::none() }),
-            })
-            .build();
+    let mut runner = Syzygy::builder::<Event, Effect>()
+        .model(())
+        .with_resource(CloneCounter(Arc::clone(&clone_count)))
+        .event_handler(|event, _ctx| match event {
+            Event::Start => Command::batch((0..128).map(|_| Command::effect(Effect::Work))),
+        })
+        .effect_handler(|effect, _ctx| match effect {
+            Effect::Work => Task::once(async { Command::none() }),
+        })
+        .build()
+        .unwrap();
 
-        runner.core().try_send(Event::Start).unwrap();
-        runner.step().unwrap();
-        runner.run().unwrap();
-    });
+    runner.core().try_send(Event::Start).unwrap();
+    runner.step().unwrap();
+    runner.run().unwrap();
 
     assert_eq!(clone_count.load(Ordering::SeqCst), 0);
 }
@@ -312,61 +315,62 @@ fn cancelling_abortable_future_returns_shell_to_idle() {
         }
     }
 
-    syzygy::runtime::block_on(async {
-        let lease = TaskLease::new();
-        let mut runner = Syzygy::builder::<Event, Effect>()
-            .model(())
-            .event_handler({
-                let lease = lease.clone();
-                move |event, _ctx| match event {
-                    Event::Start => Command::abortable(&lease, Effect::Wait),
-                    Event::Stop => Command::cancel(&lease),
-                    Event::StartAndStop => {
-                        Command::abortable(&lease, Effect::Wait).and_cancel(&lease)
-                    }
+    let lease = TaskLease::new();
+    let mut runner = Syzygy::builder::<Event, Effect>()
+        .model(())
+        .event_handler({
+            let lease = lease.clone();
+            move |event, _ctx| match event {
+                Event::Start => Command::abortable(&lease, Effect::Wait),
+                Event::Stop => Command::cancel(&lease),
+                Event::StartAndStop => Command::abortable(&lease, Effect::Wait).and_cancel(&lease),
+            }
+        })
+        .effect_handler(handle_effect)
+        .build()
+        .unwrap();
+
+    runner.core().try_send(Event::Start).unwrap();
+    runner.step().unwrap();
+    assert!(!runner.shell().is_idle());
+
+    runner.core().try_send(Event::Stop).unwrap();
+    runner.step().unwrap();
+    runner.run_until(|_, shell| shell.is_idle()).unwrap();
+
+    assert!(
+        runner.shell().is_idle(),
+        "shell should be idle after cancellation"
+    );
+
+    let same_step_lease = TaskLease::new();
+    let mut same_step_runner = Syzygy::builder::<Event, Effect>()
+        .model(())
+        .event_handler({
+            let same_step_lease = same_step_lease.clone();
+            move |event, _ctx| match event {
+                Event::Start => Command::abortable(&same_step_lease, Effect::Wait),
+                Event::Stop => Command::cancel(&same_step_lease),
+                Event::StartAndStop => {
+                    Command::abortable(&same_step_lease, Effect::Wait).and_cancel(&same_step_lease)
                 }
-            })
-            .effect_handler(handle_effect)
-            .build();
-
-        runner.core().try_send(Event::Start).unwrap();
-        runner.step().unwrap();
-        assert!(!runner.shell().is_idle());
-
-        runner.core().try_send(Event::Stop).unwrap();
-        runner.step().unwrap();
-        syzygy::runtime::sleep(Duration::from_millis(2)).await;
-
-        assert!(
-            runner.shell().is_idle(),
-            "shell should be idle after cancellation"
-        );
-
-        let same_step_lease = TaskLease::new();
-        let mut same_step_runner = Syzygy::builder::<Event, Effect>()
-            .model(())
-            .event_handler({
-                let same_step_lease = same_step_lease.clone();
-                move |event, _ctx| match event {
-                    Event::Start => Command::abortable(&same_step_lease, Effect::Wait),
-                    Event::Stop => Command::cancel(&same_step_lease),
-                    Event::StartAndStop => Command::abortable(&same_step_lease, Effect::Wait)
-                        .and_cancel(&same_step_lease),
-                }
-            })
-            .effect_handler(handle_effect)
-            .build();
-        same_step_runner
-            .core()
-            .try_send(Event::StartAndStop)
-            .unwrap();
-        same_step_runner.step().unwrap();
-        syzygy::runtime::sleep(Duration::from_millis(2)).await;
-        assert!(
-            same_step_runner.shell().is_idle(),
-            "shell should be idle when abortable task is cancelled in the same command"
-        );
-    });
+            }
+        })
+        .effect_handler(handle_effect)
+        .build()
+        .unwrap();
+    same_step_runner
+        .core()
+        .try_send(Event::StartAndStop)
+        .unwrap();
+    same_step_runner.step().unwrap();
+    same_step_runner
+        .run_until(|_, shell| shell.is_idle())
+        .unwrap();
+    assert!(
+        same_step_runner.shell().is_idle(),
+        "shell should be idle when abortable task is cancelled in the same command"
+    );
 }
 
 #[test]
@@ -397,37 +401,33 @@ fn cancelled_abortable_future_does_not_route_completion_event() {
         }
     }
 
-    syzygy::runtime::block_on(async {
-        let lease = TaskLease::new();
-        let mut runner = Syzygy::builder::<Event, Effect>()
-            .model(Model::default())
-            .event_handler({
-                let lease = lease.clone();
-                move |event, ctx| match event {
-                    Event::Start => Command::abortable(&lease, Effect::Wait),
-                    Event::Stop => Command::cancel(&lease),
-                    Event::Done => {
-                        let done = Done::extract_mut(ctx);
-                        **done = true;
-                        Command::none()
-                    }
+    let lease = TaskLease::new();
+    let mut runner = Syzygy::builder::<Event, Effect>()
+        .model(Model::default())
+        .event_handler({
+            let lease = lease.clone();
+            move |event, ctx| match event {
+                Event::Start => Command::abortable(&lease, Effect::Wait),
+                Event::Stop => Command::cancel(&lease),
+                Event::Done => {
+                    let done = Done::extract_mut(ctx);
+                    **done = true;
+                    Command::none()
                 }
-            })
-            .effect_handler(handle_effect)
-            .build();
+            }
+        })
+        .effect_handler(handle_effect)
+        .build()
+        .unwrap();
 
-        runner.core().try_send(Event::Start).unwrap();
-        runner.step().unwrap();
+    runner.core().try_send(Event::Start).unwrap();
+    runner.step().unwrap();
 
-        runner.core().try_send(Event::Stop).unwrap();
-        runner.step().unwrap();
+    runner.core().try_send(Event::Stop).unwrap();
+    runner.step().unwrap();
+    runner.run_until(|_, shell| shell.is_idle()).unwrap();
 
-        syzygy::runtime::sleep(Duration::from_millis(80)).await;
-        runner.step().unwrap();
-        runner.step().unwrap();
-
-        assert!(!runner.model().done);
-    });
+    assert!(!runner.model().done);
 }
 
 #[test]
@@ -480,30 +480,26 @@ fn dropping_abortable_lease_cancels_running_future() {
         }
     }
 
-    syzygy::runtime::block_on(async {
-        let mut runner = Syzygy::builder::<Event, Effect>()
-            .model(Model::default())
-            .event_handler(handle_event)
-            .effect_handler(handle_effect)
-            .build();
+    let mut runner = Syzygy::builder::<Event, Effect>()
+        .model(Model::default())
+        .event_handler(handle_event)
+        .effect_handler(handle_effect)
+        .build()
+        .unwrap();
 
-        runner.core().try_send(Event::Start).unwrap();
-        runner.step().unwrap();
-        assert!(!runner.shell().is_idle());
+    runner.core().try_send(Event::Start).unwrap();
+    runner.step().unwrap();
+    assert!(!runner.shell().is_idle());
 
-        runner.core().try_send(Event::DropLease).unwrap();
-        runner.step().unwrap();
+    runner.core().try_send(Event::DropLease).unwrap();
+    runner.step().unwrap();
+    runner.run_until(|_, shell| shell.is_idle()).unwrap();
 
-        syzygy::runtime::sleep(Duration::from_millis(80)).await;
-        runner.step().unwrap();
-        runner.step().unwrap();
-
-        assert!(
-            runner.shell().is_idle(),
-            "shell should be idle after abortable lease ownership disappears"
-        );
-        assert!(!runner.model().done);
-    });
+    assert!(
+        runner.shell().is_idle(),
+        "shell should be idle after abortable lease ownership disappears"
+    );
+    assert!(!runner.model().done);
 }
 
 #[test]
@@ -562,30 +558,26 @@ fn dropping_abortable_lease_cancels_running_stream() {
         }
     }
 
-    syzygy::runtime::block_on(async {
-        let mut runner = Syzygy::builder::<Event, Effect>()
-            .model(Model::default())
-            .event_handler(handle_event)
-            .effect_handler(handle_effect)
-            .build();
+    let mut runner = Syzygy::builder::<Event, Effect>()
+        .model(Model::default())
+        .event_handler(handle_event)
+        .effect_handler(handle_effect)
+        .build()
+        .unwrap();
 
-        runner.core().try_send(Event::Start).unwrap();
-        runner.step().unwrap();
-        assert!(!runner.shell().is_idle());
+    runner.core().try_send(Event::Start).unwrap();
+    runner.step().unwrap();
+    assert!(!runner.shell().is_idle());
 
-        runner.core().try_send(Event::DropLease).unwrap();
-        runner.step().unwrap();
+    runner.core().try_send(Event::DropLease).unwrap();
+    runner.step().unwrap();
+    runner.run_until(|_, shell| shell.is_idle()).unwrap();
 
-        syzygy::runtime::sleep(Duration::from_millis(80)).await;
-        runner.step().unwrap();
-        runner.step().unwrap();
-
-        assert!(
-            runner.shell().is_idle(),
-            "shell should be idle after abortable stream ownership disappears"
-        );
-        assert_eq!(runner.model().ticks, 0);
-    });
+    assert!(
+        runner.shell().is_idle(),
+        "shell should be idle after abortable stream ownership disappears"
+    );
+    assert_eq!(runner.model().ticks, 0);
 }
 
 #[test]
@@ -626,27 +618,24 @@ fn shutdown_blocks_spawned_untracked_command_routing() {
         }
     }
 
-    syzygy::runtime::block_on(async {
-        let mut runner = Syzygy::builder::<Event, Effect>()
-            .model(Model::default())
-            .event_handler(handle_event)
-            .effect_handler(handle_effect)
-            .build();
+    let mut runner = Syzygy::builder::<Event, Effect>()
+        .model(Model::default())
+        .event_handler(handle_event)
+        .effect_handler(handle_effect)
+        .build()
+        .unwrap();
 
-        runner.core().try_send(Event::Start).unwrap();
-        runner.step().unwrap();
-        runner.shutdown();
+    runner.core().try_send(Event::Start).unwrap();
+    runner.step().unwrap();
+    runner.shutdown();
+    runner.step().unwrap();
+    runner.step().unwrap();
 
-        syzygy::runtime::sleep(Duration::from_millis(8)).await;
-        runner.step().unwrap();
-        runner.step().unwrap();
-
-        assert_eq!(
-            runner.model().ticks,
-            0,
-            "spawned commands should be ignored after shutdown"
-        );
-    });
+    assert_eq!(
+        runner.model().ticks,
+        0,
+        "spawned commands should be ignored after shutdown"
+    );
 }
 
 #[test]
@@ -664,40 +653,39 @@ fn shutdown_cancels_untracked_async_tasks_without_timeout() {
     let finished = Arc::new(AtomicBool::new(false));
     let finished_in_effect = Arc::clone(&finished);
 
-    syzygy::runtime::block_on(async move {
-        let mut runner = Syzygy::builder::<Event, Effect>()
-            .model(())
-            .event_handler(|event, _ctx| match event {
-                Event::Start => Command::effect(Effect::Flush),
-            })
-            .effect_handler(move |effect, _ctx| {
-                let finished_in_effect = Arc::clone(&finished_in_effect);
-                match effect {
-                    Effect::Flush => Task::once(async move {
-                        syzygy::runtime::sleep(Duration::from_secs(60)).await;
-                        finished_in_effect.store(true, Ordering::SeqCst);
-                        Command::none()
-                    }),
-                }
-            })
-            .build();
+    let mut runner = Syzygy::builder::<Event, Effect>()
+        .model(())
+        .event_handler(|event, _ctx| match event {
+            Event::Start => Command::effect(Effect::Flush),
+        })
+        .effect_handler(move |effect, _ctx| {
+            let finished_in_effect = Arc::clone(&finished_in_effect);
+            match effect {
+                Effect::Flush => Task::once(async move {
+                    syzygy::runtime::sleep(Duration::from_secs(60)).await;
+                    finished_in_effect.store(true, Ordering::SeqCst);
+                    Command::none()
+                }),
+            }
+        })
+        .build()
+        .unwrap();
 
-        runner.core().try_send(Event::Start).unwrap();
-        runner.step().unwrap();
+    runner.core().try_send(Event::Start).unwrap();
+    runner.step().unwrap();
 
-        let shutdown_started = Instant::now();
-        runner.shutdown();
-        let elapsed = shutdown_started.elapsed();
+    let shutdown_started = Instant::now();
+    runner.shutdown();
+    let elapsed = shutdown_started.elapsed();
 
-        assert!(
-            elapsed < Duration::from_secs(1),
-            "shutdown should cancel untracked tasks promptly: {elapsed:?}"
-        );
-        assert!(
-            !finished.load(Ordering::SeqCst),
-            "untracked task should be cancelled before completion"
-        );
-    });
+    assert!(
+        elapsed < Duration::from_secs(1),
+        "shutdown should cancel untracked tasks promptly: {elapsed:?}"
+    );
+    assert!(
+        !finished.load(Ordering::SeqCst),
+        "untracked task should be cancelled before completion"
+    );
 }
 
 #[test]
@@ -715,44 +703,43 @@ fn shutdown_cancels_abortable_async_tasks_without_refcell_reentrancy_panics() {
     let finished = Arc::new(AtomicBool::new(false));
     let finished_in_effect = Arc::clone(&finished);
 
-    syzygy::runtime::block_on(async move {
-        let lease = TaskLease::new();
-        let mut runner = Syzygy::builder::<Event, Effect>()
-            .model(())
-            .event_handler({
-                let lease = lease.clone();
-                move |event, _ctx| match event {
-                    Event::Start => Command::abortable(&lease, Effect::Flush),
-                }
-            })
-            .effect_handler(move |effect, _ctx| {
-                let finished_in_effect = Arc::clone(&finished_in_effect);
-                match effect {
-                    Effect::Flush => Task::once(async move {
-                        syzygy::runtime::sleep(Duration::from_secs(60)).await;
-                        finished_in_effect.store(true, Ordering::SeqCst);
-                        Command::none()
-                    }),
-                }
-            })
-            .build();
+    let lease = TaskLease::new();
+    let mut runner = Syzygy::builder::<Event, Effect>()
+        .model(())
+        .event_handler({
+            let lease = lease.clone();
+            move |event, _ctx| match event {
+                Event::Start => Command::abortable(&lease, Effect::Flush),
+            }
+        })
+        .effect_handler(move |effect, _ctx| {
+            let finished_in_effect = Arc::clone(&finished_in_effect);
+            match effect {
+                Effect::Flush => Task::once(async move {
+                    syzygy::runtime::sleep(Duration::from_secs(60)).await;
+                    finished_in_effect.store(true, Ordering::SeqCst);
+                    Command::none()
+                }),
+            }
+        })
+        .build()
+        .unwrap();
 
-        runner.core().try_send(Event::Start).unwrap();
-        runner.step().unwrap();
+    runner.core().try_send(Event::Start).unwrap();
+    runner.step().unwrap();
 
-        let shutdown_started = Instant::now();
-        runner.shutdown();
-        let elapsed = shutdown_started.elapsed();
+    let shutdown_started = Instant::now();
+    runner.shutdown();
+    let elapsed = shutdown_started.elapsed();
 
-        assert!(
-            elapsed < Duration::from_secs(1),
-            "shutdown should cancel abortable tasks promptly: {elapsed:?}"
-        );
-        assert!(
-            !finished.load(Ordering::SeqCst),
-            "abortable task should be cancelled before completion"
-        );
-    });
+    assert!(
+        elapsed < Duration::from_secs(1),
+        "shutdown should cancel abortable tasks promptly: {elapsed:?}"
+    );
+    assert!(
+        !finished.load(Ordering::SeqCst),
+        "abortable task should be cancelled before completion"
+    );
 }
 
 #[test]
@@ -786,7 +773,8 @@ fn deep_resolved_effect_chain_is_iterative() {
         .model(())
         .event_handler(handle_event)
         .effect_handler(handle_effect)
-        .build();
+        .build()
+        .unwrap();
 
     runner.core().try_send(Event::Start).unwrap();
     runner.step().unwrap();
@@ -831,24 +819,23 @@ fn spawned_events_are_deferred_when_event_channel_is_full() {
         }
     }
 
-    syzygy::runtime::block_on(async {
-        let mut runner = Syzygy::builder::<Event, Effect>()
-            .model(Model::default())
-            .event_handler(handle_event)
-            .effect_handler(handle_effect)
-            .with_event_channel_capacity(Some(1))
-            .build();
+    let mut runner = Syzygy::builder::<Event, Effect>()
+        .model(Model::default())
+        .event_handler(handle_event)
+        .effect_handler(handle_effect)
+        .with_event_channel_capacity(Some(1))
+        .build()
+        .unwrap();
 
-        runner.core().try_send(Event::Start).unwrap();
-        runner.step().unwrap();
-        assert!(!runner.model().done);
+    runner.core().try_send(Event::Start).unwrap();
+    runner.step().unwrap();
+    assert!(!runner.model().done);
 
-        runner.step().unwrap();
-        assert!(!runner.model().done);
+    runner.step().unwrap();
+    assert!(!runner.model().done);
 
-        runner.step().unwrap();
-        assert!(runner.model().done);
-    });
+    runner.step().unwrap();
+    assert!(runner.model().done);
 }
 
 #[test]
@@ -856,19 +843,23 @@ fn runtime_yield_now_reschedules_the_current_task() {
     let order = Rc::new(RefCell::new(Vec::new()));
     let order_for_runtime = Rc::clone(&order);
 
-    syzygy::runtime::block_on(async move {
-        let order_for_task = Rc::clone(&order_for_runtime);
-        let handle = syzygy::runtime::spawn(async move {
-            order_for_task.borrow_mut().push("other");
-        });
+    let runtime = syzygy::runtime::Runtime::new().unwrap();
+    runtime.block_on({
+        let runtime = runtime.clone();
+        async move {
+            let order_for_task = Rc::clone(&order_for_runtime);
+            let handle = runtime.spawn(async move {
+                order_for_task.borrow_mut().push("other");
+            });
 
-        order_for_runtime.borrow_mut().push("before");
-        syzygy::runtime::yield_now().await;
-        order_for_runtime.borrow_mut().push("after");
+            order_for_runtime.borrow_mut().push("before");
+            syzygy::runtime::yield_now().await;
+            order_for_runtime.borrow_mut().push("after");
 
-        match handle.await {
-            Ok(()) => {}
-            Err(panic) => std::panic::resume_unwind(panic),
+            match handle.await {
+                Ok(()) => {}
+                Err(panic) => std::panic::resume_unwind(panic),
+            }
         }
     });
 
@@ -876,7 +867,7 @@ fn runtime_yield_now_reschedules_the_current_task() {
 }
 
 #[test]
-fn future_effects_can_resolve_without_async_runtime() {
+fn future_effects_resolve_on_syzygys_owned_runtime() {
     #[derive(Debug, Clone)]
     enum Event {
         Start,
@@ -914,7 +905,8 @@ fn future_effects_can_resolve_without_async_runtime() {
         .model(Model::default())
         .event_handler(handle_event)
         .effect_handler(handle_effect)
-        .build();
+        .build()
+        .unwrap();
 
     runner.core().try_send(Event::Start).unwrap();
     runner.step().unwrap();

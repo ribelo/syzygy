@@ -5,7 +5,7 @@ use std::rc::Rc;
 use futures::Stream;
 use futures::StreamExt;
 
-use crate::command::Command;
+use crate::command::{Command, TaskLeaseScope};
 
 /// Declarative unit of work returned by effect handlers.
 pub enum Task<E, X> {
@@ -52,22 +52,6 @@ where
     }
 
     #[must_use]
-    pub fn blocking<F>(blocking: F) -> Self
-    where
-        F: FnOnce() -> Command<E, X> + Send + 'static,
-        E: Send,
-        X: Send,
-    {
-        Self::future(async move {
-            if crate::runtime::try_with_current(|| ()).is_ok() {
-                crate::runtime::await_blocking(crate::runtime::spawn_blocking(blocking)).await
-            } else {
-                blocking()
-            }
-        })
-    }
-
-    #[must_use]
     pub fn stream<S>(stream: S) -> Self
     where
         S: Stream<Item = Command<E, X>> + 'static,
@@ -83,22 +67,16 @@ where
         E2: 'static,
         X2: 'static,
     {
-        let namespace = (std::any::type_name::<FE>(), std::any::type_name::<FX>());
         match self {
             Self::None => Task::None,
             Self::Resolved(command) => Task::Resolved(command.map(fe, fx)),
-            _ => self.map_impl(namespace, Rc::new(fe), Rc::new(fx)),
+            _ => self.map_impl(None, Rc::new(fe), Rc::new(fx)),
         }
     }
 
-    fn map_impl<Namespace, E2, X2, FE, FX>(
-        self,
-        namespace: Namespace,
-        fe: Rc<FE>,
-        fx: Rc<FX>,
-    ) -> Task<E2, X2>
+    #[must_use]
+    pub fn map_scoped<E2, X2, FE, FX>(self, scope: TaskLeaseScope, fe: FE, fx: FX) -> Task<E2, X2>
     where
-        Namespace: Clone + 'static,
         FE: Fn(E) -> E2 + 'static,
         FX: Fn(X) -> X2 + 'static,
         E2: 'static,
@@ -106,24 +84,56 @@ where
     {
         match self {
             Self::None => Task::None,
-            Self::Resolved(command) => {
-                Task::Resolved(command.map(|event| fe(event), |effect| fx(effect)))
-            }
+            Self::Resolved(command) => Task::Resolved(command.map_scoped(&scope, fe, fx)),
+            _ => self.map_impl(Some(scope), Rc::new(fe), Rc::new(fx)),
+        }
+    }
+
+    fn map_impl<E2, X2, FE, FX>(
+        self,
+        scope: Option<TaskLeaseScope>,
+        fe: Rc<FE>,
+        fx: Rc<FX>,
+    ) -> Task<E2, X2>
+    where
+        FE: Fn(E) -> E2 + 'static,
+        FX: Fn(X) -> X2 + 'static,
+        E2: 'static,
+        X2: 'static,
+    {
+        match self {
+            Self::None => Task::None,
+            Self::Resolved(command) => match scope {
+                Some(scope) => Task::Resolved(command.map_scoped(
+                    &scope,
+                    |event| fe(event),
+                    |effect| fx(effect),
+                )),
+                None => Task::Resolved(command.map(|event| fe(event), |effect| fx(effect))),
+            },
             Self::Future(future) => {
                 let fe = Rc::clone(&fe);
                 let fx = Rc::clone(&fx);
+                let scope = scope.clone();
                 Task::Future(Box::pin(async move {
                     let command = future.await;
-                    let _ = namespace;
-                    command.map(|event| fe(event), |effect| fx(effect))
+                    match scope {
+                        Some(scope) => {
+                            command.map_scoped(&scope, |event| fe(event), |effect| fx(effect))
+                        }
+                        None => command.map(|event| fe(event), |effect| fx(effect)),
+                    }
                 }))
             }
             Self::Stream(stream) => {
                 let fe = Rc::clone(&fe);
                 let fx = Rc::clone(&fx);
-                Task::Stream(Box::pin(stream.map(move |command| {
-                    let _ = namespace.clone();
-                    command.map(|event| fe(event), |effect| fx(effect))
+                let scope = scope.clone();
+                Task::Stream(Box::pin(stream.map(move |command| match &scope {
+                    Some(scope) => {
+                        command.map_scoped(scope, |event| fe(event), |effect| fx(effect))
+                    }
+                    None => command.map(|event| fe(event), |effect| fx(effect)),
                 })))
             }
         }
@@ -151,7 +161,8 @@ mod tests {
     use futures::StreamExt;
 
     use super::Task;
-    use crate::command::{Command, CommandStep};
+    use crate::command::{Command, CommandStep, TaskLeaseScope};
+    use crate::test_store::assert_panic_contains;
 
     #[derive(Debug, Clone, PartialEq, Eq)]
     struct ChildEvent;
@@ -170,15 +181,16 @@ mod tests {
     }
 
     #[test]
-    fn map_keeps_abortable_task_and_command_leases_aligned() {
+    fn map_scoped_keeps_abortable_task_and_command_leases_aligned() {
         let lease = crate::command::TaskLease::new();
+        let scope = TaskLeaseScope::new();
         let abortable = Command::<ChildEvent, ChildEffect>::abortable(&lease, ChildEffect)
-            .map(ParentEvent::Child, ParentEffect::Child)
+            .map_scoped(&scope, ParentEvent::Child, ParentEffect::Child)
             .into_iter()
             .collect::<Vec<_>>();
 
         let cancel_task = Task::<ChildEvent, ChildEffect>::resolved(Command::cancel(&lease))
-            .map(ParentEvent::Child, ParentEffect::Child);
+            .map_scoped(scope, ParentEvent::Child, ParentEffect::Child);
 
         let cancel = match cancel_task {
             Task::Resolved(command) => command.into_iter().collect::<Vec<_>>(),
@@ -199,10 +211,24 @@ mod tests {
     }
 
     #[test]
-    fn map_future_keeps_abortable_commands() {
+    fn map_rejects_abortable_resolved_commands_without_scope() {
+        let lease = crate::command::TaskLease::new();
+
+        assert_panic_contains("Command::map cannot safely remap abortable steps", || {
+            let _ = Task::<ChildEvent, ChildEffect>::resolved(Command::cancel(&lease))
+                .map(ParentEvent::Child, ParentEffect::Child);
+        });
+    }
+
+    #[test]
+    fn map_scoped_future_keeps_abortable_commands() {
         let lease = crate::command::TaskLease::new();
         let mapped = Task::<ChildEvent, ChildEffect>::once(async move { Command::cancel(&lease) })
-            .map(ParentEvent::Child, ParentEffect::Child);
+            .map_scoped(
+                TaskLeaseScope::new(),
+                ParentEvent::Child,
+                ParentEffect::Child,
+            );
 
         let command = match mapped {
             Task::Future(future) => futures::executor::block_on(future),
@@ -215,13 +241,17 @@ mod tests {
     }
 
     #[test]
-    fn map_stream_keeps_abortable_commands() {
+    fn map_scoped_stream_keeps_abortable_commands() {
         let lease = crate::command::TaskLease::new();
         let mapped =
             Task::<ChildEvent, ChildEffect>::stream(futures::stream::iter([Command::cancel(
                 &lease,
             )]))
-            .map(ParentEvent::Child, ParentEffect::Child);
+            .map_scoped(
+                TaskLeaseScope::new(),
+                ParentEvent::Child,
+                ParentEffect::Child,
+            );
 
         let commands = match mapped {
             Task::Stream(stream) => futures::executor::block_on(stream.collect::<Vec<_>>()),

@@ -28,6 +28,7 @@ type ActiveTasks = Rc<RefCell<HashMap<u64, ActiveTaskEntry>>>;
 type UntrackedTasks = Rc<RefCell<Vec<TaskHandle>>>;
 type DeferredEvents<E> = Rc<RefCell<VecDeque<E>>>;
 type ClosedFlag = Rc<Cell<bool>>;
+type ProgressEpoch = Rc<Cell<u64>>;
 
 #[derive(Debug)]
 struct SpawnedTask {
@@ -76,6 +77,11 @@ fn next_task_token() -> u64 {
     NEXT_TASK_TOKEN.fetch_add(1, Ordering::Relaxed)
 }
 
+fn mark_progress(progress_epoch: &ProgressEpoch) {
+    let next = progress_epoch.get().wrapping_add(1);
+    progress_epoch.set(next);
+}
+
 const MAX_DEFERRED_EVENTS: usize = 65_536;
 const MAX_INLINE_STREAM_COMMANDS: usize = 10_000;
 const DEFERRED_STREAM_BACKPRESSURE_THRESHOLD: usize = 256;
@@ -90,12 +96,14 @@ where
 {
     event_tx: EventSender<E>,
     effect_handler: EffectHandlerFn<E, X>,
+    runtime: crate::runtime::Runtime,
     resources: Rc<ResourceMap>,
     activity: Activity,
     active_tasks: ActiveTasks,
     untracked_tasks: UntrackedTasks,
     deferred_events: DeferredEvents<E>,
     closed: ClosedFlag,
+    progress_epoch: ProgressEpoch,
     queue: VecDeque<Command<E, X>>,
 }
 
@@ -108,16 +116,19 @@ where
         event_tx: EventSender<E>,
         effect_handler: EffectHandlerFn<E, X>,
         resources: ResourceMap,
+        runtime: crate::runtime::Runtime,
     ) -> Self {
         Self {
             event_tx,
             effect_handler,
+            runtime,
             resources: Rc::new(resources),
             activity: Activity::new(),
             active_tasks: Rc::new(RefCell::new(HashMap::new())),
             untracked_tasks: Rc::new(RefCell::new(Vec::new())),
             deferred_events: Rc::new(RefCell::new(VecDeque::new())),
             closed: Rc::new(Cell::new(false)),
+            progress_epoch: Rc::new(Cell::new(0)),
             queue: VecDeque::new(),
         }
     }
@@ -135,12 +146,14 @@ where
             &mut self.queue,
             &self.event_tx,
             &self.effect_handler,
+            &self.runtime,
             &self.resources,
             &self.activity,
             &self.active_tasks,
             &self.untracked_tasks,
             &self.deferred_events,
             &self.closed,
+            &self.progress_epoch,
         )
     }
 
@@ -148,24 +161,28 @@ where
         prune_orphaned_active_tasks(&self.active_tasks);
         prune_finished_untracked_tasks(&self.untracked_tasks);
 
+        let progress_before = self.progress_epoch.get();
+        let activity_before = self.activity.load();
+        let deferred_before = self.deferred_events.borrow().len();
+
         let mut progressed = flush_deferred_events(&self.event_tx, &self.deferred_events);
-        let _ = crate::runtime::try_with_current(|| {
-            let mut ran_work = crate::runtime::run();
-
-            if self.activity.load() > 0 {
-                crate::runtime::poll_with(Some(Duration::ZERO));
-                ran_work |= crate::runtime::run();
-            }
-
-            if ran_work {
-                progressed = progressed.saturating_add(1);
-            }
-        });
+        if activity_before > 0 {
+            self.runtime.drive_ready();
+        }
+        progressed =
+            progressed.saturating_add(flush_deferred_events(&self.event_tx, &self.deferred_events));
 
         prune_orphaned_active_tasks(&self.active_tasks);
         prune_finished_untracked_tasks(&self.untracked_tasks);
 
-        Ok(progressed)
+        let activity_after = self.activity.load();
+        let deferred_after = self.deferred_events.borrow().len();
+        let made_progress = progressed > 0
+            || self.progress_epoch.get() != progress_before
+            || activity_after != activity_before
+            || deferred_after != deferred_before;
+
+        Ok(usize::from(made_progress))
     }
 
     #[must_use]
@@ -219,32 +236,19 @@ where
 
             let remaining = deadline.saturating_duration_since(now);
             let wait_slice = remaining.min(EXECUTOR_POLL_SLICE);
+            self.runtime.park(wait_slice);
 
-            let in_runtime = crate::runtime::try_with_current(|| ()).is_ok();
-            if in_runtime {
-                let mut ran_work = crate::runtime::run();
-                if self.activity.load() > 0 {
-                    crate::runtime::poll_with(Some(wait_slice));
-                    ran_work |= crate::runtime::run();
-                }
-
-                if ran_work || crate::runtime::supports_sync_driving() {
-                    continue;
-                }
-
-                report_spawned_event_drop(
-                    "cannot synchronously drive cooperative runtime while waiting for executors",
-                );
-                break;
-            }
-
-            if self.activity.wait_until_zero(wait_slice) {
+            if self.activity.load() == 0 {
                 break;
             }
         }
 
         prune_orphaned_active_tasks(&self.active_tasks);
         prune_finished_untracked_tasks(&self.untracked_tasks);
+    }
+
+    pub(crate) fn park_runtime(&self, duration: Duration) {
+        self.runtime.park(duration);
     }
 }
 
@@ -333,12 +337,14 @@ fn route_command_iterative<E, X>(
     queue: &mut VecDeque<Command<E, X>>,
     event_tx: &EventSender<E>,
     effect_handler: &EffectHandlerFn<E, X>,
+    runtime: &crate::runtime::Runtime,
     resources: &Rc<ResourceMap>,
     activity: &Activity,
     active_tasks: &ActiveTasks,
     untracked_tasks: &UntrackedTasks,
     deferred_events: &DeferredEvents<E>,
     closed: &ClosedFlag,
+    progress_epoch: &ProgressEpoch,
 ) -> Result<(), ShellError>
 where
     E: 'static,
@@ -361,12 +367,14 @@ where
                         None,
                         event_tx,
                         effect_handler,
+                        runtime,
                         resources,
                         activity,
                         active_tasks,
                         untracked_tasks,
                         deferred_events,
                         closed,
+                        progress_epoch,
                         queue,
                     ) {
                         untracked_tasks.borrow_mut().push(spawned.handle);
@@ -379,12 +387,14 @@ where
                         Some(lease),
                         event_tx,
                         effect_handler,
+                        runtime,
                         resources,
                         activity,
                         active_tasks,
                         untracked_tasks,
                         deferred_events,
                         closed,
+                        progress_epoch,
                         queue,
                     ) {
                         if let (Some(lease_id), Some(owner), Some(token)) =
@@ -419,12 +429,14 @@ fn run_effect_task<E, X>(
     lease: Option<TaskLease>,
     event_tx: &EventSender<E>,
     effect_handler: &EffectHandlerFn<E, X>,
+    runtime: &crate::runtime::Runtime,
     resources: &Rc<ResourceMap>,
     activity: &Activity,
     active_tasks: &ActiveTasks,
     untracked_tasks: &UntrackedTasks,
     deferred_events: &DeferredEvents<E>,
     closed: &ClosedFlag,
+    progress_epoch: &ProgressEpoch,
     queue: &mut VecDeque<Command<E, X>>,
 ) -> Option<SpawnedTask>
 where
@@ -438,12 +450,14 @@ where
         lease,
         event_tx,
         effect_handler,
+        runtime,
         resources,
         activity,
         active_tasks,
         untracked_tasks,
         deferred_events,
         closed,
+        progress_epoch,
         queue,
     )
 }
@@ -454,12 +468,14 @@ fn spawn_task<E, X>(
     lease: Option<TaskLease>,
     event_tx: &EventSender<E>,
     effect_handler: &EffectHandlerFn<E, X>,
+    runtime: &crate::runtime::Runtime,
     resources: &Rc<ResourceMap>,
     activity: &Activity,
     active_tasks: &ActiveTasks,
     untracked_tasks: &UntrackedTasks,
     deferred_events: &DeferredEvents<E>,
     closed: &ClosedFlag,
+    progress_epoch: &ProgressEpoch,
     queue: &mut VecDeque<Command<E, X>>,
 ) -> Option<SpawnedTask>
 where
@@ -481,13 +497,7 @@ where
                 return None;
             }
 
-            let has_runtime = crate::runtime::try_with_current(|| ()).is_ok();
-            if !has_runtime {
-                let command = crate::runtime::block_on(future);
-                queue.push_back(command);
-                return None;
-            }
-
+            let runtime = runtime.clone();
             let event_tx = event_tx.clone();
             let effect_handler = Rc::clone(effect_handler);
             let resources = Rc::clone(resources);
@@ -496,6 +506,7 @@ where
             let untracked_tasks = Rc::clone(untracked_tasks);
             let deferred_events = Rc::clone(deferred_events);
             let closed = Rc::clone(closed);
+            let progress_epoch = Rc::clone(progress_epoch);
             let token = lease_id.map(|_| next_task_token());
             let owner_for_task = owner.clone();
             activity.inc();
@@ -506,7 +517,8 @@ where
                 token,
             );
 
-            let handle = crate::runtime::spawn(async move {
+            let runtime_for_task = runtime.clone();
+            let handle = runtime.spawn(async move {
                 let _lifecycle_guard = lifecycle_guard;
                 let command = future.await;
                 if closed.get() {
@@ -522,12 +534,14 @@ where
                     command,
                     &event_tx,
                     &effect_handler,
+                    &runtime_for_task,
                     &resources,
                     &activity,
                     &active_tasks,
                     &untracked_tasks,
                     &deferred_events,
                     &closed,
+                    &progress_epoch,
                 );
             });
 
@@ -543,26 +557,7 @@ where
                 return None;
             }
 
-            let has_runtime = crate::runtime::try_with_current(|| ()).is_ok();
-            if !has_runtime {
-                let commands = crate::runtime::block_on(async {
-                    stream
-                        .take(MAX_INLINE_STREAM_COMMANDS + 1)
-                        .collect::<Vec<_>>()
-                        .await
-                });
-                if commands.len() > MAX_INLINE_STREAM_COMMANDS {
-                    report_spawned_event_drop(
-                        "inline stream command limit reached; dropping remaining commands",
-                    );
-                }
-
-                for command in commands.into_iter().take(MAX_INLINE_STREAM_COMMANDS) {
-                    queue.push_back(command);
-                }
-                return None;
-            }
-
+            let runtime = runtime.clone();
             let event_tx = event_tx.clone();
             let effect_handler = Rc::clone(effect_handler);
             let resources = Rc::clone(resources);
@@ -571,6 +566,7 @@ where
             let untracked_tasks = Rc::clone(untracked_tasks);
             let deferred_events = Rc::clone(deferred_events);
             let closed = Rc::clone(closed);
+            let progress_epoch = Rc::clone(progress_epoch);
             let token = lease_id.map(|_| next_task_token());
             let owner_for_task = owner.clone();
             activity.inc();
@@ -581,9 +577,11 @@ where
                 token,
             );
 
-            let handle = crate::runtime::spawn(async move {
+            let runtime_for_task = runtime.clone();
+            let handle = runtime.spawn(async move {
                 let _lifecycle_guard = lifecycle_guard;
                 futures::pin_mut!(stream);
+                let mut emitted_commands = 0usize;
                 while let Some(command) = stream.next().await {
                     if closed.get() {
                         break;
@@ -598,16 +596,26 @@ where
                         break;
                     }
 
+                    emitted_commands = emitted_commands.saturating_add(1);
+                    if emitted_commands > MAX_INLINE_STREAM_COMMANDS {
+                        report_spawned_event_drop(
+                            "stream command limit reached; dropping remaining commands",
+                        );
+                        break;
+                    }
+
                     route_spawned_command(
                         command,
                         &event_tx,
                         &effect_handler,
+                        &runtime_for_task,
                         &resources,
                         &activity,
                         &active_tasks,
                         &untracked_tasks,
                         &deferred_events,
                         &closed,
+                        &progress_epoch,
                     );
 
                     if closed.get() {
@@ -647,12 +655,14 @@ fn route_spawned_command<E, X>(
     command: Command<E, X>,
     event_tx: &EventSender<E>,
     effect_handler: &EffectHandlerFn<E, X>,
+    runtime: &crate::runtime::Runtime,
     resources: &Rc<ResourceMap>,
     activity: &Activity,
     active_tasks: &ActiveTasks,
     untracked_tasks: &UntrackedTasks,
     deferred_events: &DeferredEvents<E>,
     closed: &ClosedFlag,
+    progress_epoch: &ProgressEpoch,
 ) where
     E: 'static,
     X: 'static,
@@ -661,6 +671,8 @@ fn route_spawned_command<E, X>(
         return;
     }
 
+    mark_progress(progress_epoch);
+
     let mut queue = VecDeque::new();
     queue.push_back(command);
 
@@ -668,12 +680,14 @@ fn route_spawned_command<E, X>(
         &mut queue,
         event_tx,
         effect_handler,
+        runtime,
         resources,
         activity,
         active_tasks,
         untracked_tasks,
         deferred_events,
         closed,
+        progress_epoch,
     )
     .is_err()
     {

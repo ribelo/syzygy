@@ -53,7 +53,7 @@ fn handle_event(event: Event, ctx: &EventContext<AppModel>) -> Command<Event, Ef
 /// Real-world operations (like HTTP, File I/O) return `Result`. Effect handlers
 /// map the `Result` into the corresponding Success or Failure `Command`.
 fn perform_risky_work() -> Task<Event, Effect> {
-    Task::blocking(|| {
+    Task::once(async {
         // Simulate an operation that might fail
         let result: Result<(), &str> = Err("Network unavailable");
 
@@ -75,15 +75,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .model(AppModel::default())
         .event_handler(handle_event)
         .effect_handler(handle_effect)
-        .build();
+        .build()?;
 
     runner.core().try_send(Event::DoRiskyWork)?;
 
     // We step to trigger the effect.
     runner.step()?;
 
-    // Task::blocking runs inline immediately without an async runtime loop.
-    runner.step()?; // Processes the WorkFailed event generated synchronously.
+    // The owned runtime drives the async effect on the next step.
+    runner.step()?;
 
     println!("Current Status: {}", runner.model().status);
     Ok(())

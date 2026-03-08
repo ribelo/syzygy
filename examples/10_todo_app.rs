@@ -136,7 +136,7 @@ fn handle_event(event: Event, ctx: &EventContext<TodoApp>) -> Command<Event, Eff
 
 fn save(todos: Vec<Todo>) -> Task<Event, Effect> {
     // In a real app, this would be Task::future saving to disk asynchronously
-    Task::blocking(move || {
+    Task::once(async move {
         // Simulate arbitrary failure to test error recovery
         if todos.len() > 10 {
             Command::event(Event::SyncFinished(Err("Too many items!".into())))
@@ -161,14 +161,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .model(TodoApp::default())
         .event_handler(handle_event)
         .effect_handler(handle_effect)
-        .build();
+        .build()?;
 
     // Add a todo
     runner
         .core()
         .try_send(Event::AddTodo("Buy groceries".into()))?;
     runner.step()?; // handles add
-    runner.step()?; // handles save effect task (blocking)
+    runner.step()?; // handles save effect task
 
     assert_eq!(runner.model().todos.len(), 1);
 

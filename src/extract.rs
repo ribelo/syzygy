@@ -1816,7 +1816,8 @@ mod tests {
                 Ev::Rename(s) => rename.handle(s, ctx),
             })
             .effect_handler(|_effect: Fx, _ctx: &EffectContext<'_>| Task::<Ev, Fx>::none())
-            .build();
+            .build()
+            .unwrap();
 
         runner.core().try_send(Ev::Increment(7)).unwrap();
         runner.step().unwrap();

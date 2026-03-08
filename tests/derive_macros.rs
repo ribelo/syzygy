@@ -80,7 +80,8 @@ fn derive_model_works_in_runtime() {
         .effect_handler(|effect: Effect, ctx: &EffectContext<'_>| match effect {
             Effect::Save => persist.handle((), ctx),
         })
-        .build();
+        .build()
+        .unwrap();
 
     runner.core().try_send(Event::Increment(3)).unwrap();
     runner.step().unwrap();
@@ -115,7 +116,8 @@ fn derive_model_tracks_runtime_borrows() {
         .effect_handler(|effect: Effect, ctx: &EffectContext<'_>| match effect {
             Effect::Save => persist.handle((), ctx),
         })
-        .build();
+        .build()
+        .unwrap();
 
     assert_panic_contains("already borrowed mutably", || {
         runner.core().try_send(Event::DoubleBorrow).unwrap();
@@ -201,7 +203,8 @@ fn derive_model_extract_attribute_projects_child_models() {
         .effect_handler(|_effect: ExtractEffect, _ctx: &EffectContext<'_>| {
             Task::<ExtractEvent, ExtractEffect>::none()
         })
-        .build();
+        .build()
+        .unwrap();
 
     runner.core().try_send(ExtractEvent::Increment(4)).unwrap();
     runner.step().unwrap();
@@ -242,7 +245,8 @@ fn derive_model_extract_attribute_detects_double_borrow() {
         .effect_handler(|_effect: ExtractEffect, _ctx: &EffectContext<'_>| {
             Task::<ExtractEvent, ExtractEffect>::none()
         })
-        .build();
+        .build()
+        .unwrap();
 
     assert_panic_contains("already borrowed mutably", || {
         runner.core().try_send(ExtractEvent::DoubleBorrow).unwrap();

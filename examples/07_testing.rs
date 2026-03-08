@@ -94,7 +94,7 @@ mod tests {
 
     #[test]
     fn async_receive_pattern() {
-        syzygy::runtime::block_on(async {
+        futures::executor::block_on(async {
             let mut store = TestStore::new(AppModel::default(), handle_event);
 
             store.send(AppEvent::Save);

@@ -3,6 +3,7 @@ use std::rc::Rc;
 
 use crate::command::Command;
 use crate::core::{Core, EventHandlerFn};
+use crate::error::ShellError;
 use crate::executor::Task;
 use crate::extract::{EffectContext, EventContext};
 use crate::resource::ResourceMap;
@@ -189,7 +190,7 @@ where
         self
     }
 
-    pub fn build(self) -> Syzygy<Event, Effect, Model> {
+    pub fn build(self) -> Result<Syzygy<Event, Effect, Model>, ShellError> {
         let (core, event_tx) = Core::with_event_channel_capacity(
             self.event_handler,
             self.model,
@@ -208,7 +209,9 @@ where
                 },
             );
 
-        let shell = Shell::new(event_tx, effect_handler, self.resources);
-        Syzygy::with_config(core, shell, self.syzygy_config)
+        let runtime = crate::runtime::Runtime::new()
+            .map_err(|err| ShellError::RuntimeInitializationFailed(err.to_string()))?;
+        let shell = Shell::new(event_tx, effect_handler, self.resources, runtime);
+        Ok(Syzygy::with_config(core, shell, self.syzygy_config))
     }
 }

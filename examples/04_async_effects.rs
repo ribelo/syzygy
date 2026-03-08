@@ -87,7 +87,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .model(AppModel::default())
         .event_handler(handle_event)
         .effect_handler(handle_effect)
-        .build();
+        .build()?;
 
     app.core().try_send(AppEvent::FetchData)?;
 

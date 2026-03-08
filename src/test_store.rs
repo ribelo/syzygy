@@ -9,6 +9,8 @@ use std::collections::VecDeque;
 use std::panic::{self, AssertUnwindSafe};
 
 #[cfg(feature = "shell")]
+use futures::executor::block_on;
+#[cfg(feature = "shell")]
 use futures::StreamExt;
 
 use crate::command::{Command, CommandStep, TaskLease};
@@ -330,11 +332,6 @@ where
     where
         H: Fn(X, &EffectContext<'_>) -> Task<E, X>,
     {
-        assert!(
-            crate::runtime::try_with_current(|| ()).is_err(),
-            "TestStore::receive cannot run inside an async runtime; use receive_async()"
-        );
-
         for effect in self.take_effects() {
             let ctx = EffectContext::new(&self.resources);
             let task = effect_handler(effect, &ctx);
@@ -368,11 +365,11 @@ where
                 self.feed_received_command(command);
             }
             Task::Future(future) => {
-                let command = crate::runtime::block_on(future);
+                let command = block_on(future);
                 self.feed_received_command(command);
             }
             Task::Stream(stream) => {
-                let commands = crate::runtime::block_on(async {
+                let commands = block_on(async {
                     stream
                         .take(MAX_RECEIVE_STREAM_COMMANDS + 1)
                         .collect::<Vec<_>>()
@@ -890,30 +887,14 @@ mod tests {
 
     #[cfg(feature = "shell")]
     #[test]
-    fn receive_panics_inside_async_runtime() {
-        crate::runtime::block_on(async {
-            let mut store = TestStore::new(Model::default(), handle_event);
-            store.send(Event::Increment(1));
-
-            assert_panic_contains("use receive_async", || {
-                store.receive(|_effect, _ctx| Task::none());
-            });
-        });
-    }
-
-    #[cfg(feature = "shell")]
-    #[test]
-    fn receive_async_runs_inside_async_runtime() {
-        crate::runtime::block_on(async {
+    fn receive_async_runs_inside_async_context() {
+        futures::executor::block_on(async {
             let mut store = TestStore::new(Model::default(), handle_event);
             store.send(Event::Increment(1));
 
             store
                 .receive_async(|effect, _ctx| match effect {
-                    Effect::Log(_) => Task::once(async {
-                        crate::runtime::sleep(std::time::Duration::from_millis(1)).await;
-                        Command::event(Event::SaveDone)
-                    }),
+                    Effect::Log(_) => Task::once(async { Command::event(Event::SaveDone) }),
                     _ => Task::none(),
                 })
                 .await;

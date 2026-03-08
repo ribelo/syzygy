@@ -1,4 +1,3 @@
-use std::thread;
 use std::time::Duration;
 
 use crate::core::Core;
@@ -75,7 +74,7 @@ where
                     return Ok(());
                 }
 
-                park_for_runtime(self.config.idle_sleep);
+                self.shell.park_runtime(self.config.idle_sleep);
             }
         }
     }
@@ -91,7 +90,7 @@ where
             }
 
             if !did_work {
-                park_for_runtime(self.config.idle_sleep);
+                self.shell.park_runtime(self.config.idle_sleep);
             }
         }
 
@@ -160,20 +159,6 @@ where
     let core_work = core.process_events_try_into(|command| shell.dispatch_command(command))?;
     let shell_work = shell.drain()?;
     Ok(core_work > 0 || shell_work > 0)
-}
-
-fn park_for_runtime(idle_sleep: Duration) {
-    let in_runtime = crate::runtime::try_with_current(|| ()).is_ok();
-    if in_runtime && crate::runtime::supports_sync_driving() {
-        crate::runtime::poll_with(Some(idle_sleep));
-        return;
-    }
-
-    if idle_sleep.is_zero() {
-        thread::yield_now();
-    } else {
-        thread::sleep(idle_sleep);
-    }
 }
 
 impl<Event, Effect, Model> From<(Core<Event, Effect, Model>, Shell<Event, Effect>)>
