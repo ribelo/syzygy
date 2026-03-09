@@ -30,8 +30,10 @@ use crate::subscription::{
     ErasedSubscriptionMapper, Subscription, SubscriptionDrivers, SubscriptionEntry,
     SubscriptionKey, SubscriptionSpec,
 };
+use crate::syzygy::UnhandledEffectPolicy;
 
-pub(crate) type EffectHandlerFn<E, X> = Rc<dyn for<'a> Fn(X, &EffectContext<'a>) -> Task<E, X>>;
+pub(crate) type EffectHandlerFn<E, X> =
+    Rc<dyn for<'a> Fn(X, &EffectContext<'a>) -> Result<Task<E, X>, ShellError>>;
 pub(crate) type SubscriptionHandlerFn<E, X, M> =
     Rc<dyn Fn(&crate::extract::SubscriptionContext<M>) -> Subscription<E, X>>;
 
@@ -324,6 +326,7 @@ where
     pending_errors: PendingErrors,
     closed: ClosedFlag,
     progress_epoch: ProgressEpoch,
+    unhandled_effects_policy: Rc<Cell<UnhandledEffectPolicy>>,
     queue: VecDeque<Command<E, X>>,
 }
 
@@ -345,6 +348,7 @@ where
             SubscriptionDrivers::new(),
             resources,
             runtime,
+            Rc::new(Cell::new(UnhandledEffectPolicy::Error)),
         )
     }
 }
@@ -362,6 +366,7 @@ where
         subscription_drivers: SubscriptionDrivers,
         resources: ResourceMap,
         runtime: crate::runtime::Runtime,
+        unhandled_effects_policy: Rc<Cell<UnhandledEffectPolicy>>,
     ) -> Self {
         Self {
             event_tx,
@@ -378,6 +383,7 @@ where
             pending_errors: Rc::new(RefCell::new(VecDeque::new())),
             closed: Rc::new(Cell::new(false)),
             progress_epoch: Rc::new(Cell::new(0)),
+            unhandled_effects_policy,
             queue: VecDeque::new(),
         }
     }
@@ -465,6 +471,15 @@ where
     #[must_use]
     pub fn runtime(&self) -> &crate::runtime::Runtime {
         &self.runtime
+    }
+
+    #[must_use]
+    pub fn unhandled_effects_policy(&self) -> UnhandledEffectPolicy {
+        self.unhandled_effects_policy.get()
+    }
+
+    pub fn set_unhandled_effects_policy(&mut self, policy: UnhandledEffectPolicy) {
+        self.unhandled_effects_policy.set(policy);
     }
 
     pub(crate) fn reconcile_subscriptions_for_model(
@@ -929,7 +944,7 @@ where
                 }
                 CommandStep::Abortable { lease, effect } => {
                     let ctx = EffectContext::new(resources.as_ref());
-                    let task = effect_handler(effect, &ctx);
+                    let task = effect_handler(effect, &ctx)?;
                     cancel_blocking_abortable_task(&task)?;
                     cancel_active_task(active_tasks, untracked_tasks, lease.id());
                     if let Some(spawned) = spawn_task(
@@ -1003,7 +1018,7 @@ where
     X: 'static,
 {
     let ctx = EffectContext::new(resources.as_ref());
-    let task = effect_handler(effect, &ctx);
+    let task = effect_handler(effect, &ctx)?;
     spawn_task(
         task,
         lease,

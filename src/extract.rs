@@ -34,17 +34,27 @@ pub trait FromEffectContext {
     /// Prefer storing expensive resources behind shared ownership pointers such
     /// as `Arc<T>` or `Rc<T>` via `.with_resource(...)` to avoid repeated deep
     /// clones on effect dispatch.
+    #[track_caller]
     fn from_context(ctx: &EffectContext<'_>) -> Self;
 }
 
+fn panic_missing_resource<T: Resource>(caller: &'static std::panic::Location<'static>) -> ! {
+    panic!(
+        "Resource `{}` not found in ResourceMap. Register it with .with_resource() (requested at {}:{})",
+        std::any::type_name::<T>(),
+        caller.file(),
+        caller.line()
+    )
+}
+
 impl<T: Resource> FromEffectContext for T {
+    #[track_caller]
     fn from_context(ctx: &EffectContext<'_>) -> Self {
-        ctx.resources().get::<T>().unwrap_or_else(|| {
-            panic!(
-                "Resource `{}` not found in ResourceMap. Register it with .with_resource()",
-                std::any::type_name::<T>()
-            )
-        })
+        let caller = std::panic::Location::caller();
+        match ctx.resources().get::<T>() {
+            Some(resource) => resource,
+            None => panic_missing_resource::<T>(caller),
+        }
     }
 }
 
@@ -795,8 +805,12 @@ mod tests {
 
         let location = Arc::new(Mutex::new(None));
         let location_in_hook = Arc::clone(&location);
+        let current_thread = std::thread::current().id();
         let previous_hook = panic::take_hook();
         panic::set_hook(Box::new(move |info| {
+            if std::thread::current().id() != current_thread {
+                return;
+            }
             let panic_location = info
                 .location()
                 .map(|location| (location.file().to_string(), location.line()));
@@ -819,6 +833,51 @@ mod tests {
             .expect("panic hook should capture a location");
 
         captured_location
+    }
+
+    fn panic_payload_to_string(payload: Box<dyn std::any::Any + Send>) -> String {
+        match payload.downcast::<String>() {
+            Ok(message) => *message,
+            Err(payload) => match payload.downcast::<&'static str>() {
+                Ok(message) => (*message).to_string(),
+                Err(_) => String::from("<non-string panic payload>"),
+            },
+        }
+    }
+
+    fn capture_panic_message_and_location(f: impl FnOnce()) -> (String, u32, String) {
+        static PANIC_HOOK_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        let lock = PANIC_HOOK_LOCK.get_or_init(|| Mutex::new(()));
+        let _guard = lock.lock().expect("panic hook mutex must not be poisoned");
+
+        let location = Arc::new(Mutex::new(None));
+        let location_in_hook = Arc::clone(&location);
+        let current_thread = std::thread::current().id();
+        let previous_hook = panic::take_hook();
+        panic::set_hook(Box::new(move |info| {
+            if std::thread::current().id() != current_thread {
+                return;
+            }
+            let panic_location = info
+                .location()
+                .map(|location| (location.file().to_string(), location.line()));
+            *location_in_hook
+                .lock()
+                .expect("panic location mutex must not be poisoned") = panic_location;
+        }));
+
+        let result = panic::catch_unwind(AssertUnwindSafe(f));
+        panic::set_hook(previous_hook);
+        let panic_payload = result.expect_err("expected panic, but closure completed successfully");
+
+        let captured_location = location
+            .lock()
+            .expect("panic location mutex must not be poisoned")
+            .clone()
+            .expect("panic hook should capture a location");
+        let message = panic_payload_to_string(panic_payload);
+
+        (captured_location.0, captured_location.1, message)
     }
 
     // ── Event handler tests ─────────────────────────────────────────
@@ -2012,6 +2071,27 @@ mod tests {
         let ctx = EffectContext::new(&resources);
 
         let _ = scoped_save.handle((), &ctx);
+    }
+
+    #[test]
+    fn missing_effect_resource_panics_with_type_hint_and_callsite() {
+        #[derive(Clone)]
+        struct MissingResource;
+
+        let resources = ResourceMap::new();
+        let ctx = EffectContext::new(&resources);
+        let expected_line = Cell::new(0_u32);
+        let (file, line, message) = capture_panic_message_and_location(|| {
+            expected_line.set(line!() + 1);
+            let _: MissingResource = MissingResource::from_context(&ctx);
+        });
+
+        assert!(file.ends_with("src/extract.rs"));
+        assert!(line > 0);
+        assert!(message.contains("MissingResource"));
+        assert!(message.contains("Register it with .with_resource()"));
+        assert!(message.contains("src/extract.rs"));
+        assert!(message.contains(&expected_line.get().to_string()));
     }
 
     // ── End-to-end with builder ─────────────────────────────────────

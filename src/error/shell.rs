@@ -25,6 +25,10 @@ pub enum ShellError {
     #[error("Runtime initialization failed: {0}")]
     RuntimeInitializationFailed(String),
 
+    /// Effect was dispatched without any handler claiming it
+    #[error("Unhandled effect reached the shell: {effect_type}")]
+    UnhandledEffect { effect_type: &'static str },
+
     /// Abortable blocking work must use cooperative cancellation
     #[error("abortable effect resolved to Task::blocking; use Task::blocking_cooperative for lease-owned blocking work")]
     AbortableBlockingTask,

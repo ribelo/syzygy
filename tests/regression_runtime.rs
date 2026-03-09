@@ -88,6 +88,162 @@ fn bounded_channel_overflow_does_not_crash() {
 }
 
 #[test]
+fn unhandled_effect_without_handler_fails_fast() {
+    #[derive(Debug, Clone)]
+    enum Event {
+        Start,
+    }
+
+    #[derive(Debug, Clone)]
+    enum Effect {
+        Work,
+    }
+
+    fn handle_event(_event: Event, _ctx: &EventContext<()>) -> Command<Event, Effect> {
+        Command::effect(Effect::Work)
+    }
+
+    let mut runner = Syzygy::builder::<Event, Effect>()
+        .model(())
+        .event_handler(handle_event)
+        .build()
+        .unwrap();
+
+    runner.core().try_send(Event::Start).unwrap();
+
+    let err = runner.step().unwrap_err();
+    assert_eq!(
+        err,
+        ShellError::UnhandledEffect {
+            effect_type: std::any::type_name::<Effect>(),
+        }
+    );
+}
+
+#[test]
+fn chained_effect_handlers_fallthrough_fail_fast() {
+    #[derive(Debug, Clone)]
+    enum Event {
+        Start,
+    }
+
+    #[derive(Debug, Clone)]
+    enum Effect {
+        Work,
+    }
+
+    fn handle_event(_event: Event, _ctx: &EventContext<()>) -> Command<Event, Effect> {
+        Command::effect(Effect::Work)
+    }
+
+    fn first(_effect: Effect, _ctx: &EffectContext<'_>) -> Option<Task<Event, Effect>> {
+        None
+    }
+
+    fn second(_effect: Effect, _ctx: &EffectContext<'_>) -> Option<Task<Event, Effect>> {
+        None
+    }
+
+    let mut runner = Syzygy::builder::<Event, Effect>()
+        .model(())
+        .event_handler(handle_event)
+        .effect_handler(first)
+        .chain_effect_handler(second)
+        .build()
+        .unwrap();
+
+    runner.core().try_send(Event::Start).unwrap();
+
+    let err = runner.step().unwrap_err();
+    assert_eq!(
+        err,
+        ShellError::UnhandledEffect {
+            effect_type: std::any::type_name::<Effect>(),
+        }
+    );
+}
+
+#[test]
+fn permissive_unhandled_effect_policy_preserves_legacy_drop_behavior() {
+    #[derive(Debug, Clone)]
+    enum Event {
+        Start,
+    }
+
+    #[derive(Debug, Clone)]
+    enum Effect {
+        Work,
+    }
+
+    #[derive(Debug, Default, Model)]
+    struct Model {
+        #[model(wrapper = Seen)]
+        seen: bool,
+    }
+
+    fn handle_event(_event: Event, ctx: &EventContext<Model>) -> Command<Event, Effect> {
+        let seen = Seen::extract_mut(ctx);
+        **seen = true;
+        Command::effect(Effect::Work)
+    }
+
+    let mut runner = Syzygy::builder::<Event, Effect>()
+        .model(Model::default())
+        .event_handler(handle_event)
+        .with_syzygy_config(
+            SyzygyConfig::default().unhandled_effects(UnhandledEffectPolicy::Ignore),
+        )
+        .build()
+        .unwrap();
+
+    runner.core().try_send(Event::Start).unwrap();
+
+    assert!(runner.step().unwrap());
+    assert!(runner.model().seen);
+    assert!(runner.shell().is_idle());
+}
+
+#[test]
+fn set_config_updates_unhandled_effect_policy_live() {
+    #[derive(Debug, Clone)]
+    enum Event {
+        Start,
+    }
+
+    #[derive(Debug, Clone)]
+    enum Effect {
+        Work,
+    }
+
+    fn handle_event(_event: Event, _ctx: &EventContext<()>) -> Command<Event, Effect> {
+        Command::effect(Effect::Work)
+    }
+
+    let mut runner = Syzygy::builder::<Event, Effect>()
+        .model(())
+        .event_handler(handle_event)
+        .with_syzygy_config(
+            SyzygyConfig::default().unhandled_effects(UnhandledEffectPolicy::Ignore),
+        )
+        .build()
+        .unwrap();
+
+    runner.core().try_send(Event::Start).unwrap();
+    assert!(runner.step().unwrap());
+
+    runner.set_config(SyzygyConfig::default());
+    runner.core().try_send(Event::Start).unwrap();
+
+    let err = runner.step().unwrap_err();
+    assert_eq!(
+        err,
+        ShellError::UnhandledEffect {
+            effect_type: std::any::type_name::<Effect>(),
+        }
+    );
+}
+
+#[test]
 fn deferred_events_preserve_fifo_when_new_commands_arrive() {
     #[derive(Debug, Clone)]
     enum Event {

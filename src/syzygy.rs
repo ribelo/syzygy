@@ -4,15 +4,50 @@ use crate::core::Core;
 use crate::error::ShellError;
 use crate::shell::Shell;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UnhandledEffectPolicy {
+    Error,
+    Ignore,
+}
+
+impl Default for UnhandledEffectPolicy {
+    fn default() -> Self {
+        Self::Error
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DiagnosticsConfig {
+    pub unhandled_effects: UnhandledEffectPolicy,
+}
+
+impl Default for DiagnosticsConfig {
+    fn default() -> Self {
+        Self {
+            unhandled_effects: UnhandledEffectPolicy::Error,
+        }
+    }
+}
+
+impl DiagnosticsConfig {
+    #[must_use]
+    pub fn unhandled_effects(mut self, policy: UnhandledEffectPolicy) -> Self {
+        self.unhandled_effects = policy;
+        self
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct SyzygyConfig {
     pub idle_sleep: Duration,
+    pub diagnostics: DiagnosticsConfig,
 }
 
 impl Default for SyzygyConfig {
     fn default() -> Self {
         Self {
             idle_sleep: Duration::from_millis(1),
+            diagnostics: DiagnosticsConfig::default(),
         }
     }
 }
@@ -21,6 +56,18 @@ impl SyzygyConfig {
     #[must_use]
     pub fn idle_sleep(mut self, duration: impl Into<Duration>) -> Self {
         self.idle_sleep = duration.into();
+        self
+    }
+
+    #[must_use]
+    pub fn diagnostics(mut self, diagnostics: DiagnosticsConfig) -> Self {
+        self.diagnostics = diagnostics;
+        self
+    }
+
+    #[must_use]
+    pub fn unhandled_effects(mut self, policy: UnhandledEffectPolicy) -> Self {
+        self.diagnostics = self.diagnostics.unhandled_effects(policy);
         self
     }
 }
@@ -44,18 +91,15 @@ where
     Model: 'static,
 {
     pub fn new(core: Core<Event, Effect, Model>, shell: Shell<Event, Effect, Model>) -> Self {
-        Self {
-            core,
-            shell,
-            config: SyzygyConfig::default(),
-        }
+        Self::with_config(core, shell, SyzygyConfig::default())
     }
 
     pub fn with_config(
         core: Core<Event, Effect, Model>,
-        shell: Shell<Event, Effect, Model>,
+        mut shell: Shell<Event, Effect, Model>,
         config: SyzygyConfig,
     ) -> Self {
+        shell.set_unhandled_effects_policy(config.diagnostics.unhandled_effects);
         Self {
             core,
             shell,
@@ -128,6 +172,8 @@ where
     }
 
     pub fn set_config(&mut self, config: SyzygyConfig) {
+        self.shell
+            .set_unhandled_effects_policy(config.diagnostics.unhandled_effects);
         self.config = config;
     }
 

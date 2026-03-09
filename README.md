@@ -163,6 +163,8 @@ async fn fetch(url: String) -> Command<Event, Effect> {
 | `Task::blocking(|| ...)` | Non-abortable blocking work | Single command |
 | `Task::blocking_cooperative(|cancel| ...)` | Lease-owned blocking work | `Option<Command>` |
 
+Unhandled effects now fail fast by default. If an effect reaches the shell and no configured handler claims it, `step()` / `run()` returns `ShellError::UnhandledEffect`. Opt out explicitly with `SyzygyConfig::default().unhandled_effects(UnhandledEffectPolicy::Ignore)` when you really want legacy drop behavior.
+
 ```rust
 fn run_git_status() -> Task<Event, Effect> {
     Task::process(

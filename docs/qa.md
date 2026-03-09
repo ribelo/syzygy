@@ -111,3 +111,11 @@ Q: Which remaining lifecycle/tooling ideas should Syzygy pull next from iced/cru
 A: Prioritize an explicit boot hook, a shell-level `RunnerTester`, and deterministic clock plus trace/replay tooling. Do not add a view layer.
 
 Reason: These three features strengthen Syzygy's existing runtime model without weakening the rule that effects stay descriptive. A view abstraction is not needed for Syzygy's current goals and would add a second architectural axis before the runtime/testing story is complete.
+
+## 2026-03-09
+
+Q: How should Syzygy handle unhandled effects and missing effect resources by default?
+
+A: Fail fast by default. Final unhandled effects must surface as `ShellError::UnhandledEffect`, and missing effect resources must panic through one `#[track_caller]` helper with a registration hint.
+
+Reason: Silently dropping an effect lies about what the shell did. Missing resources are also developer errors, but today they fail through rough ad hoc panics. The correct first step is not a broad handler redesign; it is a stricter default and one precise failure path. Permissive unhandled-effect behavior may still exist, but only as an explicit opt-out in `SyzygyConfig`.

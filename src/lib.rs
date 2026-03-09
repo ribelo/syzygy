@@ -55,7 +55,9 @@ pub mod prelude {
     #[cfg(feature = "shell")]
     pub use crate::subscription::{Subscription, SubscriptionDriver, SubscriptionStream};
     #[cfg(feature = "shell")]
-    pub use crate::syzygy::{Runner, Syzygy, SyzygyConfig};
+    pub use crate::syzygy::{
+        DiagnosticsConfig, Runner, Syzygy, SyzygyConfig, UnhandledEffectPolicy,
+    };
 
     #[cfg(feature = "shell")]
     pub use crate::error::ShellError;

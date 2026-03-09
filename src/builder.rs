@@ -1,3 +1,4 @@
+use std::cell::Cell;
 use std::marker::PhantomData;
 use std::rc::Rc;
 
@@ -9,7 +10,7 @@ use crate::extract::{EffectContext, EventContext, SubscriptionContext};
 use crate::resource::ResourceMap;
 use crate::shell::{EffectHandlerFn, Shell};
 use crate::subscription::{Subscription, SubscriptionDriver, SubscriptionDrivers};
-use crate::syzygy::{Syzygy, SyzygyConfig};
+use crate::syzygy::{Syzygy, SyzygyConfig, UnhandledEffectPolicy};
 
 /// Result of attempting to handle an effect in builder-level composition.
 pub enum EffectRoute<E, X> {
@@ -254,15 +255,23 @@ where
             self.event_channel_capacity,
         );
 
-        let routed_effect_handler = self.effect_handler.unwrap_or_else(|| {
-            Rc::new(|_effect, _ctx: &EffectContext<'_>| EffectRoute::Handled(Task::none()))
-        });
+        let routed_effect_handler = self
+            .effect_handler
+            .unwrap_or_else(|| Rc::new(|_effect, _ctx: &EffectContext<'_>| EffectRoute::Unhandled));
+        let unhandled_effects_policy =
+            Rc::new(Cell::new(self.syzygy_config.diagnostics.unhandled_effects));
+        let unhandled_effects_for_handler = Rc::clone(&unhandled_effects_policy);
 
         let effect_handler: EffectHandlerFn<Event, Effect> =
             Rc::new(
                 move |effect, ctx| match routed_effect_handler(effect, ctx) {
-                    EffectRoute::Handled(task) => task,
-                    EffectRoute::Unhandled => Task::none(),
+                    EffectRoute::Handled(task) => Ok(task),
+                    EffectRoute::Unhandled => match unhandled_effects_for_handler.get() {
+                        UnhandledEffectPolicy::Error => Err(ShellError::UnhandledEffect {
+                            effect_type: std::any::type_name::<Effect>(),
+                        }),
+                        UnhandledEffectPolicy::Ignore => Ok(Task::none()),
+                    },
                 },
             );
 
@@ -280,6 +289,7 @@ where
             self.subscription_drivers,
             self.resources,
             runtime,
+            unhandled_effects_policy,
         );
         Ok(Syzygy::with_config(core, shell, self.syzygy_config))
     }
