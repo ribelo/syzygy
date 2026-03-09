@@ -158,6 +158,7 @@ async fn fetch(url: String) -> Command<Event, Effect> {
 | `Task::once(async)` | One-shot async | Single event |
 | `Task::stream(impl Stream)` | Ongoing streams | Multiple events |
 | `Task::process(spec, map_result)` | Shell-owned subprocess | Single command |
+| `Task::process_interactive(spec, on_update)` | Shell-owned interactive subprocess | Incremental commands |
 | `Task::blocking(|| ...)` | Non-abortable blocking work | Single command |
 | `Task::blocking_cooperative(|cancel| ...)` | Lease-owned blocking work | `Option<Command>` |
 
@@ -173,6 +174,32 @@ fn run_git_status() -> Task<Event, Effect> {
             Err(error) => Command::event(Event::Failed(error)),
         },
     )
+}
+```
+
+```rust
+fn run_interactive(job: &mut SaveJob) -> Command<Event, Effect> {
+    job.start(Effect::Echo)
+        .and(job.write(b"hello\n"))
+        .and(job.close_stdin())
+}
+
+fn handle_effect(effect: Effect, _ctx: &EffectContext<'_>) -> Task<Event, Effect> {
+    match effect {
+        Effect::Echo => Task::process_interactive(
+            ProcessSpec::new("sh")
+                .args(["-c", "cat"])
+                .stdin(ProcessInput::Piped)
+                .stdout(ProcessOutput::Stream {
+                    framing: ProcessFraming::Lines { max_line_bytes: 256 },
+                }),
+            |update| match update {
+                ProcessUpdate::Stdout(frame) => Some(Command::event(Event::Stdout(frame))),
+                ProcessUpdate::Exited(result) => Some(Command::event(Event::Finished(result))),
+                ProcessUpdate::Stderr(_) => None,
+            },
+        ),
+    }
 }
 ```
 
@@ -232,7 +259,11 @@ struct DbPool(Arc<Pool>);  // Cheap clone
 
 **Blocking work is split on purpose.** `Task::blocking` is non-abortable and shutdown waits for it to finish. Lease-owned blocking work must use `Task::blocking_cooperative`; returning plain `Task::blocking` from an abortable effect is a `ShellError`.
 
-**Unmanaged subprocesses are outside Syzygy.** If you need shell-owned child-process cancellation on abort/shutdown, use `Task::process` instead of spawning a child manually inside `Task::once` or `Task::blocking`.
+**Process control is lease-addressed.** `Command::process_write`, `Command::process_close_stdin`, and the matching `AbortSlot` helpers only work while that lease still owns a live interactive process.
+
+**Interactive process cancel is explicit and bounded.** The default process termination policy is `CloseStdinThenKill { grace: 500ms }`. If stdin is not piped, Syzygy skips straight to hard kill.
+
+**Unmanaged subprocesses are outside Syzygy.** If you need shell-owned child-process cancellation on abort/shutdown, use `Task::process` or `Task::process_interactive` instead of spawning a child manually inside `Task::once` or `Task::blocking`.
 
 ## Owned Runtime
 
@@ -277,7 +308,7 @@ cargo run --example 10_todo_app
 | `08_command_composition` | `Command::and`, `map_event` |
 | `09_error_handling` | Result/Option in handlers |
 | `10_todo_app` | Full application |
-| `11_process_tasks` | `Task::process`, runtime injection |
+| `11_process_tasks` | `Task::process_interactive`, `AbortSlot`, runtime injection |
 
 ## License
 

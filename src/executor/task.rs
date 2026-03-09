@@ -8,7 +8,7 @@ use futures::Stream;
 use futures::StreamExt;
 
 use crate::command::{Command, TaskLeaseScope};
-use crate::process::{ProcessError, ProcessExit, ProcessSpec};
+use crate::process::{ProcessError, ProcessExit, ProcessSpec, ProcessUpdate};
 
 type BoxFutureCommand<E, X> = Pin<Box<dyn Future<Output = Command<E, X>> + 'static>>;
 type BoxOptionalFutureCommand<E, X> =
@@ -17,6 +17,7 @@ type BoxStreamCommand<E, X> = Pin<Box<dyn Stream<Item = Command<E, X>> + 'static
 type BlockingSpawner<E, X> = Box<dyn FnOnce(crate::runtime::Runtime) -> BoxFutureCommand<E, X>>;
 type CooperativeBlockingSpawner<E, X> =
     Box<dyn FnOnce(crate::runtime::Runtime, BlockingCancelToken) -> BoxOptionalFutureCommand<E, X>>;
+type ProcessUpdateMapper<E, X> = Box<dyn FnMut(ProcessUpdate) -> Option<Command<E, X>> + 'static>;
 
 #[derive(Clone, Debug, Default)]
 pub struct BlockingCancelToken {
@@ -168,12 +169,56 @@ where
     }
 }
 
+pub struct ProcessTask<E, X> {
+    spec: ProcessSpec,
+    on_update: ProcessUpdateMapper<E, X>,
+}
+
+impl<E, X> ProcessTask<E, X>
+where
+    E: 'static,
+    X: 'static,
+{
+    fn new<F>(spec: ProcessSpec, on_update: F) -> Self
+    where
+        F: FnMut(ProcessUpdate) -> Option<Command<E, X>> + 'static,
+    {
+        Self {
+            spec,
+            on_update: Box::new(on_update),
+        }
+    }
+
+    pub(crate) fn into_parts(self) -> (ProcessSpec, ProcessUpdateMapper<E, X>) {
+        (self.spec, self.on_update)
+    }
+
+    fn map<E2, X2, FE, FX>(
+        self,
+        scope: Option<TaskLeaseScope>,
+        fe: Rc<FE>,
+        fx: Rc<FX>,
+    ) -> ProcessTask<E2, X2>
+    where
+        FE: Fn(E) -> E2 + 'static,
+        FX: Fn(X) -> X2 + 'static,
+        E2: 'static,
+        X2: 'static,
+    {
+        let (spec, mut on_update) = self.into_parts();
+        ProcessTask::new(spec, move |update| {
+            on_update(update).map(|command| map_command(command, scope.as_ref(), &fe, &fx))
+        })
+    }
+}
+
 /// Declarative unit of work returned by effect handlers.
 pub enum Task<E, X> {
     None,
     Resolved(Command<E, X>),
     Future(BoxFutureCommand<E, X>),
     Stream(BoxStreamCommand<E, X>),
+    Process(ProcessTask<E, X>),
     Blocking(BlockingTask<E, X>),
     BlockingCooperative(CooperativeBlockingTask<E, X>),
 }
@@ -247,10 +292,23 @@ where
     where
         F: FnOnce(Result<ProcessExit, ProcessError>) -> Command<E, X> + 'static,
     {
-        Self::Future(Box::pin(async move {
-            let result = Box::pin(crate::process::run(spec)).await;
-            map_result(result)
+        let mut map_result = Some(map_result);
+        Self::Process(ProcessTask::new(spec, move |update| match update {
+            ProcessUpdate::Exited(result) => Some(map_result
+                .take()
+                .expect("process completion mapper must run only once")(
+                result
+            )),
+            ProcessUpdate::Stdout(_) | ProcessUpdate::Stderr(_) => None,
         }))
+    }
+
+    #[must_use]
+    pub fn process_interactive<F>(spec: ProcessSpec, on_update: F) -> Self
+    where
+        F: FnMut(ProcessUpdate) -> Option<Command<E, X>> + 'static,
+    {
+        Self::Process(ProcessTask::new(spec, on_update))
     }
 
     #[must_use]
@@ -322,6 +380,7 @@ where
                     stream.map(move |command| map_command(command, scope.as_ref(), &fe, &fx)),
                 ))
             }
+            Self::Process(task) => Task::Process(task.map(scope, fe, fx)),
             Self::Blocking(task) => Task::Blocking(task.map(scope, fe, fx)),
             Self::BlockingCooperative(task) => Task::BlockingCooperative(task.map(scope, fe, fx)),
         }
@@ -418,10 +477,13 @@ mod tests {
     fn map_rejects_abortable_resolved_commands_without_scope() {
         let lease = crate::command::TaskLease::new();
 
-        assert_panic_contains("Command::map cannot safely remap abortable steps", || {
-            let _ = Task::<ChildEvent, ChildEffect>::resolved(Command::cancel(&lease))
-                .map(ParentEvent::Child, ParentEffect::Child);
-        });
+        assert_panic_contains(
+            "Command::map cannot safely remap lease-addressed steps",
+            || {
+                let _ = Task::<ChildEvent, ChildEffect>::resolved(Command::cancel(&lease))
+                    .map(ParentEvent::Child, ParentEffect::Child);
+            },
+        );
     }
 
     #[test]
@@ -466,6 +528,35 @@ mod tests {
         let steps = commands[0].clone().into_iter().collect::<Vec<_>>();
         assert_eq!(steps.len(), 1);
         assert!(matches!(steps[0], CommandStep::Cancel { .. }));
+    }
+
+    #[test]
+    fn map_scoped_process_task_keeps_process_control_commands() {
+        let lease = crate::command::TaskLease::new();
+        let mapped = Task::<ChildEvent, ChildEffect>::process_interactive(
+            crate::process::ProcessSpec::new("cat"),
+            move |_update| Some(Command::process_write(&lease, b"hello")),
+        )
+        .map_scoped(
+            TaskLeaseScope::new(),
+            ParentEvent::Child,
+            ParentEffect::Child,
+        );
+
+        let command = match mapped {
+            Task::Process(task) => {
+                let (_spec, mut on_update) = task.into_parts();
+                on_update(crate::process::ProcessUpdate::Stdout(
+                    crate::process::ProcessFrame::Bytes(b"x".to_vec()),
+                ))
+                .expect("expected mapped process command")
+            }
+            _ => panic!("expected process task"),
+        };
+
+        let steps = command.into_iter().collect::<Vec<_>>();
+        assert_eq!(steps.len(), 1);
+        assert!(matches!(steps[0], CommandStep::ProcessWrite { .. }));
     }
 
     #[test]

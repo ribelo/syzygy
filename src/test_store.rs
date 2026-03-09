@@ -384,6 +384,11 @@ where
                     self.feed_received_command(command);
                 }
             }
+            Task::Process(_task) => {
+                panic!(
+                    "TestStore::receive does not support process tasks; use a real Syzygy runner for shell-owned process lifecycle tests"
+                );
+            }
             Task::Blocking(task) => {
                 let runtime = crate::runtime::Runtime::new().unwrap();
                 let command = runtime.block_on(task.into_future(runtime.clone()));
@@ -425,6 +430,11 @@ where
                     self.feed_received_command(command);
                 }
             }
+            Task::Process(_task) => {
+                panic!(
+                    "TestStore::receive_async does not support process tasks; use a real Syzygy runner for shell-owned process lifecycle tests"
+                );
+            }
             Task::Blocking(task) => {
                 let runtime = crate::runtime::Runtime::new().unwrap();
                 let command = runtime.block_on(task.into_future(runtime.clone()));
@@ -461,6 +471,11 @@ where
                     self.cancel_abortable_effect(&lease);
                     self.cancelled_leases.push(lease);
                 }
+                CommandStep::ProcessWrite { .. } | CommandStep::ProcessCloseStdin { .. } => {
+                    panic!(
+                        "TestStore::receive does not support interactive process control; use a real Syzygy runner"
+                    );
+                }
             }
         }
     }
@@ -493,6 +508,11 @@ where
                     touched_outputs = true;
                     self.cancel_abortable_effect(&lease);
                     self.cancelled_leases.push(lease);
+                }
+                CommandStep::ProcessWrite { .. } | CommandStep::ProcessCloseStdin { .. } => {
+                    panic!(
+                        "TestStore does not support interactive process control commands; use a real Syzygy runner"
+                    );
                 }
             }
         }

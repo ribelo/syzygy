@@ -1,17 +1,23 @@
+use std::collections::VecDeque;
 use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 use std::process::{ExitStatus, Stdio};
+use std::time::Duration;
 
-use futures::future::join3;
-use futures::io::{AsyncRead, AsyncReadExt};
+use futures::channel::mpsc;
+use futures::io::AsyncRead;
+use futures::io::AsyncReadExt;
 use thiserror::Error;
 
 const PROCESS_READ_CHUNK_BYTES: usize = 8 * 1024;
+const DEFAULT_PROCESS_TERMINATION_GRACE: Duration = Duration::from_millis(500);
+pub(crate) const PROCESS_CONTROL_CAPACITY: usize = 256;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ProcessInput {
     Null,
     Inherit,
+    Piped,
 }
 
 impl Default for ProcessInput {
@@ -21,15 +27,36 @@ impl Default for ProcessInput {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ProcessFraming {
+    Bytes { max_chunk_bytes: usize },
+    Lines { max_line_bytes: usize },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ProcessOutput {
     Discard,
     Inherit,
     Capture { max_bytes: usize },
+    Stream { framing: ProcessFraming },
 }
 
 impl Default for ProcessOutput {
     fn default() -> Self {
         Self::Discard
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ProcessTerminationPolicy {
+    Kill,
+    CloseStdinThenKill { grace: Duration },
+}
+
+impl Default for ProcessTerminationPolicy {
+    fn default() -> Self {
+        Self::CloseStdinThenKill {
+            grace: DEFAULT_PROCESS_TERMINATION_GRACE,
+        }
     }
 }
 
@@ -43,6 +70,7 @@ pub struct ProcessSpec {
     stdin: ProcessInput,
     stdout: ProcessOutput,
     stderr: ProcessOutput,
+    termination_policy: ProcessTerminationPolicy,
 }
 
 impl ProcessSpec {
@@ -63,6 +91,7 @@ impl ProcessSpec {
             stdin: ProcessInput::default(),
             stdout: ProcessOutput::default(),
             stderr: ProcessOutput::default(),
+            termination_policy: ProcessTerminationPolicy::default(),
         }
     }
 
@@ -133,6 +162,12 @@ impl ProcessSpec {
     }
 
     #[must_use]
+    pub fn termination_policy(mut self, policy: ProcessTerminationPolicy) -> Self {
+        self.termination_policy = policy;
+        self
+    }
+
+    #[must_use]
     pub fn program(&self) -> &OsStr {
         &self.program
     }
@@ -171,6 +206,11 @@ impl ProcessSpec {
     pub fn stderr_mode(&self) -> &ProcessOutput {
         &self.stderr
     }
+
+    #[must_use]
+    pub fn termination_policy_ref(&self) -> &ProcessTerminationPolicy {
+        &self.termination_policy
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -186,6 +226,19 @@ pub struct ProcessExit {
     pub stderr: Option<CapturedOutput>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ProcessFrame {
+    Bytes(Vec<u8>),
+    Line(Vec<u8>),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ProcessUpdate {
+    Stdout(ProcessFrame),
+    Stderr(ProcessFrame),
+    Exited(Result<ProcessExit, ProcessError>),
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Error)]
 pub enum ProcessErrorKind {
     #[error("spawn")]
@@ -196,6 +249,12 @@ pub enum ProcessErrorKind {
     StdoutRead,
     #[error("stderr read")]
     StderrRead,
+    #[error("stdout frame too long")]
+    StdoutFrameTooLong,
+    #[error("stderr frame too long")]
+    StderrFrameTooLong,
+    #[error("stdin write")]
+    StdinWrite,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Error)]
@@ -207,7 +266,12 @@ pub struct ProcessError {
 }
 
 impl ProcessError {
-    fn new(spec: &ProcessSpec, kind: ProcessErrorKind, message: impl Into<String>) -> Self {
+    #[must_use]
+    pub(crate) fn new(
+        spec: &ProcessSpec,
+        kind: ProcessErrorKind,
+        message: impl Into<String>,
+    ) -> Self {
         Self {
             kind,
             program: spec.program.to_string_lossy().into_owned(),
@@ -216,38 +280,146 @@ impl ProcessError {
     }
 }
 
-pub(crate) async fn run(spec: ProcessSpec) -> Result<ProcessExit, ProcessError> {
-    let stdout_mode = spec.stdout.clone();
-    let stderr_mode = spec.stderr.clone();
-    let mut child = spawn_child(&spec)?;
-    let stdout = output_reader(
-        child.stdout.take(),
-        &spec,
-        stdout_mode,
-        ProcessErrorKind::StdoutRead,
-    );
-    let stderr = output_reader(
-        child.stderr.take(),
-        &spec,
-        stderr_mode,
-        ProcessErrorKind::StderrRead,
-    );
-    let status = async {
-        child
-            .status()
-            .await
-            .map_err(|err| ProcessError::new(&spec, ProcessErrorKind::Wait, err.to_string()))
-    };
-    let (status, stdout, stderr) = Box::pin(join3(status, stdout, stderr)).await;
-
-    Ok(ProcessExit {
-        status: status?,
-        stdout: stdout?,
-        stderr: stderr?,
-    })
+#[derive(Debug)]
+pub(crate) enum ProcessControlMessage {
+    Write(Vec<u8>),
+    CloseStdin,
 }
 
-fn spawn_child(spec: &ProcessSpec) -> Result<async_process::Child, ProcessError> {
+pub(crate) type ProcessControlReceiver = mpsc::Receiver<ProcessControlMessage>;
+pub(crate) type ProcessControlSender = mpsc::Sender<ProcessControlMessage>;
+type BoxProcessReader = Box<dyn AsyncRead + Unpin>;
+
+struct CaptureDriver {
+    reader: BoxProcessReader,
+    max_bytes: usize,
+    bytes: Vec<u8>,
+    truncated: bool,
+}
+
+struct StreamDriver {
+    reader: BoxProcessReader,
+    framing: ProcessFraming,
+    pending_frames: VecDeque<ProcessFrame>,
+    line_buffer: Vec<u8>,
+}
+
+enum ProcessOutputDriverKind {
+    Disabled,
+    Capture(CaptureDriver),
+    Stream(StreamDriver),
+}
+
+pub(crate) struct ProcessOutputDriver {
+    kind: ProcessOutputDriverKind,
+    read_error_kind: ProcessErrorKind,
+    frame_error_kind: ProcessErrorKind,
+    finished: bool,
+}
+
+impl ProcessOutputDriver {
+    #[must_use]
+    pub(crate) fn stdout(
+        reader: Option<async_process::ChildStdout>,
+        output: &ProcessOutput,
+    ) -> Self {
+        Self::new(reader.map(box_reader), output, ProcessErrorKind::StdoutRead)
+    }
+
+    #[must_use]
+    pub(crate) fn stderr(
+        reader: Option<async_process::ChildStderr>,
+        output: &ProcessOutput,
+    ) -> Self {
+        Self::new(reader.map(box_reader), output, ProcessErrorKind::StderrRead)
+    }
+
+    #[must_use]
+    fn new(
+        reader: Option<BoxProcessReader>,
+        output: &ProcessOutput,
+        read_error_kind: ProcessErrorKind,
+    ) -> Self {
+        let frame_error_kind = frame_error_kind(read_error_kind);
+        let kind = match output {
+            ProcessOutput::Discard | ProcessOutput::Inherit => ProcessOutputDriverKind::Disabled,
+            ProcessOutput::Capture { max_bytes } => {
+                let reader = required_reader(reader, output);
+                ProcessOutputDriverKind::Capture(CaptureDriver {
+                    reader,
+                    max_bytes: *max_bytes,
+                    bytes: Vec::with_capacity((*max_bytes).min(PROCESS_READ_CHUNK_BYTES)),
+                    truncated: false,
+                })
+            }
+            ProcessOutput::Stream { framing } => {
+                let reader = required_reader(reader, output);
+                ProcessOutputDriverKind::Stream(StreamDriver {
+                    reader,
+                    framing: framing.clone(),
+                    pending_frames: VecDeque::new(),
+                    line_buffer: Vec::new(),
+                })
+            }
+        };
+        let finished = matches!(kind, ProcessOutputDriverKind::Disabled);
+
+        Self {
+            kind,
+            read_error_kind,
+            frame_error_kind,
+            finished,
+        }
+    }
+
+    #[must_use]
+    pub(crate) fn should_poll(&self) -> bool {
+        !self.finished
+    }
+
+    #[must_use]
+    pub(crate) fn is_finished(&self) -> bool {
+        self.finished
+    }
+
+    pub(crate) fn captured_output(&mut self) -> Option<CapturedOutput> {
+        match &mut self.kind {
+            ProcessOutputDriverKind::Capture(driver) => Some(CapturedOutput {
+                bytes: std::mem::take(&mut driver.bytes),
+                truncated: driver.truncated,
+            }),
+            ProcessOutputDriverKind::Disabled | ProcessOutputDriverKind::Stream(_) => None,
+        }
+    }
+
+    pub(crate) async fn next_frame(
+        &mut self,
+        spec: &ProcessSpec,
+    ) -> Result<Option<ProcessFrame>, ProcessError> {
+        match &mut self.kind {
+            ProcessOutputDriverKind::Disabled => Ok(None),
+            ProcessOutputDriverKind::Capture(driver) => {
+                let read = read_into_capture(driver, spec, self.read_error_kind).await?;
+                self.finished = read == 0;
+                Ok(None)
+            }
+            ProcessOutputDriverKind::Stream(driver) => {
+                let frame =
+                    read_into_stream(driver, spec, self.read_error_kind, self.frame_error_kind)
+                        .await?;
+                self.finished = frame.is_none() && !driver_has_pending_frames(driver);
+                Ok(frame)
+            }
+        }
+    }
+}
+
+#[must_use]
+pub(crate) fn control_channel() -> (ProcessControlSender, ProcessControlReceiver) {
+    mpsc::channel(PROCESS_CONTROL_CAPACITY)
+}
+
+pub(crate) fn spawn(spec: &ProcessSpec) -> Result<async_process::Child, ProcessError> {
     let mut command = async_process::Command::new(spec.program());
     command.args(spec.args_slice());
     command.kill_on_drop(true);
@@ -275,6 +447,7 @@ fn stdio_for_input(stdin: &ProcessInput) -> Stdio {
     match stdin {
         ProcessInput::Null => Stdio::null(),
         ProcessInput::Inherit => Stdio::inherit(),
+        ProcessInput::Piped => Stdio::piped(),
     }
 }
 
@@ -282,67 +455,156 @@ fn stdio_for_output(output: &ProcessOutput) -> Stdio {
     match output {
         ProcessOutput::Discard => Stdio::null(),
         ProcessOutput::Inherit => Stdio::inherit(),
-        ProcessOutput::Capture { .. } => Stdio::piped(),
+        ProcessOutput::Capture { .. } | ProcessOutput::Stream { .. } => Stdio::piped(),
     }
 }
 
-async fn output_reader<R>(
-    reader: Option<R>,
-    spec: &ProcessSpec,
-    output: ProcessOutput,
-    error_kind: ProcessErrorKind,
-) -> Result<Option<CapturedOutput>, ProcessError>
+fn box_reader<R>(reader: R) -> BoxProcessReader
 where
-    R: AsyncRead + Unpin,
+    R: AsyncRead + Unpin + 'static,
 {
-    match output {
-        ProcessOutput::Discard | ProcessOutput::Inherit => Ok(None),
-        ProcessOutput::Capture { max_bytes } => {
-            let Some(reader) = reader else {
-                panic!("captured process output must expose a piped reader");
-            };
+    Box::new(reader)
+}
 
-            read_captured_output(reader, spec, max_bytes, error_kind)
-                .await
-                .map(Some)
+fn required_reader(reader: Option<BoxProcessReader>, output: &ProcessOutput) -> BoxProcessReader {
+    match reader {
+        Some(reader) => reader,
+        None => panic!("process output {output:?} requires a piped reader"),
+    }
+}
+
+#[must_use]
+fn frame_error_kind(read_error_kind: ProcessErrorKind) -> ProcessErrorKind {
+    match read_error_kind {
+        ProcessErrorKind::StdoutRead => ProcessErrorKind::StdoutFrameTooLong,
+        ProcessErrorKind::StderrRead => ProcessErrorKind::StderrFrameTooLong,
+        other => panic!("unsupported frame error kind for {other:?}"),
+    }
+}
+
+#[must_use]
+fn driver_has_pending_frames(driver: &StreamDriver) -> bool {
+    !driver.pending_frames.is_empty() || !driver.line_buffer.is_empty()
+}
+
+async fn read_into_capture(
+    driver: &mut CaptureDriver,
+    spec: &ProcessSpec,
+    error_kind: ProcessErrorKind,
+) -> Result<usize, ProcessError> {
+    let mut chunk = vec![0_u8; PROCESS_READ_CHUNK_BYTES];
+    let read = driver
+        .reader
+        .read(&mut chunk)
+        .await
+        .map_err(|err| ProcessError::new(spec, error_kind, err.to_string()))?;
+    if read == 0 {
+        return Ok(0);
+    }
+
+    let remaining = driver.max_bytes.saturating_sub(driver.bytes.len());
+    let keep = remaining.min(read);
+    driver.bytes.extend_from_slice(&chunk[..keep]);
+    driver.truncated |= keep < read;
+    Ok(read)
+}
+
+async fn read_into_stream(
+    driver: &mut StreamDriver,
+    spec: &ProcessSpec,
+    read_error_kind: ProcessErrorKind,
+    frame_error_kind: ProcessErrorKind,
+) -> Result<Option<ProcessFrame>, ProcessError> {
+    if let Some(frame) = driver.pending_frames.pop_front() {
+        return Ok(Some(frame));
+    }
+
+    let mut chunk = vec![0_u8; read_buffer_len(&driver.framing)];
+    let read = driver
+        .reader
+        .read(&mut chunk)
+        .await
+        .map_err(|err| ProcessError::new(spec, read_error_kind, err.to_string()))?;
+    if read == 0 {
+        return Ok(emit_line_buffer_on_eof(driver));
+    }
+
+    match &driver.framing {
+        ProcessFraming::Bytes { .. } => Ok(Some(ProcessFrame::Bytes(chunk[..read].to_vec()))),
+        ProcessFraming::Lines { max_line_bytes } => {
+            push_line_frames(
+                driver,
+                &chunk[..read],
+                *max_line_bytes,
+                spec,
+                frame_error_kind,
+            )?;
+            Ok(driver.pending_frames.pop_front())
         }
     }
 }
 
-async fn read_captured_output<R>(
-    mut reader: R,
-    spec: &ProcessSpec,
-    max_bytes: usize,
-    error_kind: ProcessErrorKind,
-) -> Result<CapturedOutput, ProcessError>
-where
-    R: AsyncRead + Unpin,
-{
-    let mut bytes = Vec::with_capacity(max_bytes.min(PROCESS_READ_CHUNK_BYTES));
-    let mut chunk = [0_u8; PROCESS_READ_CHUNK_BYTES];
-    let mut truncated = false;
+#[must_use]
+fn read_buffer_len(framing: &ProcessFraming) -> usize {
+    match framing {
+        ProcessFraming::Bytes { max_chunk_bytes } => (*max_chunk_bytes).max(1),
+        ProcessFraming::Lines { .. } => PROCESS_READ_CHUNK_BYTES,
+    }
+}
 
-    loop {
-        let read = reader
-            .read(&mut chunk)
-            .await
-            .map_err(|err| ProcessError::new(spec, error_kind, err.to_string()))?;
-        if read == 0 {
-            break;
-        }
-
-        let remaining = max_bytes.saturating_sub(bytes.len());
-        let keep = remaining.min(read);
-        bytes.extend_from_slice(&chunk[..keep]);
-        truncated |= keep < read;
+fn emit_line_buffer_on_eof(driver: &mut StreamDriver) -> Option<ProcessFrame> {
+    if driver.pending_frames.is_empty() && driver.line_buffer.is_empty() {
+        return None;
     }
 
-    Ok(CapturedOutput { bytes, truncated })
+    if let Some(frame) = driver.pending_frames.pop_front() {
+        return Some(frame);
+    }
+
+    Some(ProcessFrame::Line(std::mem::take(&mut driver.line_buffer)))
+}
+
+fn push_line_frames(
+    driver: &mut StreamDriver,
+    chunk: &[u8],
+    max_line_bytes: usize,
+    spec: &ProcessSpec,
+    error_kind: ProcessErrorKind,
+) -> Result<(), ProcessError> {
+    assert!(
+        max_line_bytes > 0,
+        "line framing requires max_line_bytes > 0"
+    );
+
+    for byte in chunk {
+        driver.line_buffer.push(*byte);
+        if driver.line_buffer.len() > max_line_bytes {
+            return Err(ProcessError::new(
+                spec,
+                error_kind,
+                format!("line exceeded configured limit of {max_line_bytes} bytes"),
+            ));
+        }
+
+        if *byte == b'\n' {
+            driver
+                .pending_frames
+                .push_back(ProcessFrame::Line(std::mem::take(&mut driver.line_buffer)));
+        }
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{CapturedOutput, ProcessOutput, ProcessSpec};
+    use std::collections::VecDeque;
+
+    use super::{
+        box_reader, frame_error_kind, push_line_frames, CapturedOutput, ProcessErrorKind,
+        ProcessFraming, ProcessInput, ProcessOutput, ProcessSpec, ProcessTerminationPolicy,
+        StreamDriver,
+    };
 
     #[test]
     fn process_spec_defaults_are_safe() {
@@ -350,7 +612,13 @@ mod tests {
 
         assert_eq!(spec.stdout_mode(), &ProcessOutput::Discard);
         assert_eq!(spec.stderr_mode(), &ProcessOutput::Discard);
-        assert_eq!(spec.stdin_mode(), &super::ProcessInput::Null);
+        assert_eq!(spec.stdin_mode(), &ProcessInput::Null);
+        assert_eq!(
+            spec.termination_policy_ref(),
+            &ProcessTerminationPolicy::CloseStdinThenKill {
+                grace: std::time::Duration::from_millis(500),
+            }
+        );
     }
 
     #[test]
@@ -374,5 +642,68 @@ mod tests {
 
         assert_eq!(captured.bytes.len(), 3);
         assert!(captured.truncated);
+    }
+
+    #[test]
+    fn frame_error_kind_tracks_output_channel() {
+        assert_eq!(
+            frame_error_kind(ProcessErrorKind::StdoutRead),
+            ProcessErrorKind::StdoutFrameTooLong
+        );
+        assert_eq!(
+            frame_error_kind(ProcessErrorKind::StderrRead),
+            ProcessErrorKind::StderrFrameTooLong
+        );
+    }
+
+    #[test]
+    fn line_framing_preserves_newlines() {
+        let spec = ProcessSpec::new("cat");
+        let mut driver = StreamDriver {
+            reader: box_reader(futures::io::Cursor::new(Vec::<u8>::new())),
+            framing: ProcessFraming::Lines { max_line_bytes: 16 },
+            pending_frames: VecDeque::new(),
+            line_buffer: Vec::new(),
+        };
+
+        push_line_frames(
+            &mut driver,
+            b"one\ntwo\n",
+            16,
+            &spec,
+            ProcessErrorKind::StdoutFrameTooLong,
+        )
+        .unwrap();
+
+        assert_eq!(
+            driver.pending_frames.pop_front(),
+            Some(super::ProcessFrame::Line(b"one\n".to_vec()))
+        );
+        assert_eq!(
+            driver.pending_frames.pop_front(),
+            Some(super::ProcessFrame::Line(b"two\n".to_vec()))
+        );
+    }
+
+    #[test]
+    fn line_framing_rejects_oversized_lines() {
+        let spec = ProcessSpec::new("cat");
+        let mut driver = StreamDriver {
+            reader: box_reader(futures::io::Cursor::new(Vec::<u8>::new())),
+            framing: ProcessFraming::Lines { max_line_bytes: 3 },
+            pending_frames: VecDeque::new(),
+            line_buffer: Vec::new(),
+        };
+
+        let err = push_line_frames(
+            &mut driver,
+            b"toolong",
+            3,
+            &spec,
+            ProcessErrorKind::StdoutFrameTooLong,
+        )
+        .unwrap_err();
+
+        assert_eq!(err.kind, ProcessErrorKind::StdoutFrameTooLong);
     }
 }

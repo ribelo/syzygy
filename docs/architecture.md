@@ -68,6 +68,7 @@ System shape and invariants. For 3am incident response.
    - `Task::Future(fut)`: spawned on configured runtime backend
    - `Task::Stream(s)`: spawned, each item processed
    - `Task::process(spec, map_result)`: shell-owned subprocess, killed on task cancellation
+   - `Task::process_interactive(spec, on_update)`: shell-owned subprocess with streamed updates and lease-addressed stdin control
    - `Task::Blocking(f)`: shell-owned blocking work, shutdown waits for completion
    - `Task::BlockingCooperative(f)`: blocking work with cooperative cancellation
 4. Task completion produces `Command`, loops back to Core
@@ -153,7 +154,10 @@ fn start_save(save_job: &mut SaveJob) -> Command<Event, Effect> {
 - A lease owns at most one abortable task. New `abortable` with the same lease drops the old task.
 - `AbortSlot::start()` replaces the stored lease and emits an explicit cancel for the previous task before starting the next one.
 - The shell also cancels abortable work when the last owner of the lease disappears.
-- `Task::process` is shell-owned too: dropping the task kills the child process, so explicit cancel, owner loss, replacement, and shutdown all terminate subprocesses.
+- `Task::process` and `Task::process_interactive` are shell-owned too: dropping the task kills the child process, so explicit cancel, owner loss, replacement, and shutdown all terminate subprocesses.
+- Interactive process stdin is controlled through lease-addressed commands (`process_write` / `process_close_stdin`), not raw child handles.
+- Default process cancellation is `CloseStdinThenKill { grace: 500ms }`; if stdin is not piped, the shell skips the grace wait and kills immediately.
+- Stdout/stderr streaming is FIFO per channel. No cross-channel total-order guarantee.
 - Lease-owned blocking work must be cooperative. `Task::blocking` is rejected for abortable effects; use `Task::blocking_cooperative` and check the `BlockingCancelToken`.
 - Mapping abortable child commands/tasks is explicit. Plain `map` rejects abortable steps; `TaskLeaseScope` remaps leases when a caller intentionally embeds child abortable work into a parent domain.
 

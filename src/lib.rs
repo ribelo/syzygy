@@ -43,8 +43,8 @@ pub mod prelude {
     pub use crate::executor::{BlockingCancelToken, Plan, Task};
     #[cfg(feature = "shell")]
     pub use crate::process::{
-        CapturedOutput, ProcessError, ProcessErrorKind, ProcessExit, ProcessInput, ProcessOutput,
-        ProcessSpec,
+        CapturedOutput, ProcessError, ProcessErrorKind, ProcessExit, ProcessFrame, ProcessFraming,
+        ProcessInput, ProcessOutput, ProcessSpec, ProcessTerminationPolicy, ProcessUpdate,
     };
     #[cfg(feature = "shell")]
     pub use crate::shell::Shell;

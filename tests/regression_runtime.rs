@@ -7,7 +7,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use futures::{stream, StreamExt};
-use syzygy::error::CoreError;
+use syzygy::error::{CoreError, ShellError};
 use syzygy::prelude::*;
 
 #[test]
@@ -1442,6 +1442,294 @@ fn shutdown_kills_untracked_process_tasks() {
 }
 
 #[test]
+fn interactive_process_accepts_same_command_start_write_close_and_streams_stdout() {
+    #[derive(Debug, Clone)]
+    enum Event {
+        Start,
+        Stdout(ProcessFrame),
+        Exited(Result<ProcessExit, ProcessError>),
+    }
+
+    #[derive(Debug, Clone)]
+    enum Effect {
+        Run,
+    }
+
+    #[derive(Debug, Default, Model)]
+    struct Model {
+        #[model(wrapper = Job)]
+        job: AbortSlot,
+        #[model(wrapper = StdoutFrames)]
+        stdout_frames: Vec<ProcessFrame>,
+        #[model(part)]
+        exit: Option<ProcessExit>,
+        #[model(part)]
+        failure: Option<ProcessError>,
+    }
+
+    fn handle_event(event: Event, ctx: &EventContext<Model>) -> Command<Event, Effect> {
+        match event {
+            Event::Start => {
+                let job = Job::extract_mut(ctx);
+                job.start(Effect::Run)
+                    .and(job.write(expected_line_bytes("alpha")))
+                    .and(job.write(expected_line_bytes("beta")))
+                    .and(job.close_stdin())
+            }
+            Event::Stdout(frame) => {
+                StdoutFrames::extract_mut(ctx).push(frame);
+                Command::none()
+            }
+            Event::Exited(result) => {
+                Job::extract_mut(ctx).clear();
+                match result {
+                    Ok(exit) => {
+                        *Option::<ProcessExit>::extract_mut(ctx) = Some(exit);
+                    }
+                    Err(error) => {
+                        *Option::<ProcessError>::extract_mut(ctx) = Some(error);
+                    }
+                }
+                Command::none()
+            }
+        }
+    }
+
+    fn handle_effect(effect: Effect, _ctx: &EffectContext<'_>) -> Task<Event, Effect> {
+        match effect {
+            Effect::Run => Task::process_interactive(
+                interactive_echo_process_spec(ProcessFraming::Lines { max_line_bytes: 64 }),
+                |update| match update {
+                    ProcessUpdate::Stdout(frame) => Some(Command::event(Event::Stdout(frame))),
+                    ProcessUpdate::Exited(result) => Some(Command::event(Event::Exited(result))),
+                    ProcessUpdate::Stderr(_) => None,
+                },
+            ),
+        }
+    }
+
+    let mut runner = Syzygy::builder::<Event, Effect>()
+        .model(Model::default())
+        .event_handler(handle_event)
+        .effect_handler(handle_effect)
+        .build()
+        .unwrap();
+
+    runner.core().try_send(Event::Start).unwrap();
+    runner.run().unwrap();
+
+    assert!(runner.model().failure.is_none());
+    assert!(runner
+        .model()
+        .exit
+        .as_ref()
+        .is_some_and(|exit| exit.status.success()));
+    assert_eq!(
+        runner.model().stdout_frames,
+        vec![
+            ProcessFrame::Line(expected_line_bytes("alpha")),
+            ProcessFrame::Line(expected_line_bytes("beta")),
+        ]
+    );
+}
+
+#[test]
+fn interactive_process_write_after_close_returns_shell_error() {
+    #[derive(Debug, Clone)]
+    enum Event {
+        Start,
+        Close,
+        WriteAfterClose,
+    }
+
+    #[derive(Debug, Clone)]
+    enum Effect {
+        Run,
+    }
+
+    #[derive(Debug, Default, Model)]
+    struct Model {
+        #[model(wrapper = Job)]
+        job: AbortSlot,
+    }
+
+    fn handle_event(event: Event, ctx: &EventContext<Model>) -> Command<Event, Effect> {
+        let job = Job::extract_mut(ctx);
+        match event {
+            Event::Start => job.start(Effect::Run),
+            Event::Close => job.close_stdin(),
+            Event::WriteAfterClose => job.write(expected_line_bytes("late")),
+        }
+    }
+
+    fn handle_effect(effect: Effect, _ctx: &EffectContext<'_>) -> Task<Event, Effect> {
+        match effect {
+            Effect::Run => Task::process_interactive(
+                interactive_echo_process_spec(bytes_framing()),
+                |_update| None,
+            ),
+        }
+    }
+
+    let mut runner = Syzygy::builder::<Event, Effect>()
+        .model(Model::default())
+        .event_handler(handle_event)
+        .effect_handler(handle_effect)
+        .build()
+        .unwrap();
+
+    runner.core().try_send(Event::Start).unwrap();
+    runner.step().unwrap();
+    runner.core().try_send(Event::Close).unwrap();
+    runner.step().unwrap();
+    runner.core().try_send(Event::WriteAfterClose).unwrap();
+    let err = runner.step().unwrap_err();
+    runner.shutdown();
+
+    assert!(matches!(
+        err,
+        ShellError::InvalidProcessControl(message) if message.contains("stdin is already closed")
+    ));
+}
+
+#[test]
+fn interactive_process_line_limit_surfaces_error() {
+    #[derive(Debug, Clone)]
+    enum Event {
+        Start,
+        Exited(Result<ProcessExit, ProcessError>),
+    }
+
+    #[derive(Debug, Clone)]
+    enum Effect {
+        Run,
+    }
+
+    #[derive(Debug, Default, Model)]
+    struct Model {
+        #[model(wrapper = Job)]
+        job: AbortSlot,
+        #[model(part)]
+        exit: Option<ProcessExit>,
+        #[model(part)]
+        failure: Option<ProcessError>,
+    }
+
+    fn handle_event(event: Event, ctx: &EventContext<Model>) -> Command<Event, Effect> {
+        match event {
+            Event::Start => {
+                let job = Job::extract_mut(ctx);
+                job.start(Effect::Run)
+                    .and(job.write(expected_line_bytes("toolong")))
+                    .and(job.close_stdin())
+            }
+            Event::Exited(result) => {
+                Job::extract_mut(ctx).clear();
+                match result {
+                    Ok(exit) => {
+                        *Option::<ProcessExit>::extract_mut(ctx) = Some(exit);
+                    }
+                    Err(error) => {
+                        *Option::<ProcessError>::extract_mut(ctx) = Some(error);
+                    }
+                }
+                Command::none()
+            }
+        }
+    }
+
+    fn handle_effect(effect: Effect, _ctx: &EffectContext<'_>) -> Task<Event, Effect> {
+        match effect {
+            Effect::Run => Task::process_interactive(
+                interactive_echo_process_spec(ProcessFraming::Lines { max_line_bytes: 3 }),
+                |update| match update {
+                    ProcessUpdate::Exited(result) => Some(Command::event(Event::Exited(result))),
+                    ProcessUpdate::Stdout(_) | ProcessUpdate::Stderr(_) => None,
+                },
+            ),
+        }
+    }
+
+    let mut runner = Syzygy::builder::<Event, Effect>()
+        .model(Model::default())
+        .event_handler(handle_event)
+        .effect_handler(handle_effect)
+        .build()
+        .unwrap();
+
+    runner.core().try_send(Event::Start).unwrap();
+    runner.run().unwrap();
+
+    assert!(runner.model().exit.is_none());
+    assert_eq!(
+        runner.model().failure.as_ref().map(|error| error.kind),
+        Some(ProcessErrorKind::StdoutFrameTooLong)
+    );
+}
+
+#[test]
+fn cancelled_interactive_process_emits_no_terminal_update() {
+    #[derive(Debug, Clone)]
+    enum Event {
+        Start,
+        Stop,
+        Exited,
+    }
+
+    #[derive(Debug, Clone)]
+    enum Effect {
+        Run,
+    }
+
+    #[derive(Debug, Default, Model)]
+    struct Model {
+        #[model(wrapper = Job)]
+        job: AbortSlot,
+        #[model(wrapper = Exited)]
+        exited: bool,
+    }
+
+    fn handle_event(event: Event, ctx: &EventContext<Model>) -> Command<Event, Effect> {
+        match event {
+            Event::Start => Job::extract_mut(ctx).start(Effect::Run),
+            Event::Stop => Job::extract_mut(ctx).cancel(),
+            Event::Exited => {
+                let exited = Exited::extract_mut(ctx);
+                **exited = true;
+                Command::none()
+            }
+        }
+    }
+
+    fn handle_effect(effect: Effect, _ctx: &EffectContext<'_>) -> Task<Event, Effect> {
+        match effect {
+            Effect::Run => Task::process_interactive(
+                interactive_echo_process_spec(bytes_framing()),
+                |update| match update {
+                    ProcessUpdate::Exited(_) => Some(Command::event(Event::Exited)),
+                    ProcessUpdate::Stdout(_) | ProcessUpdate::Stderr(_) => None,
+                },
+            ),
+        }
+    }
+
+    let mut runner = Syzygy::builder::<Event, Effect>()
+        .model(Model::default())
+        .event_handler(handle_event)
+        .effect_handler(handle_effect)
+        .build()
+        .unwrap();
+
+    runner.core().try_send(Event::Start).unwrap();
+    runner.step().unwrap();
+    runner.core().try_send(Event::Stop).unwrap();
+    runner.step().unwrap();
+    runner.run_until(|_, shell| shell.is_idle()).unwrap();
+
+    assert!(!runner.model().exited);
+}
+
+#[test]
 fn builder_uses_injected_runtime_before_event_handler() {
     let runtime = syzygy::runtime::Runtime::new().unwrap();
 
@@ -1497,6 +1785,67 @@ fn process_kill_observation_delay() -> Duration {
     {
         Duration::from_millis(500)
     }
+}
+
+fn bytes_framing() -> ProcessFraming {
+    ProcessFraming::Bytes {
+        max_chunk_bytes: 256,
+    }
+}
+
+fn expected_line_bytes(line: &str) -> Vec<u8> {
+    #[cfg(windows)]
+    {
+        format!("{line}\r\n").into_bytes()
+    }
+
+    #[cfg(not(windows))]
+    {
+        format!("{line}\n").into_bytes()
+    }
+}
+
+fn interactive_echo_process_spec(stdout_framing: ProcessFraming) -> ProcessSpec {
+    let spec = ProcessSpec::new(interactive_echo_program())
+        .args(interactive_echo_args())
+        .stdin(ProcessInput::Piped)
+        .stdout(ProcessOutput::Stream {
+            framing: stdout_framing,
+        })
+        .stderr(ProcessOutput::Discard)
+        .termination_policy(ProcessTerminationPolicy::CloseStdinThenKill {
+            grace: Duration::from_millis(50),
+        });
+
+    #[cfg(windows)]
+    {
+        spec
+    }
+
+    #[cfg(not(windows))]
+    {
+        spec
+    }
+}
+
+#[cfg(windows)]
+fn interactive_echo_program() -> &'static str {
+    "cmd"
+}
+
+#[cfg(not(windows))]
+fn interactive_echo_program() -> &'static str {
+    "sh"
+}
+
+#[cfg(windows)]
+fn interactive_echo_args() -> [&'static str; 3] {
+    ["/Q", "/C", "more"]
+}
+
+#[cfg(not(windows))]
+fn interactive_echo_args() -> [&'static str; 2] {
+    ["-c", "cat"]
 }
 
 fn capture_process_spec(stdout_limit: usize, stderr_limit: usize) -> ProcessSpec {

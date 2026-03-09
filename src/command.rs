@@ -103,6 +103,19 @@ impl TaskLease {
     }
 
     #[must_use]
+    pub fn process_write_command<Event, Effect>(
+        &self,
+        bytes: impl Into<Vec<u8>>,
+    ) -> Command<Event, Effect> {
+        Command::process_write(self, bytes)
+    }
+
+    #[must_use]
+    pub fn process_close_stdin_command<Event, Effect>(&self) -> Command<Event, Effect> {
+        Command::process_close_stdin(self)
+    }
+
+    #[must_use]
     pub(crate) fn id(&self) -> u64 {
         self.inner.id
     }
@@ -214,6 +227,24 @@ impl AbortSlot {
         self.lease = None;
     }
 
+    /// Write bytes to the currently owned interactive process, if any.
+    #[must_use]
+    pub fn write<Event, Effect>(&self, bytes: impl Into<Vec<u8>>) -> Command<Event, Effect> {
+        match self.lease() {
+            Some(lease) => Command::process_write(lease, bytes),
+            None => Command::none(),
+        }
+    }
+
+    /// Close stdin for the currently owned interactive process, if any.
+    #[must_use]
+    pub fn close_stdin<Event, Effect>(&self) -> Command<Event, Effect> {
+        match self.lease() {
+            Some(lease) => Command::process_close_stdin(lease),
+            None => Command::none(),
+        }
+    }
+
     /// Remove and return the current lease.
     pub fn take(&mut self) -> Option<TaskLease> {
         self.lease.take()
@@ -241,6 +272,8 @@ pub enum CommandStep<Event, Effect> {
     Effect(Effect),
     Abortable { lease: TaskLease, effect: Effect },
     Cancel { lease: TaskLease },
+    ProcessWrite { lease: TaskLease, bytes: Vec<u8> },
+    ProcessCloseStdin { lease: TaskLease },
 }
 
 impl<Event, Effect> PartialEq for CommandStep<Event, Effect>
@@ -265,6 +298,20 @@ where
             (Self::Cancel { lease: lease_a }, Self::Cancel { lease: lease_b }) => {
                 lease_a == lease_b
             }
+            (
+                Self::ProcessWrite {
+                    lease: lease_a,
+                    bytes: bytes_a,
+                },
+                Self::ProcessWrite {
+                    lease: lease_b,
+                    bytes: bytes_b,
+                },
+            ) => lease_a == lease_b && bytes_a == bytes_b,
+            (
+                Self::ProcessCloseStdin { lease: lease_a },
+                Self::ProcessCloseStdin { lease: lease_b },
+            ) => lease_a == lease_b,
             _ => false,
         }
     }
@@ -285,6 +332,15 @@ where
                 .field("effect", effect)
                 .finish(),
             Self::Cancel { lease } => f.debug_struct("Cancel").field("lease", lease).finish(),
+            Self::ProcessWrite { lease, bytes } => f
+                .debug_struct("ProcessWrite")
+                .field("lease", lease)
+                .field("bytes_len", &bytes.len())
+                .finish(),
+            Self::ProcessCloseStdin { lease } => f
+                .debug_struct("ProcessCloseStdin")
+                .field("lease", lease)
+                .finish(),
         }
     }
 }
@@ -389,6 +445,21 @@ impl<Event, Effect> Command<Event, Effect> {
         })
     }
 
+    /// Creates a command that writes bytes to a running interactive process.
+    pub fn process_write(lease: impl Into<TaskLease>, bytes: impl Into<Vec<u8>>) -> Self {
+        Self::from_step(CommandStep::ProcessWrite {
+            lease: lease.into(),
+            bytes: bytes.into(),
+        })
+    }
+
+    /// Creates a command that closes stdin for a running interactive process.
+    pub fn process_close_stdin(lease: impl Into<TaskLease>) -> Self {
+        Self::from_step(CommandStep::ProcessCloseStdin {
+            lease: lease.into(),
+        })
+    }
+
     /// Creates a command that fires multiple events in order.
     ///
     /// Events are processed sequentially in the order provided. Each event
@@ -424,11 +495,14 @@ impl<Event, Effect> Command<Event, Effect> {
     }
 
     #[must_use]
-    pub(crate) fn has_abortable_steps(&self) -> bool {
+    pub(crate) fn has_lease_steps(&self) -> bool {
         self.outputs.iter().any(|step| {
             matches!(
                 step,
-                CommandStep::Abortable { .. } | CommandStep::Cancel { .. }
+                CommandStep::Abortable { .. }
+                    | CommandStep::Cancel { .. }
+                    | CommandStep::ProcessWrite { .. }
+                    | CommandStep::ProcessCloseStdin { .. }
             )
         })
     }
@@ -443,8 +517,8 @@ impl<Event, Effect> Command<Event, Effect> {
         FX: Fn(Effect) -> X2,
     {
         assert!(
-            !self.has_abortable_steps(),
-            "Command::map cannot safely remap abortable steps; use Command::map_scoped(scope, ...)"
+            !self.has_lease_steps(),
+            "Command::map cannot safely remap lease-addressed steps; use Command::map_scoped(scope, ...)"
         );
 
         self.map_scoped(&TaskLeaseScope::new(), fe, fx)
@@ -473,6 +547,13 @@ impl<Event, Effect> Command<Event, Effect> {
                     effect: fx(effect),
                 },
                 CommandStep::Cancel { lease } => CommandStep::Cancel {
+                    lease: scope.remap(&lease),
+                },
+                CommandStep::ProcessWrite { lease, bytes } => CommandStep::ProcessWrite {
+                    lease: scope.remap(&lease),
+                    bytes,
+                },
+                CommandStep::ProcessCloseStdin { lease } => CommandStep::ProcessCloseStdin {
                     lease: scope.remap(&lease),
                 },
             })
@@ -539,6 +620,31 @@ impl<Event, Effect> Command<Event, Effect> {
     #[inline]
     pub fn and_cancel(mut self, lease: impl Into<TaskLease>) -> Self {
         self.outputs.push(CommandStep::Cancel {
+            lease: lease.into(),
+        });
+        self
+    }
+
+    /// Chain a process stdin write step to this command.
+    #[must_use]
+    #[inline]
+    pub fn and_process_write(
+        mut self,
+        lease: impl Into<TaskLease>,
+        bytes: impl Into<Vec<u8>>,
+    ) -> Self {
+        self.outputs.push(CommandStep::ProcessWrite {
+            lease: lease.into(),
+            bytes: bytes.into(),
+        });
+        self
+    }
+
+    /// Chain a process stdin close step to this command.
+    #[must_use]
+    #[inline]
+    pub fn and_process_close_stdin(mut self, lease: impl Into<TaskLease>) -> Self {
+        self.outputs.push(CommandStep::ProcessCloseStdin {
             lease: lease.into(),
         });
         self
@@ -670,6 +776,25 @@ pub mod builders {
         Command::cancel(lease)
     }
 
+    /// Write bytes to an interactive process owned by a lease.
+    #[inline]
+    #[must_use]
+    pub fn process_write<Event, Effect>(
+        lease: impl Into<TaskLease>,
+        bytes: impl Into<Vec<u8>>,
+    ) -> Command<Event, Effect> {
+        Command::process_write(lease, bytes)
+    }
+
+    /// Close stdin for an interactive process owned by a lease.
+    #[inline]
+    #[must_use]
+    pub fn process_close_stdin<Event, Effect>(
+        lease: impl Into<TaskLease>,
+    ) -> Command<Event, Effect> {
+        Command::process_close_stdin(lease)
+    }
+
     /// Flatten multiple commands into one.
     #[inline]
     #[must_use]
@@ -771,12 +896,15 @@ mod tests {
     fn map_rejects_abortable_steps_without_explicit_scope() {
         let lease = TaskLease::new();
 
-        assert_panic_contains("Command::map cannot safely remap abortable steps", || {
-            let _mapped: Command<ChildEvent, ParentEffect> =
-                Command::abortable(&lease, ChildEffect::Load)
-                    .and_cancel(&lease)
-                    .map(std::convert::identity, ParentEffect::Child);
-        });
+        assert_panic_contains(
+            "Command::map cannot safely remap lease-addressed steps",
+            || {
+                let _mapped: Command<ChildEvent, ParentEffect> =
+                    Command::abortable(&lease, ChildEffect::Load)
+                        .and_cancel(&lease)
+                        .map(std::convert::identity, ParentEffect::Child);
+            },
+        );
     }
 
     #[test]
@@ -912,6 +1040,49 @@ mod tests {
         match &steps[0] {
             CommandStep::Cancel { lease } => assert_eq!(lease, &current),
             _ => panic!("expected cancel step"),
+        }
+    }
+
+    #[test]
+    fn abort_slot_write_without_active_lease_is_noop() {
+        let slot = AbortSlot::new();
+        let command: Command<ChildEvent, ChildEffect> = slot.write(b"hello".to_vec());
+
+        assert!(command.is_empty());
+    }
+
+    #[test]
+    fn abort_slot_close_stdin_without_active_lease_is_noop() {
+        let slot = AbortSlot::new();
+        let command: Command<ChildEvent, ChildEffect> = slot.close_stdin();
+
+        assert!(command.is_empty());
+    }
+
+    #[test]
+    fn scoped_mapping_keeps_process_control_leases_aligned() {
+        let lease = TaskLease::new();
+        let scope = TaskLeaseScope::new();
+        let mapped: Command<ChildEvent, ParentEffect> = Command::process_write(&lease, b"abc")
+            .and_process_close_stdin(&lease)
+            .map_scoped(&scope, std::convert::identity, ParentEffect::Child);
+
+        let steps = mapped.into_iter().collect::<Vec<_>>();
+        assert_eq!(steps.len(), 2);
+
+        match (&steps[0], &steps[1]) {
+            (
+                CommandStep::ProcessWrite {
+                    lease: write_lease,
+                    bytes,
+                },
+                CommandStep::ProcessCloseStdin { lease: close_lease },
+            ) => {
+                assert_eq!(bytes, b"abc");
+                assert_eq!(write_lease, close_lease);
+                assert_ne!(write_lease, &lease);
+            }
+            _ => panic!("expected write + close steps"),
         }
     }
 }

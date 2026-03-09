@@ -41,6 +41,10 @@ pub enum ShellError {
     #[error("Command execution failed: {0}")]
     CommandExecutionFailed(String),
 
+    /// Process control step addressed a missing or non-interactive process
+    #[error("Invalid process control command: {0}")]
+    InvalidProcessControl(String),
+
     /// Effect queue reached its configured capacity
     #[error(
         "Effect queue is full (capacity {capacity}). Consider increasing the capacity or awaiting idle before queuing more effects"

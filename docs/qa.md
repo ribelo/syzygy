@@ -63,3 +63,19 @@ Q: How should callers customize runtime ownership?
 A: Keep runtime ownership inside Syzygy, but let the builder accept an already-owned `syzygy::runtime::Runtime` through `with_runtime(runtime)`.
 
 Reason: An injected runtime is still explicit ownership transfer into Syzygy. This avoids ambient-runtime coupling, avoids backend-specific builder entry points, and keeps all shell execution on one owned runtime instance while still letting advanced callers choose when and how that runtime is constructed.
+
+## 2026-03-09
+
+Q: How should interactive subprocesses work without breaking the explicit effect model?
+
+A: Keep the child process shell-owned with `Task::process_interactive`, stream `ProcessUpdate` values back into commands, and address stdin control through lease-owned commands (`Command::process_write` / `Command::process_close_stdin`).
+
+Reason: Interactive child handles are runtime state, not effect descriptions, so they cannot live in user model code. `Task::process_interactive` keeps the effect declarative while still allowing incremental stdout/stderr updates and explicit stdin writes. Stdin control must stay lease-addressed so ownership remains visible in model state and cancellation semantics stay identical to other abortable work.
+
+## 2026-03-09
+
+Q: What is the default cancellation policy for shell-owned processes?
+
+A: Use `CloseStdinThenKill { grace: 500ms }` by default, but kill immediately when stdin is not piped.
+
+Reason: Closing stdin first is the most portable graceful shutdown signal Syzygy can own across backends today. Waiting for grace when there is no piped stdin would be dishonest because the shell has no cooperative signal to send, so the correct behavior there is immediate hard kill.

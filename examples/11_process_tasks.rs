@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use syzygy::prelude::*;
 
 #[derive(Debug, Default, Model)]
@@ -7,25 +9,29 @@ struct AppModel {
     #[model(wrapper = Status)]
     status: String,
     #[model(wrapper = Output)]
-    output: String,
+    output: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
 enum Event {
     Start,
     Stop,
+    Stdout(ProcessFrame),
     Completed(ProcessExit),
     Failed(ProcessError),
 }
 
 #[derive(Debug, Clone)]
 enum Effect {
-    InspectWorkspace,
+    EchoInput,
 }
 
 fn start(job: &mut Job, status: &mut Status) -> Command<Event, Effect> {
-    **status = "running process".into();
-    job.start(Effect::InspectWorkspace)
+    **status = "running interactive process".into();
+    job.start(Effect::EchoInput)
+        .and(job.write(line_bytes("syzygy owns this process")))
+        .and(job.write(line_bytes("stdin control is explicit")))
+        .and(job.close_stdin())
 }
 
 fn stop(job: &mut Job, status: &mut Status) -> Command<Event, Effect> {
@@ -33,19 +39,19 @@ fn stop(job: &mut Job, status: &mut Status) -> Command<Event, Effect> {
     job.cancel()
 }
 
-fn completed(
-    exit: ProcessExit,
-    job: &mut Job,
-    status: &mut Status,
-    output: &mut Output,
-) -> Command<Event, Effect> {
+fn stdout(frame: ProcessFrame, output: &mut Output) -> Command<Event, Effect> {
+    let line = match frame {
+        ProcessFrame::Bytes(bytes) | ProcessFrame::Line(bytes) => {
+            String::from_utf8_lossy(&bytes).trim_end().to_owned()
+        }
+    };
+    output.push(line);
+    Command::none()
+}
+
+fn completed(exit: ProcessExit, job: &mut Job, status: &mut Status) -> Command<Event, Effect> {
     job.clear();
     **status = format!("finished with {}", exit.status);
-    **output = exit
-        .stdout
-        .as_ref()
-        .map(|stdout| String::from_utf8_lossy(&stdout.bytes).into_owned())
-        .unwrap_or_default();
     Command::none()
 }
 
@@ -59,6 +65,7 @@ fn handle_event(event: Event, ctx: &EventContext<AppModel>) -> Command<Event, Ef
     match event {
         Event::Start => handle!(start, ctx),
         Event::Stop => handle!(stop, ctx),
+        Event::Stdout(frame) => handle!(stdout, ctx, frame),
         Event::Completed(exit) => handle!(completed, ctx, exit),
         Event::Failed(error) => handle!(failed, ctx, error),
     }
@@ -66,25 +73,61 @@ fn handle_event(event: Event, ctx: &EventContext<AppModel>) -> Command<Event, Ef
 
 fn handle_effect(effect: Effect, _ctx: &EffectContext<'_>) -> Task<Event, Effect> {
     match effect {
-        Effect::InspectWorkspace => Task::process(process_spec(), |result| match result {
-            Ok(exit) => Command::event(Event::Completed(exit)),
-            Err(error) => Command::event(Event::Failed(error)),
+        Effect::EchoInput => Task::process_interactive(process_spec(), |update| match update {
+            ProcessUpdate::Stdout(frame) => Some(Command::event(Event::Stdout(frame))),
+            ProcessUpdate::Exited(result) => Some(match result {
+                Ok(exit) => Command::event(Event::Completed(exit)),
+                Err(error) => Command::event(Event::Failed(error)),
+            }),
+            ProcessUpdate::Stderr(_) => None,
         }),
     }
 }
 
-#[cfg(windows)]
 fn process_spec() -> ProcessSpec {
-    ProcessSpec::new("cmd")
-        .args(["/C", "echo syzygy owns this process"])
-        .stdout(ProcessOutput::Capture { max_bytes: 256 })
+    ProcessSpec::new(process_program())
+        .args(process_args())
+        .stdin(ProcessInput::Piped)
+        .stdout(ProcessOutput::Stream {
+            framing: ProcessFraming::Lines {
+                max_line_bytes: 256,
+            },
+        })
+        .termination_policy(ProcessTerminationPolicy::CloseStdinThenKill {
+            grace: Duration::from_millis(50),
+        })
+}
+
+#[cfg(windows)]
+fn process_program() -> &'static str {
+    "cmd"
 }
 
 #[cfg(not(windows))]
-fn process_spec() -> ProcessSpec {
-    ProcessSpec::new("sh")
-        .args(["-c", "printf 'syzygy owns this process'"])
-        .stdout(ProcessOutput::Capture { max_bytes: 256 })
+fn process_program() -> &'static str {
+    "sh"
+}
+
+#[cfg(windows)]
+fn process_args() -> [&'static str; 3] {
+    ["/Q", "/C", "more"]
+}
+
+#[cfg(not(windows))]
+fn process_args() -> [&'static str; 2] {
+    ["-c", "cat"]
+}
+
+fn line_bytes(line: &str) -> Vec<u8> {
+    #[cfg(windows)]
+    {
+        format!("{line}\r\n").into_bytes()
+    }
+
+    #[cfg(not(windows))]
+    {
+        format!("{line}\n").into_bytes()
+    }
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -103,7 +146,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     app.run()?;
 
     println!("status: {}", app.model().status);
-    println!("output: {}", app.model().output);
+    println!("output:");
+    for line in &app.model().output {
+        println!("  {line}");
+    }
 
     Ok(())
 }
