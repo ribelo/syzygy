@@ -151,3 +151,11 @@ Q: How should direct test helpers interact with `syzygy::runtime::sleep(...)` an
 A: Keep `runtime::sleep(...)` bound to Syzygy runtime contexts, but make `TestStore::receive` / `receive_async` drive future and stream tasks under a temporary owned `Runtime` so pure effect tests still work. Separately, `RunnerTester::wait_for(...)` must honor the caller timeout instead of imposing an earlier iteration cap whenever a real timeout is present.
 
 Reason: `TestStore` is still a supported public harness for pure effect tests, so it must not regress just because tasks started using Syzygy's runtime helper. At the same time, `RunnerTester` should stay honest: iteration caps are safety rails for unbounded waits, not a hidden replacement for the explicit timeout the test author asked for.
+
+## 2026-03-09
+
+Q: After the core runtime model stabilized, which polish work should Syzygy prioritize next?
+
+A: Prioritize four things: live shell introspection, extraction ergonomics, clearer choice guidance, and lower-boilerplate subscription drivers. Keep the current explicit and pure runtime boundary; do not add sender-based worker APIs or hidden background handles.
+
+Reason: The remaining weaknesses are mostly visibility and product polish, not architecture. `Trace` and replay tooling explain behavior after the fact, but day-to-day debugging also needs a cheap `ShellSnapshot`-style view of active tasks, subscriptions, and termination reasons. Explicit extraction is correct but still noisier than it should be for common fields, so wrapper ergonomics and macro warning hygiene remain worthwhile. The choice between `Task`, `Subscription`, process tasks, and test harnesses is now sound but still not taught clearly enough, and custom subscription drivers still involve more glue than necessary. The right direction is to reduce friction without weakening the rule that effects are descriptions and runtime capabilities stay out of app code.
