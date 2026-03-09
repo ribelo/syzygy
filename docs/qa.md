@@ -135,3 +135,11 @@ Q: How should Syzygy make time deterministic for runtime-owned tasks and subscri
 A: Move `syzygy::runtime::sleep(...)` onto an owned clock abstraction and add `Runtime::manual()` for tests. The active clock is bound by the owned runtime when it polls tasks, so existing task/subscription code keeps using `syzygy::runtime::sleep(...)` while tests can advance time explicitly with a returned `ManualClock`.
 
 Reason: Wall-clock timers block deterministic tests and make future `RunnerTester` time control impossible. Binding sleep to the owned runtime keeps time as runtime infrastructure instead of an app-layer capability, makes `Subscription::every(...)` deterministic, and keeps custom drivers pure as long as they use Syzygy's sleep helper instead of backend-specific timer APIs.
+
+## 2026-03-09
+
+Q: What should `RunnerTester` own, and where does it stop?
+
+A: `RunnerTester` should own a real `Syzygy` runner built with a manual runtime clock, expose bounded `step()` / `drain()` helpers, explicit `advance_time(...)`, direct state assertions, and raw shell errors from `step()`. It should not emulate shell behavior, should not replace `TestStore`, and should not hide the underlying runner when a test needs lower-level access.
+
+Reason: The testing gap is specifically about shell-owned behavior that `TestStore` cannot model honestly. A thin wrapper over a real runner keeps lifecycle semantics truthful, reuses the new deterministic clock, and avoids inventing a second fake runtime model. `TestStore` remains the right tool for pure event/effect logic; `RunnerTester` exists for subscriptions, shell errors, runtime-owned async work, and processes.

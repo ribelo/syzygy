@@ -271,9 +271,10 @@ let app = Syzygy::builder::<Event, Effect>()
 |-----------|------|---------|
 | Pure handlers | `TestStore` | Send events, assert state |
 | Effects | `TestStore::receive_async` | Mock effect responses |
-| Integration | `Syzygy::builder()` | Full stack with mock resources |
+| Shell-owned runtime behavior | `RunnerTester` | Real runner with manual clock and bounded `drain()` |
+| Integration | `Syzygy::builder()` | Full stack with app wiring or end-to-end setup |
 
-**Determinism:** `TestStore` executes synchronously. Async effects mocked.
+**Determinism:** `TestStore` executes synchronously with mocked effects. `RunnerTester` uses a real `Syzygy` runner plus `Runtime::manual()` so subscriptions and runtime-owned tasks can advance through explicit `advance_time(...)`.
 
 ## File Locations
 

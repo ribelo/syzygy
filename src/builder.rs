@@ -8,6 +8,7 @@ use crate::error::ShellError;
 use crate::executor::Task;
 use crate::extract::{EffectContext, EventContext, SubscriptionContext};
 use crate::resource::ResourceMap;
+use crate::runner_tester::RunnerTester;
 use crate::shell::{BootHandlerFn, EffectHandlerFn, LifecycleHandlers, Shell};
 use crate::subscription::{Subscription, SubscriptionDriver, SubscriptionDrivers};
 use crate::syzygy::{Syzygy, SyzygyConfig, UnhandledEffectPolicy};
@@ -308,5 +309,13 @@ where
             unhandled_effects_policy,
         );
         Ok(Syzygy::with_config(core, shell, self.syzygy_config))
+    }
+
+    pub fn build_tester(mut self) -> Result<RunnerTester<Event, Effect, Model>, ShellError> {
+        let (runtime, clock) = crate::runtime::Runtime::manual()
+            .map_err(|err| ShellError::RuntimeInitializationFailed(err.to_string()))?;
+        self.runtime = Some(runtime);
+        let runner = self.build()?;
+        Ok(RunnerTester::new(runner, clock))
     }
 }

@@ -324,7 +324,24 @@ store.assert_effects([Effect::Save]);
 ```
 
 **Note:** `emit()` is fire-and-forget (returns `()`). Use `try_send()` if you need to handle channel errors explicitly.
-Use a real `Syzygy` runner, not `TestStore`, for `Task::process` / `Task::process_interactive` coverage because subprocess lifecycle is shell-owned.
+
+Use `RunnerTester` when the shell/runtime must stay real:
+
+```rust
+let mut tester = Syzygy::builder::<Event, Effect>()
+    .model(Model::default())
+    .event_handler(handle_event)
+    .subscription_handler(handle_subscriptions)
+    .build_tester()?;
+
+tester.advance_time(Duration::from_secs(60));
+tester.drain()?;
+```
+
+Rule of thumb:
+
+- `TestStore`: pure event logic and mocked effect completions
+- `RunnerTester`: subscriptions, shell errors, runtime-owned async work, and process tasks
 
 ## Footguns
 

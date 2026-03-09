@@ -16,6 +16,8 @@ pub mod executor;
 #[cfg(feature = "shell")]
 pub mod process;
 #[cfg(feature = "shell")]
+pub mod runner_tester;
+#[cfg(feature = "shell")]
 pub mod runtime;
 #[cfg(feature = "shell")]
 pub mod shell;
@@ -50,6 +52,8 @@ pub mod prelude {
         CapturedOutput, ProcessError, ProcessErrorKind, ProcessExit, ProcessFrame, ProcessFraming,
         ProcessInput, ProcessOutput, ProcessSpec, ProcessTerminationPolicy, ProcessUpdate,
     };
+    #[cfg(feature = "shell")]
+    pub use crate::runner_tester::RunnerTester;
     #[cfg(feature = "shell")]
     pub use crate::shell::Shell;
     #[cfg(feature = "shell")]
