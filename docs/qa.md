@@ -103,3 +103,11 @@ Q: How should subscription handlers and custom driver construction interact with
 A: Keep the model type attached to `Shell`, and construct `SubscriptionDriver::subscribe(...)` inside the owned runtime task, not in synchronous reconciliation code.
 
 Reason: Erasing the model type inside `Shell` makes safe `Core`/`Shell` recombination unsound because a shell built for one model can be paired with another. Separately, many runtime-backed drivers need an active tokio/compio runtime at construction time, so the shell must only validate registration synchronously and defer actual stream construction until the spawned subscription task is polled on Syzygy's owned runtime.
+
+## 2026-03-09
+
+Q: Which remaining lifecycle/tooling ideas should Syzygy pull next from iced/crux?
+
+A: Prioritize an explicit boot hook, a shell-level `RunnerTester`, and deterministic clock plus trace/replay tooling. Do not add a view layer.
+
+Reason: These three features strengthen Syzygy's existing runtime model without weakening the rule that effects stay descriptive. A view abstraction is not needed for Syzygy's current goals and would add a second architectural axis before the runtime/testing story is complete.
