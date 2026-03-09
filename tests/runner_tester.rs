@@ -191,6 +191,22 @@ fn runner_tester_waits_for_process_tasks() {
     assert_eq!(tester.state().output, "stdout-data");
 }
 
+#[test]
+fn runner_tester_wait_for_honors_explicit_timeout() {
+    let mut tester = Syzygy::builder::<(), ()>()
+        .model(())
+        .event_handler(|_event, _ctx| Command::none())
+        .build_tester()
+        .unwrap()
+        .with_max_drain_steps(1);
+
+    let completed = tester
+        .wait_for(Duration::from_millis(5), |_runner| false)
+        .unwrap();
+
+    assert!(!completed);
+}
+
 fn capture_process_spec(stdout_limit: usize, stderr_limit: usize) -> ProcessSpec {
     #[cfg(windows)]
     {

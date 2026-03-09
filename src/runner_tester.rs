@@ -96,11 +96,13 @@ where
         let deadline = Instant::now().checked_add(timeout);
         let mut iterations = 0usize;
         loop {
-            assert!(
-                iterations < self.max_drain_steps,
-                "RunnerTester::wait_for exceeded max_drain_steps={} before meeting its condition",
-                self.max_drain_steps
-            );
+            if deadline.is_none() {
+                assert!(
+                    iterations < self.max_drain_steps,
+                    "RunnerTester::wait_for exceeded max_drain_steps={} before meeting its condition",
+                    self.max_drain_steps
+                );
+            }
 
             let did_work = self.runner.step()?;
             iterations += 1;

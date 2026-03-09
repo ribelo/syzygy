@@ -142,12 +142,11 @@ impl ManualClock {
         registration_id: Option<u64>,
         deadline: Duration,
         waker: &Waker,
-    ) -> u64 {
+    ) -> Option<u64> {
         let mut state = lock_manual_clock_state(&self.state);
-        assert!(
-            deadline >= state.now,
-            "manual clock sleep deadline must not be in the past"
-        );
+        if deadline <= state.now {
+            return None;
+        }
 
         if let Some(id) = registration_id {
             for sleeper in &mut state.sleepers {
@@ -156,7 +155,7 @@ impl ManualClock {
                     if !sleeper.waker.will_wake(waker) {
                         sleeper.waker.clone_from(waker);
                     }
-                    return id;
+                    return Some(id);
                 }
             }
         }
@@ -171,7 +170,7 @@ impl ManualClock {
             deadline,
             waker: waker.clone(),
         });
-        id
+        Some(id)
     }
 
     fn cancel(&self, registration_id: Option<u64>) {
@@ -240,9 +239,14 @@ impl Future for ManualSleep {
             return Poll::Ready(());
         }
 
-        let registration_id =
+        let Some(registration_id) =
             self.clock
-                .register_or_refresh(self.registration_id, self.deadline, cx.waker());
+                .register_or_refresh(self.registration_id, self.deadline, cx.waker())
+        else {
+            let registration_id = self.registration_id.take();
+            self.clock.cancel(registration_id);
+            return Poll::Ready(());
+        };
         self.registration_id = Some(registration_id);
         Poll::Pending
     }
@@ -273,8 +277,8 @@ impl Future for Sleep {
         loop {
             match &mut self.state {
                 SleepState::Unbound => {
-                    let clock =
-                        current_clock().expect("syzygy::runtime::sleep polled outside Runtime");
+                    let clock = current_clock()
+                        .unwrap_or_else(|| panic!("syzygy::runtime::sleep polled outside Runtime"));
                     self.state = match clock.bind_sleep(self.duration) {
                         SleepBinding::Ready => SleepState::Done,
                         SleepBinding::Real(future) => SleepState::Real(future),
@@ -656,3 +660,21 @@ mod imp {
 }
 
 pub use imp::{yield_now, JoinHandle, Runtime};
+
+#[cfg(test)]
+mod tests {
+    use futures::task::noop_waker_ref;
+
+    use super::*;
+
+    #[test]
+    fn manual_clock_registration_returns_ready_when_time_already_advanced() {
+        let (_clock, manual_clock) = Clock::manual();
+        let waker = noop_waker_ref();
+
+        manual_clock.advance(Duration::from_secs(2));
+        let registration = manual_clock.register_or_refresh(None, Duration::from_secs(1), waker);
+
+        assert!(registration.is_none());
+    }
+}

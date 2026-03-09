@@ -9,8 +9,6 @@ use std::collections::VecDeque;
 use std::panic::{self, AssertUnwindSafe};
 
 #[cfg(feature = "shell")]
-use futures::executor::block_on;
-#[cfg(feature = "shell")]
 use futures::StreamExt;
 
 use crate::command::{Command, CommandStep, TaskLease};
@@ -335,10 +333,13 @@ where
     where
         H: Fn(X, &EffectContext<'_>) -> Task<E, X>,
     {
+        // Preserve the async API for callers already running inside an async test context.
+        futures::future::ready(()).await;
+
         for effect in self.take_effects() {
             let ctx = EffectContext::new(&self.resources);
             let task = effect_handler(effect, &ctx);
-            self.drive_received_task_async(task).await;
+            self.drive_received_task_async(task);
         }
 
         self.effects_asserted = self.pending_effects.is_empty() && self.cancelled_leases.is_empty();
@@ -352,11 +353,13 @@ where
                 self.feed_received_command(command);
             }
             Task::Future(future) => {
-                let command = block_on(future);
+                let runtime = crate::runtime::Runtime::new().unwrap();
+                let command = runtime.block_on(future);
                 self.feed_received_command(command);
             }
             Task::Stream(stream) => {
-                let commands = block_on(async {
+                let runtime = crate::runtime::Runtime::new().unwrap();
+                let commands = runtime.block_on(async {
                     stream
                         .take(MAX_RECEIVE_STREAM_COMMANDS + 1)
                         .collect::<Vec<_>>()
@@ -393,21 +396,25 @@ where
     }
 
     #[cfg(feature = "shell")]
-    async fn drive_received_task_async(&mut self, task: Task<E, X>) {
+    fn drive_received_task_async(&mut self, task: Task<E, X>) {
         match task {
             Task::None => {}
             Task::Resolved(command) => {
                 self.feed_received_command(command);
             }
             Task::Future(future) => {
-                let command = future.await;
+                let runtime = crate::runtime::Runtime::new().unwrap();
+                let command = runtime.block_on(future);
                 self.feed_received_command(command);
             }
             Task::Stream(stream) => {
-                let commands = stream
-                    .take(MAX_RECEIVE_STREAM_COMMANDS + 1)
-                    .collect::<Vec<_>>()
-                    .await;
+                let runtime = crate::runtime::Runtime::new().unwrap();
+                let commands = runtime.block_on(async {
+                    stream
+                        .take(MAX_RECEIVE_STREAM_COMMANDS + 1)
+                        .collect::<Vec<_>>()
+                        .await
+                });
                 assert!(
                     commands.len() <= MAX_RECEIVE_STREAM_COMMANDS,
                     "TestStore::receive reached stream command limit ({MAX_RECEIVE_STREAM_COMMANDS}). This usually means the stream is unbounded; use a finite stream in tests."
@@ -842,6 +849,26 @@ mod tests {
 
     #[cfg(feature = "shell")]
     #[test]
+    fn receive_supports_runtime_sleep_in_future_tasks() {
+        use std::time::Duration;
+
+        let mut store = TestStore::new(Model::default(), handle_event);
+
+        store.send(Event::Increment(1));
+        store.receive(|effect, _ctx| match effect {
+            Effect::Log(_) => Task::once(async {
+                crate::runtime::sleep(Duration::from_millis(1)).await;
+                Command::event(Event::SaveDone)
+            }),
+            _ => Task::none(),
+        });
+
+        assert!(store.state().save_completed);
+        store.assert_no_effects();
+    }
+
+    #[cfg(feature = "shell")]
+    #[test]
     fn receive_feeds_blocking_task_events_back() {
         let mut store = TestStore::new(Model::default(), handle_event);
 
@@ -930,6 +957,29 @@ mod tests {
             store
                 .receive_async(|effect, _ctx| match effect {
                     Effect::Log(_) => Task::once(async { Command::event(Event::SaveDone) }),
+                    _ => Task::none(),
+                })
+                .await;
+
+            assert!(store.state().save_completed);
+        });
+    }
+
+    #[cfg(feature = "shell")]
+    #[test]
+    fn receive_async_supports_runtime_sleep_in_stream_tasks() {
+        use std::time::Duration;
+
+        futures::executor::block_on(async {
+            let mut store = TestStore::new(Model::default(), handle_event);
+            store.send(Event::Increment(1));
+
+            store
+                .receive_async(|effect, _ctx| match effect {
+                    Effect::Log(_) => Task::stream(futures::stream::once(async {
+                        crate::runtime::sleep(Duration::from_millis(1)).await;
+                        Command::event(Event::SaveDone)
+                    })),
                     _ => Task::none(),
                 })
                 .await;

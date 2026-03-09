@@ -143,3 +143,11 @@ Q: What should `RunnerTester` own, and where does it stop?
 A: `RunnerTester` should own a real `Syzygy` runner built with a manual runtime clock, expose bounded `step()` / `drain()` helpers, explicit `advance_time(...)`, direct state assertions, and raw shell errors from `step()`. It should not emulate shell behavior, should not replace `TestStore`, and should not hide the underlying runner when a test needs lower-level access.
 
 Reason: The testing gap is specifically about shell-owned behavior that `TestStore` cannot model honestly. A thin wrapper over a real runner keeps lifecycle semantics truthful, reuses the new deterministic clock, and avoids inventing a second fake runtime model. `TestStore` remains the right tool for pure event/effect logic; `RunnerTester` exists for subscriptions, shell errors, runtime-owned async work, and processes.
+
+## 2026-03-09
+
+Q: How should direct test helpers interact with `syzygy::runtime::sleep(...)` and long waits?
+
+A: Keep `runtime::sleep(...)` bound to Syzygy runtime contexts, but make `TestStore::receive` / `receive_async` drive future and stream tasks under a temporary owned `Runtime` so pure effect tests still work. Separately, `RunnerTester::wait_for(...)` must honor the caller timeout instead of imposing an earlier iteration cap whenever a real timeout is present.
+
+Reason: `TestStore` is still a supported public harness for pure effect tests, so it must not regress just because tasks started using Syzygy's runtime helper. At the same time, `RunnerTester` should stay honest: iteration caps are safety rails for unbounded waits, not a hidden replacement for the explicit timeout the test author asked for.
