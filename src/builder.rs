@@ -8,7 +8,7 @@ use crate::error::ShellError;
 use crate::executor::Task;
 use crate::extract::{EffectContext, EventContext, SubscriptionContext};
 use crate::resource::ResourceMap;
-use crate::shell::{EffectHandlerFn, Shell};
+use crate::shell::{BootHandlerFn, EffectHandlerFn, LifecycleHandlers, Shell};
 use crate::subscription::{Subscription, SubscriptionDriver, SubscriptionDrivers};
 use crate::syzygy::{Syzygy, SyzygyConfig, UnhandledEffectPolicy};
 
@@ -42,6 +42,7 @@ impl<E, X> IntoEffectRoute<E, X> for Option<Task<E, X>> {
 }
 
 type RoutedEffectHandlerFn<E, X> = Rc<dyn for<'a> Fn(X, &EffectContext<'a>) -> EffectRoute<E, X>>;
+type BuilderBootHandlerFn<E, X, M> = BootHandlerFn<E, X, M>;
 type SubscriptionHandlerFn<E, X, M> = Box<dyn Fn(&SubscriptionContext<M>) -> Subscription<E, X>>;
 
 pub struct SyzygyBuilder<E, X, M = ()>
@@ -129,6 +130,7 @@ where
         ConfiguredBuilder {
             event_handler: Box::new(handler),
             effect_handler: None,
+            boot_handler: None,
             subscription_handler: None,
             model: self.model,
             resources: self.resources,
@@ -148,6 +150,7 @@ where
 {
     event_handler: EventHandlerFn<Event, Effect, Model>,
     effect_handler: Option<RoutedEffectHandlerFn<Event, Effect>>,
+    boot_handler: Option<BuilderBootHandlerFn<Event, Effect, Model>>,
     subscription_handler: Option<SubscriptionHandlerFn<Event, Effect, Model>>,
     model: Model,
     resources: ResourceMap,
@@ -224,6 +227,19 @@ where
     }
 
     #[must_use]
+    pub fn boot_handler<H>(mut self, handler: H) -> Self
+    where
+        H: Fn(&Model) -> Command<Event, Effect> + 'static,
+    {
+        assert!(
+            self.boot_handler.is_none(),
+            "boot handler is already configured"
+        );
+        self.boot_handler = Some(Box::new(handler));
+        self
+    }
+
+    #[must_use]
     pub fn subscription_handler<H>(mut self, handler: H) -> Self
     where
         H: Fn(&SubscriptionContext<Model>) -> Subscription<Event, Effect> + 'static,
@@ -285,7 +301,7 @@ where
         let shell = Shell::with_subscriptions(
             event_tx,
             effect_handler,
-            subscription_handler,
+            LifecycleHandlers::new(self.boot_handler, subscription_handler),
             self.subscription_drivers,
             self.resources,
             runtime,

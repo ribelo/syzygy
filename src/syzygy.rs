@@ -1,5 +1,6 @@
 use std::time::Duration;
 
+use crate::command::{Command, CommandStep};
 use crate::core::Core;
 use crate::error::ShellError;
 use crate::shell::Shell;
@@ -128,7 +129,7 @@ where
     where
         F: FnMut(&Core<Event, Effect, Model>, &Shell<Event, Effect, Model>) -> bool,
     {
-        while !condition(&self.core, &self.shell) {
+        while self.shell.has_pending_boot() || !condition(&self.core, &self.shell) {
             let did_work = self.step()?;
             if self.shell.is_closed() {
                 return Ok(());
@@ -204,10 +205,28 @@ where
         return Ok(false);
     }
 
+    let mut boot_work = 0usize;
+    if let Some(boot_command) = shell.take_boot_command_for_model(core.model()) {
+        let mut non_event_steps = Vec::new();
+        for step in boot_command {
+            match step {
+                CommandStep::Event(event) => {
+                    core.enqueue_event(event);
+                    boot_work = 1;
+                }
+                other => non_event_steps.push(other),
+            }
+        }
+
+        if !non_event_steps.is_empty() {
+            shell.dispatch_command(non_event_steps.into_iter().collect::<Command<_, _>>())?;
+            boot_work = 1;
+        }
+    }
     let core_work = core.process_events_try_into(|command| shell.dispatch_command(command))?;
     let subscription_work = shell.reconcile_subscriptions_for_model(core.model())?;
     let shell_work = shell.drain()?;
-    Ok(core_work > 0 || subscription_work > 0 || shell_work > 0)
+    Ok(boot_work > 0 || core_work > 0 || subscription_work > 0 || shell_work > 0)
 }
 
 impl<Event, Effect, Model> From<(Core<Event, Effect, Model>, Shell<Event, Effect, Model>)>

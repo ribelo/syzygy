@@ -350,6 +350,203 @@ fn run_until_exits_when_shell_is_closed() {
 }
 
 #[test]
+fn boot_handler_runs_once_before_prequeued_events() {
+    #[derive(Debug, Clone)]
+    enum Event {
+        Boot,
+        External,
+    }
+
+    #[derive(Debug, Clone)]
+    enum Effect {}
+
+    #[derive(Debug, Default, Model)]
+    struct Model {
+        #[model(wrapper = Order)]
+        order: Vec<&'static str>,
+    }
+
+    fn handle_event(event: Event, ctx: &EventContext<Model>) -> Command<Event, Effect> {
+        let order = Order::extract_mut(ctx);
+        match event {
+            Event::Boot => order.push("boot"),
+            Event::External => order.push("external"),
+        }
+        Command::none()
+    }
+
+    fn boot(_model: &Model) -> Command<Event, Effect> {
+        Command::event(Event::Boot)
+    }
+
+    let mut runner = Syzygy::builder::<Event, Effect>()
+        .model(Model::default())
+        .event_handler(handle_event)
+        .boot_handler(boot)
+        .build()
+        .unwrap();
+
+    runner.core().try_send(Event::External).unwrap();
+    runner.step().unwrap();
+
+    assert_eq!(runner.model().order, ["boot", "external"]);
+
+    runner.core().try_send(Event::External).unwrap();
+    runner.step().unwrap();
+
+    assert_eq!(runner.model().order, ["boot", "external", "external"]);
+}
+
+#[test]
+fn boot_is_preserved_across_split_and_from() {
+    #[derive(Debug, Clone)]
+    enum Event {
+        Boot,
+    }
+
+    #[derive(Debug, Clone)]
+    enum Effect {}
+
+    #[derive(Debug, Default, Model)]
+    struct Model {
+        #[model(wrapper = Count)]
+        count: usize,
+    }
+
+    fn handle_event(_event: Event, ctx: &EventContext<Model>) -> Command<Event, Effect> {
+        let count = Count::extract_mut(ctx);
+        **count += 1;
+        Command::none()
+    }
+
+    fn boot(_model: &Model) -> Command<Event, Effect> {
+        Command::event(Event::Boot)
+    }
+
+    let app = Syzygy::builder::<Event, Effect>()
+        .model(Model::default())
+        .event_handler(handle_event)
+        .boot_handler(boot)
+        .build()
+        .unwrap();
+
+    let (core, shell) = app.split();
+    let mut runner = Syzygy::from((core, shell));
+    runner.step().unwrap();
+
+    assert_eq!(runner.model().count, 1);
+}
+
+#[test]
+fn run_until_executes_pending_boot_even_when_condition_starts_true() {
+    #[derive(Debug, Clone)]
+    enum Event {
+        Boot,
+    }
+
+    #[derive(Debug, Clone)]
+    enum Effect {}
+
+    #[derive(Debug, Default, Model)]
+    struct Model {
+        #[model(wrapper = Booted)]
+        booted: bool,
+    }
+
+    fn handle_event(_event: Event, ctx: &EventContext<Model>) -> Command<Event, Effect> {
+        let booted = Booted::extract_mut(ctx);
+        **booted = true;
+        Command::none()
+    }
+
+    fn boot(_model: &Model) -> Command<Event, Effect> {
+        Command::event(Event::Boot)
+    }
+
+    let mut runner = Syzygy::builder::<Event, Effect>()
+        .model(Model::default())
+        .event_handler(handle_event)
+        .boot_handler(boot)
+        .build()
+        .unwrap();
+
+    runner.run_until(|_, _| true).unwrap();
+
+    assert!(runner.model().booted);
+}
+
+#[test]
+fn boot_runs_before_subscription_reconciliation() {
+    #[derive(Debug, Clone)]
+    enum Event {
+        Enable,
+        Tick,
+    }
+
+    #[derive(Debug, Clone)]
+    enum Effect {}
+
+    #[derive(Clone, Debug, PartialEq, Eq, Hash)]
+    enum Key {
+        Clock,
+    }
+
+    #[derive(Debug, Default, Model)]
+    struct Model {
+        #[model(wrapper = Running)]
+        running: bool,
+        #[model(wrapper = Ticks)]
+        ticks: usize,
+    }
+
+    fn handle_event(event: Event, ctx: &EventContext<Model>) -> Command<Event, Effect> {
+        match event {
+            Event::Enable => {
+                let running = Running::extract_mut(ctx);
+                **running = true;
+                Command::none()
+            }
+            Event::Tick => {
+                let ticks = Ticks::extract_mut(ctx);
+                **ticks += 1;
+                Command::none()
+            }
+        }
+    }
+
+    fn boot(_model: &Model) -> Command<Event, Effect> {
+        Command::event(Event::Enable)
+    }
+
+    fn subscriptions(running: &Running) -> Subscription<Event, Effect> {
+        if !**running {
+            return Subscription::none();
+        }
+
+        Subscription::every(Key::Clock, Duration::from_millis(1), Event::Tick)
+    }
+
+    fn handle_subscriptions(ctx: &SubscriptionContext<Model>) -> Subscription<Event, Effect> {
+        handle!(subscriptions, ctx)
+    }
+
+    let mut runner = Syzygy::builder::<Event, Effect>()
+        .model(Model::default())
+        .event_handler(handle_event)
+        .boot_handler(boot)
+        .subscription_handler(handle_subscriptions)
+        .with_syzygy_config(SyzygyConfig::default().idle_sleep(Duration::from_millis(1)))
+        .build()
+        .unwrap();
+
+    runner.step().unwrap();
+
+    assert!(runner.model().running);
+    runner.run_until(|core, _| core.model().ticks > 0).unwrap();
+    assert!(runner.model().ticks > 0);
+}
+
+#[test]
 fn run_until_progresses_async_effects() {
     #[derive(Debug, Clone)]
     enum Event {

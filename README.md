@@ -65,6 +65,7 @@ syzygy = { git = "https://github.com/ribelo/syzygy", default-features = false, f
 | `Command` | Instructions from handler | `Command::event(E)` or `Command::effect(X)` |
 | `Task` | Effect execution unit | `Task::future(async { ... })` |
 | `Subscription` | State-owned external event source | `Subscription::every(Key::Clock, Duration::from_secs(1), Event::Tick)` |
+| `boot_handler` | One-shot startup command | `.boot_handler(|model| Command::event(Event::Boot))` |
 | `handle!` | Call handler with context | `handle!(increment, ctx, amount)` |
 | `emit` | Send event to Core | `core.emit(Event::Tick)` |
 
@@ -113,6 +114,30 @@ Event -> Handler(&mut Model) -> Command -> Shell -> Task -> Event
 2. Handler returns `Command` (events, effects, or both)
 3. **Shell** routes commands: events loop back to Core, effects spawn Tasks
 4. **Task** executes async work, produces new Events
+
+## Boot
+
+Use `boot_handler(...)` for one-shot startup work instead of fake startup events pushed from outside.
+
+```rust
+fn boot(_model: &Model) -> Command<Event, Effect> {
+    Command::event(Event::LoadInitialState)
+}
+
+let app = Syzygy::builder::<Event, Effect>()
+    .model(Model::default())
+    .event_handler(handle_event)
+    .boot_handler(boot)
+    .build()?;
+```
+
+Boot semantics are explicit:
+
+- runs exactly once
+- receives `&Model` and returns a normal `Command<Event, Effect>`
+- boot-generated events are enqueued before prequeued external channel events
+- first-step order is: boot command, core event processing, subscription reconciliation, shell drain
+- steady-state order after boot is: core event processing, subscription reconciliation, shell drain
 
 ## Field Extraction
 

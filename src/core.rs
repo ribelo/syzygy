@@ -122,6 +122,10 @@ where
         (self.event_handler)(event, &ctx)
     }
 
+    pub(crate) fn enqueue_event(&mut self, event: E) {
+        self.event_queue.push_back(event);
+    }
+
     #[must_use]
     pub fn process_events(&mut self) -> Vec<Command<E, X>> {
         let mut commands = Vec::new();

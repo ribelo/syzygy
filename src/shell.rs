@@ -34,8 +34,43 @@ use crate::syzygy::UnhandledEffectPolicy;
 
 pub(crate) type EffectHandlerFn<E, X> =
     Rc<dyn for<'a> Fn(X, &EffectContext<'a>) -> Result<Task<E, X>, ShellError>>;
+pub(crate) type BootHandlerFn<E, X, M> = Box<dyn Fn(&M) -> Command<E, X>>;
 pub(crate) type SubscriptionHandlerFn<E, X, M> =
     Rc<dyn Fn(&crate::extract::SubscriptionContext<M>) -> Subscription<E, X>>;
+
+pub(crate) struct LifecycleHandlers<E, X, M>
+where
+    E: 'static,
+    X: 'static,
+{
+    boot_handler: Option<BootHandlerFn<E, X, M>>,
+    subscription_handler: Option<SubscriptionHandlerFn<E, X, M>>,
+}
+
+impl<E, X, M> LifecycleHandlers<E, X, M>
+where
+    E: 'static,
+    X: 'static,
+{
+    #[must_use]
+    pub(crate) fn none() -> Self {
+        Self {
+            boot_handler: None,
+            subscription_handler: None,
+        }
+    }
+
+    #[must_use]
+    pub(crate) fn new(
+        boot_handler: Option<BootHandlerFn<E, X, M>>,
+        subscription_handler: Option<SubscriptionHandlerFn<E, X, M>>,
+    ) -> Self {
+        Self {
+            boot_handler,
+            subscription_handler,
+        }
+    }
+}
 
 enum TaskCancelHandle {
     Blocking(BlockingCancelToken),
@@ -314,6 +349,7 @@ where
 {
     event_tx: EventSender<E>,
     effect_handler: EffectHandlerFn<E, X>,
+    boot_handler: Option<BootHandlerFn<E, X, M>>,
     subscription_handler: Option<SubscriptionHandlerFn<E, X, M>>,
     subscription_drivers: Rc<SubscriptionDrivers>,
     runtime: crate::runtime::Runtime,
@@ -344,7 +380,7 @@ where
         Self::with_subscriptions(
             event_tx,
             effect_handler,
-            None,
+            LifecycleHandlers::none(),
             SubscriptionDrivers::new(),
             resources,
             runtime,
@@ -362,7 +398,7 @@ where
     pub(crate) fn with_subscriptions(
         event_tx: EventSender<E>,
         effect_handler: EffectHandlerFn<E, X>,
-        subscription_handler: Option<SubscriptionHandlerFn<E, X, M>>,
+        lifecycle_handlers: LifecycleHandlers<E, X, M>,
         subscription_drivers: SubscriptionDrivers,
         resources: ResourceMap,
         runtime: crate::runtime::Runtime,
@@ -371,7 +407,8 @@ where
         Self {
             event_tx,
             effect_handler,
-            subscription_handler,
+            boot_handler: lifecycle_handlers.boot_handler,
+            subscription_handler: lifecycle_handlers.subscription_handler,
             subscription_drivers: Rc::new(subscription_drivers),
             runtime,
             resources: Rc::new(resources),
@@ -474,6 +511,11 @@ where
     }
 
     #[must_use]
+    pub fn has_pending_boot(&self) -> bool {
+        self.boot_handler.is_some()
+    }
+
+    #[must_use]
     pub fn unhandled_effects_policy(&self) -> UnhandledEffectPolicy {
         self.unhandled_effects_policy.get()
     }
@@ -493,6 +535,11 @@ where
         let ctx = crate::extract::SubscriptionContext::new(model);
         let desired = handler(&ctx);
         self.reconcile_subscriptions(desired)
+    }
+
+    pub(crate) fn take_boot_command_for_model(&mut self, model: &M) -> Option<Command<E, X>> {
+        let handler = self.boot_handler.take()?;
+        Some(handler(model))
     }
 
     pub(crate) fn reconcile_subscriptions(

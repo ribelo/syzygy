@@ -52,11 +52,23 @@ System shape and invariants. For 3am incident response.
 
 ### Event Path (Synchronous)
 
+0. On the first `step()`, an optional boot command runs once before ordinary channel events
 1. `Core::try_send(Event)` pushes to channel
 2. `step()` drains channel, calls `handler(event, ctx)`
 3. Handler returns `Command` (events + effects)
 4. Events immediately re-enqueued to channel
 5. Effects passed to Shell
+
+First-step order is:
+- boot command
+- core event processing
+- subscription reconciliation
+- shell drain
+
+Steady-state order after boot is:
+- core event processing
+- subscription reconciliation
+- shell drain
 
 ### Effect Path (Asynchronous)
 
@@ -191,6 +203,22 @@ fn handle_subscriptions(ctx: &SubscriptionContext<Model>) -> Subscription<Event,
 - `Shell` stays model-typed, so a shell carrying a subscription handler cannot be recombined with a different `Core<Model>`.
 - Custom `SubscriptionDriver::subscribe(...)` construction runs inside Syzygy's owned runtime task. Synchronous reconciliation only validates that the driver is registered.
 - Built-in `Subscription::every` is always available. App-specific integrations use `Subscription::custom::<Driver, _, _>(...)` plus `builder.with_subscription_driver(driver)`.
+
+## Boot
+
+```rust
+let app = Syzygy::builder::<Event, Effect>()
+    .model(Model::default())
+    .event_handler(handle_event)
+    .boot_handler(|_model| Command::event(Event::Boot))
+    .build()?;
+```
+
+**Semantics:**
+- Boot is a one-shot startup hook, not a long-lived lifecycle.
+- It is evaluated against the current model and returns an ordinary `Command`.
+- Boot-generated events are inserted ahead of already queued external events for the first step.
+- Splitting and recombining `(Core, Shell<Model>)` preserves pending boot work because boot lives in the model-typed shell.
 
 ## Error Handling
 

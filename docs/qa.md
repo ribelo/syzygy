@@ -119,3 +119,11 @@ Q: How should Syzygy handle unhandled effects and missing effect resources by de
 A: Fail fast by default. Final unhandled effects must surface as `ShellError::UnhandledEffect`, and missing effect resources must panic through one `#[track_caller]` helper with a registration hint.
 
 Reason: Silently dropping an effect lies about what the shell did. Missing resources are also developer errors, but today they fail through rough ad hoc panics. The correct first step is not a broad handler redesign; it is a stricter default and one precise failure path. Permissive unhandled-effect behavior may still exist, but only as an explicit opt-out in `SyzygyConfig`.
+
+## 2026-03-09
+
+Q: How should Syzygy run startup work?
+
+A: Add an explicit one-shot `boot_handler` on the builder. It receives `&Model`, returns a normal `Command<Event, Effect>`, runs exactly once, and executes before the first ordinary event drain and before subscription reconciliation.
+
+Reason: Fake startup events pushed from outside the runtime hide ordering and make the first step depend on channel timing. A builder-level boot hook keeps startup declarative, keeps the command model uniform, and makes first-step ordering explicit: boot command, core event processing, subscription reconciliation, shell drain.
