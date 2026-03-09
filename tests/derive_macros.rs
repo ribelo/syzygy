@@ -340,3 +340,44 @@ fn wrapper_helpers_support_common_option_workflows() {
     runner.step().unwrap();
     assert_eq!(runner.model().name, None);
 }
+
+mod shadow_option_type {
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct Option<T>(pub T);
+}
+
+#[test]
+fn wrapper_helpers_ignore_non_std_option_named_paths() {
+    #[derive(Debug, Clone)]
+    enum Event {
+        Replace(shadow_option_type::Option<i32>),
+    }
+
+    #[derive(Model)]
+    struct Model {
+        #[model(wrapper = ValueField)]
+        value: shadow_option_type::Option<i32>,
+    }
+
+    let mut runner = Syzygy::builder::<Event, ()>()
+        .model(Model {
+            value: shadow_option_type::Option(1),
+        })
+        .event_handler(|event: Event, ctx: &EventContext<Model>| match event {
+            Event::Replace(next) => {
+                let value = ValueField::extract_mut(ctx);
+                let previous = value.replace(next);
+                assert_eq!(previous.0, 1);
+                Command::none()
+            }
+        })
+        .build()
+        .unwrap();
+
+    runner
+        .core()
+        .try_send(Event::Replace(shadow_option_type::Option(7)))
+        .unwrap();
+    runner.step().unwrap();
+    assert_eq!(runner.model().value.0, 7);
+}

@@ -215,3 +215,11 @@ Q: How should Syzygy handle extraction/resource failures that are still programm
 A: Keep them as deliberate panics, but normalize the messages. Extraction overlap/capacity panics now include a consistent programmer-error hint, and missing effect resources keep explicit type + caller location + `.with_resource(...)` registration guidance.
 
 Reason: These failures indicate invalid handler wiring, not runtime recoverable conditions, so converting all of them to shell errors would hide bugs. The right improvement is consistent, actionable panic diagnostics and explicit docs stating that these paths are programmer errors.
+
+## 2026-03-09
+
+Q: How should Syzygy avoid false-positive Option helper generation and shutdown snapshot target overwrite regressions?
+
+A: Restrict derive-time option-helper detection to known std/core `Option` paths (`Option<T>`, `std::option::Option<T>`, `core::option::Option<T>`), and only emit generic untracked-task shutdown termination records when no specific active-task/subscription shutdown record was emitted earlier in the same shutdown pass.
+
+Reason: Path-suffix matching on `...::Option<T>` is too broad and breaks custom types named `Option`. Separately, generic untracked shutdown records were overwriting more precise `Subscription`/`Process` targets in `last_termination`, making snapshot diagnostics lie about what was actually shut down.

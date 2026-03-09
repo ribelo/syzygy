@@ -382,11 +382,11 @@ fn option_inner_type(field_ty: &syn::Type) -> Option<syn::Type> {
         return None;
     }
 
-    let segment = type_path.path.segments.last()?;
-    if segment.ident != "Option" {
+    if !is_std_option_path(&type_path.path) {
         return None;
     }
 
+    let segment = type_path.path.segments.last()?;
     let syn::PathArguments::AngleBracketed(arguments) = &segment.arguments else {
         return None;
     };
@@ -395,4 +395,24 @@ fn option_inner_type(field_ty: &syn::Type) -> Option<syn::Type> {
         return None;
     };
     Some(inner_ty.clone())
+}
+
+fn is_std_option_path(path: &syn::Path) -> bool {
+    let mut segments = path.segments.iter();
+    let Some(first) = segments.next() else {
+        return false;
+    };
+    let Some(second) = segments.next() else {
+        return first.ident == "Option";
+    };
+    let Some(third) = segments.next() else {
+        return false;
+    };
+    if segments.next().is_some() {
+        return false;
+    }
+
+    (first.ident == "std" || first.ident == "core")
+        && second.ident == "option"
+        && third.ident == "Option"
 }

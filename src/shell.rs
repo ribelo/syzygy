@@ -970,17 +970,21 @@ where
     pub fn shutdown(&mut self) {
         self.closed.set(true);
         self.deferred_events.borrow_mut().clear();
-        drain_active_tasks_for_shutdown(
+        let had_active_task_shutdown = drain_active_tasks_for_shutdown(
             &self.active_tasks,
             &self.untracked_tasks,
             &self.last_termination,
         );
-        drain_active_subscriptions_for_shutdown(
+        let had_subscription_shutdown = drain_active_subscriptions_for_shutdown(
             &self.active_subscriptions,
             &self.untracked_tasks,
             &self.last_termination,
         );
-        request_shutdown_for_untracked_tasks(&self.untracked_tasks, &self.last_termination);
+        request_shutdown_for_untracked_tasks(
+            &self.untracked_tasks,
+            &self.last_termination,
+            !(had_active_task_shutdown || had_subscription_shutdown),
+        );
     }
 
     pub fn wait_for_executors(&self) {
@@ -1409,11 +1413,12 @@ fn drain_active_tasks_for_shutdown(
     active_tasks: &ActiveTasks,
     untracked_tasks: &UntrackedTasks,
     last_termination: &LastTermination,
-) {
+) -> bool {
     let drained = {
         let mut active_tasks = active_tasks.borrow_mut();
         std::mem::take(&mut *active_tasks)
     };
+    let had_entries = !drained.is_empty();
 
     for (lease_id, entry) in drained {
         let target = if entry.is_process_task {
@@ -1430,13 +1435,16 @@ fn drain_active_tasks_for_shutdown(
         );
         keep_task_after_cancel(untracked_tasks, entry.handle);
     }
+
+    had_entries
 }
 
 fn drain_active_subscriptions_for_shutdown<E, X>(
     active_subscriptions: &ActiveSubscriptions<E, X>,
     untracked_tasks: &UntrackedTasks,
     last_termination: &LastTermination,
-) where
+) -> bool
+where
     E: 'static,
     X: 'static,
 {
@@ -1444,6 +1452,7 @@ fn drain_active_subscriptions_for_shutdown<E, X>(
         let mut active_subscriptions = active_subscriptions.borrow_mut();
         std::mem::take(&mut *active_subscriptions)
     };
+    let had_entries = !drained.is_empty();
 
     for (key, entry) in drained {
         record_termination(
@@ -1455,18 +1464,21 @@ fn drain_active_subscriptions_for_shutdown<E, X>(
         );
         keep_task_after_cancel(untracked_tasks, entry.handle);
     }
+
+    had_entries
 }
 
 fn request_shutdown_for_untracked_tasks(
     untracked_tasks: &UntrackedTasks,
     last_termination: &LastTermination,
+    record_shutdown_termination: bool,
 ) {
     let drained = {
         let mut untracked_tasks = untracked_tasks.borrow_mut();
         std::mem::take(&mut *untracked_tasks)
     };
 
-    if !drained.is_empty() {
+    if !drained.is_empty() && record_shutdown_termination {
         record_termination(
             last_termination,
             ShellTerminationTarget::Task,

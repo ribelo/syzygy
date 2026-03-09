@@ -1207,6 +1207,69 @@ fn shell_snapshot_records_subscription_reconcile_cancellation_reason() {
 }
 
 #[test]
+fn shutdown_preserves_specific_subscription_termination_target() {
+    #[derive(Debug, Clone)]
+    enum Event {
+        Tick,
+    }
+
+    #[derive(Debug, Clone)]
+    enum Effect {}
+
+    #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+    enum Key {
+        Clock,
+    }
+
+    #[derive(Debug, Default, Model)]
+    struct Model {
+        #[model(wrapper = Running)]
+        running: bool,
+    }
+
+    fn handle_event(_event: Event, _ctx: &EventContext<Model>) -> Command<Event, Effect> {
+        Command::none()
+    }
+
+    fn describe(running: &Running) -> Subscription<Event, Effect> {
+        if !**running {
+            return Subscription::none();
+        }
+
+        Subscription::every(Key::Clock, Duration::from_secs(60), Event::Tick)
+    }
+
+    fn handle_subscriptions(ctx: &SubscriptionContext<Model>) -> Subscription<Event, Effect> {
+        handle!(describe, ctx)
+    }
+
+    let (runtime, _clock) = syzygy::runtime::Runtime::manual().unwrap();
+    let mut runner = Syzygy::builder::<Event, Effect>()
+        .model(Model { running: true })
+        .with_runtime(runtime)
+        .event_handler(handle_event)
+        .subscription_handler(handle_subscriptions)
+        .build()
+        .unwrap();
+
+    runner.step().unwrap();
+    assert_eq!(runner.shell().snapshot().active_subscriptions.len(), 1);
+
+    runner.shutdown();
+
+    let snapshot = runner.shell().snapshot();
+    assert!(snapshot.active_subscriptions.is_empty());
+    assert!(matches!(
+        snapshot.last_termination,
+        Some(record)
+            if record.target == ShellTerminationTarget::Subscription
+                && record.reason
+                    == ShellTerminationReason::Cancelled(ShellCancellationReason::Shutdown)
+                && record.subscription_key.is_some()
+    ));
+}
+
+#[test]
 fn shell_snapshot_records_process_completion_reason() {
     #[derive(Debug, Clone)]
     enum Event {
