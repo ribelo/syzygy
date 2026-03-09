@@ -64,6 +64,10 @@ required-features = ["shell"]
 name = "11_process_tasks"
 required-features = ["shell"]
 
+[[example]]
+name = "12_subscriptions"
+required-features = ["shell"]
+
 [features]
 default = ["shell", "rt-compio"]
 shell = ["dep:async-process", "dep:futures"]

@@ -85,6 +85,17 @@ fn expand_model(input: DeriveInput) -> syn::Result<TokenStream2> {
                         }
                     }
 
+                    #[cfg(feature = "shell")]
+                    impl #impl_generics syzygy::extract::SubscriptionPart<#model_ident #ty_generics> for #field_ty #where_clause {
+                        #[track_caller]
+                        fn extract(ctx: &syzygy::extract::SubscriptionContext<#model_ident #ty_generics>) -> &Self {
+                            // SAFETY: SubscriptionContext stores a valid pointer to the active model during reconciliation.
+                            let ptr = unsafe { ::core::ptr::addr_of!((*ctx.model_ptr()).#field_ident) };
+                            // SAFETY: `ptr` points to the extracted field for the lifetime of this reconciliation step.
+                            unsafe { &*ptr }
+                        }
+                    }
+
                     #[allow(clippy::mut_from_ref)]
                     impl #impl_generics syzygy::extract::PartMut<#model_ident #ty_generics> for #field_ty #where_clause {
                         #[track_caller]
@@ -135,6 +146,19 @@ fn expand_model(input: DeriveInput) -> syn::Result<TokenStream2> {
                             };
                             ctx.track_field_immut(#field_index, #field_name);
                             // SAFETY: `ptr` points to the wrapped field for the current dispatch lifetime.
+                            unsafe { &*ptr }
+                        }
+                    }
+
+                    #[cfg(feature = "shell")]
+                    impl #impl_generics syzygy::extract::SubscriptionPart<#model_ident #ty_generics> for #wrapper_ident #ty_generics #where_clause {
+                        #[track_caller]
+                        fn extract(ctx: &syzygy::extract::SubscriptionContext<#model_ident #ty_generics>) -> &Self {
+                            // SAFETY: `repr(transparent)` guarantees Wrapper has the same layout as the field type.
+                            let ptr = unsafe {
+                                ::core::ptr::addr_of!((*ctx.model_ptr()).#field_ident).cast::<Self>()
+                            };
+                            // SAFETY: `ptr` points to the wrapped field for the current reconciliation lifetime.
                             unsafe { &*ptr }
                         }
                     }

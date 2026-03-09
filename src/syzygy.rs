@@ -157,8 +157,9 @@ where
     }
 
     let core_work = core.process_events_try_into(|command| shell.dispatch_command(command))?;
+    let subscription_work = shell.reconcile_subscriptions_for_model(core.model())?;
     let shell_work = shell.drain()?;
-    Ok(core_work > 0 || shell_work > 0)
+    Ok(core_work > 0 || subscription_work > 0 || shell_work > 0)
 }
 
 impl<Event, Effect, Model> From<(Core<Event, Effect, Model>, Shell<Event, Effect>)>

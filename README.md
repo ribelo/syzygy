@@ -64,6 +64,7 @@ syzygy = { git = "https://github.com/ribelo/syzygy", default-features = false, f
 | `Effect` | Side-effect to execute | `enum Effect { Save }` |
 | `Command` | Instructions from handler | `Command::event(E)` or `Command::effect(X)` |
 | `Task` | Effect execution unit | `Task::future(async { ... })` |
+| `Subscription` | State-owned external event source | `Subscription::every(Key::Clock, Duration::from_secs(1), Event::Tick)` |
 | `handle!` | Call handler with context | `handle!(increment, ctx, amount)` |
 | `emit` | Send event to Core | `core.emit(Event::Tick)` |
 
@@ -203,6 +204,52 @@ fn handle_effect(effect: Effect, _ctx: &EffectContext<'_>) -> Task<Event, Effect
 }
 ```
 
+## Subscriptions
+
+Use `Task` for finite work. Use `Subscription` for long-lived event sources that should stay active while the model says they should exist.
+
+```rust
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+enum SubKey {
+    Clock,
+}
+
+fn describe_subscriptions(running: &Running) -> Subscription<Event, Effect> {
+    if !**running {
+        return Subscription::none();
+    }
+
+    Subscription::every(SubKey::Clock, Duration::from_secs(1), Event::Tick)
+}
+
+fn handle_subscriptions(ctx: &SubscriptionContext<Model>) -> Subscription<Event, Effect> {
+    handle!(describe_subscriptions, ctx)
+}
+```
+
+Register the handler on the builder:
+
+```rust
+let app = Syzygy::builder::<Event, Effect>()
+    .model(Model::default())
+    .event_handler(handle_event)
+    .subscription_handler(handle_subscriptions)
+    .build()?;
+```
+
+For app-level integrations, register a custom driver and keep the handler pure:
+
+```rust
+let app = Syzygy::builder::<Event, Effect>()
+    .model(Model::default())
+    .with_subscription_driver(HttpPollDriver::new(client))
+    .event_handler(handle_event)
+    .subscription_handler(handle_subscriptions)
+    .build()?;
+```
+
+`Subscription::custom::<Driver, _, _>(...)` describes the source. The driver owns the impure runtime work. Event/effect handlers never receive sender channels or runtime handles.
+
 ## Command Composition
 
 ```rust
@@ -310,6 +357,7 @@ cargo run --example 10_todo_app
 | `09_error_handling` | Result/Option in handlers |
 | `10_todo_app` | Full application |
 | `11_process_tasks` | `Task::process_interactive`, `AbortSlot`, runtime injection |
+| `12_subscriptions` | Pure subscription handler, `Subscription::every`, custom drivers |
 
 ## License
 

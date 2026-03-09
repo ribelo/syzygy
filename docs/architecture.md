@@ -16,7 +16,7 @@ System shape and invariants. For 3am incident response.
 
 1. **Single-threaded Core.** All state transitions happen on one thread. No `Send` bound on `Model`.
 2. **No aliasing.** `&mut Model` and `&Field` to overlapping memory is impossible. Runtime panic on violation.
-3. **Explicit effects.** All I/O must go through `Effect -> Task`. Handlers are pure.
+3. **Explicit effects.** All finite I/O goes through `Effect -> Task`, and all long-lived external sources go through `Subscription`. Handlers are pure.
 4. **FIFO event ordering.** Events processed in arrival order. No prioritization.
 5. **Bounded resource growth.** 256 fields per model. Bounded event channel (configurable).
 6. **Explicit extraction surface.** `#[derive(Model)]` does not expose field extractors unless the field opts in with `#[model(...)]`.
@@ -75,6 +75,15 @@ System shape and invariants. For 3am incident response.
 
 Shell progression is synchronous. There is no async `drain`/`step` API; async is confined to effect execution on Syzygy's owned runtime.
 
+### Subscription Path (State-Derived)
+
+1. `Syzygy::step()` recomputes `Subscription` from the current model through a read-only `SubscriptionContext`
+2. Shell diffs desired subscriptions against currently active subscriptions by explicit key
+3. New subscriptions start, unchanged subscriptions keep running, removed subscriptions are stopped
+4. Driver updates map back into `Command` values and re-enter normal shell routing
+
+**Important:** event/effect handlers never receive sender channels or runtime handles. Any channel or callback machinery needed by a subscription driver stays inside the driver implementation.
+
 ## Module Dependencies
 
 ```
@@ -86,6 +95,7 @@ lib.rs
 ├── executor/
 │   └── task.rs       # Task variants
 ├── process.rs        # ProcessSpec and subprocess execution
+├── subscription.rs   # Pure Subscription descriptions and driver registry
 └── builder.rs        # Syzygy::builder()
 ```
 
@@ -163,6 +173,23 @@ fn start_save(save_job: &mut SaveJob) -> Command<Event, Effect> {
 
 **ABA Protection:** Generation token per active lease entry. Prevents "cancel wrong task" race.
 
+## Subscriptions
+
+```rust
+fn handle_subscriptions(ctx: &SubscriptionContext<Model>) -> Subscription<Event, Effect> {
+    handle!(describe_subscriptions, ctx)
+}
+```
+
+**Semantics:**
+- `Subscription` is state-derived and read-only. It describes which long-lived sources should exist now.
+- Each subscription has an explicit key. Shell diffs by key plus driver/spec equality.
+- Same key + same driver/spec keeps the running source alive and swaps in the newest mapper closure.
+- Same key + changed driver/spec cancels the old source and starts a new one.
+- Missing key cancels the old source.
+- Shutdown cancels every active subscription.
+- Built-in `Subscription::every` is always available. App-specific integrations use `Subscription::custom::<Driver, _, _>(...)` plus `builder.with_subscription_driver(driver)`.
+
 ## Error Handling
 
 | Layer | Error Type | Response |
@@ -218,7 +245,7 @@ fn start_save(save_job: &mut SaveJob) -> Command<Event, Effect> {
 | `src/extract.rs` | Borrow tracking, `EventContext` |
 | `src/command.rs` | `Command`, `CommandStep` |
 | `src/executor/task.rs` | `Task` variants |
-| `examples/` | 11 progressive tutorials |
+| `examples/` | 12 progressive tutorials |
 
 ## When It Breaks
 

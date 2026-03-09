@@ -5,9 +5,10 @@ use crate::command::Command;
 use crate::core::{Core, EventHandlerFn};
 use crate::error::ShellError;
 use crate::executor::Task;
-use crate::extract::{EffectContext, EventContext};
+use crate::extract::{EffectContext, EventContext, SubscriptionContext};
 use crate::resource::ResourceMap;
 use crate::shell::{EffectHandlerFn, Shell};
+use crate::subscription::{Subscription, SubscriptionDriver, SubscriptionDrivers};
 use crate::syzygy::{Syzygy, SyzygyConfig};
 
 /// Result of attempting to handle an effect in builder-level composition.
@@ -40,6 +41,7 @@ impl<E, X> IntoEffectRoute<E, X> for Option<Task<E, X>> {
 }
 
 type RoutedEffectHandlerFn<E, X> = Rc<dyn for<'a> Fn(X, &EffectContext<'a>) -> EffectRoute<E, X>>;
+type SubscriptionHandlerFn<E, X, M> = Box<dyn Fn(&SubscriptionContext<M>) -> Subscription<E, X>>;
 
 pub struct SyzygyBuilder<E, X, M = ()>
 where
@@ -49,6 +51,7 @@ where
     model: M,
     resources: ResourceMap,
     runtime: Option<crate::runtime::Runtime>,
+    subscription_drivers: SubscriptionDrivers,
     _marker: PhantomData<(E, X)>,
 }
 
@@ -73,6 +76,7 @@ where
             model: (),
             resources: ResourceMap::new(),
             runtime: None,
+            subscription_drivers: SubscriptionDrivers::new(),
             _marker: PhantomData,
         }
     }
@@ -90,6 +94,7 @@ where
             model,
             resources: self.resources,
             runtime: self.runtime,
+            subscription_drivers: self.subscription_drivers,
             _marker: PhantomData,
         }
     }
@@ -107,6 +112,15 @@ where
     }
 
     #[must_use]
+    pub fn with_subscription_driver<D>(mut self, driver: D) -> Self
+    where
+        D: SubscriptionDriver,
+    {
+        self.subscription_drivers.register(driver);
+        self
+    }
+
+    #[must_use]
     pub fn event_handler<H>(self, handler: H) -> ConfiguredBuilder<Event, Effect, Model>
     where
         H: Fn(Event, &EventContext<Model>) -> Command<Event, Effect> + 'static,
@@ -114,9 +128,11 @@ where
         ConfiguredBuilder {
             event_handler: Box::new(handler),
             effect_handler: None,
+            subscription_handler: None,
             model: self.model,
             resources: self.resources,
             runtime: self.runtime,
+            subscription_drivers: self.subscription_drivers,
             event_channel_capacity: None,
             syzygy_config: SyzygyConfig::default(),
             _marker: PhantomData,
@@ -131,9 +147,11 @@ where
 {
     event_handler: EventHandlerFn<Event, Effect, Model>,
     effect_handler: Option<RoutedEffectHandlerFn<Event, Effect>>,
+    subscription_handler: Option<SubscriptionHandlerFn<Event, Effect, Model>>,
     model: Model,
     resources: ResourceMap,
     runtime: Option<crate::runtime::Runtime>,
+    subscription_drivers: SubscriptionDrivers,
     event_channel_capacity: Option<usize>,
     syzygy_config: SyzygyConfig,
     _marker: PhantomData<Effect>,
@@ -196,6 +214,28 @@ where
     }
 
     #[must_use]
+    pub fn with_subscription_driver<D>(mut self, driver: D) -> Self
+    where
+        D: SubscriptionDriver,
+    {
+        self.subscription_drivers.register(driver);
+        self
+    }
+
+    #[must_use]
+    pub fn subscription_handler<H>(mut self, handler: H) -> Self
+    where
+        H: Fn(&SubscriptionContext<Model>) -> Subscription<Event, Effect> + 'static,
+    {
+        assert!(
+            self.subscription_handler.is_none(),
+            "subscription handler is already configured"
+        );
+        self.subscription_handler = Some(Box::new(handler));
+        self
+    }
+
+    #[must_use]
     pub fn with_syzygy_config(mut self, config: SyzygyConfig) -> Self {
         self.syzygy_config = config;
         self
@@ -231,7 +271,26 @@ where
             None => crate::runtime::Runtime::new()
                 .map_err(|err| ShellError::RuntimeInitializationFailed(err.to_string()))?,
         };
-        let shell = Shell::new(event_tx, effect_handler, self.resources, runtime);
+        let erased_subscription_handler = self.subscription_handler.map(
+            |handler| -> crate::shell::SubscriptionHandlerFn<Event, Effect> {
+                Rc::new(move |model_ptr: *const ()| {
+                    let model_ptr = model_ptr.cast::<Model>();
+                    // SAFETY: builder wires this erased closure to the matching model type.
+                    let model = unsafe { &*model_ptr };
+                    let ctx = SubscriptionContext::new(model);
+                    handler(&ctx)
+                })
+            },
+        );
+
+        let shell = Shell::with_subscriptions(
+            event_tx,
+            effect_handler,
+            erased_subscription_handler,
+            self.subscription_drivers,
+            self.resources,
+            runtime,
+        );
         Ok(Syzygy::with_config(core, shell, self.syzygy_config))
     }
 }

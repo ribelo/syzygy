@@ -6,6 +6,8 @@ use futures::Stream;
 use crate::command::Command;
 use crate::executor::Task;
 use crate::resource::{Resource, ResourceMap};
+#[cfg(feature = "shell")]
+use crate::subscription::Subscription;
 
 // ── Effect side ─────────────────────────────────────────────────────
 
@@ -355,6 +357,35 @@ impl<M> EventContext<M> {
     }
 }
 
+#[cfg(feature = "shell")]
+pub struct SubscriptionContext<M> {
+    ptr: *const M,
+}
+
+#[cfg(feature = "shell")]
+impl<M> SubscriptionContext<M> {
+    pub(crate) fn new(model: &M) -> Self {
+        Self {
+            ptr: model as *const M,
+        }
+    }
+
+    #[must_use]
+    pub fn model_ptr(&self) -> *const M {
+        self.ptr
+    }
+
+    #[track_caller]
+    pub fn handle<E, X, H, Marker>(&self, handler: H) -> Subscription<E, X>
+    where
+        H: SubscriptionHandler<E, X, (), M, Marker>,
+        E: 'static,
+        X: 'static,
+    {
+        handler.handle((), self)
+    }
+}
+
 fn set_field_bit(mut bits: [u64; 4], field_index: u32, field_name: &str) -> [u64; 4] {
     let (word, mask) = field_bit(field_index, field_name);
     bits[word] |= mask;
@@ -409,12 +440,29 @@ pub trait PartMut<M> {
     fn extract_mut(ctx: &EventContext<M>) -> &mut Self;
 }
 
+#[cfg(feature = "shell")]
+pub trait SubscriptionPart<M> {
+    #[track_caller]
+    fn extract(ctx: &SubscriptionContext<M>) -> &Self;
+}
+
 impl<M> Part<M> for M {
     #[track_caller]
     fn extract(ctx: &EventContext<M>) -> &Self {
         let ptr = ctx.model_ptr();
         ctx.track_whole_model_immut();
         // SAFETY: EventContext holds a valid pointer to the active model for the current dispatch.
+        unsafe { &*ptr }
+    }
+}
+
+#[cfg(feature = "shell")]
+impl<M> SubscriptionPart<M> for M {
+    #[track_caller]
+    fn extract(ctx: &SubscriptionContext<M>) -> &Self {
+        let ptr = ctx.model_ptr();
+        // SAFETY: SubscriptionContext holds a valid pointer to the current model
+        // for the duration of subscription reconciliation.
         unsafe { &*ptr }
     }
 }
@@ -454,6 +502,58 @@ pub struct Mut<T>(::core::marker::PhantomData<fn(&mut T)>);
 
 #[doc(hidden)]
 pub struct EventNP<Inner>(::core::marker::PhantomData<fn() -> Inner>);
+
+#[cfg(feature = "shell")]
+pub trait SubscriptionHandler<E: 'static, X: 'static, P, M, Marker>: 'static {
+    #[track_caller]
+    fn handle(&self, payload: P, ctx: &SubscriptionContext<M>) -> Subscription<E, X>;
+}
+
+#[cfg(feature = "shell")]
+impl<E, X, P, M, F> SubscriptionHandler<E, X, P, M, ()> for F
+where
+    F: Fn(P) -> Subscription<E, X> + 'static,
+    E: 'static,
+    X: 'static,
+{
+    #[track_caller]
+    fn handle(&self, payload: P, _ctx: &SubscriptionContext<M>) -> Subscription<E, X> {
+        (self)(payload)
+    }
+}
+
+#[cfg(feature = "shell")]
+macro_rules! impl_subscription_handler {
+    ($($T:ident),+ $(,)?) => {
+        #[allow(non_snake_case)]
+        impl<E, X, P, M, F, $($T),+> SubscriptionHandler<E, X, P, M, ($(Owned<$T>,)+)> for F
+        where
+            F: for<'a> Fn(P, $(&'a $T),+) -> Subscription<E, X> + 'static,
+            $($T: SubscriptionPart<M>,)+
+            E: 'static,
+            X: 'static,
+        {
+            #[track_caller]
+            fn handle(&self, payload: P, ctx: &SubscriptionContext<M>) -> Subscription<E, X> {
+                (self)(payload, $(<$T as SubscriptionPart<M>>::extract(ctx)),+)
+            }
+        }
+
+        #[allow(non_snake_case)]
+        impl<E, X, M, F, $($T),+> SubscriptionHandler<E, X, (), M, EventNP<($(Owned<$T>,)+)>> for F
+        where
+            F: for<'a> Fn($(&'a $T),+) -> Subscription<E, X> + 'static,
+            $($T: SubscriptionPart<M>,)+
+            E: 'static,
+            X: 'static,
+        {
+            #[track_caller]
+            fn handle(&self, _payload: (), ctx: &SubscriptionContext<M>) -> Subscription<E, X> {
+                (self)($(<$T as SubscriptionPart<M>>::extract(ctx)),+)
+            }
+        }
+    };
+}
 
 macro_rules! impl_event_handler {
     ($($T:ident),+ $(,)?) => {
@@ -540,6 +640,31 @@ impl_event_handler_mut!(T1, T2, T3, T4, T5, T6, T7, T8, T9);
 impl_event_handler_mut!(T1, T2, T3, T4, T5, T6, T7, T8, T9, T10);
 impl_event_handler_mut!(T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11);
 impl_event_handler_mut!(T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12);
+
+#[cfg(feature = "shell")]
+impl_subscription_handler!(T1);
+#[cfg(feature = "shell")]
+impl_subscription_handler!(T1, T2);
+#[cfg(feature = "shell")]
+impl_subscription_handler!(T1, T2, T3);
+#[cfg(feature = "shell")]
+impl_subscription_handler!(T1, T2, T3, T4);
+#[cfg(feature = "shell")]
+impl_subscription_handler!(T1, T2, T3, T4, T5);
+#[cfg(feature = "shell")]
+impl_subscription_handler!(T1, T2, T3, T4, T5, T6);
+#[cfg(feature = "shell")]
+impl_subscription_handler!(T1, T2, T3, T4, T5, T6, T7);
+#[cfg(feature = "shell")]
+impl_subscription_handler!(T1, T2, T3, T4, T5, T6, T7, T8);
+#[cfg(feature = "shell")]
+impl_subscription_handler!(T1, T2, T3, T4, T5, T6, T7, T8, T9);
+#[cfg(feature = "shell")]
+impl_subscription_handler!(T1, T2, T3, T4, T5, T6, T7, T8, T9, T10);
+#[cfg(feature = "shell")]
+impl_subscription_handler!(T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11);
+#[cfg(feature = "shell")]
+impl_subscription_handler!(T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12);
 
 #[cfg(test)]
 mod tests {
@@ -1307,7 +1432,7 @@ mod tests {
 
         let ctx = EventContext::new(&mut model);
         let _model = <ArityEventModel as PartMut<ArityEventModel>>::extract_mut(&ctx);
-        let _field = A1::extract(&ctx);
+        let _field = <A1 as Part<ArityEventModel>>::extract(&ctx);
     }
 
     #[test]
@@ -1329,7 +1454,7 @@ mod tests {
         };
 
         let ctx = EventContext::new(&mut model);
-        let _field_ref = A1::extract(&ctx);
+        let _field_ref = <A1 as Part<ArityEventModel>>::extract(&ctx);
         let _field_mut = A1::extract_mut(&ctx);
     }
 
@@ -1352,7 +1477,7 @@ mod tests {
         };
 
         let ctx = EventContext::new(&mut model);
-        let _field_ref = A1::extract(&ctx);
+        let _field_ref = <A1 as Part<ArityEventModel>>::extract(&ctx);
         let _model_mut = <ArityEventModel as PartMut<ArityEventModel>>::extract_mut(&ctx);
     }
 
@@ -1422,7 +1547,7 @@ mod tests {
 
         let ctx = EventContext::new(&mut model);
         let _field_mut = A1::extract_mut(&ctx);
-        let _field_ref = A1::extract(&ctx);
+        let _field_ref = <A1 as Part<ArityEventModel>>::extract(&ctx);
     }
 
     #[test]

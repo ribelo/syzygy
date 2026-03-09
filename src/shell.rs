@@ -1,3 +1,4 @@
+use std::any::TypeId;
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, VecDeque};
 use std::future::poll_fn;
@@ -25,19 +26,25 @@ use crate::process::{
     ProcessTerminationPolicy, ProcessUpdate,
 };
 use crate::resource::ResourceMap;
+use crate::subscription::{
+    ErasedSubscriptionMapper, Subscription, SubscriptionDrivers, SubscriptionEntry,
+    SubscriptionKey, SubscriptionSpec,
+};
 
 pub(crate) type EffectHandlerFn<E, X> = Rc<dyn for<'a> Fn(X, &EffectContext<'a>) -> Task<E, X>>;
+pub(crate) type SubscriptionHandlerFn<E, X> = Rc<dyn Fn(*const ()) -> Subscription<E, X>>;
 
 enum TaskCancelHandle {
     Blocking(BlockingCancelToken),
     Process(Option<oneshot::Sender<()>>),
+    Subscription(Option<oneshot::Sender<()>>),
 }
 
 impl TaskCancelHandle {
     fn request_cancel(&mut self) {
         match self {
             Self::Blocking(cancel) => cancel.cancel(),
-            Self::Process(cancel) => {
+            Self::Process(cancel) | Self::Subscription(cancel) => {
                 if let Some(cancel) = cancel.take() {
                     let _ = cancel.send(());
                 }
@@ -142,6 +149,8 @@ type DeferredEvents<E> = Rc<RefCell<VecDeque<E>>>;
 type PendingErrors = Rc<RefCell<VecDeque<ShellError>>>;
 type ClosedFlag = Rc<Cell<bool>>;
 type ProgressEpoch = Rc<Cell<u64>>;
+type ActiveSubscriptions<E, X> =
+    Rc<RefCell<HashMap<SubscriptionKey, ActiveSubscriptionEntry<E, X>>>>;
 
 struct SpawnedTask {
     lease_id: Option<u64>,
@@ -149,6 +158,18 @@ struct SpawnedTask {
     token: Option<u64>,
     handle: TaskHandle,
     process_controller: Option<ProcessController>,
+}
+
+struct ActiveSubscriptionEntry<E, X>
+where
+    E: 'static,
+    X: 'static,
+{
+    driver_id: TypeId,
+    spec: SubscriptionSpec,
+    mapper: Rc<RefCell<Box<dyn ErasedSubscriptionMapper<E, X>>>>,
+    token: u64,
+    handle: TaskHandle,
 }
 
 struct TaskLifecycleGuard {
@@ -180,6 +201,48 @@ impl Drop for TaskLifecycleGuard {
         if let (Some(lease_id), Some(token)) = (self.lease_id, self.token) {
             cleanup_active_task_if_current(&self.active_tasks, lease_id, token);
         }
+    }
+}
+
+struct SubscriptionLifecycleGuard<E, X>
+where
+    E: 'static,
+    X: 'static,
+{
+    activity: Activity,
+    active_subscriptions: ActiveSubscriptions<E, X>,
+    key: SubscriptionKey,
+    token: u64,
+}
+
+impl<E, X> SubscriptionLifecycleGuard<E, X>
+where
+    E: 'static,
+    X: 'static,
+{
+    fn new(
+        activity: Activity,
+        active_subscriptions: ActiveSubscriptions<E, X>,
+        key: SubscriptionKey,
+        token: u64,
+    ) -> Self {
+        Self {
+            activity,
+            active_subscriptions,
+            key,
+            token,
+        }
+    }
+}
+
+impl<E, X> Drop for SubscriptionLifecycleGuard<E, X>
+where
+    E: 'static,
+    X: 'static,
+{
+    fn drop(&mut self) {
+        self.activity.dec();
+        cleanup_active_subscription_if_current(&self.active_subscriptions, &self.key, self.token);
     }
 }
 
@@ -248,10 +311,13 @@ where
 {
     event_tx: EventSender<E>,
     effect_handler: EffectHandlerFn<E, X>,
+    subscription_handler: Option<SubscriptionHandlerFn<E, X>>,
+    subscription_drivers: Rc<SubscriptionDrivers>,
     runtime: crate::runtime::Runtime,
     resources: Rc<ResourceMap>,
     activity: Activity,
     active_tasks: ActiveTasks,
+    active_subscriptions: ActiveSubscriptions<E, X>,
     untracked_tasks: UntrackedTasks,
     deferred_events: DeferredEvents<E>,
     pending_errors: PendingErrors,
@@ -271,13 +337,34 @@ where
         resources: ResourceMap,
         runtime: crate::runtime::Runtime,
     ) -> Self {
+        Self::with_subscriptions(
+            event_tx,
+            effect_handler,
+            None,
+            SubscriptionDrivers::new(),
+            resources,
+            runtime,
+        )
+    }
+
+    pub(crate) fn with_subscriptions(
+        event_tx: EventSender<E>,
+        effect_handler: EffectHandlerFn<E, X>,
+        subscription_handler: Option<SubscriptionHandlerFn<E, X>>,
+        subscription_drivers: SubscriptionDrivers,
+        resources: ResourceMap,
+        runtime: crate::runtime::Runtime,
+    ) -> Self {
         Self {
             event_tx,
             effect_handler,
+            subscription_handler,
+            subscription_drivers: Rc::new(subscription_drivers),
             runtime,
             resources: Rc::new(resources),
             activity: Activity::new(),
             active_tasks: Rc::new(RefCell::new(HashMap::new())),
+            active_subscriptions: Rc::new(RefCell::new(HashMap::new())),
             untracked_tasks: Rc::new(RefCell::new(Vec::new())),
             deferred_events: Rc::new(RefCell::new(VecDeque::new())),
             pending_errors: Rc::new(RefCell::new(VecDeque::new())),
@@ -372,10 +459,86 @@ where
         &self.runtime
     }
 
+    pub(crate) fn reconcile_subscriptions_for_model<Model>(
+        &mut self,
+        model: &Model,
+    ) -> Result<usize, ShellError> {
+        let Some(handler) = self.subscription_handler.as_ref() else {
+            return Ok(0);
+        };
+
+        let model_ptr = (model as *const Model).cast::<()>();
+        let desired = handler(model_ptr);
+        self.reconcile_subscriptions(desired)
+    }
+
+    pub(crate) fn reconcile_subscriptions(
+        &mut self,
+        desired: Subscription<E, X>,
+    ) -> Result<usize, ShellError> {
+        if self.closed.get() {
+            return Ok(0);
+        }
+        if let Some(err) = take_pending_error(&self.pending_errors) {
+            return Err(err);
+        }
+
+        let mut desired_by_key = HashMap::new();
+        for entry in desired.into_entries() {
+            let key = entry.key().clone();
+            if desired_by_key.insert(key.clone(), entry).is_some() {
+                return Err(ShellError::DuplicateSubscriptionKey(format!("{key:?}")));
+            }
+        }
+
+        let active_keys = self
+            .active_subscriptions
+            .borrow()
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>();
+
+        let mut changes = 0usize;
+        for key in active_keys {
+            let Some(entry) = desired_by_key.remove(&key) else {
+                cancel_active_subscription(&self.active_subscriptions, &self.untracked_tasks, &key);
+                changes = changes.saturating_add(1);
+                continue;
+            };
+
+            if active_subscription_matches(
+                &self.active_subscriptions,
+                &key,
+                entry.driver_id(),
+                entry.spec(),
+            ) {
+                let (_, _, _, _, mapper) = entry.into_parts();
+                replace_active_subscription_mapper(&self.active_subscriptions, &key, mapper);
+                continue;
+            }
+
+            cancel_active_subscription(&self.active_subscriptions, &self.untracked_tasks, &key);
+            self.start_subscription(entry)?;
+            changes = changes.saturating_add(1);
+        }
+
+        for entry in desired_by_key.into_values() {
+            self.start_subscription(entry)?;
+            changes = changes.saturating_add(1);
+        }
+
+        if let Some(err) = take_pending_error(&self.pending_errors) {
+            return Err(err);
+        }
+
+        Ok(changes)
+    }
+
     pub fn shutdown(&mut self) {
         self.closed.set(true);
         self.deferred_events.borrow_mut().clear();
         drain_active_tasks_for_shutdown(&self.active_tasks, &self.untracked_tasks);
+        drain_active_subscriptions_for_shutdown(&self.active_subscriptions, &self.untracked_tasks);
         request_shutdown_for_untracked_tasks(&self.untracked_tasks);
     }
 
@@ -400,12 +563,117 @@ where
     pub(crate) fn park_runtime(&self, duration: Duration) {
         self.runtime.park(duration);
     }
+
+    fn start_subscription(&mut self, entry: SubscriptionEntry<E, X>) -> Result<(), ShellError> {
+        let (key, driver_id, driver_name, spec, mapper) = entry.into_parts();
+        let Some(stream) = self.subscription_drivers.subscribe(driver_id, spec.clone()) else {
+            return Err(ShellError::MissingSubscriptionDriver(driver_name.into()));
+        };
+
+        let mapper = Rc::new(RefCell::new(mapper));
+        let token = next_task_token();
+        let handle = spawn_subscription_runtime_task(
+            key.clone(),
+            Rc::clone(&mapper),
+            token,
+            stream,
+            &self.event_tx,
+            &self.effect_handler,
+            &self.runtime,
+            &self.resources,
+            &self.activity,
+            &self.active_tasks,
+            &self.active_subscriptions,
+            &self.untracked_tasks,
+            &self.deferred_events,
+            &self.pending_errors,
+            &self.closed,
+            &self.progress_epoch,
+        );
+
+        self.active_subscriptions.borrow_mut().insert(
+            key,
+            ActiveSubscriptionEntry {
+                driver_id,
+                spec,
+                mapper,
+                token,
+                handle,
+            },
+        );
+        Ok(())
+    }
 }
 
 fn keep_task_after_cancel(untracked_tasks: &UntrackedTasks, handle: TaskHandle) {
     if let Some(handle) = handle.request_cancel() {
         untracked_tasks.borrow_mut().push(handle);
     }
+}
+
+fn cleanup_active_subscription_if_current<E, X>(
+    active_subscriptions: &ActiveSubscriptions<E, X>,
+    key: &SubscriptionKey,
+    token: u64,
+) where
+    E: 'static,
+    X: 'static,
+{
+    if let std::collections::hash_map::Entry::Occupied(entry) =
+        active_subscriptions.borrow_mut().entry(key.clone())
+    {
+        if entry.get().token == token {
+            entry.remove();
+        }
+    }
+}
+
+fn active_subscription_is_current<E, X>(
+    active_subscriptions: &ActiveSubscriptions<E, X>,
+    key: &SubscriptionKey,
+    token: u64,
+) -> bool
+where
+    E: 'static,
+    X: 'static,
+{
+    active_subscriptions
+        .borrow()
+        .get(key)
+        .is_some_and(|entry| entry.token == token)
+}
+
+fn active_subscription_matches<E, X>(
+    active_subscriptions: &ActiveSubscriptions<E, X>,
+    key: &SubscriptionKey,
+    driver_id: TypeId,
+    spec: &SubscriptionSpec,
+) -> bool
+where
+    E: 'static,
+    X: 'static,
+{
+    let active_subscriptions = active_subscriptions.borrow();
+    let Some(active) = active_subscriptions.get(key) else {
+        return false;
+    };
+
+    active.driver_id == driver_id && active.spec == *spec
+}
+
+fn replace_active_subscription_mapper<E, X>(
+    active_subscriptions: &ActiveSubscriptions<E, X>,
+    key: &SubscriptionKey,
+    mapper: Box<dyn ErasedSubscriptionMapper<E, X>>,
+) where
+    E: 'static,
+    X: 'static,
+{
+    let mut active_subscriptions = active_subscriptions.borrow_mut();
+    let active = active_subscriptions
+        .get_mut(key)
+        .expect("active subscription mapper replacement requires a live key");
+    *active.mapper.borrow_mut() = mapper;
 }
 
 fn invalid_process_control(lease_id: u64, message: impl Into<String>) -> ShellError {
@@ -423,6 +691,24 @@ fn cancel_active_task(active_tasks: &ActiveTasks, untracked_tasks: &UntrackedTas
     let removed_entry = {
         let mut active_tasks = active_tasks.borrow_mut();
         active_tasks.remove(&lease_id)
+    };
+
+    if let Some(entry) = removed_entry {
+        keep_task_after_cancel(untracked_tasks, entry.handle);
+    }
+}
+
+fn cancel_active_subscription<E, X>(
+    active_subscriptions: &ActiveSubscriptions<E, X>,
+    untracked_tasks: &UntrackedTasks,
+    key: &SubscriptionKey,
+) where
+    E: 'static,
+    X: 'static,
+{
+    let removed_entry = {
+        let mut active_subscriptions = active_subscriptions.borrow_mut();
+        active_subscriptions.remove(key)
     };
 
     if let Some(entry) = removed_entry {
@@ -533,6 +819,23 @@ fn drain_active_tasks_for_shutdown(active_tasks: &ActiveTasks, untracked_tasks: 
     let drained = {
         let mut active_tasks = active_tasks.borrow_mut();
         std::mem::take(&mut *active_tasks)
+    };
+
+    for entry in drained.into_values() {
+        keep_task_after_cancel(untracked_tasks, entry.handle);
+    }
+}
+
+fn drain_active_subscriptions_for_shutdown<E, X>(
+    active_subscriptions: &ActiveSubscriptions<E, X>,
+    untracked_tasks: &UntrackedTasks,
+) where
+    E: 'static,
+    X: 'static,
+{
+    let drained = {
+        let mut active_subscriptions = active_subscriptions.borrow_mut();
+        std::mem::take(&mut *active_subscriptions)
     };
 
     for entry in drained.into_values() {
@@ -785,6 +1088,142 @@ fn build_process_terminal_update(
             Err(err) => Some(ProcessUpdate::Exited(Err(err.clone()))),
         },
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn route_subscription_update<E, X>(
+    mapper: &Rc<RefCell<Box<dyn ErasedSubscriptionMapper<E, X>>>>,
+    update: Box<dyn std::any::Any>,
+    event_tx: &EventSender<E>,
+    effect_handler: &EffectHandlerFn<E, X>,
+    runtime: &crate::runtime::Runtime,
+    resources: &Rc<ResourceMap>,
+    activity: &Activity,
+    active_tasks: &ActiveTasks,
+    untracked_tasks: &UntrackedTasks,
+    deferred_events: &DeferredEvents<E>,
+    pending_errors: &PendingErrors,
+    closed: &ClosedFlag,
+    progress_epoch: &ProgressEpoch,
+) where
+    E: 'static,
+    X: 'static,
+{
+    let Some(command) = mapper.borrow_mut().map(update) else {
+        return;
+    };
+
+    route_spawned_command(
+        command,
+        event_tx,
+        effect_handler,
+        runtime,
+        resources,
+        activity,
+        active_tasks,
+        untracked_tasks,
+        deferred_events,
+        pending_errors,
+        closed,
+        progress_epoch,
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn spawn_subscription_runtime_task<E, X>(
+    key: SubscriptionKey,
+    mapper: Rc<RefCell<Box<dyn ErasedSubscriptionMapper<E, X>>>>,
+    token: u64,
+    mut stream: crate::subscription::ErasedSubscriptionStream,
+    event_tx: &EventSender<E>,
+    effect_handler: &EffectHandlerFn<E, X>,
+    runtime: &crate::runtime::Runtime,
+    resources: &Rc<ResourceMap>,
+    activity: &Activity,
+    active_tasks: &ActiveTasks,
+    active_subscriptions: &ActiveSubscriptions<E, X>,
+    untracked_tasks: &UntrackedTasks,
+    deferred_events: &DeferredEvents<E>,
+    pending_errors: &PendingErrors,
+    closed: &ClosedFlag,
+    progress_epoch: &ProgressEpoch,
+) -> TaskHandle
+where
+    E: 'static,
+    X: 'static,
+{
+    let runtime = runtime.clone();
+    let event_tx = event_tx.clone();
+    let effect_handler = Rc::clone(effect_handler);
+    let resources = Rc::clone(resources);
+    let activity = activity.clone();
+    let active_tasks = Rc::clone(active_tasks);
+    let active_subscriptions = Rc::clone(active_subscriptions);
+    let untracked_tasks = Rc::clone(untracked_tasks);
+    let deferred_events = Rc::clone(deferred_events);
+    let pending_errors = Rc::clone(pending_errors);
+    let closed = Rc::clone(closed);
+    let progress_epoch = Rc::clone(progress_epoch);
+    let mapper_for_task = Rc::clone(&mapper);
+    activity.inc();
+    let lifecycle_guard = SubscriptionLifecycleGuard::new(
+        activity.clone(),
+        Rc::clone(&active_subscriptions),
+        key.clone(),
+        token,
+    );
+    let (cancel_tx, cancel_rx) = oneshot::channel();
+    let mut cancel_future: LocalBoxFuture<'static, ()> = Box::pin(async move {
+        let _ = cancel_rx.await;
+    });
+
+    let runtime_for_task = runtime.clone();
+    let handle = runtime.spawn(async move {
+        let _lifecycle_guard = lifecycle_guard;
+
+        loop {
+            if closed.get() {
+                return;
+            }
+
+            let mut events: Vec<LocalBoxFuture<'_, Option<Box<dyn std::any::Any>>>> = Vec::new();
+            events.push(Box::pin(async {
+                (&mut cancel_future).await;
+                None
+            }));
+            events.push(Box::pin(async { stream.next().await }));
+
+            let (update, _, _) = select_all(events).await;
+            let Some(update) = update else {
+                return;
+            };
+
+            if !active_subscription_is_current(&active_subscriptions, &key, token) {
+                return;
+            }
+
+            route_subscription_update(
+                &mapper_for_task,
+                update,
+                &event_tx,
+                &effect_handler,
+                &runtime_for_task,
+                &resources,
+                &activity,
+                &active_tasks,
+                &untracked_tasks,
+                &deferred_events,
+                &pending_errors,
+                &closed,
+                &progress_epoch,
+            );
+        }
+    });
+
+    TaskHandle::wait_for_completion(
+        handle,
+        Some(TaskCancelHandle::Subscription(Some(cancel_tx))),
+    )
 }
 
 #[allow(clippy::too_many_arguments)]

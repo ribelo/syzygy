@@ -37,6 +37,14 @@ pub enum ShellError {
     #[error("Invalid process control command: {0}")]
     InvalidProcessControl(String),
 
+    /// Subscription handler returned the same key more than once
+    #[error("Duplicate subscription key in desired state: {0}")]
+    DuplicateSubscriptionKey(String),
+
+    /// Subscription driver type was referenced but never registered
+    #[error("Missing subscription driver: {0}")]
+    MissingSubscriptionDriver(String),
+
     /// Effect queue reached its configured capacity
     #[error(
         "Effect queue is full (capacity {capacity}). Consider increasing the capacity or awaiting idle before queuing more effects"

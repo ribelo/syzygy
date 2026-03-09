@@ -20,6 +20,8 @@ pub mod runtime;
 #[cfg(feature = "shell")]
 pub mod shell;
 #[cfg(feature = "shell")]
+pub mod subscription;
+#[cfg(feature = "shell")]
 pub mod syzygy;
 
 pub mod prelude {
@@ -42,12 +44,16 @@ pub mod prelude {
     #[cfg(feature = "shell")]
     pub use crate::executor::{BlockingCancelToken, Plan, Task};
     #[cfg(feature = "shell")]
+    pub use crate::extract::{SubscriptionContext, SubscriptionHandler, SubscriptionPart};
+    #[cfg(feature = "shell")]
     pub use crate::process::{
         CapturedOutput, ProcessError, ProcessErrorKind, ProcessExit, ProcessFrame, ProcessFraming,
         ProcessInput, ProcessOutput, ProcessSpec, ProcessTerminationPolicy, ProcessUpdate,
     };
     #[cfg(feature = "shell")]
     pub use crate::shell::Shell;
+    #[cfg(feature = "shell")]
+    pub use crate::subscription::{Subscription, SubscriptionDriver, SubscriptionStream};
     #[cfg(feature = "shell")]
     pub use crate::syzygy::{Runner, Syzygy, SyzygyConfig};
 
