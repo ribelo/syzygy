@@ -95,6 +95,25 @@ Shell progression is synchronous. There is no async `drain`/`step` API; async is
 - Built-in timers like `Subscription::every(...)` and shell internal grace/backpressure waits use the same clock path.
 - Manual time is advanced explicitly by tests; it is not an app capability.
 
+### Shell Snapshot
+
+- `Shell::snapshot()` returns lightweight runtime diagnostics without requiring trace recording.
+- Snapshot includes active lease-owned tasks, active subscription keys, deferred/untracked/queue/error counts, and in-flight activity count.
+- Snapshot also carries `last_termination` with explicit target (`Task`, `Process`, `Subscription`) and reason (`Completed`, `Failed`, `Cancelled(...)`).
+- Cancellation reasons are explicit (`ExplicitCommand`, `Replacement`, `OwnerDropped`, `SubscriptionReconciled`, `Shutdown`) so teardown intent is visible during live debugging.
+- Snapshot is observational only; it does not expose runtime control handles.
+
+### Structured Trace Recorder
+
+- Tracing is runtime infrastructure, not an app capability: enable it through `DiagnosticsConfig.trace(ShellTraceConfig { ... })`.
+- `Shell::trace_snapshot()` returns ordered `ShellTraceEntry` values with monotonic sequence numbers.
+- Trace events cover:
+  - core/shell phases (`BootCommandDispatched`, `CoreEventsProcessed`, `SubscriptionsReconciled`, `ShellDrained`)
+  - command routing (`CommandStep::Event/Effect/Abortable/Cancel/ProcessWrite/ProcessCloseStdin`)
+  - task/subscription lifecycle (`TaskSpawned`, `SubscriptionStarted`, `SubscriptionUpdated`)
+  - process stdin control and termination (`ProcessControl`, `Termination`)
+- Default is disabled to keep baseline overhead minimal; when enabled, storage is bounded by `max_entries` (ring-buffer eviction from oldest).
+
 ### Subscription Path (State-Derived)
 
 1. `Syzygy::step()` recomputes `Subscription` from the current model through a read-only `SubscriptionContext`
@@ -103,6 +122,19 @@ Shell progression is synchronous. There is no async `drain`/`step` API; async is
 4. Driver updates map back into `Command` values and re-enter normal shell routing
 
 **Important:** event/effect handlers never receive sender channels or runtime handles. Any channel or callback machinery needed by a subscription driver stays inside the driver implementation.
+
+## Runtime Work Decision Guide
+
+Pick the primitive by lifecycle shape, not by implementation convenience:
+
+| Scenario | Preferred primitive | Why | Avoid |
+|----------|---------------------|-----|-------|
+| Event triggers one finite async operation | `Command::effect` + `Task::once` (or `Task::future`) | Work has a clear start/end and returns a bounded command | Using `Subscription` for one-shot requests |
+| Event triggers finite stream-like work with explicit owner | `Command::effect` + `Task::stream` (typically lease-owned) | Stream lifetime should follow app-owned task ownership | Global subscription for workflow-local stream |
+| Need shell-owned subprocess result | `Task::process` | Shell owns child lifecycle and cancellation on drop/shutdown | Spawning child manually inside generic async/blocking task |
+| Need interactive subprocess control | `Task::process_interactive` + lease-addressed process commands | Keeps stdin writes/cancel semantics explicit and model-owned | Exposing child handles to model/event handlers |
+| Need long-lived external source while state predicate is true | `Subscription::{every, custom}` | Source lifecycle is state-derived and reconciled by key | Re-emitting recurring effects from event handlers |
+| Need replace/cancel semantics tied to model state | `AbortSlot` / `TaskLease` | Ownership is explicit; replacement and owner-drop cancellation are deterministic | Starting abortable work without retaining owner |
 
 ## Module Dependencies
 
@@ -210,6 +242,7 @@ fn handle_subscriptions(ctx: &SubscriptionContext<Model>) -> Subscription<Event,
 - Shutdown cancels every active subscription.
 - `Shell` stays model-typed, so a shell carrying a subscription handler cannot be recombined with a different `Core<Model>`.
 - Custom `SubscriptionDriver::subscribe(...)` construction runs inside Syzygy's owned runtime task. Synchronous reconciliation only validates that the driver is registered.
+- Common driver adapters are explicit and local to the driver impl: `SubscriptionDriver::poll`, `poll_with`, and `stream` reduce repetitive glue while keeping specs as pure data and registration explicit.
 - Custom drivers that want deterministic time should use `syzygy::runtime::sleep(...)` instead of backend-specific timer APIs.
 - Built-in `Subscription::every` is always available. App-specific integrations use `Subscription::custom::<Driver, _, _>(...)` plus `builder.with_subscription_driver(driver)`.
 
@@ -267,12 +300,12 @@ let app = Syzygy::builder::<Event, Effect>()
 
 ## Testing Strategy
 
-| Component | Tool | Pattern |
-|-----------|------|---------|
-| Pure handlers | `TestStore` | Send events, assert state |
-| Effects | `TestStore::receive_async` | Mock effect responses |
-| Shell-owned runtime behavior | `RunnerTester` | Real runner with manual clock and bounded `drain()` |
-| Integration | `Syzygy::builder()` | Full stack with app wiring or end-to-end setup |
+| Test goal | Tool | Pattern | Avoid |
+|-----------|------|---------|-------|
+| Verify pure event logic and emitted effects | `TestStore` | Send events, assert state/effects synchronously | `RunnerTester` for simple reducer tests |
+| Verify effect-to-event mapping only | `TestStore::receive_async` | Mock effect completions directly | Full runtime when shell behavior is irrelevant |
+| Verify subscriptions, process tasks, shell errors, or manual time | `RunnerTester` | Real runner + bounded `drain()` + `advance_time(...)` | Mocking these paths in `TestStore` |
+| Verify production wiring (drivers/resources/config) | Integration with `Syzygy::builder()` | Build full app and drive real commands/events | Assuming unit tests cover wiring failures |
 
 **Determinism:** `TestStore` executes synchronously with mocked effects. `RunnerTester` uses a real `Syzygy` runner plus `Runtime::manual()` so subscriptions and runtime-owned tasks can advance through explicit `advance_time(...)`.
 
@@ -289,10 +322,10 @@ let app = Syzygy::builder::<Event, Effect>()
 
 ## When It Breaks
 
-**"already borrowed mutably" panic:** Handler tried to borrow same field twice, or mixed `&Model` with `&mut Field`. Fix: Remove duplicate borrow or use scoped extraction.
+**"already borrowed mutably" panic:** Handler tried to borrow same field twice, or mixed `&Model` with `&mut Field`. This is a deliberate programmer-error panic; messages include overlap guidance and caller location. Fix: Remove duplicate borrow or use scoped extraction.
 
 **"exceeds borrow tracker capacity (256)":** Model has >256 fields. Fix: Split into nested models with `#[model(part)]`.
 
-**"Resource not found":** Effect handler requested resource not registered. Fix: Add `.with_resource()` during build.
+**"Effect resource ... is not registered":** Effect handler extracted a resource that was not registered. This is a deliberate programmer-error panic with caller location and `.with_resource(...)` hint. Fix: Add `.with_resource()` during build.
 
 **Channel full:** Bounded channel overflow. Fix: Increase capacity or add backpressure.

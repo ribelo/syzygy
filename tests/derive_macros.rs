@@ -41,12 +41,12 @@ impl SaveCompleted {
 
 fn increment(amount: u32, counter: &mut Counter) -> Command<Event, Effect> {
     let amount = i32::try_from(amount).expect("u32 amount must fit in i32");
-    **counter += amount;
+    *counter.get_mut() += amount;
     Command::none()
 }
 
 fn rename(new_name: String, display_name: &mut DisplayName) -> Command<Event, Effect> {
-    **display_name = new_name;
+    display_name.set(new_name);
     Command::none()
 }
 
@@ -167,7 +167,7 @@ fn increment_child(
 }
 
 fn rename_extract(new_title: String, title: &mut Title) -> Command<ExtractEvent, ExtractEffect> {
-    **title = new_title;
+    title.set(new_title);
     Command::none()
 }
 
@@ -255,4 +255,88 @@ fn derive_model_part_attribute_detects_double_borrow() {
         runner.core().try_send(ExtractEvent::DoubleBorrow).unwrap();
         let _ = runner.step();
     });
+}
+
+#[test]
+fn wrapper_helpers_support_common_option_workflows() {
+    #[derive(Debug, Clone)]
+    enum Event {
+        Bump,
+        ReplaceCount(i32),
+        SetName(String),
+        EnsureName,
+        TakeName,
+    }
+
+    #[derive(Model)]
+    struct Model {
+        #[model(wrapper = CountField)]
+        count: i32,
+        #[model(wrapper = MaybeName)]
+        name: Option<String>,
+    }
+
+    let mut runner = Syzygy::builder::<Event, ()>()
+        .model(Model {
+            count: 1,
+            name: None,
+        })
+        .event_handler(|event: Event, ctx: &EventContext<Model>| match event {
+            Event::Bump => {
+                let count = CountField::extract_mut(ctx);
+                *count.get_mut() += 1;
+                Command::none()
+            }
+            Event::ReplaceCount(next) => {
+                let count = CountField::extract_mut(ctx);
+                let previous = count.replace(next);
+                assert!(previous >= 0);
+                Command::none()
+            }
+            Event::SetName(name) => {
+                let maybe_name = MaybeName::extract_mut(ctx);
+                maybe_name.set(Some(name));
+                assert!(maybe_name.is_some());
+                Command::none()
+            }
+            Event::EnsureName => {
+                let maybe_name = MaybeName::extract_mut(ctx);
+                let name = maybe_name.get_or_insert("default".to_string());
+                name.push('!');
+                Command::none()
+            }
+            Event::TakeName => {
+                let maybe_name = MaybeName::extract_mut(ctx);
+                let taken = maybe_name.take();
+                assert_eq!(taken.as_deref(), Some("alice!"));
+                maybe_name.clear();
+                assert!(maybe_name.is_none());
+                Command::none()
+            }
+        })
+        .build()
+        .unwrap();
+
+    runner.core().try_send(Event::Bump).unwrap();
+    runner.step().unwrap();
+    assert_eq!(runner.model().count, 2);
+
+    runner.core().try_send(Event::ReplaceCount(5)).unwrap();
+    runner.step().unwrap();
+    assert_eq!(runner.model().count, 5);
+
+    runner
+        .core()
+        .try_send(Event::SetName("alice".into()))
+        .unwrap();
+    runner.step().unwrap();
+    assert_eq!(runner.model().name.as_deref(), Some("alice"));
+
+    runner.core().try_send(Event::EnsureName).unwrap();
+    runner.step().unwrap();
+    assert_eq!(runner.model().name.as_deref(), Some("alice!"));
+
+    runner.core().try_send(Event::TakeName).unwrap();
+    runner.step().unwrap();
+    assert_eq!(runner.model().name, None);
 }

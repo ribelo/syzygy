@@ -33,15 +33,13 @@ enum AppEffect {}
 /// ## Why use wrapper types?
 ///
 /// `#[model(wrapper = Counter)]` generated a transparent wrapper type for this field.
-/// The wrapper implements `Deref` and `DerefMut`, allowing us to use `**counter`
-/// to access the underlying `i32` while keeping extraction explicit in the model.
+/// The wrapper exposes explicit helpers (`get`, `get_mut`, `set`, `replace`) so
+/// common updates stay readable while extraction remains explicit in the model.
 ///
 /// This approach enables the runtime borrow checker to prevent aliasing
 /// violations at the field level.
 fn increment(counter: &mut Counter) -> Command<AppEvent, AppEffect> {
-    // Double deref: &mut Counter -> &mut i32 -> i32
-    // The first * goes through DerefMut, the second derefs the &mut i32
-    **counter += 1;
+    *counter.get_mut() += 1;
     Command::none()
 }
 
@@ -51,7 +49,7 @@ fn increment(counter: &mut Counter) -> Command<AppEvent, AppEffect> {
 /// but does not produce any further events or effects. Handlers should generally be
 /// pure (side-effect free), delegating external actions to `Task`s via `Effect`s.
 fn decrement(counter: &mut Counter) -> Command<AppEvent, AppEffect> {
-    **counter -= 1;
+    *counter.get_mut() -= 1;
     Command::none()
 }
 

@@ -159,3 +159,59 @@ Q: After the core runtime model stabilized, which polish work should Syzygy prio
 A: Prioritize four things: live shell introspection, extraction ergonomics, clearer choice guidance, and lower-boilerplate subscription drivers. Keep the current explicit and pure runtime boundary; do not add sender-based worker APIs or hidden background handles.
 
 Reason: The remaining weaknesses are mostly visibility and product polish, not architecture. `Trace` and replay tooling explain behavior after the fact, but day-to-day debugging also needs a cheap `ShellSnapshot`-style view of active tasks, subscriptions, and termination reasons. Explicit extraction is correct but still noisier than it should be for common fields, so wrapper ergonomics and macro warning hygiene remain worthwhile. The choice between `Task`, `Subscription`, process tasks, and test harnesses is now sound but still not taught clearly enough, and custom subscription drivers still involve more glue than necessary. The right direction is to reduce friction without weakening the rule that effects are descriptions and runtime capabilities stay out of app code.
+
+## 2026-03-09
+
+Q: How should live shell introspection expose teardown outcomes without trace payloads?
+
+A: Add `Shell::snapshot()` as a cheap observational API and track one explicit `last_termination` record with target (`Task`/`Process`/`Subscription`) plus reason (`Completed`, `Failed`, `Cancelled(...)`). Keep cancellation causes explicit (`ExplicitCommand`, `Replacement`, `OwnerDropped`, `SubscriptionReconciled`, `Shutdown`).
+
+Reason: Day-to-day debugging needs immediate lifecycle visibility even when trace recording is disabled. A small fixed reason taxonomy gives actionable teardown context without exposing runtime internals or requiring `Event`/`Effect` debug bounds.
+
+## 2026-03-09
+
+Q: How should structured trace recording be exposed without mutating handler APIs or requiring `Debug` on app event/effect types?
+
+A: Add an opt-in shell-owned recorder configured through `DiagnosticsConfig.trace(ShellTraceConfig { ... })`. Record ordered, payload-light `ShellTraceEntry` transitions (core/shell phases, command routing, task/subscription/process lifecycle, termination) with bounded retention (`max_entries` ring buffer).
+
+Reason: Trace capture must stay runtime/test infrastructure, not an app-layer concern. A typed transition stream with sequence numbers gives deterministic replay input and practical debugging context while preserving explicit effect boundaries and keeping default overhead near zero when tracing is disabled.
+
+## 2026-03-09
+
+Q: How should wrapper ergonomics improve without reintroducing implicit extraction?
+
+A: Keep `#[model(wrapper = ...)]` explicit, but generate small helper methods on wrappers (`get`, `get_mut`, `set`, `replace`) and, for `Option<T>` wrappers, explicit option helpers (`is_some`, `as_ref`, `insert`, `get_or_insert`, `take`, `clear`).
+
+Reason: The explicit extraction boundary is correct, but common wrapper usage should not require noisy deref patterns. Helper methods reduce boilerplate while keeping ownership and extraction intent visible in handler code.
+
+## 2026-03-09
+
+Q: How should `#[derive(Model)]` avoid downstream `unexpected_cfgs` noise for subscription impls?
+
+A: Keep the generated `#[cfg(feature = "shell")]` gating for `SubscriptionPart` impls, but annotate those generated impl blocks with `#[allow(unexpected_cfgs)]`.
+
+Reason: Macro expansions land in downstream crates where `feature = "shell"` is not a local feature name, which can trigger noisy warning output under strict check-cfg setups. The allowance is localized to the generated cfg item and keeps warning output clean without changing extraction semantics.
+
+## 2026-03-09
+
+Q: How should Syzygy teach the choice between effect/task/process/subscription primitives and between `TestStore` vs `RunnerTester`?
+
+A: Use a lifecycle-first decision matrix with concrete examples and anti-examples. Keep finite event-triggered work on `Command::effect + Task::{once,stream,process,process_interactive}`, keep long-lived state-derived sources on `Subscription`, keep cancellation ownership explicit via `AbortSlot`/`TaskLease`, and mirror the same rule in test docs (`TestStore` for pure logic, `RunnerTester` for shell/runtime behavior).
+
+Reason: Most remaining confusion is about where work should live, not missing runtime capability. A short matrix prevents category mistakes (for example one-shot requests modeled as subscriptions, or subprocesses spawned outside shell ownership) while preserving Syzygy's explicit runtime boundary.
+
+## 2026-03-09
+
+Q: How should Syzygy reduce custom `SubscriptionDriver` boilerplate for polling and stream-backed sources without weakening runtime ownership boundaries?
+
+A: Keep `SubscriptionDriver` explicit, but add small default adapters on the trait itself: `stream(...)` for prebuilt streams, `poll(...)` for immediate-first periodic polling, and `poll_with(..., SubscriptionPollStart, ...)` when the first poll should wait for the interval.
+
+Reason: The friction is repetitive stream plumbing, not a missing abstraction. Trait-level helpers cut boilerplate while preserving the existing model: specs stay pure data, drivers are still registered explicitly, and app handlers still never receive sender/runtime handles.
+
+## 2026-03-09
+
+Q: How should Syzygy handle extraction/resource failures that are still programmer errors while improving diagnostics?
+
+A: Keep them as deliberate panics, but normalize the messages. Extraction overlap/capacity panics now include a consistent programmer-error hint, and missing effect resources keep explicit type + caller location + `.with_resource(...)` registration guidance.
+
+Reason: These failures indicate invalid handler wiring, not runtime recoverable conditions, so converting all of them to shell errors would hide bugs. The right improvement is consistent, actionable panic diagnostics and explicit docs stating that these paths are programmer errors.

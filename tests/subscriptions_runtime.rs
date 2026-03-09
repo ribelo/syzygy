@@ -1,7 +1,6 @@
 use std::time::Duration;
 
 use futures::stream;
-use futures::StreamExt;
 use syzygy::prelude::*;
 
 #[derive(Clone)]
@@ -17,11 +16,31 @@ impl SubscriptionDriver for PulseDriver {
     type Update = ();
 
     fn subscribe(&self, spec: Self::Spec) -> SubscriptionStream<Self::Update> {
-        stream::unfold(spec.interval, |interval| async move {
-            syzygy::runtime::sleep(interval).await;
-            Some(((), interval))
-        })
-        .boxed_local()
+        let interval = spec.interval;
+        Self::poll_with(
+            spec,
+            interval,
+            SubscriptionPollStart::AfterInterval,
+            |_spec| async {},
+        )
+    }
+}
+
+#[derive(Clone)]
+struct ImmediatePulseDriver;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ImmediatePulseSpec {
+    interval: Duration,
+}
+
+impl SubscriptionDriver for ImmediatePulseDriver {
+    type Spec = ImmediatePulseSpec;
+    type Update = ();
+
+    fn subscribe(&self, spec: Self::Spec) -> SubscriptionStream<Self::Update> {
+        let interval = spec.interval;
+        Self::poll(spec, interval, |_spec| async {})
     }
 }
 
@@ -45,7 +64,7 @@ impl SubscriptionDriver for RuntimeCheckedDriver {
                 .expect("subscription driver should be constructed inside the owned runtime");
         }
 
-        stream::once(async {}).boxed_local()
+        Self::stream(stream::once(async {}))
     }
 }
 
@@ -183,6 +202,88 @@ fn manual_clock_drives_every_subscription_without_wall_time() {
     assert_eq!(app.model().ticks, 1);
 
     clock.advance(Duration::from_secs(60));
+    app.step().unwrap();
+    app.step().unwrap();
+    assert_eq!(app.model().ticks, 2);
+    assert!(!app.model().running);
+}
+
+#[test]
+fn poll_helper_emits_immediately_then_respects_interval() {
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    enum Event {
+        Tick,
+    }
+
+    #[derive(Clone, Debug, PartialEq, Eq, Hash)]
+    enum Key {
+        Main,
+    }
+
+    #[derive(Default, Model)]
+    struct Model {
+        #[model(wrapper = Running)]
+        running: bool,
+        #[model(wrapper = Ticks)]
+        ticks: u8,
+    }
+
+    fn on_tick(running: &mut Running, ticks: &mut Ticks) -> Command<Event, ()> {
+        let next = ticks.saturating_add(1);
+        *ticks.get_mut() = next;
+        if next >= 2 {
+            running.set(false);
+        }
+        Command::none()
+    }
+
+    fn describe(running: &Running) -> Subscription<Event, ()> {
+        if !*running.get() {
+            return Subscription::none();
+        }
+
+        Subscription::custom::<ImmediatePulseDriver, _, _>(
+            Key::Main,
+            ImmediatePulseSpec {
+                interval: Duration::from_secs(60),
+            },
+            |()| Some(Command::event(Event::Tick)),
+        )
+    }
+
+    fn handle_event(event: Event, ctx: &EventContext<Model>) -> Command<Event, ()> {
+        match event {
+            Event::Tick => handle!(on_tick, ctx),
+        }
+    }
+
+    fn handle_subscriptions(ctx: &SubscriptionContext<Model>) -> Subscription<Event, ()> {
+        handle!(describe, ctx)
+    }
+
+    let (runtime, clock) = syzygy::runtime::Runtime::manual().unwrap();
+    let mut app = Syzygy::builder::<Event, ()>()
+        .model(Model {
+            running: true,
+            ticks: 0,
+        })
+        .with_runtime(runtime)
+        .with_subscription_driver(ImmediatePulseDriver)
+        .event_handler(handle_event)
+        .subscription_handler(handle_subscriptions)
+        .build()
+        .unwrap();
+
+    app.step().unwrap();
+    app.step().unwrap();
+    assert_eq!(app.model().ticks, 1);
+
+    clock.advance(Duration::from_secs(59));
+    app.step().unwrap();
+    app.step().unwrap();
+    assert_eq!(app.model().ticks, 1);
+
+    clock.advance(Duration::from_secs(1));
     app.step().unwrap();
     app.step().unwrap();
     assert_eq!(app.model().ticks, 2);

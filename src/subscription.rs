@@ -1,12 +1,13 @@
 use std::any::{type_name, Any, TypeId};
 use std::collections::hash_map::DefaultHasher;
 use std::fmt;
+use std::future::Future;
 use std::hash::{Hash, Hasher};
 use std::marker::PhantomData;
 use std::time::Duration;
 
 use futures::stream::{self, LocalBoxStream};
-use futures::StreamExt;
+use futures::{Stream, StreamExt};
 use rustc_hash::FxHashMap;
 use smallvec::SmallVec;
 
@@ -14,11 +15,65 @@ use crate::command::Command;
 
 pub type SubscriptionStream<U> = LocalBoxStream<'static, U>;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SubscriptionPollStart {
+    Immediate,
+    AfterInterval,
+}
+
 pub trait SubscriptionDriver: 'static {
     type Spec: Clone + Eq + fmt::Debug + 'static;
     type Update: 'static;
 
     fn subscribe(&self, spec: Self::Spec) -> SubscriptionStream<Self::Update>;
+
+    fn stream<S>(updates: S) -> SubscriptionStream<Self::Update>
+    where
+        S: Stream<Item = Self::Update> + 'static,
+    {
+        updates.boxed_local()
+    }
+
+    fn poll<PollFn, Fut>(
+        spec: Self::Spec,
+        interval: Duration,
+        poll_once: PollFn,
+    ) -> SubscriptionStream<Self::Update>
+    where
+        PollFn: Fn(Self::Spec) -> Fut + Clone + 'static,
+        Fut: Future<Output = Self::Update> + 'static,
+    {
+        Self::poll_with(spec, interval, SubscriptionPollStart::Immediate, poll_once)
+    }
+
+    fn poll_with<PollFn, Fut>(
+        spec: Self::Spec,
+        interval: Duration,
+        start: SubscriptionPollStart,
+        poll_once: PollFn,
+    ) -> SubscriptionStream<Self::Update>
+    where
+        PollFn: Fn(Self::Spec) -> Fut + Clone + 'static,
+        Fut: Future<Output = Self::Update> + 'static,
+    {
+        assert!(
+            !interval.is_zero(),
+            "subscription polling interval must be non-zero"
+        );
+
+        let poll_first = matches!(start, SubscriptionPollStart::Immediate);
+        stream::unfold((spec, poll_first), move |(spec, poll_first)| {
+            let poll_once = poll_once.clone();
+            async move {
+                if !poll_first {
+                    crate::runtime::sleep(interval).await;
+                }
+                let update = poll_once(spec.clone()).await;
+                Some((update, (spec, false)))
+            }
+        })
+        .boxed_local()
+    }
 }
 
 #[must_use]
@@ -439,10 +494,12 @@ impl SubscriptionDriver for EveryDriver {
     type Update = ();
 
     fn subscribe(&self, spec: Self::Spec) -> SubscriptionStream<Self::Update> {
-        stream::unfold(spec.interval, |interval| async move {
-            crate::runtime::sleep(interval).await;
-            Some(((), interval))
-        })
-        .boxed_local()
+        let interval = spec.interval;
+        Self::poll_with(
+            spec,
+            interval,
+            SubscriptionPollStart::AfterInterval,
+            |_spec| async {},
+        )
     }
 }

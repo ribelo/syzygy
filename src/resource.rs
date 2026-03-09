@@ -37,8 +37,15 @@ impl Clone for ResourceMap {
 fn clone_fn_for<T: Clone + 'static>(any: &dyn Any) -> Box<dyn Any> {
     Box::new(
         any.downcast_ref::<T>()
-            .expect("type mismatch in ResourceMap")
+            .unwrap_or_else(|| panic_resource_type_mismatch::<T>())
             .clone(),
+    )
+}
+
+fn panic_resource_type_mismatch<T: 'static>() -> ! {
+    panic!(
+        "ResourceMap internal type mismatch for `{}`. This indicates a programmer error in ResourceMap storage invariants.",
+        std::any::type_name::<T>()
     )
 }
 
@@ -64,7 +71,7 @@ impl ResourceMap {
             entry
                 .value
                 .downcast_ref::<T>()
-                .expect("type mismatch in ResourceMap")
+                .unwrap_or_else(|| panic_resource_type_mismatch::<T>())
                 .clone()
         })
     }

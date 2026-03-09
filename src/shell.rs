@@ -179,6 +179,7 @@ struct ActiveTaskEntry {
     token: u64,
     handle: TaskHandle,
     process_controller: Option<ProcessController>,
+    is_process_task: bool,
 }
 
 type ActiveTasks = Rc<RefCell<HashMap<u64, ActiveTaskEntry>>>;
@@ -187,6 +188,7 @@ type DeferredEvents<E> = Rc<RefCell<VecDeque<E>>>;
 type PendingErrors = Rc<RefCell<VecDeque<ShellError>>>;
 type ClosedFlag = Rc<Cell<bool>>;
 type ProgressEpoch = Rc<Cell<u64>>;
+type LastTermination = Rc<RefCell<ShellDiagnosticsState>>;
 type ActiveSubscriptions<E, X> =
     Rc<RefCell<HashMap<SubscriptionKey, ActiveSubscriptionEntry<E, X>>>>;
 
@@ -196,6 +198,7 @@ struct SpawnedTask {
     token: Option<u64>,
     handle: TaskHandle,
     process_controller: Option<ProcessController>,
+    is_process_task: bool,
 }
 
 struct ActiveSubscriptionEntry<E, X>
@@ -213,6 +216,7 @@ where
 struct TaskLifecycleGuard {
     activity: Activity,
     active_tasks: ActiveTasks,
+    last_termination: LastTermination,
     lease_id: Option<u64>,
     token: Option<u64>,
 }
@@ -221,12 +225,14 @@ impl TaskLifecycleGuard {
     fn new(
         activity: Activity,
         active_tasks: ActiveTasks,
+        last_termination: LastTermination,
         lease_id: Option<u64>,
         token: Option<u64>,
     ) -> Self {
         Self {
             activity,
             active_tasks,
+            last_termination,
             lease_id,
             token,
         }
@@ -237,7 +243,12 @@ impl Drop for TaskLifecycleGuard {
     fn drop(&mut self) {
         self.activity.dec();
         if let (Some(lease_id), Some(token)) = (self.lease_id, self.token) {
-            cleanup_active_task_if_current(&self.active_tasks, lease_id, token);
+            cleanup_active_task_if_current(
+                &self.active_tasks,
+                &self.last_termination,
+                lease_id,
+                token,
+            );
         }
     }
 }
@@ -249,6 +260,7 @@ where
 {
     activity: Activity,
     active_subscriptions: ActiveSubscriptions<E, X>,
+    last_termination: LastTermination,
     key: SubscriptionKey,
     token: u64,
 }
@@ -261,12 +273,14 @@ where
     fn new(
         activity: Activity,
         active_subscriptions: ActiveSubscriptions<E, X>,
+        last_termination: LastTermination,
         key: SubscriptionKey,
         token: u64,
     ) -> Self {
         Self {
             activity,
             active_subscriptions,
+            last_termination,
             key,
             token,
         }
@@ -280,7 +294,12 @@ where
 {
     fn drop(&mut self) {
         self.activity.dec();
-        cleanup_active_subscription_if_current(&self.active_subscriptions, &self.key, self.token);
+        cleanup_active_subscription_if_current(
+            &self.active_subscriptions,
+            &self.last_termination,
+            &self.key,
+            self.token,
+        );
     }
 }
 
@@ -342,6 +361,243 @@ enum ProcessEvent {
     Stderr(Result<Option<ProcessFrame>, ProcessError>),
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ShellTerminationTarget {
+    Task,
+    Process,
+    Subscription,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ShellCancellationReason {
+    ExplicitCommand,
+    Replacement,
+    OwnerDropped,
+    SubscriptionReconciled,
+    Shutdown,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ShellTerminationReason {
+    Completed,
+    Failed,
+    Cancelled(ShellCancellationReason),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ShellTerminationRecord {
+    pub target: ShellTerminationTarget,
+    pub reason: ShellTerminationReason,
+    pub lease_id: Option<u64>,
+    pub subscription_key: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ShellTaskSnapshot {
+    pub lease_id: u64,
+    pub owner_alive: bool,
+    pub is_process_task: bool,
+    pub has_process_stdin_control: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ShellSubscriptionSnapshot {
+    pub key: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ShellSnapshot {
+    pub active_tasks: Vec<ShellTaskSnapshot>,
+    pub active_subscriptions: Vec<ShellSubscriptionSnapshot>,
+    pub in_flight_count: usize,
+    pub untracked_task_count: usize,
+    pub deferred_event_count: usize,
+    pub queued_command_count: usize,
+    pub pending_error_count: usize,
+    pub last_termination: Option<ShellTerminationRecord>,
+}
+
+const DEFAULT_TRACE_MAX_ENTRIES: usize = 4_096;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ShellTraceConfig {
+    pub enabled: bool,
+    pub max_entries: usize,
+}
+
+impl Default for ShellTraceConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            max_entries: DEFAULT_TRACE_MAX_ENTRIES,
+        }
+    }
+}
+
+impl ShellTraceConfig {
+    #[must_use]
+    pub fn enabled(mut self, enabled: bool) -> Self {
+        self.enabled = enabled;
+        self
+    }
+
+    #[must_use]
+    pub fn max_entries(mut self, max_entries: usize) -> Self {
+        assert!(
+            max_entries > 0,
+            "ShellTraceConfig::max_entries must be greater than zero"
+        );
+        self.max_entries = max_entries;
+        self
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ShellTraceTaskKind {
+    Future,
+    Stream,
+    Process,
+    Blocking,
+    BlockingCooperative,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ShellTraceCommandStep {
+    Event,
+    Effect {
+        effect_type: &'static str,
+    },
+    Abortable {
+        lease_id: u64,
+        effect_type: &'static str,
+    },
+    Cancel {
+        lease_id: u64,
+    },
+    ProcessWrite {
+        lease_id: u64,
+        bytes: usize,
+    },
+    ProcessCloseStdin {
+        lease_id: u64,
+    },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ShellTraceProcessControl {
+    Write { bytes: usize },
+    CloseStdin,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ShellTraceEvent {
+    BootCommandDispatched,
+    CoreEventCommandDispatched,
+    CoreEventsProcessed {
+        count: usize,
+    },
+    SubscriptionsReconciled {
+        changes: usize,
+    },
+    ShellDrained {
+        made_progress: bool,
+        deferred_events: usize,
+        in_flight: usize,
+    },
+    CommandStep(ShellTraceCommandStep),
+    TaskSpawned {
+        lease_id: Option<u64>,
+        kind: ShellTraceTaskKind,
+    },
+    SubscriptionStarted {
+        key: String,
+        driver: &'static str,
+    },
+    SubscriptionUpdated {
+        key: String,
+    },
+    ProcessControl {
+        lease_id: u64,
+        action: ShellTraceProcessControl,
+    },
+    Termination(ShellTerminationRecord),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ShellTraceEntry {
+    pub sequence: u64,
+    pub event: ShellTraceEvent,
+}
+
+#[derive(Default)]
+struct TraceRecorder {
+    config: ShellTraceConfig,
+    next_sequence: u64,
+    entries: VecDeque<ShellTraceEntry>,
+}
+
+impl TraceRecorder {
+    #[must_use]
+    fn with_config(config: ShellTraceConfig) -> Self {
+        Self {
+            config,
+            next_sequence: 0,
+            entries: VecDeque::with_capacity(config.max_entries),
+        }
+    }
+
+    #[must_use]
+    fn config(&self) -> ShellTraceConfig {
+        self.config
+    }
+
+    fn set_config(&mut self, config: ShellTraceConfig) {
+        assert!(
+            config.max_entries > 0,
+            "ShellTraceConfig::max_entries must be greater than zero"
+        );
+        self.config = config;
+        while self.entries.len() > self.config.max_entries {
+            self.entries.pop_front();
+        }
+    }
+
+    fn clear(&mut self) {
+        self.entries.clear();
+    }
+
+    fn record(&mut self, event: ShellTraceEvent) {
+        if !self.config.enabled {
+            return;
+        }
+
+        if self.entries.len() >= self.config.max_entries {
+            self.entries.pop_front();
+        }
+
+        let entry = ShellTraceEntry {
+            sequence: self.next_sequence,
+            event,
+        };
+        self.next_sequence = self.next_sequence.wrapping_add(1);
+        self.entries.push_back(entry);
+    }
+
+    #[must_use]
+    fn snapshot(&self) -> Vec<ShellTraceEntry> {
+        self.entries.iter().cloned().collect()
+    }
+
+    fn take(&mut self) -> Vec<ShellTraceEntry> {
+        self.entries.drain(..).collect()
+    }
+}
+
+struct ShellDiagnosticsState {
+    last_termination: Option<ShellTerminationRecord>,
+    trace: TraceRecorder,
+}
+
 pub struct Shell<E, X, M = ()>
 where
     E: 'static,
@@ -362,6 +618,7 @@ where
     pending_errors: PendingErrors,
     closed: ClosedFlag,
     progress_epoch: ProgressEpoch,
+    last_termination: LastTermination,
     unhandled_effects_policy: Rc<Cell<UnhandledEffectPolicy>>,
     queue: VecDeque<Command<E, X>>,
 }
@@ -420,6 +677,10 @@ where
             pending_errors: Rc::new(RefCell::new(VecDeque::new())),
             closed: Rc::new(Cell::new(false)),
             progress_epoch: Rc::new(Cell::new(0)),
+            last_termination: Rc::new(RefCell::new(ShellDiagnosticsState {
+                last_termination: None,
+                trace: TraceRecorder::with_config(ShellTraceConfig::default()),
+            })),
             unhandled_effects_policy,
             queue: VecDeque::new(),
         }
@@ -433,7 +694,11 @@ where
             return Err(err);
         }
 
-        prune_orphaned_active_tasks(&self.active_tasks, &self.untracked_tasks);
+        prune_orphaned_active_tasks(
+            &self.active_tasks,
+            &self.untracked_tasks,
+            &self.last_termination,
+        );
         self.queue.clear();
         self.queue.push_back(command);
 
@@ -450,6 +715,7 @@ where
             &self.pending_errors,
             &self.closed,
             &self.progress_epoch,
+            &self.last_termination,
         )?;
 
         if let Some(err) = take_pending_error(&self.pending_errors) {
@@ -464,7 +730,11 @@ where
             return Err(err);
         }
 
-        prune_orphaned_active_tasks(&self.active_tasks, &self.untracked_tasks);
+        prune_orphaned_active_tasks(
+            &self.active_tasks,
+            &self.untracked_tasks,
+            &self.last_termination,
+        );
         prune_finished_untracked_tasks(&self.untracked_tasks);
 
         let progress_before = self.progress_epoch.get();
@@ -478,7 +748,11 @@ where
         progressed =
             progressed.saturating_add(flush_deferred_events(&self.event_tx, &self.deferred_events));
 
-        prune_orphaned_active_tasks(&self.active_tasks, &self.untracked_tasks);
+        prune_orphaned_active_tasks(
+            &self.active_tasks,
+            &self.untracked_tasks,
+            &self.last_termination,
+        );
         prune_finished_untracked_tasks(&self.untracked_tasks);
 
         let activity_after = self.activity.load();
@@ -491,6 +765,15 @@ where
         if let Some(err) = take_pending_error(&self.pending_errors) {
             return Err(err);
         }
+
+        record_trace(
+            &self.last_termination,
+            ShellTraceEvent::ShellDrained {
+                made_progress,
+                deferred_events: deferred_after,
+                in_flight: activity_after,
+            },
+        );
 
         Ok(usize::from(made_progress))
     }
@@ -522,6 +805,69 @@ where
 
     pub fn set_unhandled_effects_policy(&mut self, policy: UnhandledEffectPolicy) {
         self.unhandled_effects_policy.set(policy);
+    }
+
+    #[must_use]
+    pub fn trace_config(&self) -> ShellTraceConfig {
+        self.last_termination.borrow().trace.config()
+    }
+
+    pub fn set_trace_config(&mut self, config: ShellTraceConfig) {
+        self.last_termination.borrow_mut().trace.set_config(config);
+    }
+
+    #[must_use]
+    pub fn trace_snapshot(&self) -> Vec<ShellTraceEntry> {
+        self.last_termination.borrow().trace.snapshot()
+    }
+
+    pub fn take_trace(&mut self) -> Vec<ShellTraceEntry> {
+        self.last_termination.borrow_mut().trace.take()
+    }
+
+    pub fn clear_trace(&mut self) {
+        self.last_termination.borrow_mut().trace.clear();
+    }
+
+    pub(crate) fn record_trace_event(&self, event: ShellTraceEvent) {
+        record_trace(&self.last_termination, event);
+    }
+
+    #[must_use]
+    pub fn snapshot(&self) -> ShellSnapshot {
+        let mut active_tasks = self
+            .active_tasks
+            .borrow()
+            .iter()
+            .map(|(&lease_id, entry)| ShellTaskSnapshot {
+                lease_id,
+                owner_alive: entry.owner.has_owner(),
+                is_process_task: entry.is_process_task,
+                has_process_stdin_control: entry.process_controller.is_some(),
+            })
+            .collect::<Vec<_>>();
+        active_tasks.sort_by_key(|task| task.lease_id);
+
+        let mut active_subscriptions = self
+            .active_subscriptions
+            .borrow()
+            .keys()
+            .map(|key| ShellSubscriptionSnapshot {
+                key: format!("{key:?}"),
+            })
+            .collect::<Vec<_>>();
+        active_subscriptions.sort_by(|left, right| left.key.cmp(&right.key));
+
+        ShellSnapshot {
+            active_tasks,
+            active_subscriptions,
+            in_flight_count: self.activity.load(),
+            untracked_task_count: self.untracked_tasks.borrow().len(),
+            deferred_event_count: self.deferred_events.borrow().len(),
+            queued_command_count: self.queue.len(),
+            pending_error_count: self.pending_errors.borrow().len(),
+            last_termination: self.last_termination.borrow().last_termination.clone(),
+        }
     }
 
     pub(crate) fn reconcile_subscriptions_for_model(
@@ -571,7 +917,13 @@ where
         let mut changes = 0usize;
         for key in active_keys {
             let Some(entry) = desired_by_key.remove(&key) else {
-                cancel_active_subscription(&self.active_subscriptions, &self.untracked_tasks, &key);
+                cancel_active_subscription(
+                    &self.active_subscriptions,
+                    &self.untracked_tasks,
+                    &self.last_termination,
+                    &key,
+                    ShellCancellationReason::SubscriptionReconciled,
+                );
                 changes = changes.saturating_add(1);
                 continue;
             };
@@ -587,7 +939,13 @@ where
                 continue;
             }
 
-            cancel_active_subscription(&self.active_subscriptions, &self.untracked_tasks, &key);
+            cancel_active_subscription(
+                &self.active_subscriptions,
+                &self.untracked_tasks,
+                &self.last_termination,
+                &key,
+                ShellCancellationReason::SubscriptionReconciled,
+            );
             self.start_subscription(entry)?;
             changes = changes.saturating_add(1);
         }
@@ -601,19 +959,36 @@ where
             return Err(err);
         }
 
+        record_trace(
+            &self.last_termination,
+            ShellTraceEvent::SubscriptionsReconciled { changes },
+        );
+
         Ok(changes)
     }
 
     pub fn shutdown(&mut self) {
         self.closed.set(true);
         self.deferred_events.borrow_mut().clear();
-        drain_active_tasks_for_shutdown(&self.active_tasks, &self.untracked_tasks);
-        drain_active_subscriptions_for_shutdown(&self.active_subscriptions, &self.untracked_tasks);
-        request_shutdown_for_untracked_tasks(&self.untracked_tasks);
+        drain_active_tasks_for_shutdown(
+            &self.active_tasks,
+            &self.untracked_tasks,
+            &self.last_termination,
+        );
+        drain_active_subscriptions_for_shutdown(
+            &self.active_subscriptions,
+            &self.untracked_tasks,
+            &self.last_termination,
+        );
+        request_shutdown_for_untracked_tasks(&self.untracked_tasks, &self.last_termination);
     }
 
     pub fn wait_for_executors(&self) {
-        prune_orphaned_active_tasks(&self.active_tasks, &self.untracked_tasks);
+        prune_orphaned_active_tasks(
+            &self.active_tasks,
+            &self.untracked_tasks,
+            &self.last_termination,
+        );
         prune_finished_untracked_tasks(&self.untracked_tasks);
 
         if self.activity.load() == 0 {
@@ -621,12 +996,20 @@ where
         }
 
         while self.activity.load() > 0 {
-            prune_orphaned_active_tasks(&self.active_tasks, &self.untracked_tasks);
+            prune_orphaned_active_tasks(
+                &self.active_tasks,
+                &self.untracked_tasks,
+                &self.last_termination,
+            );
             prune_finished_untracked_tasks(&self.untracked_tasks);
             self.runtime.park(EXECUTOR_POLL_SLICE);
         }
 
-        prune_orphaned_active_tasks(&self.active_tasks, &self.untracked_tasks);
+        prune_orphaned_active_tasks(
+            &self.active_tasks,
+            &self.untracked_tasks,
+            &self.last_termination,
+        );
         prune_finished_untracked_tasks(&self.untracked_tasks);
     }
 
@@ -642,6 +1025,13 @@ where
 
         let mapper = Rc::new(RefCell::new(mapper));
         let token = next_task_token();
+        record_trace(
+            &self.last_termination,
+            ShellTraceEvent::SubscriptionStarted {
+                key: format!("{key:?}"),
+                driver: driver_name,
+            },
+        );
         let handle = spawn_subscription_runtime_task(
             key.clone(),
             Rc::clone(&mapper),
@@ -662,6 +1052,7 @@ where
             &self.pending_errors,
             &self.closed,
             &self.progress_epoch,
+            &self.last_termination,
         );
 
         self.active_subscriptions.borrow_mut().insert(
@@ -684,8 +1075,33 @@ fn keep_task_after_cancel(untracked_tasks: &UntrackedTasks, handle: TaskHandle) 
     }
 }
 
+fn record_trace(last_termination: &LastTermination, event: ShellTraceEvent) {
+    last_termination.borrow_mut().trace.record(event);
+}
+
+fn record_termination(
+    last_termination: &LastTermination,
+    target: ShellTerminationTarget,
+    reason: ShellTerminationReason,
+    lease_id: Option<u64>,
+    subscription_key: Option<String>,
+) {
+    let termination = ShellTerminationRecord {
+        target,
+        reason,
+        lease_id,
+        subscription_key,
+    };
+    let mut diagnostics = last_termination.borrow_mut();
+    diagnostics.last_termination = Some(termination.clone());
+    diagnostics
+        .trace
+        .record(ShellTraceEvent::Termination(termination));
+}
+
 fn cleanup_active_subscription_if_current<E, X>(
     active_subscriptions: &ActiveSubscriptions<E, X>,
+    last_termination: &LastTermination,
     key: &SubscriptionKey,
     token: u64,
 ) where
@@ -697,6 +1113,13 @@ fn cleanup_active_subscription_if_current<E, X>(
     {
         if entry.get().token == token {
             entry.remove();
+            record_termination(
+                last_termination,
+                ShellTerminationTarget::Subscription,
+                ShellTerminationReason::Completed,
+                None,
+                Some(format!("{key:?}")),
+            );
         }
     }
 }
@@ -760,13 +1183,31 @@ fn invalid_process_send_error(lease_id: u64, message: impl Into<String>) -> Shel
     )
 }
 
-fn cancel_active_task(active_tasks: &ActiveTasks, untracked_tasks: &UntrackedTasks, lease_id: u64) {
+fn cancel_active_task(
+    active_tasks: &ActiveTasks,
+    untracked_tasks: &UntrackedTasks,
+    last_termination: &LastTermination,
+    lease_id: u64,
+    cancellation: ShellCancellationReason,
+) {
     let removed_entry = {
         let mut active_tasks = active_tasks.borrow_mut();
         active_tasks.remove(&lease_id)
     };
 
     if let Some(entry) = removed_entry {
+        let target = if entry.is_process_task {
+            ShellTerminationTarget::Process
+        } else {
+            ShellTerminationTarget::Task
+        };
+        record_termination(
+            last_termination,
+            target,
+            ShellTerminationReason::Cancelled(cancellation),
+            Some(lease_id),
+            None,
+        );
         keep_task_after_cancel(untracked_tasks, entry.handle);
     }
 }
@@ -774,7 +1215,9 @@ fn cancel_active_task(active_tasks: &ActiveTasks, untracked_tasks: &UntrackedTas
 fn cancel_active_subscription<E, X>(
     active_subscriptions: &ActiveSubscriptions<E, X>,
     untracked_tasks: &UntrackedTasks,
+    last_termination: &LastTermination,
     key: &SubscriptionKey,
+    cancellation: ShellCancellationReason,
 ) where
     E: 'static,
     X: 'static,
@@ -785,6 +1228,13 @@ fn cancel_active_subscription<E, X>(
     };
 
     if let Some(entry) = removed_entry {
+        record_termination(
+            last_termination,
+            ShellTerminationTarget::Subscription,
+            ShellTerminationReason::Cancelled(cancellation),
+            None,
+            Some(format!("{key:?}")),
+        );
         keep_task_after_cancel(untracked_tasks, entry.handle);
     }
 }
@@ -806,10 +1256,19 @@ fn with_process_controller<T>(
 
 fn write_to_active_process(
     active_tasks: &ActiveTasks,
+    last_termination: &LastTermination,
     lease: TaskLease,
     bytes: Vec<u8>,
 ) -> Result<(), ShellError> {
     let lease_id = lease.id();
+    let byte_count = bytes.len();
+    record_trace(
+        last_termination,
+        ShellTraceEvent::ProcessControl {
+            lease_id,
+            action: ShellTraceProcessControl::Write { bytes: byte_count },
+        },
+    );
     with_process_controller(active_tasks, lease_id, |controller| {
         controller.write(lease_id, bytes)
     })
@@ -817,20 +1276,68 @@ fn write_to_active_process(
 
 fn close_active_process_stdin(
     active_tasks: &ActiveTasks,
+    last_termination: &LastTermination,
     lease: TaskLease,
 ) -> Result<(), ShellError> {
     let lease_id = lease.id();
+    record_trace(
+        last_termination,
+        ShellTraceEvent::ProcessControl {
+            lease_id,
+            action: ShellTraceProcessControl::CloseStdin,
+        },
+    );
     with_process_controller(active_tasks, lease_id, |controller| {
         controller.close_stdin(lease_id)
     })
 }
 
-fn cleanup_active_task_if_current(active_tasks: &ActiveTasks, lease_id: u64, token: u64) {
+fn cleanup_active_task_if_current(
+    active_tasks: &ActiveTasks,
+    last_termination: &LastTermination,
+    lease_id: u64,
+    token: u64,
+) {
+    if let std::collections::hash_map::Entry::Occupied(entry) =
+        active_tasks.borrow_mut().entry(lease_id)
+    {
+        if entry.get().token == token {
+            let removed = entry.remove();
+            let target = if removed.is_process_task {
+                ShellTerminationTarget::Process
+            } else {
+                ShellTerminationTarget::Task
+            };
+            record_termination(
+                last_termination,
+                target,
+                ShellTerminationReason::Completed,
+                Some(lease_id),
+                None,
+            );
+        }
+    }
+}
+
+fn cleanup_active_process_if_current(
+    active_tasks: &ActiveTasks,
+    last_termination: &LastTermination,
+    lease_id: u64,
+    token: u64,
+    reason: ShellTerminationReason,
+) {
     if let std::collections::hash_map::Entry::Occupied(entry) =
         active_tasks.borrow_mut().entry(lease_id)
     {
         if entry.get().token == token {
             entry.remove();
+            record_termination(
+                last_termination,
+                ShellTerminationTarget::Process,
+                reason,
+                Some(lease_id),
+                None,
+            );
         }
     }
 }
@@ -863,7 +1370,11 @@ fn abortable_task_is_alive(
     owner_alive && active_task_is_current(active_tasks, lease_id, token)
 }
 
-fn prune_orphaned_active_tasks(active_tasks: &ActiveTasks, untracked_tasks: &UntrackedTasks) {
+fn prune_orphaned_active_tasks(
+    active_tasks: &ActiveTasks,
+    untracked_tasks: &UntrackedTasks,
+    last_termination: &LastTermination,
+) {
     let orphaned = {
         let active_tasks = active_tasks.borrow();
         active_tasks
@@ -874,7 +1385,13 @@ fn prune_orphaned_active_tasks(active_tasks: &ActiveTasks, untracked_tasks: &Unt
     };
 
     for lease_id in orphaned {
-        cancel_active_task(active_tasks, untracked_tasks, lease_id);
+        cancel_active_task(
+            active_tasks,
+            untracked_tasks,
+            last_termination,
+            lease_id,
+            ShellCancellationReason::OwnerDropped,
+        );
     }
 }
 
@@ -888,13 +1405,29 @@ fn take_pending_error(pending_errors: &PendingErrors) -> Option<ShellError> {
     pending_errors.borrow_mut().pop_front()
 }
 
-fn drain_active_tasks_for_shutdown(active_tasks: &ActiveTasks, untracked_tasks: &UntrackedTasks) {
+fn drain_active_tasks_for_shutdown(
+    active_tasks: &ActiveTasks,
+    untracked_tasks: &UntrackedTasks,
+    last_termination: &LastTermination,
+) {
     let drained = {
         let mut active_tasks = active_tasks.borrow_mut();
         std::mem::take(&mut *active_tasks)
     };
 
-    for entry in drained.into_values() {
+    for (lease_id, entry) in drained {
+        let target = if entry.is_process_task {
+            ShellTerminationTarget::Process
+        } else {
+            ShellTerminationTarget::Task
+        };
+        record_termination(
+            last_termination,
+            target,
+            ShellTerminationReason::Cancelled(ShellCancellationReason::Shutdown),
+            Some(lease_id),
+            None,
+        );
         keep_task_after_cancel(untracked_tasks, entry.handle);
     }
 }
@@ -902,6 +1435,7 @@ fn drain_active_tasks_for_shutdown(active_tasks: &ActiveTasks, untracked_tasks: 
 fn drain_active_subscriptions_for_shutdown<E, X>(
     active_subscriptions: &ActiveSubscriptions<E, X>,
     untracked_tasks: &UntrackedTasks,
+    last_termination: &LastTermination,
 ) where
     E: 'static,
     X: 'static,
@@ -911,16 +1445,36 @@ fn drain_active_subscriptions_for_shutdown<E, X>(
         std::mem::take(&mut *active_subscriptions)
     };
 
-    for entry in drained.into_values() {
+    for (key, entry) in drained {
+        record_termination(
+            last_termination,
+            ShellTerminationTarget::Subscription,
+            ShellTerminationReason::Cancelled(ShellCancellationReason::Shutdown),
+            None,
+            Some(format!("{key:?}")),
+        );
         keep_task_after_cancel(untracked_tasks, entry.handle);
     }
 }
 
-fn request_shutdown_for_untracked_tasks(untracked_tasks: &UntrackedTasks) {
+fn request_shutdown_for_untracked_tasks(
+    untracked_tasks: &UntrackedTasks,
+    last_termination: &LastTermination,
+) {
     let drained = {
         let mut untracked_tasks = untracked_tasks.borrow_mut();
         std::mem::take(&mut *untracked_tasks)
     };
+
+    if !drained.is_empty() {
+        record_termination(
+            last_termination,
+            ShellTerminationTarget::Task,
+            ShellTerminationReason::Cancelled(ShellCancellationReason::Shutdown),
+            None,
+            None,
+        );
+    }
 
     let kept = drained
         .into_iter()
@@ -953,6 +1507,7 @@ fn route_command_iterative<E, X>(
     pending_errors: &PendingErrors,
     closed: &ClosedFlag,
     progress_epoch: &ProgressEpoch,
+    last_termination: &LastTermination,
 ) -> Result<(), ShellError>
 where
     E: 'static,
@@ -966,10 +1521,20 @@ where
         for step in command {
             match step {
                 CommandStep::Event(event) => {
+                    record_trace(
+                        last_termination,
+                        ShellTraceEvent::CommandStep(ShellTraceCommandStep::Event),
+                    );
                     route_event(event_tx, deferred_events, event)
                         .map_err(|_| ShellError::EventChannelClosed)?;
                 }
                 CommandStep::Effect(effect) => {
+                    record_trace(
+                        last_termination,
+                        ShellTraceEvent::CommandStep(ShellTraceCommandStep::Effect {
+                            effect_type: std::any::type_name::<X>(),
+                        }),
+                    );
                     if let Some(spawned) = run_effect_task(
                         effect,
                         None,
@@ -984,16 +1549,30 @@ where
                         pending_errors,
                         closed,
                         progress_epoch,
+                        last_termination,
                         queue,
                     )? {
                         untracked_tasks.borrow_mut().push(spawned.handle);
                     }
                 }
                 CommandStep::Abortable { lease, effect } => {
+                    record_trace(
+                        last_termination,
+                        ShellTraceEvent::CommandStep(ShellTraceCommandStep::Abortable {
+                            lease_id: lease.id(),
+                            effect_type: std::any::type_name::<X>(),
+                        }),
+                    );
                     let ctx = EffectContext::new(resources.as_ref());
                     let task = effect_handler(effect, &ctx)?;
                     cancel_blocking_abortable_task(&task)?;
-                    cancel_active_task(active_tasks, untracked_tasks, lease.id());
+                    cancel_active_task(
+                        active_tasks,
+                        untracked_tasks,
+                        last_termination,
+                        lease.id(),
+                        ShellCancellationReason::Replacement,
+                    );
                     if let Some(spawned) = spawn_task(
                         task,
                         Some(lease),
@@ -1008,6 +1587,7 @@ where
                         pending_errors,
                         closed,
                         progress_epoch,
+                        last_termination,
                         queue,
                     )? {
                         if let (Some(lease_id), Some(owner), Some(token)) =
@@ -1020,6 +1600,7 @@ where
                                     token,
                                     handle: spawned.handle,
                                     process_controller: spawned.process_controller,
+                                    is_process_task: spawned.is_process_task,
                                 },
                             );
                         } else {
@@ -1028,13 +1609,38 @@ where
                     }
                 }
                 CommandStep::Cancel { lease } => {
-                    cancel_active_task(active_tasks, untracked_tasks, lease.id());
+                    record_trace(
+                        last_termination,
+                        ShellTraceEvent::CommandStep(ShellTraceCommandStep::Cancel {
+                            lease_id: lease.id(),
+                        }),
+                    );
+                    cancel_active_task(
+                        active_tasks,
+                        untracked_tasks,
+                        last_termination,
+                        lease.id(),
+                        ShellCancellationReason::ExplicitCommand,
+                    );
                 }
                 CommandStep::ProcessWrite { lease, bytes } => {
-                    write_to_active_process(active_tasks, lease, bytes)?;
+                    record_trace(
+                        last_termination,
+                        ShellTraceEvent::CommandStep(ShellTraceCommandStep::ProcessWrite {
+                            lease_id: lease.id(),
+                            bytes: bytes.len(),
+                        }),
+                    );
+                    write_to_active_process(active_tasks, last_termination, lease, bytes)?;
                 }
                 CommandStep::ProcessCloseStdin { lease } => {
-                    close_active_process_stdin(active_tasks, lease)?;
+                    record_trace(
+                        last_termination,
+                        ShellTraceEvent::CommandStep(ShellTraceCommandStep::ProcessCloseStdin {
+                            lease_id: lease.id(),
+                        }),
+                    );
+                    close_active_process_stdin(active_tasks, last_termination, lease)?;
                 }
             }
         }
@@ -1058,6 +1664,7 @@ fn run_effect_task<E, X>(
     pending_errors: &PendingErrors,
     closed: &ClosedFlag,
     progress_epoch: &ProgressEpoch,
+    last_termination: &LastTermination,
     queue: &mut VecDeque<Command<E, X>>,
 ) -> Result<Option<SpawnedTask>, ShellError>
 where
@@ -1080,6 +1687,7 @@ where
         pending_errors,
         closed,
         progress_epoch,
+        last_termination,
         queue,
     )
 }
@@ -1178,6 +1786,7 @@ fn route_subscription_update<E, X>(
     pending_errors: &PendingErrors,
     closed: &ClosedFlag,
     progress_epoch: &ProgressEpoch,
+    last_termination: &LastTermination,
 ) where
     E: 'static,
     X: 'static,
@@ -1199,6 +1808,7 @@ fn route_subscription_update<E, X>(
         pending_errors,
         closed,
         progress_epoch,
+        last_termination,
     );
 }
 
@@ -1223,6 +1833,7 @@ fn spawn_subscription_runtime_task<E, X>(
     pending_errors: &PendingErrors,
     closed: &ClosedFlag,
     progress_epoch: &ProgressEpoch,
+    last_termination: &LastTermination,
 ) -> TaskHandle
 where
     E: 'static,
@@ -1240,11 +1851,13 @@ where
     let pending_errors = Rc::clone(pending_errors);
     let closed = Rc::clone(closed);
     let progress_epoch = Rc::clone(progress_epoch);
+    let last_termination = Rc::clone(last_termination);
     let mapper_for_task = Rc::clone(&mapper);
     activity.inc();
     let lifecycle_guard = SubscriptionLifecycleGuard::new(
         activity.clone(),
         Rc::clone(&active_subscriptions),
+        Rc::clone(&last_termination),
         key.clone(),
         token,
     );
@@ -1284,6 +1897,13 @@ where
                 return;
             }
 
+            record_trace(
+                &last_termination,
+                ShellTraceEvent::SubscriptionUpdated {
+                    key: format!("{key:?}"),
+                },
+            );
+
             route_subscription_update(
                 &mapper_for_task,
                 update,
@@ -1298,6 +1918,7 @@ where
                 &pending_errors,
                 &closed,
                 &progress_epoch,
+                &last_termination,
             );
         }
     });
@@ -1325,13 +1946,24 @@ fn route_process_update<E, X>(
     pending_errors: &PendingErrors,
     closed: &ClosedFlag,
     progress_epoch: &ProgressEpoch,
+    last_termination: &LastTermination,
 ) where
     E: 'static,
     X: 'static,
 {
-    if matches!(update, ProcessUpdate::Exited(_)) {
+    if let ProcessUpdate::Exited(result) = &update {
         if let (Some(lease_id), Some(token)) = (lease_id, token) {
-            cleanup_active_task_if_current(active_tasks, lease_id, token);
+            let reason = match result {
+                Ok(_) => ShellTerminationReason::Completed,
+                Err(_) => ShellTerminationReason::Failed,
+            };
+            cleanup_active_process_if_current(
+                active_tasks,
+                last_termination,
+                lease_id,
+                token,
+                reason,
+            );
         }
     }
 
@@ -1349,6 +1981,7 @@ fn route_process_update<E, X>(
             pending_errors,
             closed,
             progress_epoch,
+            last_termination,
         );
     }
 }
@@ -1455,6 +2088,7 @@ fn spawn_process_runtime_task<E, X>(
     pending_errors: &PendingErrors,
     closed: &ClosedFlag,
     progress_epoch: &ProgressEpoch,
+    last_termination: &LastTermination,
 ) -> SpawnedTask
 where
     E: 'static,
@@ -1471,11 +2105,17 @@ where
     let pending_errors = Rc::clone(pending_errors);
     let closed = Rc::clone(closed);
     let progress_epoch = Rc::clone(progress_epoch);
+    let last_termination = Rc::clone(last_termination);
     let token = lease_id.map(|_| next_task_token());
     let owner_for_task = owner.clone();
     activity.inc();
-    let lifecycle_guard =
-        TaskLifecycleGuard::new(activity.clone(), Rc::clone(&active_tasks), lease_id, token);
+    let lifecycle_guard = TaskLifecycleGuard::new(
+        activity.clone(),
+        Rc::clone(&active_tasks),
+        Rc::clone(&last_termination),
+        lease_id,
+        token,
+    );
 
     let mut stdin = child.stdin.take();
     let mut stdout = ProcessOutputDriver::stdout(child.stdout.take(), spec.stdout_mode());
@@ -1552,6 +2192,7 @@ where
                         &pending_errors,
                         &closed,
                         &progress_epoch,
+                        &last_termination,
                     );
                 }
                 return;
@@ -1683,6 +2324,7 @@ where
                                 &pending_errors,
                                 &closed,
                                 &progress_epoch,
+                                &last_termination,
                             );
                         }
                     }
@@ -1726,6 +2368,7 @@ where
                                 &pending_errors,
                                 &closed,
                                 &progress_epoch,
+                                &last_termination,
                             );
                         }
                     }
@@ -1758,6 +2401,7 @@ where
             Some(TaskCancelHandle::Process(Some(cancel_tx))),
         ),
         process_controller,
+        is_process_task: true,
     }
 }
 
@@ -1776,6 +2420,7 @@ fn spawn_task<E, X>(
     pending_errors: &PendingErrors,
     closed: &ClosedFlag,
     progress_epoch: &ProgressEpoch,
+    last_termination: &LastTermination,
     queue: &mut VecDeque<Command<E, X>>,
 ) -> Result<Option<SpawnedTask>, ShellError>
 where
@@ -1797,6 +2442,14 @@ where
                 return Ok(None);
             }
 
+            record_trace(
+                last_termination,
+                ShellTraceEvent::TaskSpawned {
+                    lease_id,
+                    kind: ShellTraceTaskKind::Future,
+                },
+            );
+
             let runtime = runtime.clone();
             let event_tx = event_tx.clone();
             let effect_handler = Rc::clone(effect_handler);
@@ -1808,12 +2461,14 @@ where
             let pending_errors = Rc::clone(pending_errors);
             let closed = Rc::clone(closed);
             let progress_epoch = Rc::clone(progress_epoch);
+            let last_termination = Rc::clone(last_termination);
             let token = lease_id.map(|_| next_task_token());
             let owner_for_task = owner.clone();
             activity.inc();
             let lifecycle_guard = TaskLifecycleGuard::new(
                 activity.clone(),
                 Rc::clone(&active_tasks),
+                Rc::clone(&last_termination),
                 lease_id,
                 token,
             );
@@ -1844,6 +2499,7 @@ where
                     &pending_errors,
                     &closed,
                     &progress_epoch,
+                    &last_termination,
                 );
             });
 
@@ -1853,12 +2509,21 @@ where
                 token,
                 handle: TaskHandle::abort_on_drop(handle),
                 process_controller: None,
+                is_process_task: false,
             }))
         }
         Task::Stream(stream) => {
             if owner.as_ref().is_some_and(|owner| !owner.has_owner()) {
                 return Ok(None);
             }
+
+            record_trace(
+                last_termination,
+                ShellTraceEvent::TaskSpawned {
+                    lease_id,
+                    kind: ShellTraceTaskKind::Stream,
+                },
+            );
 
             let runtime = runtime.clone();
             let event_tx = event_tx.clone();
@@ -1871,12 +2536,14 @@ where
             let pending_errors = Rc::clone(pending_errors);
             let closed = Rc::clone(closed);
             let progress_epoch = Rc::clone(progress_epoch);
+            let last_termination = Rc::clone(last_termination);
             let token = lease_id.map(|_| next_task_token());
             let owner_for_task = owner.clone();
             activity.inc();
             let lifecycle_guard = TaskLifecycleGuard::new(
                 activity.clone(),
                 Rc::clone(&active_tasks),
+                Rc::clone(&last_termination),
                 lease_id,
                 token,
             );
@@ -1921,6 +2588,7 @@ where
                         &pending_errors,
                         &closed,
                         &progress_epoch,
+                        &last_termination,
                     );
 
                     if closed.get() {
@@ -1951,12 +2619,21 @@ where
                 token,
                 handle: TaskHandle::abort_on_drop(handle),
                 process_controller: None,
+                is_process_task: false,
             }))
         }
         Task::Process(task) => {
             if owner.as_ref().is_some_and(|owner| !owner.has_owner()) {
                 return Ok(None);
             }
+
+            record_trace(
+                last_termination,
+                ShellTraceEvent::TaskSpawned {
+                    lease_id,
+                    kind: ShellTraceTaskKind::Process,
+                },
+            );
 
             let (spec, mut on_update) = task.into_parts();
             let child = match crate::process::spawn(&spec) {
@@ -1996,12 +2673,21 @@ where
                 pending_errors,
                 closed,
                 progress_epoch,
+                last_termination,
             )))
         }
         Task::Blocking(task) => {
             if owner.is_some() {
                 return Err(ShellError::AbortableBlockingTask);
             }
+
+            record_trace(
+                last_termination,
+                ShellTraceEvent::TaskSpawned {
+                    lease_id: None,
+                    kind: ShellTraceTaskKind::Blocking,
+                },
+            );
 
             let runtime = runtime.clone();
             let future = task.into_future(runtime.clone());
@@ -2015,9 +2701,15 @@ where
             let pending_errors = Rc::clone(pending_errors);
             let closed = Rc::clone(closed);
             let progress_epoch = Rc::clone(progress_epoch);
+            let last_termination = Rc::clone(last_termination);
             activity.inc();
-            let lifecycle_guard =
-                TaskLifecycleGuard::new(activity.clone(), Rc::clone(&active_tasks), None, None);
+            let lifecycle_guard = TaskLifecycleGuard::new(
+                activity.clone(),
+                Rc::clone(&active_tasks),
+                Rc::clone(&last_termination),
+                None,
+                None,
+            );
 
             let runtime_for_task = runtime.clone();
             let handle = runtime.spawn(async move {
@@ -2040,6 +2732,7 @@ where
                     &pending_errors,
                     &closed,
                     &progress_epoch,
+                    &last_termination,
                 );
             });
 
@@ -2049,12 +2742,21 @@ where
                 token: None,
                 handle: TaskHandle::wait_for_completion(handle, None),
                 process_controller: None,
+                is_process_task: false,
             }))
         }
         Task::BlockingCooperative(task) => {
             if owner.as_ref().is_some_and(|owner| !owner.has_owner()) {
                 return Ok(None);
             }
+
+            record_trace(
+                last_termination,
+                ShellTraceEvent::TaskSpawned {
+                    lease_id,
+                    kind: ShellTraceTaskKind::BlockingCooperative,
+                },
+            );
 
             let runtime = runtime.clone();
             let cancel = BlockingCancelToken::new();
@@ -2069,12 +2771,14 @@ where
             let pending_errors = Rc::clone(pending_errors);
             let closed = Rc::clone(closed);
             let progress_epoch = Rc::clone(progress_epoch);
+            let last_termination = Rc::clone(last_termination);
             let token = lease_id.map(|_| next_task_token());
             let owner_for_task = owner.clone();
             activity.inc();
             let lifecycle_guard = TaskLifecycleGuard::new(
                 activity.clone(),
                 Rc::clone(&active_tasks),
+                Rc::clone(&last_termination),
                 lease_id,
                 token,
             );
@@ -2109,6 +2813,7 @@ where
                     &pending_errors,
                     &closed,
                     &progress_epoch,
+                    &last_termination,
                 );
             });
 
@@ -2121,6 +2826,7 @@ where
                     Some(TaskCancelHandle::Blocking(cancel)),
                 ),
                 process_controller: None,
+                is_process_task: false,
             }))
         }
     }
@@ -2147,6 +2853,7 @@ fn route_spawned_command<E, X>(
     pending_errors: &PendingErrors,
     closed: &ClosedFlag,
     progress_epoch: &ProgressEpoch,
+    last_termination: &LastTermination,
 ) where
     E: 'static,
     X: 'static,
@@ -2173,6 +2880,7 @@ fn route_spawned_command<E, X>(
         pending_errors,
         closed,
         progress_epoch,
+        last_termination,
     ) {
         Ok(()) => {}
         Err(err) => {

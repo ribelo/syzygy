@@ -41,7 +41,7 @@ enum AppEffect {}
 /// Notice `&mut Score`. We use the generated wrapper, keeping it distinct from
 /// any other `i32` fields in the model.
 fn add_points(points: i32, score: &mut Score) -> Command<AppEvent, AppEffect> {
-    **score += points;
+    *score.get_mut() += points;
     Command::none()
 }
 

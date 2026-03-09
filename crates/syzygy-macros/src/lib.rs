@@ -85,6 +85,7 @@ fn expand_model(input: DeriveInput) -> syn::Result<TokenStream2> {
                         }
                     }
 
+                    #[allow(unexpected_cfgs)]
                     #[cfg(feature = "shell")]
                     impl #impl_generics syzygy::extract::SubscriptionPart<#model_ident #ty_generics> for #field_ty #where_clause {
                         #[track_caller]
@@ -119,9 +120,72 @@ fn expand_model(input: DeriveInput) -> syn::Result<TokenStream2> {
                     ));
                 }
 
+                let option_helpers = option_inner_type(field_ty).map_or_else(TokenStream2::new, |inner_ty| {
+                    quote! {
+                        impl #impl_generics #wrapper_ident #ty_generics #where_clause {
+                            #[must_use]
+                            pub fn is_some(&self) -> bool {
+                                self.0.is_some()
+                            }
+
+                            #[must_use]
+                            pub fn is_none(&self) -> bool {
+                                self.0.is_none()
+                            }
+
+                            #[must_use]
+                            pub fn as_ref(&self) -> ::core::option::Option<&#inner_ty> {
+                                self.0.as_ref()
+                            }
+
+                            pub fn as_mut(&mut self) -> ::core::option::Option<&mut #inner_ty> {
+                                self.0.as_mut()
+                            }
+
+                            pub fn insert(&mut self, value: #inner_ty) -> &mut #inner_ty {
+                                self.0.insert(value)
+                            }
+
+                            pub fn get_or_insert(&mut self, value: #inner_ty) -> &mut #inner_ty {
+                                self.0.get_or_insert(value)
+                            }
+
+                            pub fn take(&mut self) -> ::core::option::Option<#inner_ty> {
+                                self.0.take()
+                            }
+
+                            pub fn clear(&mut self) {
+                                self.0 = ::core::option::Option::None;
+                            }
+                        }
+                    }
+                });
+
                 wrappers.push(quote! {
                     #[repr(transparent)]
                     pub struct #wrapper_ident #struct_generics (#field_ty) #where_clause;
+
+                    impl #impl_generics #wrapper_ident #ty_generics #where_clause {
+                        #[allow(clippy::ref_option)]
+                        #[must_use]
+                        pub fn get(&self) -> &#field_ty {
+                            &self.0
+                        }
+
+                        #[allow(clippy::ref_option)]
+                        pub fn get_mut(&mut self) -> &mut #field_ty {
+                            &mut self.0
+                        }
+
+                        pub fn set(&mut self, value: #field_ty) {
+                            self.0 = value;
+                        }
+
+                        #[must_use]
+                        pub fn replace(&mut self, value: #field_ty) -> #field_ty {
+                            ::core::mem::replace(&mut self.0, value)
+                        }
+                    }
 
                     impl #impl_generics ::core::ops::Deref for #wrapper_ident #ty_generics #where_clause {
                         type Target = #field_ty;
@@ -150,6 +214,7 @@ fn expand_model(input: DeriveInput) -> syn::Result<TokenStream2> {
                         }
                     }
 
+                    #[allow(unexpected_cfgs)]
                     #[cfg(feature = "shell")]
                     impl #impl_generics syzygy::extract::SubscriptionPart<#model_ident #ty_generics> for #wrapper_ident #ty_generics #where_clause {
                         #[track_caller]
@@ -176,6 +241,8 @@ fn expand_model(input: DeriveInput) -> syn::Result<TokenStream2> {
                             unsafe { &mut *ptr }
                         }
                     }
+
+                    #option_helpers
                 });
             }
         }
@@ -305,4 +372,27 @@ fn split_generics(
     };
     let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
     (struct_generics, impl_generics, ty_generics, where_clause)
+}
+
+fn option_inner_type(field_ty: &syn::Type) -> Option<syn::Type> {
+    let syn::Type::Path(type_path) = field_ty else {
+        return None;
+    };
+    if type_path.qself.is_some() {
+        return None;
+    }
+
+    let segment = type_path.path.segments.last()?;
+    if segment.ident != "Option" {
+        return None;
+    }
+
+    let syn::PathArguments::AngleBracketed(arguments) = &segment.arguments else {
+        return None;
+    };
+    let first = arguments.args.first()?;
+    let syn::GenericArgument::Type(inner_ty) = first else {
+        return None;
+    };
+    Some(inner_ty.clone())
 }

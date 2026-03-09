@@ -9,6 +9,9 @@ use crate::resource::{Resource, ResourceMap};
 #[cfg(feature = "shell")]
 use crate::subscription::Subscription;
 
+const EXTRACTION_PROGRAMMER_ERROR_HINT: &str =
+    "This is a programmer error; adjust handler extractors to avoid overlapping borrows";
+
 // ── Effect side ─────────────────────────────────────────────────────
 
 pub struct EffectContext<'a> {
@@ -40,7 +43,7 @@ pub trait FromEffectContext {
 
 fn panic_missing_resource<T: Resource>(caller: &'static std::panic::Location<'static>) -> ! {
     panic!(
-        "Resource `{}` not found in ResourceMap. Register it with .with_resource() (requested at {}:{})",
+        "Effect resource `{}` is not registered. Register it with .with_resource() during builder setup. This is a programmer error (requested at {}:{})",
         std::any::type_name::<T>(),
         caller.file(),
         caller.line()
@@ -255,23 +258,23 @@ impl<M> EventContext<M> {
     pub fn track_field_borrow(&self, field_index: u32, field_name: &str) {
         assert!(
             !self.whole_model_mut.get(),
-            "field '{field_name}' overlaps already-borrowed mutable region"
+            "field '{field_name}' overlaps already-borrowed mutable region; {EXTRACTION_PROGRAMMER_ERROR_HINT}"
         );
         assert!(
             self.whole_model_immut.get() == 0,
-            "field '{field_name}' overlaps already-borrowed immutable region"
+            "field '{field_name}' overlaps already-borrowed immutable region; {EXTRACTION_PROGRAMMER_ERROR_HINT}"
         );
 
         let fields_mut = self.fields_mut.get();
         assert!(
             !check_field_bit(fields_mut, field_index, field_name),
-            "field '{field_name}' (index {field_index}) already borrowed mutably in this handler"
+            "field '{field_name}' (index {field_index}) already borrowed mutably in this handler; {EXTRACTION_PROGRAMMER_ERROR_HINT}"
         );
 
         let fields_immut = self.fields_immut.get();
         assert!(
             !check_field_bit(fields_immut, field_index, field_name),
-            "field '{field_name}' overlaps already-borrowed immutable region"
+            "field '{field_name}' overlaps already-borrowed immutable region; {EXTRACTION_PROGRAMMER_ERROR_HINT}"
         );
 
         self.fields_mut
@@ -282,13 +285,13 @@ impl<M> EventContext<M> {
     pub fn track_field_immut(&self, field_index: u32, field_name: &str) {
         assert!(
             !self.whole_model_mut.get(),
-            "field '{field_name}' overlaps already-borrowed mutable region"
+            "field '{field_name}' overlaps already-borrowed mutable region; {EXTRACTION_PROGRAMMER_ERROR_HINT}"
         );
 
         let fields_mut = self.fields_mut.get();
         assert!(
             !check_field_bit(fields_mut, field_index, field_name),
-            "field '{field_name}' overlaps already-borrowed mutable region"
+            "field '{field_name}' overlaps already-borrowed mutable region; {EXTRACTION_PROGRAMMER_ERROR_HINT}"
         );
 
         let fields_immut = self.fields_immut.get();
@@ -300,19 +303,19 @@ impl<M> EventContext<M> {
     fn track_whole_model_mut(&self) {
         assert!(
             !self.whole_model_mut.get(),
-            "field 'model' overlaps already-borrowed mutable region"
+            "field 'model' overlaps already-borrowed mutable region; {EXTRACTION_PROGRAMMER_ERROR_HINT}"
         );
         assert!(
             self.whole_model_immut.get() == 0,
-            "field 'model' overlaps already-borrowed immutable region"
+            "field 'model' overlaps already-borrowed immutable region; {EXTRACTION_PROGRAMMER_ERROR_HINT}"
         );
         assert!(
             !check_any_field_set(self.fields_mut.get()),
-            "field 'model' overlaps already-borrowed mutable region"
+            "field 'model' overlaps already-borrowed mutable region; {EXTRACTION_PROGRAMMER_ERROR_HINT}"
         );
         assert!(
             !check_any_field_set(self.fields_immut.get()),
-            "field 'model' overlaps already-borrowed immutable region"
+            "field 'model' overlaps already-borrowed immutable region; {EXTRACTION_PROGRAMMER_ERROR_HINT}"
         );
 
         self.whole_model_mut.set(true);
@@ -322,18 +325,22 @@ impl<M> EventContext<M> {
     fn track_whole_model_immut(&self) {
         assert!(
             !self.whole_model_mut.get(),
-            "field 'model' overlaps already-borrowed mutable region"
+            "field 'model' overlaps already-borrowed mutable region; {EXTRACTION_PROGRAMMER_ERROR_HINT}"
         );
         assert!(
             !check_any_field_set(self.fields_mut.get()),
-            "field 'model' overlaps already-borrowed mutable region"
+            "field 'model' overlaps already-borrowed mutable region; {EXTRACTION_PROGRAMMER_ERROR_HINT}"
         );
 
         let next = self
             .whole_model_immut
             .get()
             .checked_add(1)
-            .unwrap_or_else(|| panic!("field 'model' exceeded immutable borrow tracking limit"));
+            .unwrap_or_else(|| {
+                panic!(
+                    "field 'model' exceeded immutable borrow tracking limit; {EXTRACTION_PROGRAMMER_ERROR_HINT}"
+                )
+            });
         self.whole_model_immut.set(next);
     }
 
@@ -414,7 +421,7 @@ fn check_any_field_set(bits: [u64; 4]) -> bool {
 fn field_bit(field_index: u32, field_name: &str) -> (usize, u64) {
     assert!(
         field_index < 256,
-        "field '{field_name}' index {field_index} exceeds borrow tracker capacity (256)",
+        "field '{field_name}' index {field_index} exceeds borrow tracker capacity (256); {EXTRACTION_PROGRAMMER_ERROR_HINT}",
     );
 
     let word = (field_index / 64) as usize;
@@ -1045,6 +1052,24 @@ mod tests {
 
         assert!(file.ends_with("src/extract.rs"));
         assert_eq!(line, expected_line.get());
+    }
+
+    #[test]
+    fn extraction_overlap_panic_includes_programmer_error_hint() {
+        let mut model = AppModel {
+            counter: 0,
+            name: String::new(),
+        };
+
+        let (_file, _line, message) = capture_panic_message_and_location(|| {
+            let ctx = EventContext::new(&mut model);
+            let _first = Counter::extract_mut(&ctx);
+            let _second = Counter::extract_mut(&ctx);
+        });
+
+        assert!(message.contains("already borrowed mutably"));
+        assert!(message.contains("programmer error"));
+        assert!(message.contains("overlapping borrows"));
     }
 
     #[test]
@@ -2090,6 +2115,7 @@ mod tests {
         assert!(line > 0);
         assert!(message.contains("MissingResource"));
         assert!(message.contains("Register it with .with_resource()"));
+        assert!(message.contains("programmer error"));
         assert!(message.contains("src/extract.rs"));
         assert!(message.contains(&expected_line.get().to_string()));
     }

@@ -1,7 +1,5 @@
 use std::time::Duration;
 
-use futures::stream;
-use futures::StreamExt;
 use syzygy::prelude::*;
 
 #[derive(Clone, Debug)]
@@ -41,18 +39,10 @@ impl SubscriptionDriver for WeatherPollDriver {
     type Update = String;
 
     fn subscribe(&self, spec: Self::Spec) -> SubscriptionStream<Self::Update> {
-        stream::unfold(false, move |loaded_once| {
-            let every = spec.every;
-            async move {
-                if loaded_once {
-                    syzygy::runtime::sleep(every).await;
-                }
-
-                let json = "{\"temp_c\":21,\"summary\":\"clear\"}".to_owned();
-                Some((json, true))
-            }
+        let interval = spec.every;
+        Self::poll(spec, interval, |_spec| async move {
+            "{\"temp_c\":21,\"summary\":\"clear\"}".to_owned()
         })
-        .boxed_local()
     }
 }
 

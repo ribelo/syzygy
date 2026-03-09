@@ -26,9 +26,11 @@ enum AppEffect {
 /// ## Why use loading states?
 ///
 /// While the async operation occurs, our pure UI state needs to reflect the pending status.
-/// We update `is_loading` synchronously before returning the asynchronous effect.
+/// We update `is_loading` synchronously before returning a one-shot effect.
+/// This is finite event-triggered work, so `Command::effect(...)` + `Task::once(...)`
+/// is the right shape (not a `Subscription`).
 fn fetch_data(is_loading: &mut IsLoading) -> Command<AppEvent, AppEffect> {
-    **is_loading = true;
+    is_loading.set(true);
     Command::effect(AppEffect::MakeHttpRequest)
 }
 
@@ -37,13 +39,13 @@ fn fetch_success(
     data: &mut Data,
     is_loading: &mut IsLoading,
 ) -> Command<AppEvent, AppEffect> {
-    **data = Some(payload);
-    **is_loading = false;
+    data.set(Some(payload));
+    is_loading.set(false);
     Command::none()
 }
 
 fn fetch_error(_err: String, is_loading: &mut IsLoading) -> Command<AppEvent, AppEffect> {
-    **is_loading = false;
+    is_loading.set(false);
     Command::none()
 }
 
@@ -57,7 +59,7 @@ fn handle_event(event: AppEvent, ctx: &EventContext<AppModel>) -> Command<AppEve
 
 /// ## Why use async functions for effects?
 ///
-/// Async functions that return `Command` are automatically inferred as `Task::future`
+/// Async functions that return `Command` are automatically inferred as `Task::once`
 /// by the `EffectHandler` macro implementation. This allows you to write natural
 /// asynchronous code inside effect handlers.
 ///
@@ -79,7 +81,7 @@ async fn make_http_request((): ()) -> Command<AppEvent, AppEffect> {
 
 fn handle_effect(effect: AppEffect, ctx: &EffectContext<'_>) -> Task<AppEvent, AppEffect> {
     match effect {
-        // `handle!` on an `async fn` automatically constructs a `Task::Future`
+        // One-shot request: finite task, started by explicit event.
         AppEffect::MakeHttpRequest => handle!(make_http_request, ctx),
     }
 }

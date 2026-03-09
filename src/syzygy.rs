@@ -3,7 +3,7 @@ use std::time::Duration;
 use crate::command::{Command, CommandStep};
 use crate::core::Core;
 use crate::error::ShellError;
-use crate::shell::Shell;
+use crate::shell::{Shell, ShellTraceConfig, ShellTraceEvent};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum UnhandledEffectPolicy {
@@ -20,12 +20,14 @@ impl Default for UnhandledEffectPolicy {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DiagnosticsConfig {
     pub unhandled_effects: UnhandledEffectPolicy,
+    pub trace: ShellTraceConfig,
 }
 
 impl Default for DiagnosticsConfig {
     fn default() -> Self {
         Self {
             unhandled_effects: UnhandledEffectPolicy::Error,
+            trace: ShellTraceConfig::default(),
         }
     }
 }
@@ -34,6 +36,12 @@ impl DiagnosticsConfig {
     #[must_use]
     pub fn unhandled_effects(mut self, policy: UnhandledEffectPolicy) -> Self {
         self.unhandled_effects = policy;
+        self
+    }
+
+    #[must_use]
+    pub fn trace(mut self, trace: ShellTraceConfig) -> Self {
+        self.trace = trace;
         self
     }
 }
@@ -101,6 +109,7 @@ where
         config: SyzygyConfig,
     ) -> Self {
         shell.set_unhandled_effects_policy(config.diagnostics.unhandled_effects);
+        shell.set_trace_config(config.diagnostics.trace);
         Self {
             core,
             shell,
@@ -175,6 +184,7 @@ where
     pub fn set_config(&mut self, config: SyzygyConfig) {
         self.shell
             .set_unhandled_effects_policy(config.diagnostics.unhandled_effects);
+        self.shell.set_trace_config(config.diagnostics.trace);
         self.config = config;
     }
 
@@ -207,6 +217,7 @@ where
 
     let mut boot_work = 0usize;
     if let Some(boot_command) = shell.take_boot_command_for_model(core.model()) {
+        shell.record_trace_event(ShellTraceEvent::BootCommandDispatched);
         let mut non_event_steps = Vec::new();
         for step in boot_command {
             match step {
@@ -223,7 +234,11 @@ where
             boot_work = 1;
         }
     }
-    let core_work = core.process_events_try_into(|command| shell.dispatch_command(command))?;
+    let core_work = core.process_events_try_into(|command| {
+        shell.record_trace_event(ShellTraceEvent::CoreEventCommandDispatched);
+        shell.dispatch_command(command)
+    })?;
+    shell.record_trace_event(ShellTraceEvent::CoreEventsProcessed { count: core_work });
     let subscription_work = shell.reconcile_subscriptions_for_model(core.model())?;
     let shell_work = shell.drain()?;
     Ok(boot_work > 0 || core_work > 0 || subscription_work > 0 || shell_work > 0)

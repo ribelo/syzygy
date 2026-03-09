@@ -55,9 +55,16 @@ pub mod prelude {
     #[cfg(feature = "shell")]
     pub use crate::runner_tester::RunnerTester;
     #[cfg(feature = "shell")]
-    pub use crate::shell::Shell;
+    pub use crate::shell::{
+        Shell, ShellCancellationReason, ShellSnapshot, ShellSubscriptionSnapshot,
+        ShellTaskSnapshot, ShellTerminationReason, ShellTerminationRecord, ShellTerminationTarget,
+        ShellTraceCommandStep, ShellTraceConfig, ShellTraceEntry, ShellTraceEvent,
+        ShellTraceProcessControl, ShellTraceTaskKind,
+    };
     #[cfg(feature = "shell")]
-    pub use crate::subscription::{Subscription, SubscriptionDriver, SubscriptionStream};
+    pub use crate::subscription::{
+        Subscription, SubscriptionDriver, SubscriptionPollStart, SubscriptionStream,
+    };
     #[cfg(feature = "shell")]
     pub use crate::syzygy::{
         DiagnosticsConfig, Runner, Syzygy, SyzygyConfig, UnhandledEffectPolicy,

@@ -9,6 +9,10 @@ use std::time::{Duration, Instant};
 use futures::{stream, StreamExt};
 use syzygy::error::{CoreError, ShellError};
 use syzygy::prelude::*;
+use syzygy::shell::{
+    ShellCancellationReason, ShellTerminationReason, ShellTerminationTarget, ShellTraceCommandStep,
+    ShellTraceConfig, ShellTraceEvent, ShellTraceTaskKind,
+};
 
 #[test]
 fn bounded_event_channel_surfaces_channel_full() {
@@ -994,6 +998,496 @@ fn dropping_abortable_lease_cancels_running_stream() {
         "shell should be idle after abortable stream ownership disappears"
     );
     assert_eq!(runner.model().ticks, 0);
+}
+
+#[test]
+fn shell_snapshot_reports_active_task_subscription_and_queue_counts() {
+    #[derive(Debug, Clone)]
+    enum Event {
+        Start,
+        Tick,
+    }
+
+    #[derive(Debug, Clone)]
+    enum Effect {
+        Wait,
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+    enum Key {
+        Clock,
+    }
+
+    #[derive(Debug, Default, Model)]
+    struct Model {
+        #[model(wrapper = Running)]
+        running: bool,
+    }
+
+    fn describe(running: &Running) -> Subscription<Event, Effect> {
+        if !**running {
+            return Subscription::none();
+        }
+
+        Subscription::every(Key::Clock, Duration::from_secs(60), Event::Tick)
+    }
+
+    fn handle_subscriptions(ctx: &SubscriptionContext<Model>) -> Subscription<Event, Effect> {
+        handle!(describe, ctx)
+    }
+
+    fn handle_effect(effect: Effect, _ctx: &EffectContext<'_>) -> Task<Event, Effect> {
+        match effect {
+            Effect::Wait => Task::once(async {
+                syzygy::runtime::sleep(Duration::from_secs(60)).await;
+                Command::none()
+            }),
+        }
+    }
+
+    let (runtime, _clock) = syzygy::runtime::Runtime::manual().unwrap();
+    let lease = TaskLease::new();
+    let mut runner = Syzygy::builder::<Event, Effect>()
+        .model(Model { running: true })
+        .with_runtime(runtime)
+        .event_handler({
+            let lease = lease.clone();
+            move |event, _ctx| match event {
+                Event::Start => Command::abortable(&lease, Effect::Wait),
+                Event::Tick => Command::none(),
+            }
+        })
+        .effect_handler(handle_effect)
+        .subscription_handler(handle_subscriptions)
+        .build()
+        .unwrap();
+
+    runner.core().try_send(Event::Start).unwrap();
+    runner.step().unwrap();
+
+    let snapshot = runner.shell().snapshot();
+    assert_eq!(snapshot.active_tasks.len(), 1);
+    assert_eq!(snapshot.active_subscriptions.len(), 1);
+    assert_eq!(snapshot.untracked_task_count, 0);
+    assert_eq!(snapshot.deferred_event_count, 0);
+    assert_eq!(snapshot.queued_command_count, 0);
+    assert_eq!(snapshot.pending_error_count, 0);
+    assert!(snapshot.in_flight_count >= 2);
+    assert!(snapshot.last_termination.is_none());
+}
+
+#[test]
+fn shell_snapshot_records_explicit_task_cancellation_reason() {
+    #[derive(Debug, Clone)]
+    enum Event {
+        Start,
+        Stop,
+    }
+
+    #[derive(Debug, Clone)]
+    enum Effect {
+        Wait,
+    }
+
+    fn handle_effect(effect: Effect, _ctx: &EffectContext<'_>) -> Task<Event, Effect> {
+        match effect {
+            Effect::Wait => Task::once(async {
+                syzygy::runtime::sleep(Duration::from_secs(60)).await;
+                Command::none()
+            }),
+        }
+    }
+
+    let lease = TaskLease::new();
+    let mut runner = Syzygy::builder::<Event, Effect>()
+        .model(())
+        .event_handler({
+            let lease = lease.clone();
+            move |event, _ctx| match event {
+                Event::Start => Command::abortable(&lease, Effect::Wait),
+                Event::Stop => Command::cancel(&lease),
+            }
+        })
+        .effect_handler(handle_effect)
+        .build()
+        .unwrap();
+
+    runner.core().try_send(Event::Start).unwrap();
+    runner.step().unwrap();
+
+    runner.core().try_send(Event::Stop).unwrap();
+    runner.step().unwrap();
+
+    let snapshot = runner.shell().snapshot();
+    assert!(snapshot.active_tasks.is_empty());
+    assert!(matches!(
+        snapshot.last_termination,
+        Some(record)
+            if record.target == ShellTerminationTarget::Task
+                && record.reason
+                    == ShellTerminationReason::Cancelled(
+                        ShellCancellationReason::ExplicitCommand
+                    )
+                && record.lease_id.is_some()
+    ));
+}
+
+#[test]
+fn shell_snapshot_records_subscription_reconcile_cancellation_reason() {
+    #[derive(Debug, Clone)]
+    enum Event {
+        Disable,
+        Tick,
+    }
+
+    #[derive(Debug, Clone)]
+    enum Effect {}
+
+    #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+    enum Key {
+        Clock,
+    }
+
+    #[derive(Debug, Default, Model)]
+    struct Model {
+        #[model(wrapper = Running)]
+        running: bool,
+    }
+
+    fn handle_event(event: Event, ctx: &EventContext<Model>) -> Command<Event, Effect> {
+        match event {
+            Event::Disable => {
+                let running = Running::extract_mut(ctx);
+                **running = false;
+                Command::none()
+            }
+            Event::Tick => Command::none(),
+        }
+    }
+
+    fn describe(running: &Running) -> Subscription<Event, Effect> {
+        if !**running {
+            return Subscription::none();
+        }
+
+        Subscription::every(Key::Clock, Duration::from_secs(60), Event::Tick)
+    }
+
+    fn handle_subscriptions(ctx: &SubscriptionContext<Model>) -> Subscription<Event, Effect> {
+        handle!(describe, ctx)
+    }
+
+    let (runtime, _clock) = syzygy::runtime::Runtime::manual().unwrap();
+    let mut runner = Syzygy::builder::<Event, Effect>()
+        .model(Model { running: true })
+        .with_runtime(runtime)
+        .event_handler(handle_event)
+        .subscription_handler(handle_subscriptions)
+        .build()
+        .unwrap();
+
+    runner.step().unwrap();
+    assert_eq!(runner.shell().snapshot().active_subscriptions.len(), 1);
+
+    runner.core().try_send(Event::Disable).unwrap();
+    runner.step().unwrap();
+
+    let snapshot = runner.shell().snapshot();
+    assert!(snapshot.active_subscriptions.is_empty());
+    assert!(matches!(
+        snapshot.last_termination,
+        Some(record)
+            if record.target == ShellTerminationTarget::Subscription
+                && record.reason
+                    == ShellTerminationReason::Cancelled(
+                        ShellCancellationReason::SubscriptionReconciled
+                    )
+                && record.subscription_key.is_some()
+    ));
+}
+
+#[test]
+fn shell_snapshot_records_process_completion_reason() {
+    #[derive(Debug, Clone)]
+    enum Event {
+        Start,
+        Done,
+    }
+
+    #[derive(Debug, Clone)]
+    enum Effect {
+        Run,
+    }
+
+    #[derive(Debug, Default, Model)]
+    struct Model {
+        #[model(wrapper = Done)]
+        done: bool,
+    }
+
+    fn handle_effect(effect: Effect, _ctx: &EffectContext<'_>) -> Task<Event, Effect> {
+        match effect {
+            Effect::Run => Task::process(capture_process_spec(256, 256), |_result| {
+                Command::event(Event::Done)
+            }),
+        }
+    }
+
+    let lease = TaskLease::new();
+    let mut runner = Syzygy::builder::<Event, Effect>()
+        .model(Model::default())
+        .event_handler({
+            let lease = lease.clone();
+            move |event, ctx| match event {
+                Event::Start => Command::abortable(&lease, Effect::Run),
+                Event::Done => {
+                    let done = Done::extract_mut(ctx);
+                    **done = true;
+                    Command::none()
+                }
+            }
+        })
+        .effect_handler(handle_effect)
+        .build()
+        .unwrap();
+
+    runner.core().try_send(Event::Start).unwrap();
+    runner.run_until(|core, _| core.model().done).unwrap();
+
+    let snapshot = runner.shell().snapshot();
+    assert!(snapshot.active_tasks.is_empty());
+    assert!(matches!(
+        snapshot.last_termination,
+        Some(record)
+            if record.target == ShellTerminationTarget::Process
+                && record.reason == ShellTerminationReason::Completed
+    ));
+}
+
+#[test]
+fn trace_recorder_is_disabled_by_default() {
+    #[derive(Debug, Clone)]
+    enum Event {
+        Start,
+    }
+
+    #[derive(Debug, Clone)]
+    enum Effect {
+        Wait,
+    }
+
+    fn handle_effect(effect: Effect, _ctx: &EffectContext<'_>) -> Task<Event, Effect> {
+        match effect {
+            Effect::Wait => Task::once(async { Command::none() }),
+        }
+    }
+
+    let lease = TaskLease::new();
+    let mut runner = Syzygy::builder::<Event, Effect>()
+        .model(())
+        .event_handler({
+            let lease = lease.clone();
+            move |event, _ctx| match event {
+                Event::Start => Command::abortable(&lease, Effect::Wait),
+            }
+        })
+        .effect_handler(handle_effect)
+        .build()
+        .unwrap();
+
+    runner.core().try_send(Event::Start).unwrap();
+    runner.step().unwrap();
+
+    assert!(runner.shell().trace_snapshot().is_empty());
+}
+
+#[test]
+fn trace_recorder_captures_ordered_core_effect_subscription_transitions() {
+    #[derive(Debug, Clone)]
+    enum Event {
+        Start,
+        Tick,
+    }
+
+    #[derive(Debug, Clone)]
+    enum Effect {
+        Wait,
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+    enum Key {
+        Clock,
+    }
+
+    #[derive(Debug, Default, Model)]
+    struct Model {
+        #[model(wrapper = Running)]
+        running: bool,
+    }
+
+    fn describe(running: &Running) -> Subscription<Event, Effect> {
+        if !**running {
+            return Subscription::none();
+        }
+
+        Subscription::every(Key::Clock, Duration::from_secs(60), Event::Tick)
+    }
+
+    fn handle_subscriptions(ctx: &SubscriptionContext<Model>) -> Subscription<Event, Effect> {
+        handle!(describe, ctx)
+    }
+
+    fn handle_effect(effect: Effect, _ctx: &EffectContext<'_>) -> Task<Event, Effect> {
+        match effect {
+            Effect::Wait => Task::once(async { Command::none() }),
+        }
+    }
+
+    let diagnostics = DiagnosticsConfig::default()
+        .trace(ShellTraceConfig::default().enabled(true).max_entries(256));
+    let (runtime, _clock) = syzygy::runtime::Runtime::manual().unwrap();
+    let lease = TaskLease::new();
+    let mut runner = Syzygy::builder::<Event, Effect>()
+        .model(Model { running: true })
+        .with_runtime(runtime)
+        .event_handler({
+            let lease = lease.clone();
+            move |event, _ctx| match event {
+                Event::Start => Command::abortable(&lease, Effect::Wait),
+                Event::Tick => Command::none(),
+            }
+        })
+        .with_syzygy_config(SyzygyConfig::default().diagnostics(diagnostics))
+        .effect_handler(handle_effect)
+        .subscription_handler(handle_subscriptions)
+        .build()
+        .unwrap();
+
+    runner.core().try_send(Event::Start).unwrap();
+    runner.step().unwrap();
+
+    let trace = runner.shell().trace_snapshot();
+    assert!(
+        !trace.is_empty(),
+        "trace should capture transitions when enabled"
+    );
+    assert!(
+        trace
+            .windows(2)
+            .all(|pair| pair[0].sequence < pair[1].sequence),
+        "trace sequence numbers must be strictly increasing"
+    );
+
+    let core_dispatch = trace
+        .iter()
+        .position(|entry| matches!(entry.event, ShellTraceEvent::CoreEventCommandDispatched))
+        .expect("core command dispatch event should be traced");
+    let abortable_step = trace
+        .iter()
+        .position(|entry| {
+            matches!(
+                entry.event,
+                ShellTraceEvent::CommandStep(ShellTraceCommandStep::Abortable { .. })
+            )
+        })
+        .expect("abortable command step should be traced");
+    let task_spawned = trace
+        .iter()
+        .position(|entry| {
+            matches!(
+                entry.event,
+                ShellTraceEvent::TaskSpawned {
+                    kind: ShellTraceTaskKind::Future,
+                    ..
+                }
+            )
+        })
+        .expect("task spawn should be traced");
+    let subscription_start = trace
+        .iter()
+        .position(|entry| matches!(entry.event, ShellTraceEvent::SubscriptionStarted { .. }))
+        .expect("subscription start should be traced");
+    let reconcile = trace
+        .iter()
+        .position(|entry| {
+            matches!(
+                entry.event,
+                ShellTraceEvent::SubscriptionsReconciled { changes: 1 }
+            )
+        })
+        .expect("subscription reconciliation should be traced");
+    let drained = trace
+        .iter()
+        .position(|entry| matches!(entry.event, ShellTraceEvent::ShellDrained { .. }))
+        .expect("drain phase should be traced");
+
+    assert!(core_dispatch < abortable_step);
+    assert!(abortable_step < task_spawned);
+    assert!(task_spawned < subscription_start);
+    assert!(subscription_start < reconcile);
+    assert!(reconcile < drained);
+}
+
+#[test]
+fn trace_recorder_captures_process_control_steps() {
+    #[derive(Debug, Clone)]
+    enum Event {
+        Start,
+    }
+
+    #[derive(Debug, Clone)]
+    enum Effect {
+        Run,
+    }
+
+    fn handle_effect(effect: Effect, _ctx: &EffectContext<'_>) -> Task<Event, Effect> {
+        match effect {
+            Effect::Run => Task::process_interactive(
+                interactive_echo_process_spec(bytes_framing()),
+                |_update| None,
+            ),
+        }
+    }
+
+    let diagnostics = DiagnosticsConfig::default()
+        .trace(ShellTraceConfig::default().enabled(true).max_entries(256));
+    let lease = TaskLease::new();
+    let mut runner = Syzygy::builder::<Event, Effect>()
+        .model(())
+        .event_handler({
+            let lease = lease.clone();
+            move |event, _ctx| match event {
+                Event::Start => Command::abortable(&lease, Effect::Run)
+                    .and_process_write(&lease, expected_line_bytes("alpha"))
+                    .and_process_close_stdin(&lease),
+            }
+        })
+        .with_syzygy_config(SyzygyConfig::default().diagnostics(diagnostics))
+        .effect_handler(handle_effect)
+        .build()
+        .unwrap();
+
+    runner.core().try_send(Event::Start).unwrap();
+    runner.step().unwrap();
+
+    let trace = runner.shell().trace_snapshot();
+    runner.shutdown();
+
+    assert!(trace.iter().any(|entry| {
+        matches!(
+            entry.event,
+            ShellTraceEvent::CommandStep(ShellTraceCommandStep::ProcessWrite { .. })
+        )
+    }));
+    assert!(trace.iter().any(|entry| {
+        matches!(
+            entry.event,
+            ShellTraceEvent::CommandStep(ShellTraceCommandStep::ProcessCloseStdin { .. })
+        )
+    }));
+    assert!(trace
+        .iter()
+        .any(|entry| { matches!(entry.event, ShellTraceEvent::ProcessControl { .. }) }));
 }
 
 #[test]

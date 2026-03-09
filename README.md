@@ -15,7 +15,7 @@ struct Model {
 enum Event { Increment }
 
 fn inc(counter: &mut Counter) {
-    **counter += 1;
+    *counter.get_mut() += 1;
 }
 
 fn handle_event(event: Event, ctx: &EventContext<Model>) -> Command<Event, ()> {
@@ -109,9 +109,9 @@ fn handle_event(event: Event, ctx: &EventContext<Model>) -> Command<Event, Effec
 Handler signatures use extracted field types:
 
 ```rust
-// Wrapper type - double deref to access inner value
+// Wrapper type - explicit helper methods
 fn add(n: i32, counter: &mut Counter) -> Command<Event, Effect> {
-    **counter += n;
+    *counter.get_mut() += n;
     Command::none()
 }
 
@@ -170,11 +170,24 @@ struct Model {
     settings: Settings,
 }
 
-// Wrapper type: double deref
-fn inc(counter: &mut Counter) { **counter += 1; }
+// Wrapper type: explicit access helpers
+fn inc(counter: &mut Counter) { *counter.get_mut() += 1; }
 
 // Extracted type: direct access
 fn update(settings: &mut Settings) { settings.theme = Dark; }
+```
+
+Generated wrapper helpers keep explicit extraction readable:
+
+```rust
+fn mark_loaded(counter: &mut Counter) {
+    *counter.get_mut() += 1;
+}
+
+fn ensure_name(name: &mut MaybeName) {
+    let value = name.get_or_insert("guest".to_string());
+    value.push('!');
+}
 ```
 
 | Approach | Attribute | When to Use | Handler Signature |
@@ -205,6 +218,19 @@ async fn fetch(url: String) -> Command<Event, Effect> {
 | `Task::process_interactive(spec, on_update)` | Shell-owned interactive subprocess | Incremental commands |
 | `Task::blocking(|| ...)` | Non-abortable blocking work | Single command |
 | `Task::blocking_cooperative(|cancel| ...)` | Lease-owned blocking work | `Option<Command>` |
+
+### Decision Matrix (App Code)
+
+Use this when deciding where new runtime work should live:
+
+| You need | Use | Example | Anti-example |
+|----------|-----|---------|--------------|
+| Finite one-shot async work triggered by an event | `Command::effect(...)` + `Task::once(async { ... })` | Fetch profile after `Event::OpenProfile` | Modeling one request as a `Subscription` |
+| Finite stream tied to explicit ownership | `Command::effect(...)` + `Task::stream(...)` (usually started through `AbortSlot`) | Typeahead stream while a search is active | Permanent `Subscription` for workflow-local stream |
+| Shell-owned subprocess with one final result | `Task::process(...)` | `git status` + map exit/result to event | Spawning child process manually inside `Task::once` |
+| Interactive subprocess with stdin control and streamed output | `Task::process_interactive(...)` + `AbortSlot::write/close_stdin` | REPL-like command session | Storing `Child` handles in model state |
+| Long-lived source that should exist while model says so | `Subscription::every(...)` / `Subscription::custom(...)` | Tick while screen is visible; weather polling while enabled | Re-emitting timer effects each event loop step |
+| Cancellation ownership in model state | `AbortSlot` (or explicit `TaskLease`) | Replace stale save job when user edits again | Fire-and-forget abortable commands without retaining owner |
 
 Unhandled effects now fail fast by default. If an effect reaches the shell and no configured handler claims it, `step()` / `run()` returns `ShellError::UnhandledEffect`. Opt out explicitly with `SyzygyConfig::default().unhandled_effects(UnhandledEffectPolicy::Ignore)` when you really want legacy drop behavior.
 
@@ -260,7 +286,7 @@ enum SubKey {
 }
 
 fn describe_subscriptions(running: &Running) -> Subscription<Event, Effect> {
-    if !**running {
+    if !*running.get() {
         return Subscription::none();
     }
 
@@ -294,6 +320,27 @@ let app = Syzygy::builder::<Event, Effect>()
 ```
 
 `Subscription::custom::<Driver, _, _>(...)` describes the source. The driver owns the impure runtime work. Event/effect handlers never receive sender channels or runtime handles.
+
+Common driver shapes can use built-in `SubscriptionDriver` helpers instead of hand-rolling `stream::unfold(...)` loops:
+
+```rust
+impl SubscriptionDriver for HttpPollDriver {
+    type Spec = HttpPollSpec;
+    type Update = HttpPayload;
+
+    fn subscribe(&self, spec: Self::Spec) -> SubscriptionStream<Self::Update> {
+        let every = spec.every;
+        Self::poll_with(
+            spec,
+            every,
+            SubscriptionPollStart::AfterInterval,
+            |spec| async move { fetch_http_payload(spec.url).await },
+        )
+    }
+}
+```
+
+Use `Self::poll(...)` for immediate-first polling and `Self::stream(stream)` when a backend already gives you a stream.
 
 Custom drivers are constructed on Syzygy's owned runtime, so runtime-backed sources can be created safely inside `SubscriptionDriver::subscribe(...)`. If a driver should participate in deterministic manual time, prefer `syzygy::runtime::sleep(...)` over backend-specific timers like `tokio::time::interval(...)`.
 
@@ -338,10 +385,44 @@ tester.advance_time(Duration::from_secs(60));
 tester.drain()?;
 ```
 
-Rule of thumb:
+### Decision Matrix (Tests)
 
-- `TestStore`: pure event logic and mocked effect completions
-- `RunnerTester`: subscriptions, shell errors, runtime-owned async work, and process tasks
+| Test question | Use | Example |
+|---------------|-----|---------|
+| Did pure event handlers update state and emit expected effects? | `TestStore` | `send(...)`, then `assert_state` / `assert_effects` |
+| Does an effect map to the right completion events? | `TestStore::receive_async(...)` | Map `Effect::Save` to success/failure events |
+| Do subscriptions, shell errors, process tasks, or manual time behave correctly? | `RunnerTester` | `advance_time(...)` + `drain()` + assert runtime outcome |
+| Does full wiring (resources + drivers + config) work end-to-end? | Integration test with `Syzygy::builder()` | Build app like production and drive it with real events |
+
+Live shell diagnostics are available without traces:
+
+```rust
+let snapshot = app.shell().snapshot();
+
+assert_eq!(snapshot.pending_error_count, 0);
+assert!(snapshot.last_termination.is_none());
+```
+
+`snapshot()` reports active tasks/subscriptions, deferred and queued work counts, and the latest explicit termination reason (`Completed`, `Failed`, or `Cancelled(...)` with a cancellation cause).
+
+Structured traces are opt-in through diagnostics config:
+
+```rust
+let diagnostics = DiagnosticsConfig::default()
+    .trace(ShellTraceConfig::default().enabled(true).max_entries(2_048));
+
+let mut app = Syzygy::builder::<Event, Effect>()
+    .model(Model::default())
+    .event_handler(handle_event)
+    .effect_handler(handle_effect)
+    .with_syzygy_config(SyzygyConfig::default().diagnostics(diagnostics))
+    .build()?;
+
+app.step()?;
+let trace = app.shell().trace_snapshot();
+```
+
+Trace entries are ordered and payload-light: they capture core/shell phases, command routing, task/subscription lifecycle, process control, and termination outcomes without requiring `Event`/`Effect` `Debug` bounds.
 
 ## Footguns
 
@@ -353,6 +434,10 @@ fn bad(ctx: &EventContext<Model>) {
     let _ = Counter::extract_mut(ctx);  // &mut i32 inside Model
 }
 ```
+
+**Extraction panics are deliberate programmer errors.** Borrow overlap failures include the caller location and a hint to fix handler extractor overlap.
+
+**Missing effect resources panic deliberately.** If an effect handler extracts an unregistered resource, Syzygy panics with the resource type, caller location, and a `.with_resource(...)` registration hint.
 
 **Resource cloning on every effect access.** Expensive resources should be wrapped in `Arc<T>`:
 
@@ -421,7 +506,7 @@ cargo run --example 10_todo_app
 | `09_error_handling` | Result/Option in handlers |
 | `10_todo_app` | Full application |
 | `11_process_tasks` | `Task::process_interactive`, `AbortSlot`, runtime injection |
-| `12_subscriptions` | Pure subscription handler, `Subscription::every`, custom drivers |
+| `12_subscriptions` | Pure subscription handler, `Subscription::every`, `SubscriptionDriver::poll`, custom drivers |
 
 ## License
 
