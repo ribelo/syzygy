@@ -3,11 +3,11 @@ use syzygy::prelude::*;
 /// ## Why use `#[derive(Model)]`?
 ///
 /// The `Model` macro is the core of Syzygy's state management.
-/// It automatically generates wrapper types (like `Counter`) for each field,
-/// enabling the runtime borrow checker to track access per-field instead
-/// of locking the entire struct.
+/// Field extraction is explicit: `#[model(wrapper = Counter)]` opts this field
+/// into a named wrapper type that the runtime can track independently.
 #[derive(Debug, Default, Model)]
 struct AppModel {
+    #[model(wrapper = Counter)]
     counter: i32,
 }
 
@@ -32,9 +32,9 @@ enum AppEffect {}
 
 /// ## Why use wrapper types?
 ///
-/// The `#[derive(Model)]` macro generates transparent wrapper types for each field.
-/// These wrappers implement `Deref` and `DerefMut`, allowing us to use `**counter`
-/// to access the underlying `i32` while maintaining type safety.
+/// `#[model(wrapper = Counter)]` generated a transparent wrapper type for this field.
+/// The wrapper implements `Deref` and `DerefMut`, allowing us to use `**counter`
+/// to access the underlying `i32` while keeping extraction explicit in the model.
 ///
 /// This approach enables the runtime borrow checker to prevent aliasing
 /// violations at the field level.

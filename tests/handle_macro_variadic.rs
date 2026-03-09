@@ -2,6 +2,7 @@ use syzygy::prelude::*;
 
 #[derive(Debug, Default, Clone, PartialEq, Model)]
 struct AppModel {
+    #[model(wrapper = Sum)]
     sum: i32,
 }
 

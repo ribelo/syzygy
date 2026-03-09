@@ -15,7 +15,9 @@ enum Effect {
 
 #[derive(Model)]
 struct AppModel {
+    #[model(wrapper = Counter)]
     counter: i32,
+    #[model(wrapper = DisplayName)]
     display_name: String,
 }
 
@@ -148,10 +150,11 @@ struct ToggleState {
 
 #[derive(Model)]
 struct ExtractAppModel {
-    #[extract]
+    #[model(part)]
     counter: CounterState,
-    #[extract]
+    #[model(part)]
     toggle: ToggleState,
+    #[model(wrapper = Title)]
     title: String,
 }
 
@@ -185,7 +188,7 @@ fn double_borrow_child(
 }
 
 #[test]
-fn derive_model_extract_attribute_projects_child_models() {
+fn derive_model_part_attribute_projects_child_models() {
     let mut runner = Syzygy::builder::<ExtractEvent, ExtractEffect>()
         .model(ExtractAppModel {
             counter: CounterState { value: 1 },
@@ -227,7 +230,7 @@ fn derive_model_extract_attribute_projects_child_models() {
 }
 
 #[test]
-fn derive_model_extract_attribute_detects_double_borrow() {
+fn derive_model_part_attribute_detects_double_borrow() {
     let mut runner = Syzygy::builder::<ExtractEvent, ExtractEffect>()
         .model(ExtractAppModel {
             counter: CounterState { value: 0 },

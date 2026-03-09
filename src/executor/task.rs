@@ -33,6 +33,11 @@ impl BlockingCancelToken {
         self.inner.load(Ordering::Relaxed)
     }
 
+    #[must_use]
+    pub fn check(&self) -> Option<()> {
+        (!self.is_cancelled()).then_some(())
+    }
+
     pub(crate) fn cancel(&self) {
         self.inner.store(true, Ordering::Relaxed);
     }
@@ -496,5 +501,14 @@ mod tests {
             steps[0],
             CommandStep::Event(ParentEvent::Child(_))
         ));
+    }
+
+    #[test]
+    fn blocking_cancel_token_check_reports_cancellation() {
+        let cancel = BlockingCancelToken::new();
+
+        assert_eq!(cancel.check(), Some(()));
+        cancel.cancel();
+        assert_eq!(cancel.check(), None);
     }
 }

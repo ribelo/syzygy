@@ -4,6 +4,7 @@ use syzygy::prelude::*;
 
 #[derive(Debug, Default, Model)]
 struct AppModel {
+    #[model(wrapper = Log)]
     log: Vec<String>,
 }
 

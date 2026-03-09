@@ -2,10 +2,10 @@ use std::collections::HashSet;
 
 use proc_macro::TokenStream;
 use proc_macro2::TokenStream as TokenStream2;
-use quote::format_ident;
 use quote::quote;
 use quote::ToTokens;
 use syn::parse_macro_input;
+use syn::spanned::Spanned;
 use syn::Attribute;
 use syn::Data;
 use syn::DeriveInput;
@@ -13,7 +13,7 @@ use syn::Fields;
 use syn::Generics;
 use syn::Ident;
 
-#[proc_macro_derive(Model, attributes(extract))]
+#[proc_macro_derive(Model, attributes(model, extract))]
 pub fn derive_model(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
     match expand_model(input) {
@@ -37,7 +37,8 @@ fn expand_model(input: DeriveInput) -> syn::Result<TokenStream2> {
     let mut wrappers = Vec::with_capacity(fields.len());
     let mut extract_impls = Vec::new();
     let mut tracked_field_count = 0usize;
-    let mut extract_types = HashSet::new();
+    let mut part_types = HashSet::new();
+    let mut wrapper_names = HashSet::new();
 
     for field in fields {
         let field_ident = field.ident.as_ref().ok_or_else(|| {
@@ -45,109 +46,111 @@ fn expand_model(input: DeriveInput) -> syn::Result<TokenStream2> {
         })?;
         let field_ty = &field.ty;
         let field_name = field_ident.to_string();
-        let is_extract = has_extract_attr(field)?;
+        let field_mode = parse_field_mode(field)?;
 
         let (struct_generics, impl_generics, ty_generics, where_clause) = split_generics(&generics);
 
-        if is_extract {
-            let extract_type_key = quote!(#field_ty).to_string();
-            if !extract_types.insert(extract_type_key) {
-                return Err(syn::Error::new_spanned(
-                    field_ty,
-                    "duplicate #[extract] field type in this model; each extracted type must be unique",
-                ));
-            }
-
-            tracked_field_count += 1;
-            if tracked_field_count > 256 {
-                return Err(syn::Error::new_spanned(
-                    model_ident.clone(),
-                    "Model derive supports up to 256 tracked fields for runtime borrow checks",
-                ));
-            }
-            let field_index = (tracked_field_count - 1) as u32;
-
-            extract_impls.push(quote! {
-                impl #impl_generics syzygy::extract::Part<#model_ident #ty_generics> for #field_ty #where_clause {
-                    fn extract(ctx: &syzygy::extract::EventContext<#model_ident #ty_generics>) -> &Self {
-                        // SAFETY: EventContext stores a valid pointer to the active model during dispatch.
-                        let ptr = unsafe { ::core::ptr::addr_of!((*ctx.model_ptr()).#field_ident) };
-                        ctx.track_field_immut(#field_index, #field_name);
-                        // SAFETY: `ptr` points to the extracted field for the lifetime of this dispatch step.
-                        unsafe { &*ptr }
-                    }
-                }
-
-                #[allow(clippy::mut_from_ref)]
-                impl #impl_generics syzygy::extract::PartMut<#model_ident #ty_generics> for #field_ty #where_clause {
-                    fn extract_mut(ctx: &syzygy::extract::EventContext<#model_ident #ty_generics>) -> &mut Self {
-                        ctx.track_field_borrow(#field_index, #field_name);
-                        // SAFETY: EventContext stores a valid mutable pointer for the active handler call,
-                        // and borrow tracking ensures this field is extracted at most once per handler.
-                        let ptr = unsafe { ::core::ptr::addr_of_mut!((*ctx.model_ptr()).#field_ident) };
-                        // SAFETY: `ptr` points to the extracted field and runtime tracking enforces exclusivity.
-                        unsafe { &mut *ptr }
-                    }
-                }
-            });
-
+        let Some(field_mode) = field_mode else {
             continue;
-        }
+        };
 
         tracked_field_count += 1;
         if tracked_field_count > 256 {
             return Err(syn::Error::new_spanned(
                 model_ident.clone(),
-                "Model derive supports up to 256 tracked fields for runtime borrow checks",
+                "Model derive supports up to 256 #[model(...)] fields for runtime borrow checks",
             ));
         }
         let field_index = (tracked_field_count - 1) as u32;
 
-        let wrapper_ident = field_wrapper_ident(field_ident)?;
-
-        wrappers.push(quote! {
-            #[repr(transparent)]
-            pub struct #wrapper_ident #struct_generics (#field_ty) #where_clause;
-
-            impl #impl_generics ::core::ops::Deref for #wrapper_ident #ty_generics #where_clause {
-                type Target = #field_ty;
-
-                fn deref(&self) -> &Self::Target {
-                    &self.0
+        match field_mode {
+            FieldMode::Part => {
+                let part_type_key = quote!(#field_ty).to_string();
+                if !part_types.insert(part_type_key) {
+                    return Err(syn::Error::new_spanned(
+                        field_ty,
+                        "duplicate #[model(part)] field type in this model; each part type must be unique",
+                    ));
                 }
-            }
 
-            impl #impl_generics ::core::ops::DerefMut for #wrapper_ident #ty_generics #where_clause {
-                fn deref_mut(&mut self) -> &mut Self::Target {
-                    &mut self.0
-                }
-            }
+                extract_impls.push(quote! {
+                    impl #impl_generics syzygy::extract::Part<#model_ident #ty_generics> for #field_ty #where_clause {
+                        fn extract(ctx: &syzygy::extract::EventContext<#model_ident #ty_generics>) -> &Self {
+                            // SAFETY: EventContext stores a valid pointer to the active model during dispatch.
+                            let ptr = unsafe { ::core::ptr::addr_of!((*ctx.model_ptr()).#field_ident) };
+                            ctx.track_field_immut(#field_index, #field_name);
+                            // SAFETY: `ptr` points to the extracted field for the lifetime of this dispatch step.
+                            unsafe { &*ptr }
+                        }
+                    }
 
-            impl #impl_generics syzygy::extract::Part<#model_ident #ty_generics> for #wrapper_ident #ty_generics #where_clause {
-                fn extract(ctx: &syzygy::extract::EventContext<#model_ident #ty_generics>) -> &Self {
-                    // SAFETY: `repr(transparent)` guarantees Wrapper has the same layout as the field type.
-                    let ptr = unsafe {
-                        ::core::ptr::addr_of!((*ctx.model_ptr()).#field_ident).cast::<Self>()
-                    };
-                    ctx.track_field_immut(#field_index, #field_name);
-                    // SAFETY: `ptr` points to the wrapped field for the current dispatch lifetime.
-                    unsafe { &*ptr }
-                }
+                    #[allow(clippy::mut_from_ref)]
+                    impl #impl_generics syzygy::extract::PartMut<#model_ident #ty_generics> for #field_ty #where_clause {
+                        fn extract_mut(ctx: &syzygy::extract::EventContext<#model_ident #ty_generics>) -> &mut Self {
+                            ctx.track_field_borrow(#field_index, #field_name);
+                            // SAFETY: EventContext stores a valid mutable pointer for the active handler call,
+                            // and borrow tracking ensures this field is extracted at most once per handler.
+                            let ptr = unsafe { ::core::ptr::addr_of_mut!((*ctx.model_ptr()).#field_ident) };
+                            // SAFETY: `ptr` points to the extracted field and runtime tracking enforces exclusivity.
+                            unsafe { &mut *ptr }
+                        }
+                    }
+                });
             }
+            FieldMode::Wrapper(wrapper_ident) => {
+                let wrapper_name = wrapper_ident.to_string();
+                if !wrapper_names.insert(wrapper_name) {
+                    return Err(syn::Error::new_spanned(
+                        wrapper_ident,
+                        "duplicate #[model(wrapper = ...)] name in this model",
+                    ));
+                }
 
-            #[allow(clippy::mut_from_ref)]
-            impl #impl_generics syzygy::extract::PartMut<#model_ident #ty_generics> for #wrapper_ident #ty_generics #where_clause {
-                fn extract_mut(ctx: &syzygy::extract::EventContext<#model_ident #ty_generics>) -> &mut Self {
-                    ctx.track_field_borrow(#field_index, #field_name);
-                    // SAFETY: `repr(transparent)` guarantees Wrapper has the same layout as the field type.
-                    let ptr = unsafe {
-                        ::core::ptr::addr_of_mut!((*ctx.model_ptr()).#field_ident).cast::<Self>()
-                    };
-                    // SAFETY: `track_field_borrow` ensures unique mutable access for this field in the handler.
-                    unsafe { &mut *ptr }
-                }
+                wrappers.push(quote! {
+                    #[repr(transparent)]
+                    pub struct #wrapper_ident #struct_generics (#field_ty) #where_clause;
+
+                    impl #impl_generics ::core::ops::Deref for #wrapper_ident #ty_generics #where_clause {
+                        type Target = #field_ty;
+
+                        fn deref(&self) -> &Self::Target {
+                            &self.0
+                        }
+                    }
+
+                    impl #impl_generics ::core::ops::DerefMut for #wrapper_ident #ty_generics #where_clause {
+                        fn deref_mut(&mut self) -> &mut Self::Target {
+                            &mut self.0
+                        }
+                    }
+
+                    impl #impl_generics syzygy::extract::Part<#model_ident #ty_generics> for #wrapper_ident #ty_generics #where_clause {
+                        fn extract(ctx: &syzygy::extract::EventContext<#model_ident #ty_generics>) -> &Self {
+                            // SAFETY: `repr(transparent)` guarantees Wrapper has the same layout as the field type.
+                            let ptr = unsafe {
+                                ::core::ptr::addr_of!((*ctx.model_ptr()).#field_ident).cast::<Self>()
+                            };
+                            ctx.track_field_immut(#field_index, #field_name);
+                            // SAFETY: `ptr` points to the wrapped field for the current dispatch lifetime.
+                            unsafe { &*ptr }
+                        }
+                    }
+
+                    #[allow(clippy::mut_from_ref)]
+                    impl #impl_generics syzygy::extract::PartMut<#model_ident #ty_generics> for #wrapper_ident #ty_generics #where_clause {
+                        fn extract_mut(ctx: &syzygy::extract::EventContext<#model_ident #ty_generics>) -> &mut Self {
+                            ctx.track_field_borrow(#field_index, #field_name);
+                            // SAFETY: `repr(transparent)` guarantees Wrapper has the same layout as the field type.
+                            let ptr = unsafe {
+                                ::core::ptr::addr_of_mut!((*ctx.model_ptr()).#field_ident).cast::<Self>()
+                            };
+                            // SAFETY: `track_field_borrow` ensures unique mutable access for this field in the handler.
+                            unsafe { &mut *ptr }
+                        }
+                    }
+                });
             }
-        });
+        }
     }
 
     Ok(quote! {
@@ -174,25 +177,54 @@ fn ensure_not_packed(attrs: &[Attribute]) -> syn::Result<()> {
     Ok(())
 }
 
-fn has_extract_attr(field: &syn::Field) -> syn::Result<bool> {
-    let mut is_extract = false;
+#[derive(Debug)]
+enum FieldMode {
+    Part,
+    Wrapper(Ident),
+}
+
+fn parse_field_mode(field: &syn::Field) -> syn::Result<Option<FieldMode>> {
+    let mut mode = None;
 
     for attr in &field.attrs {
-        if !attr.path().is_ident("extract") {
-            continue;
-        }
-
-        if !matches!(&attr.meta, syn::Meta::Path(_)) {
+        if attr.path().is_ident("extract") {
             return Err(syn::Error::new_spanned(
                 attr,
-                "`#[extract]` does not accept arguments",
+                "legacy #[extract] is removed; use #[model(part)] instead",
             ));
         }
 
-        is_extract = true;
+        if !attr.path().is_ident("model") {
+            continue;
+        }
+
+        let syn::Meta::List(_) = &attr.meta else {
+            return Err(syn::Error::new_spanned(
+                attr,
+                "#[model(...)] requires arguments: use #[model(part)] or #[model(wrapper = Name)]",
+            ));
+        };
+
+        attr.parse_nested_meta(|meta| {
+            if meta.path.is_ident("part") {
+                if !meta.input.is_empty() {
+                    return Err(meta.error(
+                        "#[model(part)] does not accept a value; use #[model(wrapper = Name)] for named wrappers",
+                    ));
+                }
+
+                set_field_mode(&mut mode, FieldMode::Part, meta.path.span())
+            } else if meta.path.is_ident("wrapper") {
+                let value = meta.value()?;
+                let wrapper_ident: Ident = value.parse()?;
+                set_field_mode(&mut mode, FieldMode::Wrapper(wrapper_ident), meta.path.span())
+            } else {
+                Err(meta.error("expected `part` or `wrapper = Name`"))
+            }
+        })?;
     }
 
-    Ok(is_extract)
+    Ok(mode)
 }
 
 fn named_fields(
@@ -213,30 +245,20 @@ fn named_fields(
     }
 }
 
-fn field_wrapper_ident(field_ident: &Ident) -> syn::Result<Ident> {
-    let field_name = field_ident.to_string();
-    let mut name = String::new();
-
-    for segment in field_name.split('_') {
-        if segment.is_empty() {
-            continue;
-        }
-
-        let mut chars = segment.chars();
-        if let Some(first) = chars.next() {
-            name.extend(first.to_uppercase());
-            name.push_str(chars.as_str());
-        }
-    }
-
-    if name.is_empty() {
-        return Err(syn::Error::new_spanned(
-            field_ident,
-            "field name must contain at least one alphanumeric character",
+fn set_field_mode(
+    slot: &mut Option<FieldMode>,
+    new_mode: FieldMode,
+    span: proc_macro2::Span,
+) -> syn::Result<()> {
+    if slot.is_some() {
+        return Err(syn::Error::new(
+            span,
+            "field extraction mode already specified; use a single #[model(...)] mode per field",
         ));
     }
 
-    Ok(format_ident!("{}", name, span = field_ident.span()))
+    *slot = Some(new_mode);
+    Ok(())
 }
 
 fn split_generics(

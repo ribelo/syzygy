@@ -625,7 +625,9 @@ mod tests {
 
     #[derive(Debug, Default, PartialEq, Eq, crate::Model)]
     struct Model {
+        #[model(wrapper = Counter)]
         counter: i32,
+        #[model(wrapper = SaveCompleted)]
         save_completed: bool,
     }
 

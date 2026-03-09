@@ -35,12 +35,11 @@ fn increment(_: (), counter: &mut CounterModel) -> Command<CounterEvent, Counter
 
 #[derive(Debug, Default, Model)]
 struct AppModel {
-    /// ## Why `#[extract]`?
+    /// ## Why `#[model(part)]`?
     ///
-    /// The parent model composes child models. Using `#[extract]` means
-    /// `CounterModel` and its inner wrappers (like `Count`) become
-    /// cleanly extractable from the parent `AppModel` automatically!
-    #[extract]
+    /// The parent model composes child models. Using `#[model(part)]` makes
+    /// `CounterModel` itself directly extractable from `AppModel`.
+    #[model(part)]
     counter: CounterModel,
 }
 
@@ -58,7 +57,7 @@ fn handle_event(event: AppEvent, ctx: &EventContext<AppModel>) -> Command<AppEve
     match event {
         AppEvent::ChildMsg(child_event) => {
             // ## Event delegation pattern
-            // Since `#[extract]` makes `CounterModel` directly extractable,
+            // Since `#[model(part)]` makes `CounterModel` directly extractable,
             // we can run child handlers using the parent context.
             let child_cmd = match child_event {
                 CounterEvent::Increment => handle!(increment, ctx),

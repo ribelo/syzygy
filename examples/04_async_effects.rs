@@ -5,7 +5,9 @@ use syzygy::prelude::*;
 
 #[derive(Debug, Default, Model)]
 struct AppModel {
+    #[model(wrapper = Data)]
     data: Option<String>,
+    #[model(wrapper = IsLoading)]
     is_loading: bool,
 }
 

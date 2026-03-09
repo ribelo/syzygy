@@ -22,7 +22,7 @@ pub mod syzygy;
 
 pub mod prelude {
     pub use crate::command::builders as cmd;
-    pub use crate::command::{Command, CommandStep, TaskLease, TaskLeaseScope};
+    pub use crate::command::{AbortSlot, Command, CommandStep, TaskLease, TaskLeaseScope};
 
     pub use crate::core::{Core, EventSender};
     pub use crate::handle;

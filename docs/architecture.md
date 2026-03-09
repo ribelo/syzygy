@@ -19,6 +19,7 @@ System shape and invariants. For 3am incident response.
 3. **Explicit effects.** All I/O must go through `Effect -> Task`. Handlers are pure.
 4. **FIFO event ordering.** Events processed in arrival order. No prioritization.
 5. **Bounded resource growth.** 256 fields per model. Bounded event channel (configurable).
+6. **Explicit extraction surface.** `#[derive(Model)]` does not expose field extractors unless the field opts in with `#[model(...)]`.
 
 ## Component Diagram
 
@@ -106,6 +107,24 @@ EventContext {
 
 **Complexity:** O(1) per borrow. No heap allocation.
 
+## Explicit Field Extraction
+
+```rust
+#[derive(Model)]
+struct AppModel {
+    #[model(wrapper = Counter)]
+    counter: i32,
+    #[model(part)]
+    settings: Settings,
+}
+```
+
+**Rules:**
+- `#[derive(Model)]` alone only enables whole-model extraction.
+- `#[model(wrapper = Name)]` generates an explicit wrapper extractor with that exact name.
+- `#[model(part)]` extracts the field type directly and requires the type to be unique within the model.
+- Unannotated fields remain ordinary state and are invisible to field-level extraction.
+
 ## Abortable Task Ownership
 
 ```rust
@@ -114,8 +133,23 @@ Command::abortable(lease.clone(), effect) // Start/replace lease-owned task
 Command::cancel(lease)                    // Explicit stop
 ```
 
+For the common one-slot-in-model case:
+
+```rust
+#[derive(Model)]
+struct AppModel {
+    #[model(wrapper = SaveJob)]
+    save_job: AbortSlot,
+}
+
+fn start_save(save_job: &mut SaveJob) -> Command<Event, Effect> {
+    save_job.start(Effect::Save)
+}
+```
+
 **Semantics:**
 - A lease owns at most one abortable task. New `abortable` with the same lease drops the old task.
+- `AbortSlot::start()` replaces the stored lease and emits an explicit cancel for the previous task before starting the next one.
 - The shell also cancels abortable work when the last owner of the lease disappears.
 - Lease-owned blocking work must be cooperative. `Task::blocking` is rejected for abortable effects; use `Task::blocking_cooperative` and check the `BlockingCancelToken`.
 - Mapping abortable child commands/tasks is explicit. Plain `map` rejects abortable steps; `TaskLeaseScope` remaps leases when a caller intentionally embeds child abortable work into a parent domain.

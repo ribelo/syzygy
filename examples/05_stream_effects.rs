@@ -4,10 +4,14 @@ use syzygy::prelude::*;
 
 #[derive(Debug, Default, Model)]
 struct AppModel {
+    #[model(wrapper = Ticks)]
     ticks: i32,
+    #[model(wrapper = ActiveTimers)]
     active_timers: i32,
-    timer_1: Option<TaskLease>,
-    timer_2: Option<TaskLease>,
+    #[model(wrapper = Timer1)]
+    timer_1: AbortSlot,
+    #[model(wrapper = Timer2)]
+    timer_2: AbortSlot,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -23,23 +27,30 @@ enum AppEffect {
     SpawnTicker(u32),
 }
 
-/// ## Why use `TaskLease`?
-/// `TaskLease` gives the timer an explicit owner in model state.
-/// As long as the lease is retained, the stream is allowed to keep running.
+/// ## Why use `AbortSlot`?
+/// `AbortSlot` keeps timer ownership in model state and builds the right
+/// command when a timer starts, restarts, or stops.
 fn start_timer(
     id: u32,
     active_timers: &mut ActiveTimers,
     timer_1: &mut Timer1,
     timer_2: &mut Timer2,
 ) -> Command<AppEvent, AppEffect> {
-    **active_timers += 1;
-    let lease = TaskLease::new();
     match id {
-        1 => **timer_1 = Some(lease.clone()),
-        2 => **timer_2 = Some(lease.clone()),
-        _ => {}
+        1 => {
+            if !timer_1.is_active() {
+                **active_timers += 1;
+            }
+            timer_1.start(AppEffect::SpawnTicker(1))
+        }
+        2 => {
+            if !timer_2.is_active() {
+                **active_timers += 1;
+            }
+            timer_2.start(AppEffect::SpawnTicker(2))
+        }
+        _ => Command::none(),
     }
-    Command::abortable(lease, AppEffect::SpawnTicker(id))
 }
 
 /// ## Why use explicit cancel?
@@ -50,14 +61,21 @@ fn stop_timer(
     timer_1: &mut Timer1,
     timer_2: &mut Timer2,
 ) -> Command<AppEvent, AppEffect> {
-    **active_timers -= 1;
-    let lease = match id {
-        1 => timer_1.take(),
-        2 => timer_2.take(),
-        _ => None,
-    };
-
-    lease.map_or_else(Command::none, Command::cancel)
+    match id {
+        1 => {
+            if timer_1.is_active() {
+                **active_timers -= 1;
+            }
+            timer_1.cancel()
+        }
+        2 => {
+            if timer_2.is_active() {
+                **active_timers -= 1;
+            }
+            timer_2.cancel()
+        }
+        _ => Command::none(),
+    }
 }
 
 fn tick(_: (), ticks: &mut Ticks) -> Command<AppEvent, AppEffect> {
@@ -71,13 +89,18 @@ fn timer_finished(
     timer_1: &mut Timer1,
     timer_2: &mut Timer2,
 ) -> Command<AppEvent, AppEffect> {
-    **active_timers -= 1;
     match id {
         1 => {
-            let _ = timer_1.take();
+            if timer_1.is_active() {
+                **active_timers -= 1;
+                timer_1.clear();
+            }
         }
         2 => {
-            let _ = timer_2.take();
+            if timer_2.is_active() {
+                **active_timers -= 1;
+                timer_2.clear();
+            }
         }
         _ => {}
     }

@@ -4,7 +4,9 @@ use syzygy::prelude::*;
 
 #[derive(Debug, Default, Model, Clone, PartialEq)]
 struct AppModel {
+    #[model(wrapper = Counter)]
     counter: i32,
+    #[model(wrapper = Loading)]
     loading: bool,
 }
 

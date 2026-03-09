@@ -164,6 +164,72 @@ impl From<&TaskLease> for TaskLease {
     }
 }
 
+/// Explicit model state helper for a single abortable task owner.
+///
+/// `AbortSlot` keeps the current lease in model state and provides ergonomic
+/// helpers for the common "start / replace / cancel / clear" flow without
+/// hiding ownership. The slot itself does not execute anything; it only stores
+/// the lease and builds [`Command`] values.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct AbortSlot {
+    lease: Option<TaskLease>,
+}
+
+impl AbortSlot {
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Start or replace the abortable effect owned by this slot.
+    ///
+    /// If the slot already owns a lease, the returned command cancels the old
+    /// task explicitly before starting the new one.
+    #[must_use]
+    pub fn start<Event, Effect>(&mut self, effect: impl Into<Effect>) -> Command<Event, Effect> {
+        let next = TaskLease::new();
+        let previous = self.lease.replace(next.clone());
+        let command = Command::abortable(next, effect);
+
+        match previous {
+            Some(previous) => Command::cancel(previous).and(command),
+            None => command,
+        }
+    }
+
+    /// Cancel the currently owned abortable task, if any.
+    #[must_use]
+    pub fn cancel<Event, Effect>(&mut self) -> Command<Event, Effect> {
+        match self.take() {
+            Some(lease) => Command::cancel(lease),
+            None => Command::none(),
+        }
+    }
+
+    /// Drop the current owner without emitting a command.
+    ///
+    /// The shell will observe owner loss and cancel the task on the next
+    /// `step`/`drain` cycle.
+    pub fn clear(&mut self) {
+        self.lease = None;
+    }
+
+    /// Remove and return the current lease.
+    pub fn take(&mut self) -> Option<TaskLease> {
+        self.lease.take()
+    }
+
+    #[must_use]
+    pub fn lease(&self) -> Option<&TaskLease> {
+        self.lease.as_ref()
+    }
+
+    #[must_use]
+    pub fn is_active(&self) -> bool {
+        self.lease.is_some()
+    }
+}
+
 /// One atomic operation in the Core→Shell pipeline.
 ///
 /// This is what actually happens when your event handler returns a Command.
@@ -616,7 +682,7 @@ pub mod builders {
 
 #[cfg(test)]
 mod tests {
-    use super::{Command, CommandStep, TaskLease, TaskLeaseScope};
+    use super::{AbortSlot, Command, CommandStep, TaskLease, TaskLeaseScope};
     use crate::test_store::assert_panic_contains;
 
     #[derive(Debug, Clone, PartialEq, Eq)]
@@ -782,5 +848,70 @@ mod tests {
         let second = TaskLease::new();
 
         assert_ne!(first, second);
+    }
+
+    #[test]
+    fn abort_slot_start_stores_lease_and_emits_abortable_step() {
+        let mut slot = AbortSlot::new();
+        let command: Command<ChildEvent, ChildEffect> = slot.start(ChildEffect::Load);
+
+        let current = slot.lease().cloned().expect("slot should store a lease");
+        let steps = command.into_iter().collect::<Vec<_>>();
+        assert_eq!(steps.len(), 1);
+
+        match &steps[0] {
+            CommandStep::Abortable { lease, effect } => {
+                assert_eq!(lease, &current);
+                assert_eq!(*effect, ChildEffect::Load);
+            }
+            _ => panic!("expected abortable step"),
+        }
+    }
+
+    #[test]
+    fn abort_slot_restart_cancels_previous_lease_before_starting_next() {
+        let mut slot = AbortSlot::new();
+        let _: Command<ChildEvent, ChildEffect> = slot.start(ChildEffect::Load);
+        let previous = slot.lease().cloned().expect("slot should store a lease");
+
+        let command: Command<ChildEvent, ChildEffect> = slot.start(ChildEffect::Save);
+        let current = slot.lease().cloned().expect("slot should store a lease");
+
+        assert_ne!(previous, current);
+
+        let steps = command.into_iter().collect::<Vec<_>>();
+        assert_eq!(steps.len(), 2);
+
+        match (&steps[0], &steps[1]) {
+            (
+                CommandStep::Cancel {
+                    lease: cancelled_lease,
+                },
+                CommandStep::Abortable { lease, effect },
+            ) => {
+                assert_eq!(cancelled_lease, &previous);
+                assert_eq!(lease, &current);
+                assert_eq!(*effect, ChildEffect::Save);
+            }
+            _ => panic!("expected cancel + abortable steps"),
+        }
+    }
+
+    #[test]
+    fn abort_slot_cancel_clears_lease_and_emits_cancel_step() {
+        let mut slot = AbortSlot::new();
+        let _: Command<ChildEvent, ChildEffect> = slot.start(ChildEffect::Load);
+        let current = slot.lease().cloned().expect("slot should store a lease");
+
+        let command: Command<ChildEvent, ChildEffect> = slot.cancel();
+
+        assert!(!slot.is_active());
+
+        let steps = command.into_iter().collect::<Vec<_>>();
+        assert_eq!(steps.len(), 1);
+        match &steps[0] {
+            CommandStep::Cancel { lease } => assert_eq!(lease, &current),
+            _ => panic!("expected cancel step"),
+        }
     }
 }

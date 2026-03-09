@@ -31,3 +31,19 @@ Q: How should blocking work fit the lease-owned abortable task model?
 A: Split it explicitly. `Task::blocking` is non-abortable blocking work, while lease-owned blocking work must use `Task::blocking_cooperative` with a `BlockingCancelToken`.
 
 Reason: Runtime blocking threads cannot honestly support hard abort once started. Pretending otherwise would make `Command::abortable` lie about what cancellation means. The correct contract is: plain blocking work runs to completion and shutdown waits for it, while abortable blocking work must cooperatively observe cancellation and return `None` when cancelled. If an abortable effect resolves to plain `Task::blocking`, the shell returns `ShellError::AbortableBlockingTask` instead of silently accepting dishonest semantics.
+
+## 2026-03-09
+
+Q: What should `#[derive(Model)]` expose by default?
+
+A: Only whole-model extraction. Field extraction is opt-in per field via `#[model(wrapper = Name)]` or `#[model(part)]`.
+
+Reason: Implicit field wrappers create public API surface from naming conventions instead of explicit declarations. That conflicts with Syzygy's goal of making model access obvious at the declaration site. The derive should not invent extractor names or field-level access unless the field explicitly opts in.
+
+## 2026-03-09
+
+Q: How should Syzygy improve abortable task DX without hiding ownership?
+
+A: Add `AbortSlot` as an explicit model-state helper on top of `TaskLease`.
+
+Reason: The low-level lease API is correct but repetitive for the common "one piece of model state owns one abortable task" case. `AbortSlot` keeps ownership in model state, builds declarative commands, and stays honest about replacement semantics by emitting `cancel(previous)` before `abortable(next, effect)`. The runtime still only sees `TaskLease` and `Command` descriptions.

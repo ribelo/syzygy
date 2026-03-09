@@ -48,6 +48,7 @@ fn bounded_channel_overflow_does_not_crash() {
 
     #[derive(Debug, Default, Model)]
     struct Model {
+        #[model(wrapper = Seen)]
         seen: usize,
     }
 
@@ -98,6 +99,7 @@ fn deferred_events_preserve_fifo_when_new_commands_arrive() {
 
     #[derive(Debug, Default, Model)]
     struct Model {
+        #[model(wrapper = Order)]
         order: Vec<&'static str>,
     }
 
@@ -204,6 +206,7 @@ fn run_until_progresses_async_effects() {
 
     #[derive(Debug, Default, Model)]
     struct Model {
+        #[model(wrapper = Done)]
         done: bool,
     }
 
@@ -389,6 +392,7 @@ fn cancelled_abortable_future_does_not_route_completion_event() {
 
     #[derive(Debug, Default, Model)]
     struct Model {
+        #[model(wrapper = Done)]
         done: bool,
     }
 
@@ -446,21 +450,18 @@ fn dropping_abortable_lease_cancels_running_future() {
 
     #[derive(Debug, Default, Model)]
     struct Model {
-        lease: Option<TaskLease>,
+        #[model(wrapper = Lease)]
+        lease: AbortSlot,
+        #[model(wrapper = Done)]
         done: bool,
     }
 
     fn handle_event(event: Event, ctx: &EventContext<Model>) -> Command<Event, Effect> {
         match event {
-            Event::Start => {
-                let lease = TaskLease::new();
-                let current = Lease::extract_mut(ctx);
-                **current = Some(lease.clone());
-                Command::abortable(lease, Effect::Wait)
-            }
+            Event::Start => Lease::extract_mut(ctx).start(Effect::Wait),
             Event::DropLease => {
                 let current = Lease::extract_mut(ctx);
-                **current = None;
+                current.clear();
                 Command::none()
             }
             Event::Done => {
@@ -518,21 +519,18 @@ fn dropping_abortable_lease_cancels_running_stream() {
 
     #[derive(Debug, Default, Model)]
     struct Model {
-        lease: Option<TaskLease>,
+        #[model(wrapper = Lease)]
+        lease: AbortSlot,
+        #[model(wrapper = Ticks)]
         ticks: usize,
     }
 
     fn handle_event(event: Event, ctx: &EventContext<Model>) -> Command<Event, Effect> {
         match event {
-            Event::Start => {
-                let lease = TaskLease::new();
-                let current = Lease::extract_mut(ctx);
-                **current = Some(lease.clone());
-                Command::abortable(lease, Effect::Watch)
-            }
+            Event::Start => Lease::extract_mut(ctx).start(Effect::Watch),
             Event::DropLease => {
                 let current = Lease::extract_mut(ctx);
-                **current = None;
+                current.clear();
                 Command::none()
             }
             Event::Tick => {
@@ -595,6 +593,7 @@ fn shutdown_blocks_spawned_untracked_command_routing() {
 
     #[derive(Debug, Default, Model)]
     struct Model {
+        #[model(wrapper = Ticks)]
         ticks: usize,
     }
 
@@ -798,6 +797,7 @@ fn spawned_events_are_deferred_when_event_channel_is_full() {
 
     #[derive(Debug, Default, Model)]
     struct Model {
+        #[model(wrapper = Done)]
         done: bool,
     }
 
@@ -881,6 +881,7 @@ fn future_effects_resolve_on_syzygys_owned_runtime() {
 
     #[derive(Debug, Default, Model)]
     struct Model {
+        #[model(wrapper = Done)]
         done: bool,
     }
 
@@ -930,6 +931,7 @@ fn blocking_effects_resolve_on_syzygys_owned_runtime() {
 
     #[derive(Debug, Default, Model)]
     struct Model {
+        #[model(wrapper = Done)]
         done: bool,
     }
 
@@ -983,6 +985,7 @@ fn cooperative_blocking_task_cancels_on_explicit_abort() {
 
     #[derive(Debug, Default, Model)]
     struct Model {
+        #[model(wrapper = Done)]
         done: bool,
     }
 
@@ -1049,21 +1052,18 @@ fn cooperative_blocking_task_cancels_when_lease_owner_drops() {
 
     #[derive(Debug, Default, Model)]
     struct Model {
-        lease: Option<TaskLease>,
+        #[model(wrapper = Lease)]
+        lease: AbortSlot,
+        #[model(wrapper = Done)]
         done: bool,
     }
 
     fn handle_event(event: Event, ctx: &EventContext<Model>) -> Command<Event, Effect> {
         match event {
-            Event::Start => {
-                let lease = TaskLease::new();
-                let current = Lease::extract_mut(ctx);
-                **current = Some(lease.clone());
-                Command::abortable(lease, Effect::Work)
-            }
+            Event::Start => Lease::extract_mut(ctx).start(Effect::Work),
             Event::DropLease => {
                 let current = Lease::extract_mut(ctx);
-                **current = None;
+                current.clear();
                 Command::none()
             }
             Event::Done => {

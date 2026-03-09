@@ -25,14 +25,17 @@ pub enum FilterType {
 
 /// ## Why combine everything here?
 /// This application shows how the TEA pattern scales to a realistic scenario.
-/// It uses wrapper types (Example 01), `#[extract]` (Example 02), async effects (Example 04),
-/// and error handling (Example 09).
+/// It uses explicit wrappers (Example 01), `#[model(part)]` (Example 02), async
+/// effects (Example 04), and error handling (Example 09).
 #[derive(Debug, Model)]
 pub struct TodoApp {
+    #[model(wrapper = Todos)]
     pub todos: Vec<Todo>,
+    #[model(wrapper = NextId)]
     pub next_id: u32,
-    #[extract]
+    #[model(part)]
     pub filter: FilterType,
+    #[model(wrapper = SyncError)]
     pub sync_error: Option<String>,
 }
 

@@ -6,7 +6,10 @@ Zero-overhead TEA (The Elm Architecture) for Rust. Pure synchronous state transi
 use syzygy::prelude::*;
 
 #[derive(Model)]
-struct Model { counter: i32 }
+struct Model {
+    #[model(wrapper = Counter)]
+    counter: i32,
+}
 
 #[derive(Clone)]
 enum Event { Increment }
@@ -56,7 +59,7 @@ syzygy = { git = "https://github.com/ribelo/syzygy", default-features = false, f
 
 | Concept | Purpose | Example |
 |---------|---------|---------|
-| `Model` | Application state | `#[derive(Model)] struct App { count: i32 }` |
+| `Model` | Application state | `#[derive(Model)] struct App { #[model(wrapper = Count)] count: i32 }` |
 | `Event` | Something that happened | `enum Event { Increment }` |
 | `Effect` | Side-effect to execute | `enum Effect { Save }` |
 | `Command` | Instructions from handler | `Command::event(E)` or `Command::effect(X)` |
@@ -112,13 +115,14 @@ Event -> Handler(&mut Model) -> Command -> Shell -> Task -> Event
 
 ## Field Extraction
 
-`#[derive(Model)]` generates transparent wrapper types for borrow tracking:
+`#[derive(Model)]` is inert until a field opts into extraction:
 
 ```rust
 #[derive(Model)]
 struct Model {
+    #[model(wrapper = Counter)]
     counter: i32,
-    #[model(part)]  // Use type directly, no wrapper
+    #[model(part)]  // Use the field type directly
     settings: Settings,
 }
 
@@ -129,13 +133,11 @@ fn inc(counter: &mut Counter) { **counter += 1; }
 fn update(settings: &mut Settings) { settings.theme = Dark; }
 ```
 
-| Approach | When to Use | Handler Signature |
-|----------|-------------|-------------------|
-| Wrapper (default) | Multiple fields of same type | `&mut Counter` |
-| `#[model(part)]` | Unique complex types | `&mut Settings` |
-| Whole model | Needs all fields | `&mut Model` |
-
-`#[model(direct)]` is accepted as an alias for `#[model(part)]`.
+| Approach | Attribute | When to Use | Handler Signature |
+|----------|-----------|-------------|-------------------|
+| Named wrapper | `#[model(wrapper = Counter)]` | Repeated/simple field types | `&mut Counter` |
+| Direct part | `#[model(part)]` | Unique complex field types | `&mut Settings` |
+| Whole model | none | Needs all fields | `&mut Model` |
 
 **Constraint:** 256 fields max per model. Runtime panic on aliasing violations (`&mut T` + `&T` overlap).
 
@@ -161,12 +163,15 @@ async fn fetch(url: String) -> Command<Event, Effect> {
 ## Command Composition
 
 ```rust
-let save = TaskLease::new();
+#[derive(Model)]
+struct AppModel {
+    #[model(wrapper = SaveJob)]
+    save_job: AbortSlot,
+}
 
-Command::effect(Effect::Save)
-    .and_event(Event::Saved)           // Add event
-    .map_event(|e| Event::Child(e))    // Transform
-    .and_abortable(save.clone(), Effect::Backup)
+fn start_save(save_job: &mut SaveJob) -> Command<Event, Effect> {
+    save_job.start(Effect::Save)
+}
 ```
 
 ## Testing
@@ -205,7 +210,7 @@ struct DbPool(Arc<Pool>);  // Cheap clone
 
 **256 field limit.** Exceeding this panics at model construction.
 
-**Abortable work needs an owner.** If you schedule an abortable effect with a `TaskLease` and do not retain the lease in state, the shell will cancel it on the next `step`/`drain` cycle.
+**Abortable work needs an owner.** `AbortSlot` is the convenient state wrapper for the common case, but the underlying owner is still a `TaskLease`. If you schedule an abortable effect and do not retain its owner in model state, the shell will cancel it on the next `step`/`drain` cycle.
 
 **Abortable command/task mapping is explicit.** Plain `Command::map` / `Task::map` reject abortable steps. Use `TaskLeaseScope` when you intentionally remap child abortable work into a parent domain.
 

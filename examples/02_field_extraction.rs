@@ -8,21 +8,22 @@ struct UserProfile {
 
 #[derive(Debug, Default, Model)]
 struct AppState {
-    /// ## Why no `#[extract]` here?
+    /// ## Why use an explicit wrapper here?
     ///
     /// For primitive types like `i32` or `String`, multiple fields might have the same type.
-    /// Standard wrapper generation creates unique types (e.g., `Score`) so the runtime
-    /// borrow checker can distinguish them.
+    /// `#[model(wrapper = Score)]` creates a unique extractor type so the runtime
+    /// borrow checker can distinguish this field from other `i32` values.
+    #[model(wrapper = Score)]
     score: i32,
 
-    /// ## Why use `#[extract]`?
+    /// ## Why use `#[model(part)]`?
     ///
-    /// By adding `#[extract]`, the `Model` macro implements the internal extraction traits
+    /// By adding `#[model(part)]`, the `Model` macro implements the internal extraction traits
     /// directly on the `UserProfile` type rather than generating a wrapper.
     /// This allows us to access the complex struct directly in our handlers.
     ///
-    /// Constraint: You can only have one `#[extract]` per type in a given model.
-    #[extract]
+    /// Constraint: You can only have one `#[model(part)]` field per type in a given model.
+    #[model(part)]
     profile: UserProfile,
 }
 
