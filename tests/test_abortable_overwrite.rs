@@ -27,7 +27,7 @@ fn handler(event: Event, _ctx: &EventContext<()>) -> Command<Event, Effect> {
 }
 
 #[test]
-fn overwrite_records_implicit_cancellation_for_exhaustivity() {
+fn abortable_overwrite_records_implicit_cancellation_for_exhaustivity() {
     let mut store = TestStore::new((), handler).with_exhaustivity(Exhaustivity::On);
     store.send(Event::EmitTwo);
 

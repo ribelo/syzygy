@@ -67,8 +67,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .event_handler(handle_event)
         .build()?;
 
-    app.core().try_send(AppEvent::UpdateName("Alice".into()))?;
-    app.core().try_send(AppEvent::AddPoints(100))?;
+    app.core().emit(AppEvent::UpdateName("Alice".into()));
+    app.core().emit(AppEvent::AddPoints(100));
 
     app.step()?;
     app.step()?;

@@ -91,7 +91,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .effect_handler(handle_effect)
         .build()?;
 
-    app.core().try_send(AppEvent::FetchData)?;
+    app.core().emit(AppEvent::FetchData);
 
     // Syzygy owns progression synchronously; effects remain async internally.
     app.run_until(|core, _| core.model().data.is_some())?;

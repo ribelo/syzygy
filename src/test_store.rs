@@ -268,14 +268,6 @@ where
         buffered.effect
     }
 
-    /// Backwards-compatible alias for [`assert_abortable_effect`](Self::assert_abortable_effect).
-    pub fn assert_tracked_effect(&mut self, lease: impl Into<TaskLease>, expected: X) -> X
-    where
-        X: std::fmt::Debug + PartialEq,
-    {
-        self.assert_abortable_effect(lease, expected)
-    }
-
     /// Assert and consume the next cancellation lease.
     pub fn assert_cancelled(&mut self, lease: impl Into<TaskLease>) {
         let lease = lease.into();
@@ -301,11 +293,6 @@ where
                 .any(|buffered| buffered.lease.as_ref() == Some(&lease)),
             "expected lease {lease:?} to be empty"
         );
-    }
-
-    /// Backwards-compatible alias for [`assert_lease_empty`](Self::assert_lease_empty).
-    pub fn assert_slot_empty(&self, lease: impl Into<TaskLease>) {
-        self.assert_lease_empty(lease);
     }
 
     /// Assert that no effects are currently buffered.
@@ -629,8 +616,8 @@ mod tests {
         SaveDone,
         EmitMany,
         DoubleBorrow,
-        Track,
-        CancelTracked,
+        StartAbortable,
+        CancelAbortable,
     }
 
     #[derive(Debug, Clone, PartialEq, Eq)]
@@ -640,7 +627,7 @@ mod tests {
         Second,
         Third,
         Fourth,
-        Tracked,
+        Abortable,
     }
 
     #[derive(Debug, Default, PartialEq, Eq, crate::Model)]
@@ -651,7 +638,7 @@ mod tests {
         save_completed: bool,
     }
 
-    fn tracked_lease() -> TaskLease {
+    fn abortable_lease() -> TaskLease {
         static LEASE: OnceLock<TaskLease> = OnceLock::new();
         LEASE.get_or_init(TaskLease::new).clone()
     }
@@ -684,8 +671,8 @@ mod tests {
                 .and_effect(Effect::Third)
                 .and_effect(Effect::Fourth),
             Event::DoubleBorrow => bad_double_borrow.handle((), ctx),
-            Event::Track => Command::abortable(tracked_lease(), Effect::Tracked),
-            Event::CancelTracked => Command::cancel(tracked_lease()),
+            Event::StartAbortable => Command::abortable(abortable_lease(), Effect::Abortable),
+            Event::CancelAbortable => Command::cancel(abortable_lease()),
         }
     }
 
@@ -785,47 +772,47 @@ mod tests {
     }
 
     #[test]
-    fn tracked_effect_assertion_consumes_slot() {
+    fn abortable_effect_assertion_consumes_lease() {
         let mut store = TestStore::new(Model::default(), handle_event);
 
-        store.send(Event::Track);
-        store.assert_abortable_effect(tracked_lease(), Effect::Tracked);
+        store.send(Event::StartAbortable);
+        store.assert_abortable_effect(abortable_lease(), Effect::Abortable);
 
         store.assert_no_effects();
     }
 
     #[test]
-    fn assert_effects_rejects_tracked_outputs() {
+    fn assert_effects_rejects_abortable_outputs() {
         let mut store = TestStore::new(Model::default(), handle_event);
-        store.send(Event::Track);
+        store.send(Event::StartAbortable);
 
         assert_panic_contains(
             "cannot assert plain effects while abortable effects are pending",
             || {
-                store.assert_effects([Effect::Tracked]);
+                store.assert_effects([Effect::Abortable]);
             },
         );
     }
 
     #[test]
-    fn tracked_overwrite_records_cancellation() {
+    fn abortable_overwrite_records_cancellation() {
         let mut store = TestStore::new(Model::default(), |_event: Event, _ctx| {
-            let lease = tracked_lease();
+            let lease = abortable_lease();
             Command::abortable(&lease, Effect::First).and_abortable(&lease, Effect::Second)
         });
 
-        store.send(Event::Track);
-        store.assert_cancelled(tracked_lease());
-        store.assert_abortable_effect(tracked_lease(), Effect::Second);
-        store.assert_lease_empty(tracked_lease());
+        store.send(Event::StartAbortable);
+        store.assert_cancelled(abortable_lease());
+        store.assert_abortable_effect(abortable_lease(), Effect::Second);
+        store.assert_lease_empty(abortable_lease());
     }
 
     #[test]
-    fn cancelled_slot_requires_assertion_in_exhaustive_mode() {
+    fn cancelled_lease_requires_assertion_in_exhaustive_mode() {
         assert_panic_contains("must assert effects", || {
             let mut store =
                 TestStore::new(Model::default(), handle_event).with_exhaustivity(Exhaustivity::On);
-            store.send(Event::CancelTracked);
+            store.send(Event::CancelAbortable);
         });
     }
 
@@ -833,8 +820,8 @@ mod tests {
     fn assert_cancelled_consumes_pending_cancellation() {
         let mut store = TestStore::new(Model::default(), handle_event);
 
-        store.send(Event::CancelTracked);
-        store.assert_cancelled(tracked_lease());
+        store.send(Event::CancelAbortable);
+        store.assert_cancelled(abortable_lease());
         store.assert_no_effects();
     }
 
@@ -922,12 +909,12 @@ mod tests {
     }
 
     #[test]
-    fn take_effects_rejects_tracked_outputs() {
+    fn take_effects_rejects_abortable_outputs() {
         let mut store = TestStore::new(Model::default(), |_event: Event, _ctx| {
-            Command::<Event, Effect>::abortable(tracked_lease(), Effect::First)
+            Command::<Event, Effect>::abortable(abortable_lease(), Effect::First)
         });
 
-        store.send(Event::Track);
+        store.send(Event::StartAbortable);
         assert_panic_contains("abortable effects are pending", || {
             let _ = store.take_effects();
         });

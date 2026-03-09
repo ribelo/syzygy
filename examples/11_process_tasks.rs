@@ -139,9 +139,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .effect_handler(handle_effect)
         .build()?;
 
-    app.core().try_send(Event::Start)?;
+    app.core().emit(Event::Start);
     if std::env::args().any(|arg| arg == "--cancel") {
-        app.core().try_send(Event::Stop)?;
+        app.core().emit(Event::Stop);
     }
     app.run()?;
 

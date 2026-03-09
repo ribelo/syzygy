@@ -26,7 +26,7 @@ fn handler(event: Event, _ctx: &EventContext<()>) -> Command<Event, Effect> {
 }
 
 #[test]
-fn cancelled_assertion_consumes_slot() {
+fn cancelled_assertion_consumes_pending_cancellation() {
     let mut store = TestStore::new((), handler);
     store.send(Event::CancelIt);
     store.assert_cancelled(lease());

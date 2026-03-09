@@ -154,8 +154,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .build()?;
 
     // Start multiple tickers concurrently
-    app.core().try_send(AppEvent::StartTimer(1))?;
-    app.core().try_send(AppEvent::StartTimer(2))?;
+    app.core().emit(AppEvent::StartTimer(1));
+    app.core().emit(AppEvent::StartTimer(2));
 
     // Let them run until both timers finish.
     app.run_until(|core, _| core.model().active_timers == 0)?;

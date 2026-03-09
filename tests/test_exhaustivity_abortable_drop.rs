@@ -26,7 +26,7 @@ fn handler(event: Event, _ctx: &EventContext<()>) -> Command<Event, Effect> {
 }
 
 #[test]
-fn tracked_assertion_prevents_drop_panic_when_slot_drained() {
+fn abortable_assertion_prevents_drop_panic_when_lease_is_drained() {
     let mut store = TestStore::new((), handler).with_exhaustivity(Exhaustivity::On);
     store.send(Event::Step1);
     store.assert_abortable_effect(lease(), Effect::MyEffect);

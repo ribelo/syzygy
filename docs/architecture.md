@@ -136,7 +136,7 @@ Command::abortable(lease.clone(), effect) // Start/replace lease-owned task
 Command::cancel(lease)                    // Explicit stop
 ```
 
-For the common one-slot-in-model case:
+For the common one-owned-field-in-model case:
 
 ```rust
 #[derive(Model)]
@@ -161,7 +161,7 @@ fn start_save(save_job: &mut SaveJob) -> Command<Event, Effect> {
 - Lease-owned blocking work must be cooperative. `Task::blocking` is rejected for abortable effects; use `Task::blocking_cooperative` and check the `BlockingCancelToken`.
 - Mapping abortable child commands/tasks is explicit. Plain `map` rejects abortable steps; `TaskLeaseScope` remaps leases when a caller intentionally embeds child abortable work into a parent domain.
 
-**ABA Protection:** Generation token per slot entry. Prevents "cancel wrong task" race.
+**ABA Protection:** Generation token per active lease entry. Prevents "cancel wrong task" race.
 
 ## Error Handling
 

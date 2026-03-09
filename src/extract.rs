@@ -239,6 +239,7 @@ impl<M> EventContext<M> {
         }
     }
 
+    #[track_caller]
     pub fn track_field_borrow(&self, field_index: u32, field_name: &str) {
         assert!(
             !self.whole_model_mut.get(),
@@ -265,6 +266,7 @@ impl<M> EventContext<M> {
             .set(set_field_bit(fields_mut, field_index, field_name));
     }
 
+    #[track_caller]
     pub fn track_field_immut(&self, field_index: u32, field_name: &str) {
         assert!(
             !self.whole_model_mut.get(),
@@ -282,6 +284,7 @@ impl<M> EventContext<M> {
             .set(set_field_bit(fields_immut, field_index, field_name));
     }
 
+    #[track_caller]
     fn track_whole_model_mut(&self) {
         assert!(
             !self.whole_model_mut.get(),
@@ -303,6 +306,7 @@ impl<M> EventContext<M> {
         self.whole_model_mut.set(true);
     }
 
+    #[track_caller]
     fn track_whole_model_immut(&self) {
         assert!(
             !self.whole_model_mut.get(),
@@ -342,6 +346,7 @@ impl<M> EventContext<M> {
         self.ptr
     }
 
+    #[track_caller]
     pub fn handle<E, X, H, Marker>(&self, handler: H) -> Command<E, X>
     where
         H: EventHandler<E, X, (), M, Marker>,
@@ -394,15 +399,18 @@ impl<M> Drop for BorrowGuard<'_, M> {
 }
 
 pub trait Part<M> {
+    #[track_caller]
     fn extract(ctx: &EventContext<M>) -> &Self;
 }
 
 #[allow(clippy::mut_from_ref)]
 pub trait PartMut<M> {
+    #[track_caller]
     fn extract_mut(ctx: &EventContext<M>) -> &mut Self;
 }
 
 impl<M> Part<M> for M {
+    #[track_caller]
     fn extract(ctx: &EventContext<M>) -> &Self {
         let ptr = ctx.model_ptr();
         ctx.track_whole_model_immut();
@@ -413,6 +421,7 @@ impl<M> Part<M> for M {
 
 #[allow(clippy::mut_from_ref)]
 impl<M> PartMut<M> for M {
+    #[track_caller]
     fn extract_mut(ctx: &EventContext<M>) -> &mut Self {
         let ptr = ctx.model_ptr();
         ctx.track_whole_model_mut();
@@ -423,6 +432,7 @@ impl<M> PartMut<M> for M {
 }
 
 pub trait EventHandler<E, X, P, M, Marker>: 'static {
+    #[track_caller]
     fn handle(&self, payload: P, ctx: &EventContext<M>) -> Command<E, X>;
 }
 
@@ -430,6 +440,7 @@ impl<E, X, P, M, F> EventHandler<E, X, P, M, ()> for F
 where
     F: Fn(P) -> Command<E, X> + 'static,
 {
+    #[track_caller]
     fn handle(&self, payload: P, _ctx: &EventContext<M>) -> Command<E, X> {
         (self)(payload)
     }
@@ -452,6 +463,7 @@ macro_rules! impl_event_handler {
             F: for<'a> Fn(P, $(&'a $T),+) -> Command<E, X> + 'static,
             $($T: Part<M>,)+
         {
+            #[track_caller]
             fn handle(&self, payload: P, ctx: &EventContext<M>) -> Command<E, X> {
                 let _borrow_guard = ctx.borrow_guard();
                 (self)(payload, $(<$T as Part<M>>::extract(ctx)),+)
@@ -464,6 +476,7 @@ macro_rules! impl_event_handler {
             F: for<'a> Fn($(&'a $T),+) -> Command<E, X> + 'static,
             $($T: Part<M>,)+
         {
+            #[track_caller]
             fn handle(&self, _payload: (), ctx: &EventContext<M>) -> Command<E, X> {
                 let _borrow_guard = ctx.borrow_guard();
                 (self)($(<$T as Part<M>>::extract(ctx)),+)
@@ -480,6 +493,7 @@ macro_rules! impl_event_handler_mut {
             F: for<'a> Fn(P, $(&'a mut $T),+) -> Command<E, X> + 'static,
             $($T: PartMut<M>,)+
         {
+            #[track_caller]
             fn handle(&self, payload: P, ctx: &EventContext<M>) -> Command<E, X> {
                 let _borrow_guard = ctx.borrow_guard();
                 (self)(payload, $(<$T as PartMut<M>>::extract_mut(ctx)),+)
@@ -492,6 +506,7 @@ macro_rules! impl_event_handler_mut {
             F: for<'a> Fn($(&'a mut $T),+) -> Command<E, X> + 'static,
             $($T: PartMut<M>,)+
         {
+            #[track_caller]
             fn handle(&self, _payload: (), ctx: &EventContext<M>) -> Command<E, X> {
                 let _borrow_guard = ctx.borrow_guard();
                 (self)($(<$T as PartMut<M>>::extract_mut(ctx)),+)
@@ -528,6 +543,9 @@ impl_event_handler_mut!(T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12);
 
 #[cfg(test)]
 mod tests {
+    use std::panic::{self, AssertUnwindSafe};
+    use std::sync::{Arc, Mutex, OnceLock};
+
     use super::*;
     use crate as syzygy;
     use crate::command::CommandStep;
@@ -643,6 +661,39 @@ mod tests {
         resources.insert(R11(11));
         resources.insert(R12(12));
         resources
+    }
+
+    fn capture_panic_location(f: impl FnOnce()) -> (String, u32) {
+        static PANIC_HOOK_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        let lock = PANIC_HOOK_LOCK.get_or_init(|| Mutex::new(()));
+        let _guard = lock.lock().expect("panic hook mutex must not be poisoned");
+
+        let location = Arc::new(Mutex::new(None));
+        let location_in_hook = Arc::clone(&location);
+        let previous_hook = panic::take_hook();
+        panic::set_hook(Box::new(move |info| {
+            let panic_location = info
+                .location()
+                .map(|location| (location.file().to_string(), location.line()));
+            *location_in_hook
+                .lock()
+                .expect("panic location mutex must not be poisoned") = panic_location;
+        }));
+
+        let result = panic::catch_unwind(AssertUnwindSafe(f));
+        panic::set_hook(previous_hook);
+        assert!(
+            result.is_err(),
+            "expected panic, but closure completed successfully"
+        );
+
+        let captured_location = location
+            .lock()
+            .expect("panic location mutex must not be poisoned")
+            .clone()
+            .expect("panic hook should capture a location");
+
+        captured_location
     }
 
     // ── Event handler tests ─────────────────────────────────────────
@@ -772,6 +823,47 @@ mod tests {
     }
 
     #[test]
+    fn direct_extract_mut_panics_at_callsite() {
+        let mut model = AppModel {
+            counter: 0,
+            name: String::new(),
+        };
+
+        let expected_line = Cell::new(0_u32);
+        let (file, line) = capture_panic_location(|| {
+            let ctx = EventContext::new(&mut model);
+            let _first = Counter::extract_mut(&ctx);
+            expected_line.set(line!() + 1);
+            let _second = Counter::extract_mut(&ctx);
+        });
+
+        assert!(file.ends_with("src/extract.rs"));
+        assert_eq!(line, expected_line.get());
+    }
+
+    #[test]
+    fn handler_extract_mut_panics_at_callsite() {
+        fn bad(_: (), _first: &mut Counter, _second: &mut Counter) -> Command<Event, Effect> {
+            unreachable!()
+        }
+
+        let mut model = AppModel {
+            counter: 0,
+            name: String::new(),
+        };
+
+        let expected_line = Cell::new(0_u32);
+        let (file, line) = capture_panic_location(|| {
+            let ctx = EventContext::new(&mut model);
+            expected_line.set(line!() + 1);
+            let _ = bad.handle((), &ctx);
+        });
+
+        assert!(file.ends_with("src/extract.rs"));
+        assert_eq!(line, expected_line.get());
+    }
+
+    #[test]
     #[should_panic(expected = "already borrowed mutably")]
     fn track_field_borrow_panics_on_overlap() {
         let mut model = AppModel {
@@ -793,7 +885,7 @@ mod tests {
         let ctx = EventContext::new(&mut model);
 
         for index in 0..256 {
-            ctx.track_field_borrow(index, "tracked");
+            ctx.track_field_borrow(index, "field");
         }
     }
 

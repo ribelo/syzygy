@@ -78,14 +78,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // ## Running the application
     // We can inject events manually using the core channel.
-    app.core().try_send(AppEvent::Increment)?;
+    app.core().emit(AppEvent::Increment);
     // `step()` processes one pass of the internal event queue.
     app.step()?;
 
-    app.core().try_send(AppEvent::Increment)?;
+    app.core().emit(AppEvent::Increment);
     app.step()?;
 
-    app.core().try_send(AppEvent::Decrement)?;
+    app.core().emit(AppEvent::Decrement);
     app.step()?;
 
     println!("Final Counter: {}", app.model().counter);

@@ -33,7 +33,7 @@ fn handler(event: Event, _ctx: &EventContext<()>) -> Command<Event, Effect> {
 }
 
 #[test]
-fn drop_panics_when_other_tracked_effects_remain_unasserted() {
+fn drop_panics_when_other_abortable_effects_remain_unasserted() {
     assert_panic_contains("must assert effects before dropping test store", || {
         let mut store = TestStore::new((), handler).with_exhaustivity(Exhaustivity::On);
         store.send(Event::Step1);

@@ -28,7 +28,7 @@ fn handler(event: Event, _ctx: &EventContext<()>) -> Command<Event, Effect> {
 }
 
 #[test]
-fn tracked_assertion_drains_effect_for_exhaustivity() {
+fn abortable_assertion_drains_effect_for_exhaustivity() {
     let mut store = TestStore::new((), handler).with_exhaustivity(Exhaustivity::On);
     store.send(Event::Step1);
     store.assert_abortable_effect(lease(), Effect::MyEffect);
@@ -36,7 +36,7 @@ fn tracked_assertion_drains_effect_for_exhaustivity() {
 }
 
 #[test]
-fn assert_effects_rejects_tracked_effects() {
+fn assert_effects_rejects_abortable_effects() {
     let mut store = TestStore::new((), handler).with_exhaustivity(Exhaustivity::Off);
     store.send(Event::Step1);
 

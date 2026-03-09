@@ -75,6 +75,7 @@ fn expand_model(input: DeriveInput) -> syn::Result<TokenStream2> {
 
                 extract_impls.push(quote! {
                     impl #impl_generics syzygy::extract::Part<#model_ident #ty_generics> for #field_ty #where_clause {
+                        #[track_caller]
                         fn extract(ctx: &syzygy::extract::EventContext<#model_ident #ty_generics>) -> &Self {
                             // SAFETY: EventContext stores a valid pointer to the active model during dispatch.
                             let ptr = unsafe { ::core::ptr::addr_of!((*ctx.model_ptr()).#field_ident) };
@@ -86,6 +87,7 @@ fn expand_model(input: DeriveInput) -> syn::Result<TokenStream2> {
 
                     #[allow(clippy::mut_from_ref)]
                     impl #impl_generics syzygy::extract::PartMut<#model_ident #ty_generics> for #field_ty #where_clause {
+                        #[track_caller]
                         fn extract_mut(ctx: &syzygy::extract::EventContext<#model_ident #ty_generics>) -> &mut Self {
                             ctx.track_field_borrow(#field_index, #field_name);
                             // SAFETY: EventContext stores a valid mutable pointer for the active handler call,
@@ -125,6 +127,7 @@ fn expand_model(input: DeriveInput) -> syn::Result<TokenStream2> {
                     }
 
                     impl #impl_generics syzygy::extract::Part<#model_ident #ty_generics> for #wrapper_ident #ty_generics #where_clause {
+                        #[track_caller]
                         fn extract(ctx: &syzygy::extract::EventContext<#model_ident #ty_generics>) -> &Self {
                             // SAFETY: `repr(transparent)` guarantees Wrapper has the same layout as the field type.
                             let ptr = unsafe {
@@ -138,6 +141,7 @@ fn expand_model(input: DeriveInput) -> syn::Result<TokenStream2> {
 
                     #[allow(clippy::mut_from_ref)]
                     impl #impl_generics syzygy::extract::PartMut<#model_ident #ty_generics> for #wrapper_ident #ty_generics #where_clause {
+                        #[track_caller]
                         fn extract_mut(ctx: &syzygy::extract::EventContext<#model_ident #ty_generics>) -> &mut Self {
                             ctx.track_field_borrow(#field_index, #field_name);
                             // SAFETY: `repr(transparent)` guarantees Wrapper has the same layout as the field type.

@@ -79,3 +79,11 @@ Q: What is the default cancellation policy for shell-owned processes?
 A: Use `CloseStdinThenKill { grace: 500ms }` by default, but kill immediately when stdin is not piped.
 
 Reason: Closing stdin first is the most portable graceful shutdown signal Syzygy can own across backends today. Waiting for grace when there is no piped stdin would be dishonest because the shell has no cooperative signal to send, so the correct behavior there is immediate hard kill.
+
+## 2026-03-09
+
+Q: Should stale compatibility aliases and superseded tracker entries stay around after the lease/runtime redesign?
+
+A: No. Remove stale compatibility shims like `assert_tracked_effect` / `assert_slot_empty`, rename tests to the current abortable/lease terminology, and close superseded or already-implemented beads.
+
+Reason: Keeping two names for one concept makes the repository lie about the current API surface. Syzygy’s design goal is explicitness, so cleanup is not optional polish here; the code, docs, tests, and tracker should all use the same vocabulary.

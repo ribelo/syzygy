@@ -87,8 +87,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .effect_handler(handle_effect)
         .build()?;
 
-    app.core()
-        .try_send(AppEvent::ChildMsg(CounterEvent::Increment))?;
+    app.core().emit(AppEvent::ChildMsg(CounterEvent::Increment));
 
     // Process the event
     app.step()?;

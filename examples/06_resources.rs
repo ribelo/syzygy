@@ -98,7 +98,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .effect_handler(handle_effect)
         .build()?;
 
-    app.core().try_send(AppEvent::Start)?;
+    app.core().emit(AppEvent::Start);
     app.step()?;
     app.step()?;
 

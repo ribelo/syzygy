@@ -5,14 +5,6 @@ use thiserror::Error;
 /// Errors that can occur in Shell operations
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum ShellError {
-    /// Task tracker is closed (no new tasks can be spawned)
-    #[error("Task tracker is closed - no new tasks can be spawned")]
-    TaskTrackerClosed,
-
-    /// Task tracker mutex was poisoned
-    #[error("Task tracker mutex was poisoned")]
-    TaskTrackerPoisoned,
-
     /// Event channel is closed
     #[error("Event channel is closed")]
     EventChannelClosed,

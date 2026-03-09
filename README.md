@@ -223,13 +223,14 @@ fn start_save(save_job: &mut SaveJob) -> Command<Event, Effect> {
 use syzygy::prelude::*;
 
 let mut store = TestStore::new(Model::default(), handle_event);
-store.emit(Event::Increment);
+store.send(Event::Increment);
 
 assert_eq!(store.state().counter, 1);
 store.assert_effects([Effect::Save]);
 ```
 
 **Note:** `emit()` is fire-and-forget (returns `()`). Use `try_send()` if you need to handle channel errors explicitly.
+Use a real `Syzygy` runner, not `TestStore`, for `Task::process` / `Task::process_interactive` coverage because subprocess lifecycle is shell-owned.
 
 ## Footguns
 

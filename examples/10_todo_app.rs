@@ -167,16 +167,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .build()?;
 
     // Add a todo
-    runner
-        .core()
-        .try_send(Event::AddTodo("Buy groceries".into()))?;
+    runner.core().emit(Event::AddTodo("Buy groceries".into()));
     runner.step()?; // handles add
     runner.step()?; // handles save effect task
 
     assert_eq!(runner.model().todos.len(), 1);
 
     // Toggle the todo
-    runner.core().try_send(Event::ToggleTodo(1))?;
+    runner.core().emit(Event::ToggleTodo(1));
     runner.step()?;
     runner.step()?;
 
