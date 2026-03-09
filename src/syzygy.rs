@@ -31,7 +31,7 @@ where
     Effect: 'static,
 {
     core: Core<Event, Effect, Model>,
-    shell: Shell<Event, Effect>,
+    shell: Shell<Event, Effect, Model>,
     config: SyzygyConfig,
 }
 
@@ -41,8 +41,9 @@ impl<Event, Effect, Model> Syzygy<Event, Effect, Model>
 where
     Event: 'static,
     Effect: 'static,
+    Model: 'static,
 {
-    pub fn new(core: Core<Event, Effect, Model>, shell: Shell<Event, Effect>) -> Self {
+    pub fn new(core: Core<Event, Effect, Model>, shell: Shell<Event, Effect, Model>) -> Self {
         Self {
             core,
             shell,
@@ -52,7 +53,7 @@ where
 
     pub fn with_config(
         core: Core<Event, Effect, Model>,
-        shell: Shell<Event, Effect>,
+        shell: Shell<Event, Effect, Model>,
         config: SyzygyConfig,
     ) -> Self {
         Self {
@@ -81,7 +82,7 @@ where
 
     pub fn run_until<F>(&mut self, mut condition: F) -> Result<(), ShellError>
     where
-        F: FnMut(&Core<Event, Effect, Model>, &Shell<Event, Effect>) -> bool,
+        F: FnMut(&Core<Event, Effect, Model>, &Shell<Event, Effect, Model>) -> bool,
     {
         while !condition(&self.core, &self.shell) {
             let did_work = self.step()?;
@@ -114,11 +115,11 @@ where
         &mut self.core
     }
 
-    pub fn shell(&self) -> &Shell<Event, Effect> {
+    pub fn shell(&self) -> &Shell<Event, Effect, Model> {
         &self.shell
     }
 
-    pub fn shell_mut(&mut self) -> &mut Shell<Event, Effect> {
+    pub fn shell_mut(&mut self) -> &mut Shell<Event, Effect, Model> {
         &mut self.shell
     }
 
@@ -139,18 +140,19 @@ where
         step_core_shell(&mut self.core, &mut self.shell)
     }
 
-    pub fn split(self) -> (Core<Event, Effect, Model>, Shell<Event, Effect>) {
+    pub fn split(self) -> (Core<Event, Effect, Model>, Shell<Event, Effect, Model>) {
         (self.core, self.shell)
     }
 }
 
 pub fn step_core_shell<Event, Effect, Model>(
     core: &mut Core<Event, Effect, Model>,
-    shell: &mut Shell<Event, Effect>,
+    shell: &mut Shell<Event, Effect, Model>,
 ) -> Result<bool, ShellError>
 where
     Event: 'static,
     Effect: 'static,
+    Model: 'static,
 {
     if shell.is_closed() {
         return Ok(false);
@@ -162,13 +164,14 @@ where
     Ok(core_work > 0 || subscription_work > 0 || shell_work > 0)
 }
 
-impl<Event, Effect, Model> From<(Core<Event, Effect, Model>, Shell<Event, Effect>)>
+impl<Event, Effect, Model> From<(Core<Event, Effect, Model>, Shell<Event, Effect, Model>)>
     for Syzygy<Event, Effect, Model>
 where
     Event: 'static,
     Effect: 'static,
+    Model: 'static,
 {
-    fn from(parts: (Core<Event, Effect, Model>, Shell<Event, Effect>)) -> Self {
+    fn from(parts: (Core<Event, Effect, Model>, Shell<Event, Effect, Model>)) -> Self {
         Self::new(parts.0, parts.1)
     }
 }
@@ -177,6 +180,7 @@ impl<Event, Effect, Model> std::fmt::Debug for Syzygy<Event, Effect, Model>
 where
     Event: 'static,
     Effect: 'static,
+    Model: 'static,
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Syzygy")

@@ -90,6 +90,7 @@ syzygy-macros = { path = "crates/syzygy-macros" }
 
 [dev-dependencies]
 futures = "0.3"
+trybuild = "1.0"
 
 [lints.clippy]
 all = { level = "warn", priority = -2 }

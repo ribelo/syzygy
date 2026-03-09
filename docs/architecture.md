@@ -188,6 +188,8 @@ fn handle_subscriptions(ctx: &SubscriptionContext<Model>) -> Subscription<Event,
 - Same key + changed driver/spec cancels the old source and starts a new one.
 - Missing key cancels the old source.
 - Shutdown cancels every active subscription.
+- `Shell` stays model-typed, so a shell carrying a subscription handler cannot be recombined with a different `Core<Model>`.
+- Custom `SubscriptionDriver::subscribe(...)` construction runs inside Syzygy's owned runtime task. Synchronous reconciliation only validates that the driver is registered.
 - Built-in `Subscription::every` is always available. App-specific integrations use `Subscription::custom::<Driver, _, _>(...)` plus `builder.with_subscription_driver(driver)`.
 
 ## Error Handling

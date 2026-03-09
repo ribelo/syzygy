@@ -95,3 +95,11 @@ Q: How should Syzygy model long-lived external event sources without giving app 
 A: Add a separate pure `Subscription` mechanism. The app returns a state-derived `Subscription<Event, Effect>` from a read-only `SubscriptionContext`, and the shell diffs desired subscriptions against active runtime-owned sources.
 
 Reason: Long-lived timers, watchers, and polling loops are not finite `Task`s, but handing a sender/channel into app code would break the rule that effects stay descriptive. `Subscription` keeps the app layer pure: the model describes which sources should exist, the shell owns lifecycle by explicit key, and custom integrations live behind registered `SubscriptionDriver`s instead of imperative backchannels.
+
+## 2026-03-09
+
+Q: How should subscription handlers and custom driver construction interact with shell/runtime ownership?
+
+A: Keep the model type attached to `Shell`, and construct `SubscriptionDriver::subscribe(...)` inside the owned runtime task, not in synchronous reconciliation code.
+
+Reason: Erasing the model type inside `Shell` makes safe `Core`/`Shell` recombination unsound because a shell built for one model can be paired with another. Separately, many runtime-backed drivers need an active tokio/compio runtime at construction time, so the shell must only validate registration synchronously and defer actual stream construction until the spawned subscription task is polled on Syzygy's owned runtime.

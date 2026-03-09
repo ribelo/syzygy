@@ -32,7 +32,8 @@ use crate::subscription::{
 };
 
 pub(crate) type EffectHandlerFn<E, X> = Rc<dyn for<'a> Fn(X, &EffectContext<'a>) -> Task<E, X>>;
-pub(crate) type SubscriptionHandlerFn<E, X> = Rc<dyn Fn(*const ()) -> Subscription<E, X>>;
+pub(crate) type SubscriptionHandlerFn<E, X, M> =
+    Rc<dyn Fn(&crate::extract::SubscriptionContext<M>) -> Subscription<E, X>>;
 
 enum TaskCancelHandle {
     Blocking(BlockingCancelToken),
@@ -304,14 +305,14 @@ enum ProcessEvent {
     Stderr(Result<Option<ProcessFrame>, ProcessError>),
 }
 
-pub struct Shell<E, X>
+pub struct Shell<E, X, M = ()>
 where
     E: 'static,
     X: 'static,
 {
     event_tx: EventSender<E>,
     effect_handler: EffectHandlerFn<E, X>,
-    subscription_handler: Option<SubscriptionHandlerFn<E, X>>,
+    subscription_handler: Option<SubscriptionHandlerFn<E, X, M>>,
     subscription_drivers: Rc<SubscriptionDrivers>,
     runtime: crate::runtime::Runtime,
     resources: Rc<ResourceMap>,
@@ -326,7 +327,7 @@ where
     queue: VecDeque<Command<E, X>>,
 }
 
-impl<E, X> Shell<E, X>
+impl<E, X> Shell<E, X, ()>
 where
     E: 'static,
     X: 'static,
@@ -346,11 +347,18 @@ where
             runtime,
         )
     }
+}
 
+impl<E, X, M> Shell<E, X, M>
+where
+    E: 'static,
+    X: 'static,
+    M: 'static,
+{
     pub(crate) fn with_subscriptions(
         event_tx: EventSender<E>,
         effect_handler: EffectHandlerFn<E, X>,
-        subscription_handler: Option<SubscriptionHandlerFn<E, X>>,
+        subscription_handler: Option<SubscriptionHandlerFn<E, X, M>>,
         subscription_drivers: SubscriptionDrivers,
         resources: ResourceMap,
         runtime: crate::runtime::Runtime,
@@ -459,16 +467,16 @@ where
         &self.runtime
     }
 
-    pub(crate) fn reconcile_subscriptions_for_model<Model>(
+    pub(crate) fn reconcile_subscriptions_for_model(
         &mut self,
-        model: &Model,
+        model: &M,
     ) -> Result<usize, ShellError> {
         let Some(handler) = self.subscription_handler.as_ref() else {
             return Ok(0);
         };
 
-        let model_ptr = (model as *const Model).cast::<()>();
-        let desired = handler(model_ptr);
+        let ctx = crate::extract::SubscriptionContext::new(model);
+        let desired = handler(&ctx);
         self.reconcile_subscriptions(desired)
     }
 
@@ -566,9 +574,9 @@ where
 
     fn start_subscription(&mut self, entry: SubscriptionEntry<E, X>) -> Result<(), ShellError> {
         let (key, driver_id, driver_name, spec, mapper) = entry.into_parts();
-        let Some(stream) = self.subscription_drivers.subscribe(driver_id, spec.clone()) else {
+        if !self.subscription_drivers.contains(driver_id) {
             return Err(ShellError::MissingSubscriptionDriver(driver_name.into()));
-        };
+        }
 
         let mapper = Rc::new(RefCell::new(mapper));
         let token = next_task_token();
@@ -576,7 +584,10 @@ where
             key.clone(),
             Rc::clone(&mapper),
             token,
-            stream,
+            Rc::clone(&self.subscription_drivers),
+            driver_id,
+            driver_name,
+            spec.clone(),
             &self.event_tx,
             &self.effect_handler,
             &self.runtime,
@@ -1134,7 +1145,10 @@ fn spawn_subscription_runtime_task<E, X>(
     key: SubscriptionKey,
     mapper: Rc<RefCell<Box<dyn ErasedSubscriptionMapper<E, X>>>>,
     token: u64,
-    mut stream: crate::subscription::ErasedSubscriptionStream,
+    subscription_drivers: Rc<SubscriptionDrivers>,
+    driver_id: TypeId,
+    driver_name: &'static str,
+    spec: SubscriptionSpec,
     event_tx: &EventSender<E>,
     effect_handler: &EffectHandlerFn<E, X>,
     runtime: &crate::runtime::Runtime,
@@ -1180,6 +1194,12 @@ where
     let runtime_for_task = runtime.clone();
     let handle = runtime.spawn(async move {
         let _lifecycle_guard = lifecycle_guard;
+        let Some(mut stream) = subscription_drivers.subscribe(driver_id, spec) else {
+            pending_errors
+                .borrow_mut()
+                .push_back(ShellError::MissingSubscriptionDriver(driver_name.into()));
+            return;
+        };
 
         loop {
             if closed.get() {

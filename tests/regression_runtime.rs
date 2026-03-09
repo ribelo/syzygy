@@ -1125,6 +1125,9 @@ fn shutdown_waits_for_non_abortable_blocking_tasks() {
 
     let finished = Arc::new(AtomicBool::new(false));
     let finished_in_effect = Arc::clone(&finished);
+    let (started_tx, started_rx) = std::sync::mpsc::sync_channel(1);
+    let release_barrier = Arc::new(std::sync::Barrier::new(2));
+    let release_barrier_in_effect = Arc::clone(&release_barrier);
 
     let mut runner = Syzygy::builder::<Event, Effect>()
         .model(())
@@ -1133,8 +1136,12 @@ fn shutdown_waits_for_non_abortable_blocking_tasks() {
         })
         .effect_handler(move |effect, _ctx| {
             let finished_in_effect = Arc::clone(&finished_in_effect);
+            let release_barrier = Arc::clone(&release_barrier_in_effect);
+            let started_tx = started_tx.clone();
             match effect {
                 Effect::Work => Task::blocking(move || {
+                    started_tx.send(()).unwrap();
+                    release_barrier.wait();
                     std::thread::sleep(Duration::from_millis(20));
                     finished_in_effect.store(true, Ordering::SeqCst);
                     Command::none()
@@ -1146,8 +1153,10 @@ fn shutdown_waits_for_non_abortable_blocking_tasks() {
 
     runner.core().try_send(Event::Start).unwrap();
     runner.step().unwrap();
+    started_rx.recv_timeout(Duration::from_secs(1)).unwrap();
 
     let shutdown_started = Instant::now();
+    release_barrier.wait();
     runner.shutdown();
 
     assert!(finished.load(Ordering::SeqCst));

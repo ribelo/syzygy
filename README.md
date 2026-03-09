@@ -250,6 +250,8 @@ let app = Syzygy::builder::<Event, Effect>()
 
 `Subscription::custom::<Driver, _, _>(...)` describes the source. The driver owns the impure runtime work. Event/effect handlers never receive sender channels or runtime handles.
 
+Custom drivers are constructed on Syzygy's owned runtime, so runtime-backed sources like `tokio::time::interval(...)` or compio primitives can be created safely inside `SubscriptionDriver::subscribe(...)`.
+
 ## Command Composition
 
 ```rust

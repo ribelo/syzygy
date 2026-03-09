@@ -271,22 +271,12 @@ where
             None => crate::runtime::Runtime::new()
                 .map_err(|err| ShellError::RuntimeInitializationFailed(err.to_string()))?,
         };
-        let erased_subscription_handler = self.subscription_handler.map(
-            |handler| -> crate::shell::SubscriptionHandlerFn<Event, Effect> {
-                Rc::new(move |model_ptr: *const ()| {
-                    let model_ptr = model_ptr.cast::<Model>();
-                    // SAFETY: builder wires this erased closure to the matching model type.
-                    let model = unsafe { &*model_ptr };
-                    let ctx = SubscriptionContext::new(model);
-                    handler(&ctx)
-                })
-            },
-        );
+        let subscription_handler = self.subscription_handler.map(Rc::from);
 
         let shell = Shell::with_subscriptions(
             event_tx,
             effect_handler,
-            erased_subscription_handler,
+            subscription_handler,
             self.subscription_drivers,
             self.resources,
             runtime,

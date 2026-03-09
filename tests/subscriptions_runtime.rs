@@ -25,6 +25,30 @@ impl SubscriptionDriver for PulseDriver {
     }
 }
 
+#[derive(Clone)]
+struct RuntimeCheckedDriver;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct RuntimeCheckedSpec;
+
+impl SubscriptionDriver for RuntimeCheckedDriver {
+    type Spec = RuntimeCheckedSpec;
+    type Update = ();
+
+    fn subscribe(&self, _spec: Self::Spec) -> SubscriptionStream<Self::Update> {
+        #[cfg(feature = "rt-compio")]
+        compio::runtime::Runtime::with_current(|_| ());
+
+        #[cfg(feature = "rt-tokio")]
+        {
+            let _ = tokio::runtime::Handle::try_current()
+                .expect("subscription driver should be constructed inside the owned runtime");
+        }
+
+        stream::once(async {}).boxed_local()
+    }
+}
+
 #[test]
 fn every_subscription_ticks_until_model_disables_it() {
     #[derive(Clone, Debug, PartialEq, Eq)]
@@ -271,4 +295,62 @@ fn duplicate_subscription_keys_are_rejected() {
 
     let error = app.step().unwrap_err();
     assert!(matches!(error, ShellError::DuplicateSubscriptionKey(_)));
+}
+
+#[test]
+fn custom_subscription_driver_is_constructed_inside_owned_runtime() {
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    enum Event {
+        Ready,
+    }
+
+    #[derive(Clone, Debug, PartialEq, Eq, Hash)]
+    enum Key {
+        RuntimeChecked,
+    }
+
+    #[derive(Model)]
+    struct Model {
+        #[model(wrapper = Active)]
+        active: bool,
+    }
+
+    fn ready(active: &mut Active) -> Command<Event, ()> {
+        **active = false;
+        Command::none()
+    }
+
+    fn describe(active: &Active) -> Subscription<Event, ()> {
+        if !**active {
+            return Subscription::none();
+        }
+
+        Subscription::custom::<RuntimeCheckedDriver, _, _>(
+            Key::RuntimeChecked,
+            RuntimeCheckedSpec,
+            |()| Some(Command::event(Event::Ready)),
+        )
+    }
+
+    fn handle_event(event: Event, ctx: &EventContext<Model>) -> Command<Event, ()> {
+        match event {
+            Event::Ready => handle!(ready, ctx),
+        }
+    }
+
+    fn handle_subscriptions(ctx: &SubscriptionContext<Model>) -> Subscription<Event, ()> {
+        handle!(describe, ctx)
+    }
+
+    let mut app = Syzygy::builder::<Event, ()>()
+        .model(Model { active: true })
+        .with_subscription_driver(RuntimeCheckedDriver)
+        .event_handler(handle_event)
+        .subscription_handler(handle_subscriptions)
+        .with_syzygy_config(SyzygyConfig::default().idle_sleep(Duration::from_millis(1)))
+        .build()
+        .unwrap();
+
+    app.run_until(|core, _| !core.model().active).unwrap();
+    assert!(!app.model().active);
 }

@@ -214,6 +214,11 @@ impl SubscriptionDrivers {
     }
 
     #[must_use]
+    pub(crate) fn contains(&self, driver_id: TypeId) -> bool {
+        self.inner.contains_key(&driver_id)
+    }
+
+    #[must_use]
     pub(crate) fn subscribe(
         &self,
         driver_id: TypeId,
