@@ -14,6 +14,8 @@ pub mod builder;
 #[cfg(feature = "shell")]
 pub mod executor;
 #[cfg(feature = "shell")]
+pub mod process;
+#[cfg(feature = "shell")]
 pub mod runtime;
 #[cfg(feature = "shell")]
 pub mod shell;
@@ -39,6 +41,11 @@ pub mod prelude {
     pub use crate::builder::SyzygyBuilder;
     #[cfg(feature = "shell")]
     pub use crate::executor::{BlockingCancelToken, Plan, Task};
+    #[cfg(feature = "shell")]
+    pub use crate::process::{
+        CapturedOutput, ProcessError, ProcessErrorKind, ProcessExit, ProcessInput, ProcessOutput,
+        ProcessSpec,
+    };
     #[cfg(feature = "shell")]
     pub use crate::shell::Shell;
     #[cfg(feature = "shell")]

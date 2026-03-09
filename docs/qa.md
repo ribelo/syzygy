@@ -47,3 +47,19 @@ Q: How should Syzygy improve abortable task DX without hiding ownership?
 A: Add `AbortSlot` as an explicit model-state helper on top of `TaskLease`.
 
 Reason: The low-level lease API is correct but repetitive for the common "one piece of model state owns one abortable task" case. `AbortSlot` keeps ownership in model state, builds declarative commands, and stays honest about replacement semantics by emitting `cancel(previous)` before `abortable(next, effect)`. The runtime still only sees `TaskLease` and `Command` descriptions.
+
+## 2026-03-09
+
+Q: How should child processes fit the explicit effect model?
+
+A: Add a first-class `Task::process(ProcessSpec, map_result)` API and keep subprocess lifecycle shell-owned.
+
+Reason: Spawning `std::process::Command` or backend-specific child handles inside arbitrary user futures makes subprocess ownership invisible to the shell, which breaks the "no orphaned process" rule. `ProcessSpec` keeps the effect declarative, `Task::process` keeps backend details out of the public API, and cancellation stays honest because the spawned child is killed when the shell drops the task on cancel, owner loss, replacement, or shutdown. Output capture must stay bounded at the call site.
+
+## 2026-03-09
+
+Q: How should callers customize runtime ownership?
+
+A: Keep runtime ownership inside Syzygy, but let the builder accept an already-owned `syzygy::runtime::Runtime` through `with_runtime(runtime)`.
+
+Reason: An injected runtime is still explicit ownership transfer into Syzygy. This avoids ambient-runtime coupling, avoids backend-specific builder entry points, and keeps all shell execution on one owned runtime instance while still letting advanced callers choose when and how that runtime is constructed.

@@ -60,15 +60,20 @@ required-features = ["shell"]
 name = "10_todo_app"
 required-features = ["shell"]
 
+[[example]]
+name = "11_process_tasks"
+required-features = ["shell"]
+
 [features]
 default = ["shell", "rt-compio"]
-shell = ["dep:futures"]
+shell = ["dep:async-process", "dep:futures"]
 rt-compio = ["dep:compio"]
 rt-tokio = ["dep:tokio"]
 examples = ["shell"]
 tracing = ["dep:tracing"]
 
 [dependencies]
+async-process = { version = "2.5", optional = true }
 thiserror = "2.0"
 futures = { version = "0.3", optional = true }
 smallvec = "1.13"

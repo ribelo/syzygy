@@ -32,6 +32,11 @@ mod imp {
             })
         }
 
+        #[must_use]
+        pub fn ptr_eq(&self, other: &Self) -> bool {
+            Rc::ptr_eq(&self.inner, &other.inner)
+        }
+
         pub fn spawn<F>(&self, future: F) -> JoinHandle<F::Output>
         where
             F: Future + 'static,
@@ -177,6 +182,11 @@ mod imp {
             Ok(Self {
                 inner: Rc::new(RuntimeState { runtime, local_set }),
             })
+        }
+
+        #[must_use]
+        pub fn ptr_eq(&self, other: &Self) -> bool {
+            Rc::ptr_eq(&self.inner, &other.inner)
         }
 
         pub fn spawn<F>(&self, future: F) -> JoinHandle<F::Output>

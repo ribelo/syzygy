@@ -8,6 +8,7 @@ use futures::Stream;
 use futures::StreamExt;
 
 use crate::command::{Command, TaskLeaseScope};
+use crate::process::{ProcessError, ProcessExit, ProcessSpec};
 
 type BoxFutureCommand<E, X> = Pin<Box<dyn Future<Output = Command<E, X>> + 'static>>;
 type BoxOptionalFutureCommand<E, X> =
@@ -239,6 +240,17 @@ where
         X: Send,
     {
         Self::BlockingCooperative(CooperativeBlockingTask::new(work))
+    }
+
+    #[must_use]
+    pub fn process<F>(spec: ProcessSpec, map_result: F) -> Self
+    where
+        F: FnOnce(Result<ProcessExit, ProcessError>) -> Command<E, X> + 'static,
+    {
+        Self::Future(Box::pin(async move {
+            let result = Box::pin(crate::process::run(spec)).await;
+            map_result(result)
+        }))
     }
 
     #[must_use]

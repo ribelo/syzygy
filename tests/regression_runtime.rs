@@ -1,6 +1,8 @@
 use std::cell::RefCell;
+use std::fs;
+use std::path::Path;
 use std::rc::Rc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -1195,4 +1197,351 @@ fn spawned_abortable_blocking_violation_surfaces_as_shell_error() {
     let err = runner.step().unwrap_err();
 
     assert_eq!(err, ShellError::AbortableBlockingTask);
+}
+
+#[test]
+fn process_tasks_capture_bounded_output() {
+    #[derive(Debug, Clone)]
+    enum Event {
+        Start,
+        Done(ProcessExit),
+        Failed(ProcessError),
+    }
+
+    #[derive(Debug, Clone)]
+    enum Effect {
+        Run,
+    }
+
+    #[derive(Debug, Default, Model)]
+    struct Model {
+        #[model(part)]
+        exit: Option<ProcessExit>,
+        #[model(part)]
+        failure: Option<ProcessError>,
+    }
+
+    fn handle_event(event: Event, ctx: &EventContext<Model>) -> Command<Event, Effect> {
+        match event {
+            Event::Start => Command::effect(Effect::Run),
+            Event::Done(exit) => {
+                *Option::<ProcessExit>::extract_mut(ctx) = Some(exit);
+                Command::none()
+            }
+            Event::Failed(error) => {
+                *Option::<ProcessError>::extract_mut(ctx) = Some(error);
+                Command::none()
+            }
+        }
+    }
+
+    fn handle_effect(effect: Effect, _ctx: &EffectContext<'_>) -> Task<Event, Effect> {
+        match effect {
+            Effect::Run => Task::process(capture_process_spec(3, 2), |result| match result {
+                Ok(exit) => Command::event(Event::Done(exit)),
+                Err(error) => Command::event(Event::Failed(error)),
+            }),
+        }
+    }
+
+    let mut runner = Syzygy::builder::<Event, Effect>()
+        .model(Model::default())
+        .event_handler(handle_event)
+        .effect_handler(handle_effect)
+        .build()
+        .unwrap();
+
+    runner.core().try_send(Event::Start).unwrap();
+    runner.run().unwrap();
+
+    assert!(runner.model().failure.is_none());
+    let exit = runner
+        .model()
+        .exit
+        .as_ref()
+        .expect("expected process output");
+    assert!(exit.status.success());
+
+    let stdout = exit.stdout.as_ref().expect("expected stdout capture");
+    assert_eq!(stdout.bytes.len(), 3);
+    assert!(stdout.truncated);
+
+    let stderr = exit.stderr.as_ref().expect("expected stderr capture");
+    assert_eq!(stderr.bytes.len(), 2);
+    assert!(stderr.truncated);
+}
+
+#[test]
+fn abortable_process_kills_on_explicit_cancel() {
+    #[derive(Debug, Clone)]
+    enum Event {
+        Start,
+        Stop,
+        Done,
+    }
+
+    #[derive(Debug, Clone)]
+    enum Effect {
+        Run,
+    }
+
+    #[derive(Debug, Default, Model)]
+    struct Model {
+        #[model(wrapper = Lease)]
+        lease: AbortSlot,
+        #[model(wrapper = Done)]
+        done: bool,
+    }
+
+    fn handle_event(event: Event, ctx: &EventContext<Model>) -> Command<Event, Effect> {
+        match event {
+            Event::Start => Lease::extract_mut(ctx).start(Effect::Run),
+            Event::Stop => Lease::extract_mut(ctx).cancel(),
+            Event::Done => {
+                let done = Done::extract_mut(ctx);
+                **done = true;
+                Command::none()
+            }
+        }
+    }
+
+    let output_path = unique_process_output_path("explicit-cancel");
+    remove_process_output(&output_path);
+
+    let mut runner = Syzygy::builder::<Event, Effect>()
+        .model(Model::default())
+        .event_handler(handle_event)
+        .effect_handler({
+            let output_path = output_path.clone();
+            move |effect, _ctx| match effect {
+                Effect::Run => Task::process(delayed_write_process_spec(&output_path), |_| {
+                    Command::event(Event::Done)
+                }),
+            }
+        })
+        .build()
+        .unwrap();
+
+    runner.core().try_send(Event::Start).unwrap();
+    runner.step().unwrap();
+    runner.core().try_send(Event::Stop).unwrap();
+    runner.step().unwrap();
+    runner.run_until(|_, shell| shell.is_idle()).unwrap();
+    std::thread::sleep(process_kill_observation_delay());
+
+    assert!(!runner.model().done);
+    assert!(!output_path.exists());
+}
+
+#[test]
+fn abortable_process_kills_when_lease_owner_drops() {
+    #[derive(Debug, Clone)]
+    enum Event {
+        Start,
+        DropLease,
+        Done,
+    }
+
+    #[derive(Debug, Clone)]
+    enum Effect {
+        Run,
+    }
+
+    #[derive(Debug, Default, Model)]
+    struct Model {
+        #[model(wrapper = Lease)]
+        lease: AbortSlot,
+        #[model(wrapper = Done)]
+        done: bool,
+    }
+
+    fn handle_event(event: Event, ctx: &EventContext<Model>) -> Command<Event, Effect> {
+        match event {
+            Event::Start => Lease::extract_mut(ctx).start(Effect::Run),
+            Event::DropLease => {
+                Lease::extract_mut(ctx).clear();
+                Command::none()
+            }
+            Event::Done => {
+                let done = Done::extract_mut(ctx);
+                **done = true;
+                Command::none()
+            }
+        }
+    }
+
+    let output_path = unique_process_output_path("owner-drop");
+    remove_process_output(&output_path);
+
+    let mut runner = Syzygy::builder::<Event, Effect>()
+        .model(Model::default())
+        .event_handler(handle_event)
+        .effect_handler({
+            let output_path = output_path.clone();
+            move |effect, _ctx| match effect {
+                Effect::Run => Task::process(delayed_write_process_spec(&output_path), |_| {
+                    Command::event(Event::Done)
+                }),
+            }
+        })
+        .build()
+        .unwrap();
+
+    runner.core().try_send(Event::Start).unwrap();
+    runner.step().unwrap();
+    runner.core().try_send(Event::DropLease).unwrap();
+    runner.step().unwrap();
+    runner.run_until(|_, shell| shell.is_idle()).unwrap();
+    std::thread::sleep(process_kill_observation_delay());
+
+    assert!(!runner.model().done);
+    assert!(!output_path.exists());
+}
+
+#[test]
+fn shutdown_kills_untracked_process_tasks() {
+    #[derive(Debug, Clone)]
+    enum Event {
+        Start,
+    }
+
+    #[derive(Debug, Clone)]
+    enum Effect {
+        Run,
+    }
+
+    fn handle_event(event: Event, _ctx: &EventContext<()>) -> Command<Event, Effect> {
+        match event {
+            Event::Start => Command::effect(Effect::Run),
+        }
+    }
+
+    let output_path = unique_process_output_path("shutdown");
+    remove_process_output(&output_path);
+
+    let mut runner = Syzygy::builder::<Event, Effect>()
+        .model(())
+        .event_handler(handle_event)
+        .effect_handler({
+            let output_path = output_path.clone();
+            move |effect, _ctx| match effect {
+                Effect::Run => Task::process(delayed_write_process_spec(&output_path), |_| {
+                    Command::none()
+                }),
+            }
+        })
+        .build()
+        .unwrap();
+
+    runner.core().try_send(Event::Start).unwrap();
+    runner.step().unwrap();
+    runner.shutdown();
+    std::thread::sleep(process_kill_observation_delay());
+
+    assert!(!output_path.exists());
+}
+
+#[test]
+fn builder_uses_injected_runtime_before_event_handler() {
+    let runtime = syzygy::runtime::Runtime::new().unwrap();
+
+    let runner = Syzygy::builder::<(), ()>()
+        .with_runtime(runtime.clone())
+        .model(())
+        .event_handler(|(), _ctx| Command::<(), ()>::none())
+        .build()
+        .unwrap();
+
+    assert!(runner.shell().runtime().ptr_eq(&runtime));
+}
+
+#[test]
+fn builder_uses_injected_runtime_after_event_handler() {
+    let runtime = syzygy::runtime::Runtime::new().unwrap();
+
+    let runner = Syzygy::builder::<(), ()>()
+        .model(())
+        .event_handler(|(), _ctx| Command::<(), ()>::none())
+        .with_runtime(runtime.clone())
+        .build()
+        .unwrap();
+
+    assert!(runner.shell().runtime().ptr_eq(&runtime));
+}
+
+static NEXT_PROCESS_OUTPUT_ID: AtomicU64 = AtomicU64::new(1);
+
+fn unique_process_output_path(label: &str) -> std::path::PathBuf {
+    let id = NEXT_PROCESS_OUTPUT_ID.fetch_add(1, Ordering::Relaxed);
+    std::env::temp_dir().join(format!(
+        "syzygy-process-{label}-{id}-{}.tmp",
+        std::process::id()
+    ))
+}
+
+fn remove_process_output(path: &Path) {
+    match fs::remove_file(path) {
+        Ok(()) => {}
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+        Err(err) => panic!("failed to remove test output {}: {err}", path.display()),
+    }
+}
+
+fn process_kill_observation_delay() -> Duration {
+    #[cfg(windows)]
+    {
+        Duration::from_millis(1_500)
+    }
+
+    #[cfg(not(windows))]
+    {
+        Duration::from_millis(500)
+    }
+}
+
+fn capture_process_spec(stdout_limit: usize, stderr_limit: usize) -> ProcessSpec {
+    #[cfg(windows)]
+    {
+        ProcessSpec::new("cmd")
+            .args(["/C", "echo stdout-data & echo stderr-data 1>&2"])
+            .stdout(ProcessOutput::Capture {
+                max_bytes: stdout_limit,
+            })
+            .stderr(ProcessOutput::Capture {
+                max_bytes: stderr_limit,
+            })
+    }
+
+    #[cfg(not(windows))]
+    {
+        ProcessSpec::new("sh")
+            .args(["-c", "printf stdout-data; printf stderr-data >&2"])
+            .stdout(ProcessOutput::Capture {
+                max_bytes: stdout_limit,
+            })
+            .stderr(ProcessOutput::Capture {
+                max_bytes: stderr_limit,
+            })
+    }
+}
+
+fn delayed_write_process_spec(path: &Path) -> ProcessSpec {
+    #[cfg(windows)]
+    {
+        let script = format!(
+            "ping 127.0.0.1 -n 3 >NUL && echo done>\"{}\"",
+            path.to_string_lossy()
+        );
+
+        ProcessSpec::new("cmd").args(["/C", script.as_str()])
+    }
+
+    #[cfg(not(windows))]
+    {
+        ProcessSpec::new("sh")
+            .arg("-c")
+            .arg("sleep 0.3; printf done > \"$1\"")
+            .arg("syzygy-process")
+            .arg(path.as_os_str().to_os_string())
+    }
 }

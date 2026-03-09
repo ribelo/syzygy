@@ -262,6 +262,11 @@ where
         self.closed.get()
     }
 
+    #[must_use]
+    pub fn runtime(&self) -> &crate::runtime::Runtime {
+        &self.runtime
+    }
+
     pub fn shutdown(&mut self) {
         self.closed.set(true);
         self.deferred_events.borrow_mut().clear();

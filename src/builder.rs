@@ -48,6 +48,7 @@ where
 {
     model: M,
     resources: ResourceMap,
+    runtime: Option<crate::runtime::Runtime>,
     _marker: PhantomData<(E, X)>,
 }
 
@@ -71,6 +72,7 @@ where
         Self {
             model: (),
             resources: ResourceMap::new(),
+            runtime: None,
             _marker: PhantomData,
         }
     }
@@ -87,6 +89,7 @@ where
         SyzygyBuilder {
             model,
             resources: self.resources,
+            runtime: self.runtime,
             _marker: PhantomData,
         }
     }
@@ -94,6 +97,12 @@ where
     #[must_use]
     pub fn with_resource<T: Clone + 'static>(mut self, resource: T) -> Self {
         self.resources.insert(resource);
+        self
+    }
+
+    #[must_use]
+    pub fn with_runtime(mut self, runtime: crate::runtime::Runtime) -> Self {
+        self.runtime = Some(runtime);
         self
     }
 
@@ -107,6 +116,7 @@ where
             effect_handler: None,
             model: self.model,
             resources: self.resources,
+            runtime: self.runtime,
             event_channel_capacity: None,
             syzygy_config: SyzygyConfig::default(),
             _marker: PhantomData,
@@ -123,6 +133,7 @@ where
     effect_handler: Option<RoutedEffectHandlerFn<Event, Effect>>,
     model: Model,
     resources: ResourceMap,
+    runtime: Option<crate::runtime::Runtime>,
     event_channel_capacity: Option<usize>,
     syzygy_config: SyzygyConfig,
     _marker: PhantomData<Effect>,
@@ -179,6 +190,12 @@ where
     }
 
     #[must_use]
+    pub fn with_runtime(mut self, runtime: crate::runtime::Runtime) -> Self {
+        self.runtime = Some(runtime);
+        self
+    }
+
+    #[must_use]
     pub fn with_syzygy_config(mut self, config: SyzygyConfig) -> Self {
         self.syzygy_config = config;
         self
@@ -209,8 +226,11 @@ where
                 },
             );
 
-        let runtime = crate::runtime::Runtime::new()
-            .map_err(|err| ShellError::RuntimeInitializationFailed(err.to_string()))?;
+        let runtime = match self.runtime {
+            Some(runtime) => runtime,
+            None => crate::runtime::Runtime::new()
+                .map_err(|err| ShellError::RuntimeInitializationFailed(err.to_string()))?,
+        };
         let shell = Shell::new(event_tx, effect_handler, self.resources, runtime);
         Ok(Syzygy::with_config(core, shell, self.syzygy_config))
     }

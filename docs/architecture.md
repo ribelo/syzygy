@@ -52,7 +52,7 @@ System shape and invariants. For 3am incident response.
 
 ### Event Path (Synchronous)
 
-1. `Core::try_send_event(Event)` pushes to channel
+1. `Core::try_send(Event)` pushes to channel
 2. `step()` drains channel, calls `handler(event, ctx)`
 3. Handler returns `Command` (events + effects)
 4. Events immediately re-enqueued to channel
@@ -67,11 +67,12 @@ System shape and invariants. For 3am incident response.
    - `Task::Resolved(cmd)`: command executed synchronously
    - `Task::Future(fut)`: spawned on configured runtime backend
    - `Task::Stream(s)`: spawned, each item processed
+   - `Task::process(spec, map_result)`: shell-owned subprocess, killed on task cancellation
    - `Task::Blocking(f)`: shell-owned blocking work, shutdown waits for completion
    - `Task::BlockingCooperative(f)`: blocking work with cooperative cancellation
 4. Task completion produces `Command`, loops back to Core
 
-Shell progression is synchronous. There is no async `drain`/`step` API; async is confined to effect execution.
+Shell progression is synchronous. There is no async `drain`/`step` API; async is confined to effect execution on Syzygy's owned runtime.
 
 ## Module Dependencies
 
@@ -83,6 +84,7 @@ lib.rs
 ├── extract.rs        # EventContext, borrow tracking
 ├── executor/
 │   └── task.rs       # Task variants
+├── process.rs        # ProcessSpec and subprocess execution
 └── builder.rs        # Syzygy::builder()
 ```
 
@@ -151,6 +153,7 @@ fn start_save(save_job: &mut SaveJob) -> Command<Event, Effect> {
 - A lease owns at most one abortable task. New `abortable` with the same lease drops the old task.
 - `AbortSlot::start()` replaces the stored lease and emits an explicit cancel for the previous task before starting the next one.
 - The shell also cancels abortable work when the last owner of the lease disappears.
+- `Task::process` is shell-owned too: dropping the task kills the child process, so explicit cancel, owner loss, replacement, and shutdown all terminate subprocesses.
 - Lease-owned blocking work must be cooperative. `Task::blocking` is rejected for abortable effects; use `Task::blocking_cooperative` and check the `BlockingCancelToken`.
 - Mapping abortable child commands/tasks is explicit. Plain `map` rejects abortable steps; `TaskLeaseScope` remaps leases when a caller intentionally embeds child abortable work into a parent domain.
 
@@ -190,7 +193,7 @@ fn start_save(save_job: &mut SaveJob) -> Command<Event, Effect> {
 
 **State location:** User owns `Model`. Syzygy holds during `step()`.
 
-**Shutdown:** Drop `Syzygy`. Pending tasks cancelled. No graceful drain.
+**Shutdown:** Drop `Syzygy`. Pending async/process tasks are cancelled, subprocesses are killed, and non-abortable blocking work is awaited to completion.
 
 ## Testing Strategy
 
@@ -211,7 +214,7 @@ fn start_save(save_job: &mut SaveJob) -> Command<Event, Effect> {
 | `src/extract.rs` | Borrow tracking, `EventContext` |
 | `src/command.rs` | `Command`, `CommandStep` |
 | `src/executor/task.rs` | `Task` variants |
-| `examples/` | 10 progressive tutorials |
+| `examples/` | 11 progressive tutorials |
 
 ## When It Breaks
 

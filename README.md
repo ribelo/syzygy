@@ -157,8 +157,24 @@ async fn fetch(url: String) -> Command<Event, Effect> {
 | `Task::none()` | No side effect | Nothing |
 | `Task::once(async)` | One-shot async | Single event |
 | `Task::stream(impl Stream)` | Ongoing streams | Multiple events |
+| `Task::process(spec, map_result)` | Shell-owned subprocess | Single command |
 | `Task::blocking(|| ...)` | Non-abortable blocking work | Single command |
 | `Task::blocking_cooperative(|cancel| ...)` | Lease-owned blocking work | `Option<Command>` |
+
+```rust
+fn run_git_status() -> Task<Event, Effect> {
+    Task::process(
+        ProcessSpec::new("git")
+            .arg("status")
+            .stdout(ProcessOutput::Capture { max_bytes: 8 * 1024 })
+            .stderr(ProcessOutput::Capture { max_bytes: 8 * 1024 }),
+        |result| match result {
+            Ok(exit) => Command::event(Event::Finished(exit)),
+            Err(error) => Command::event(Event::Failed(error)),
+        },
+    )
+}
+```
 
 ## Command Composition
 
@@ -216,6 +232,23 @@ struct DbPool(Arc<Pool>);  // Cheap clone
 
 **Blocking work is split on purpose.** `Task::blocking` is non-abortable and shutdown waits for it to finish. Lease-owned blocking work must use `Task::blocking_cooperative`; returning plain `Task::blocking` from an abortable effect is a `ShellError`.
 
+**Unmanaged subprocesses are outside Syzygy.** If you need shell-owned child-process cancellation on abort/shutdown, use `Task::process` instead of spawning a child manually inside `Task::once` or `Task::blocking`.
+
+## Owned Runtime
+
+Syzygy owns the runtime it drives. By default the builder constructs it for you, but you can inject an owned runtime explicitly:
+
+```rust
+let runtime = syzygy::runtime::Runtime::new()?;
+
+let app = Syzygy::builder::<Event, Effect>()
+    .with_runtime(runtime)
+    .model(Model::default())
+    .event_handler(handle_event)
+    .effect_handler(handle_effect)
+    .build()?;
+```
+
 ## Development
 
 Quality gate (run before commit):
@@ -244,6 +277,7 @@ cargo run --example 10_todo_app
 | `08_command_composition` | `Command::and`, `map_event` |
 | `09_error_handling` | Result/Option in handlers |
 | `10_todo_app` | Full application |
+| `11_process_tasks` | `Task::process`, runtime injection |
 
 ## License
 
