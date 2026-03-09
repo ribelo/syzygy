@@ -127,3 +127,11 @@ Q: How should Syzygy run startup work?
 A: Add an explicit one-shot `boot_handler` on the builder. It receives `&Model`, returns a normal `Command<Event, Effect>`, runs exactly once, and executes before the first ordinary event drain and before subscription reconciliation.
 
 Reason: Fake startup events pushed from outside the runtime hide ordering and make the first step depend on channel timing. A builder-level boot hook keeps startup declarative, keeps the command model uniform, and makes first-step ordering explicit: boot command, core event processing, subscription reconciliation, shell drain.
+
+## 2026-03-09
+
+Q: How should Syzygy make time deterministic for runtime-owned tasks and subscriptions?
+
+A: Move `syzygy::runtime::sleep(...)` onto an owned clock abstraction and add `Runtime::manual()` for tests. The active clock is bound by the owned runtime when it polls tasks, so existing task/subscription code keeps using `syzygy::runtime::sleep(...)` while tests can advance time explicitly with a returned `ManualClock`.
+
+Reason: Wall-clock timers block deterministic tests and make future `RunnerTester` time control impossible. Binding sleep to the owned runtime keeps time as runtime infrastructure instead of an app-layer capability, makes `Subscription::every(...)` deterministic, and keeps custom drivers pure as long as they use Syzygy's sleep helper instead of backend-specific timer APIs.

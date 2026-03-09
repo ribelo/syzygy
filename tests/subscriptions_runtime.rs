@@ -112,6 +112,84 @@ fn every_subscription_ticks_until_model_disables_it() {
 }
 
 #[test]
+fn manual_clock_drives_every_subscription_without_wall_time() {
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    enum Event {
+        Tick,
+    }
+
+    #[derive(Clone, Debug, PartialEq, Eq, Hash)]
+    enum Key {
+        Clock,
+    }
+
+    #[derive(Default, Model)]
+    struct Model {
+        #[model(wrapper = Running)]
+        running: bool,
+        #[model(wrapper = Ticks)]
+        ticks: u8,
+    }
+
+    fn on_tick(running: &mut Running, ticks: &mut Ticks) -> Command<Event, ()> {
+        **ticks = ticks.saturating_add(1);
+        if **ticks >= 2 {
+            **running = false;
+        }
+        Command::none()
+    }
+
+    fn describe(running: &Running) -> Subscription<Event, ()> {
+        if !**running {
+            return Subscription::none();
+        }
+
+        Subscription::every(Key::Clock, Duration::from_secs(60), Event::Tick)
+    }
+
+    fn handle_event(event: Event, ctx: &EventContext<Model>) -> Command<Event, ()> {
+        match event {
+            Event::Tick => handle!(on_tick, ctx),
+        }
+    }
+
+    fn handle_subscriptions(ctx: &SubscriptionContext<Model>) -> Subscription<Event, ()> {
+        handle!(describe, ctx)
+    }
+
+    let (runtime, clock) = syzygy::runtime::Runtime::manual().unwrap();
+    let mut app = Syzygy::builder::<Event, ()>()
+        .model(Model {
+            running: true,
+            ticks: 0,
+        })
+        .with_runtime(runtime)
+        .event_handler(handle_event)
+        .subscription_handler(handle_subscriptions)
+        .build()
+        .unwrap();
+
+    app.step().unwrap();
+    assert_eq!(app.model().ticks, 0);
+
+    clock.advance(Duration::from_secs(59));
+    app.step().unwrap();
+    app.step().unwrap();
+    assert_eq!(app.model().ticks, 0);
+
+    clock.advance(Duration::from_secs(1));
+    app.step().unwrap();
+    app.step().unwrap();
+    assert_eq!(app.model().ticks, 1);
+
+    clock.advance(Duration::from_secs(60));
+    app.step().unwrap();
+    app.step().unwrap();
+    assert_eq!(app.model().ticks, 2);
+    assert!(!app.model().running);
+}
+
+#[test]
 fn subscription_mapper_updates_without_restarting_driver() {
     #[derive(Clone, Debug, PartialEq, Eq)]
     enum Event {

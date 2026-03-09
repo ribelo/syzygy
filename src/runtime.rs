@@ -6,6 +6,322 @@ compile_error!("features `rt-compio` and `rt-tokio` are mutually exclusive");
 #[cfg(not(any(feature = "rt-compio", feature = "rt-tokio")))]
 compile_error!("a runtime feature must be enabled: `rt-compio` or `rt-tokio`");
 
+use std::cell::RefCell;
+use std::future::Future;
+use std::pin::Pin;
+use std::sync::{Arc, Mutex};
+use std::task::{Context, Poll, Waker};
+use std::time::Duration;
+
+type BackendSleep = Pin<Box<dyn Future<Output = ()> + 'static>>;
+
+thread_local! {
+    static CURRENT_CLOCK: RefCell<Option<Clock>> = const { RefCell::new(None) };
+}
+
+#[derive(Clone)]
+enum Clock {
+    Real,
+    Manual(Arc<Mutex<ManualClockState>>),
+}
+
+impl Clock {
+    #[must_use]
+    fn real() -> Self {
+        Self::Real
+    }
+
+    #[must_use]
+    fn manual() -> (Self, ManualClock) {
+        let state = Arc::new(Mutex::new(ManualClockState::new()));
+        let clock = ManualClock {
+            state: Arc::clone(&state),
+        };
+        (Self::Manual(state), clock)
+    }
+
+    #[must_use]
+    fn is_manual(&self) -> bool {
+        matches!(self, Self::Manual(_))
+    }
+
+    #[must_use]
+    fn bind_sleep(&self, duration: Duration) -> SleepBinding {
+        if duration.is_zero() {
+            return SleepBinding::Ready;
+        }
+
+        match self {
+            Self::Real => SleepBinding::Real(imp::backend_sleep(duration)),
+            Self::Manual(state) => SleepBinding::Manual(ManualSleep::new(
+                ManualClock {
+                    state: Arc::clone(state),
+                },
+                duration,
+            )),
+        }
+    }
+}
+
+impl std::fmt::Debug for Clock {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Real => f.write_str("Clock::Real"),
+            Self::Manual(_) => f.write_str("Clock::Manual"),
+        }
+    }
+}
+
+enum SleepBinding {
+    Ready,
+    Real(BackendSleep),
+    Manual(ManualSleep),
+}
+
+struct ManualClockState {
+    now: Duration,
+    next_sleeper_id: u64,
+    sleepers: Vec<SleeperRegistration>,
+}
+
+impl ManualClockState {
+    #[must_use]
+    fn new() -> Self {
+        Self {
+            now: Duration::ZERO,
+            next_sleeper_id: 0,
+            sleepers: Vec::new(),
+        }
+    }
+}
+
+struct SleeperRegistration {
+    id: u64,
+    deadline: Duration,
+    waker: Waker,
+}
+
+#[derive(Clone)]
+pub struct ManualClock {
+    state: Arc<Mutex<ManualClockState>>,
+}
+
+impl ManualClock {
+    pub fn advance(&self, duration: Duration) {
+        let mut ready_wakers = Vec::new();
+        {
+            let mut state = lock_manual_clock_state(&self.state);
+            state.now = state
+                .now
+                .checked_add(duration)
+                .expect("manual clock overflow while advancing time");
+
+            let now = state.now;
+            let mut index = 0usize;
+            while index < state.sleepers.len() {
+                if state.sleepers[index].deadline <= now {
+                    ready_wakers.push(state.sleepers.swap_remove(index).waker);
+                } else {
+                    index += 1;
+                }
+            }
+        }
+
+        for waker in ready_wakers {
+            waker.wake();
+        }
+    }
+
+    #[must_use]
+    pub fn now(&self) -> Duration {
+        lock_manual_clock_state(&self.state).now
+    }
+
+    fn register_or_refresh(
+        &self,
+        registration_id: Option<u64>,
+        deadline: Duration,
+        waker: &Waker,
+    ) -> u64 {
+        let mut state = lock_manual_clock_state(&self.state);
+        assert!(
+            deadline >= state.now,
+            "manual clock sleep deadline must not be in the past"
+        );
+
+        if let Some(id) = registration_id {
+            for sleeper in &mut state.sleepers {
+                if sleeper.id == id {
+                    sleeper.deadline = deadline;
+                    if !sleeper.waker.will_wake(waker) {
+                        sleeper.waker.clone_from(waker);
+                    }
+                    return id;
+                }
+            }
+        }
+
+        let id = state.next_sleeper_id;
+        state.next_sleeper_id = state
+            .next_sleeper_id
+            .checked_add(1)
+            .expect("manual clock sleeper id overflow");
+        state.sleepers.push(SleeperRegistration {
+            id,
+            deadline,
+            waker: waker.clone(),
+        });
+        id
+    }
+
+    fn cancel(&self, registration_id: Option<u64>) {
+        let Some(registration_id) = registration_id else {
+            return;
+        };
+
+        let mut state = lock_manual_clock_state(&self.state);
+        let mut index = 0usize;
+        while index < state.sleepers.len() {
+            if state.sleepers[index].id == registration_id {
+                let _ = state.sleepers.swap_remove(index);
+                return;
+            }
+            index += 1;
+        }
+    }
+}
+
+impl std::fmt::Debug for ManualClock {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let state = lock_manual_clock_state(&self.state);
+        f.debug_struct("ManualClock")
+            .field("now", &state.now)
+            .field("sleepers", &state.sleepers.len())
+            .finish()
+    }
+}
+
+fn lock_manual_clock_state(
+    state: &Arc<Mutex<ManualClockState>>,
+) -> std::sync::MutexGuard<'_, ManualClockState> {
+    state
+        .lock()
+        .unwrap_or_else(|_| panic!("manual clock state mutex poisoned"))
+}
+
+struct ManualSleep {
+    clock: ManualClock,
+    deadline: Duration,
+    registration_id: Option<u64>,
+}
+
+impl ManualSleep {
+    #[must_use]
+    fn new(clock: ManualClock, duration: Duration) -> Self {
+        let deadline = clock
+            .now()
+            .checked_add(duration)
+            .expect("manual clock overflow while scheduling sleep");
+        Self {
+            clock,
+            deadline,
+            registration_id: None,
+        }
+    }
+}
+
+impl Future for ManualSleep {
+    type Output = ();
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        if self.clock.now() >= self.deadline {
+            let registration_id = self.registration_id.take();
+            self.clock.cancel(registration_id);
+            return Poll::Ready(());
+        }
+
+        let registration_id =
+            self.clock
+                .register_or_refresh(self.registration_id, self.deadline, cx.waker());
+        self.registration_id = Some(registration_id);
+        Poll::Pending
+    }
+}
+
+impl Drop for ManualSleep {
+    fn drop(&mut self) {
+        self.clock.cancel(self.registration_id.take());
+    }
+}
+
+enum SleepState {
+    Unbound,
+    Real(BackendSleep),
+    Manual(ManualSleep),
+    Done,
+}
+
+pub struct Sleep {
+    duration: Duration,
+    state: SleepState,
+}
+
+impl Future for Sleep {
+    type Output = ();
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        loop {
+            match &mut self.state {
+                SleepState::Unbound => {
+                    let clock =
+                        current_clock().expect("syzygy::runtime::sleep polled outside Runtime");
+                    self.state = match clock.bind_sleep(self.duration) {
+                        SleepBinding::Ready => SleepState::Done,
+                        SleepBinding::Real(future) => SleepState::Real(future),
+                        SleepBinding::Manual(future) => SleepState::Manual(future),
+                    };
+                }
+                SleepState::Real(future) => match future.as_mut().poll(cx) {
+                    Poll::Ready(()) => {
+                        self.state = SleepState::Done;
+                        return Poll::Ready(());
+                    }
+                    Poll::Pending => return Poll::Pending,
+                },
+                SleepState::Manual(future) => match Pin::new(future).poll(cx) {
+                    Poll::Ready(()) => {
+                        self.state = SleepState::Done;
+                        return Poll::Ready(());
+                    }
+                    Poll::Pending => return Poll::Pending,
+                },
+                SleepState::Done => return Poll::Ready(()),
+            }
+        }
+    }
+}
+
+#[must_use]
+pub fn sleep(duration: Duration) -> Sleep {
+    Sleep {
+        duration,
+        state: SleepState::Unbound,
+    }
+}
+
+fn current_clock() -> Option<Clock> {
+    CURRENT_CLOCK.with(|current| current.borrow().clone())
+}
+
+fn with_current_clock<T>(clock: &Clock, f: impl FnOnce() -> T) -> T {
+    CURRENT_CLOCK.with(|current| {
+        let previous = current.replace(Some(clock.clone()));
+        let result = f();
+        let _ = current.replace(previous);
+        result
+    })
+}
+
 #[cfg(feature = "rt-compio")]
 mod imp {
     use std::any::Any;
@@ -16,9 +332,12 @@ mod imp {
     use std::task::{Context, Poll};
     use std::time::Duration;
 
+    use super::{with_current_clock, BackendSleep, Clock, ManualClock};
+
     #[derive(Clone)]
     pub struct Runtime {
         inner: Rc<compio::runtime::Runtime>,
+        clock: Clock,
     }
 
     pub struct JoinHandle<T> {
@@ -27,8 +346,19 @@ mod imp {
 
     impl Runtime {
         pub fn new() -> io::Result<Self> {
+            Self::with_clock(Clock::real())
+        }
+
+        pub fn manual() -> io::Result<(Self, ManualClock)> {
+            let (clock, manual_clock) = Clock::manual();
+            let runtime = Self::with_clock(clock)?;
+            Ok((runtime, manual_clock))
+        }
+
+        fn with_clock(clock: Clock) -> io::Result<Self> {
             Ok(Self {
                 inner: Rc::new(compio::runtime::Runtime::new()?),
+                clock,
             })
         }
 
@@ -57,17 +387,26 @@ mod imp {
         }
 
         pub fn drive_ready(&self) {
-            self.inner.enter(|| {
-                let _ = self.inner.run();
-                self.inner.poll_with(Some(Duration::ZERO));
-                let _ = self.inner.run();
+            with_current_clock(&self.clock, || {
+                self.inner.enter(|| {
+                    let _ = self.inner.run();
+                    self.inner.poll_with(Some(Duration::ZERO));
+                    let _ = self.inner.run();
+                });
             });
         }
 
         pub fn park(&self, duration: Duration) {
-            self.inner.enter(|| {
-                self.inner.poll_with(Some(duration));
-                let _ = self.inner.run();
+            if self.clock.is_manual() {
+                self.drive_ready();
+                return;
+            }
+
+            with_current_clock(&self.clock, || {
+                self.inner.enter(|| {
+                    self.inner.poll_with(Some(duration));
+                    let _ = self.inner.run();
+                });
             });
         }
 
@@ -75,7 +414,7 @@ mod imp {
         where
             F: Future,
         {
-            self.inner.block_on(future)
+            with_current_clock(&self.clock, || self.inner.block_on(future))
         }
     }
 
@@ -122,12 +461,14 @@ mod imp {
 
     impl std::fmt::Debug for Runtime {
         fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            f.debug_struct("Runtime").finish_non_exhaustive()
+            f.debug_struct("Runtime")
+                .field("clock", &self.clock)
+                .finish_non_exhaustive()
         }
     }
 
-    pub fn sleep(duration: Duration) -> impl Future<Output = ()> {
-        compio::runtime::time::sleep(duration)
+    pub(crate) fn backend_sleep(duration: Duration) -> BackendSleep {
+        Box::pin(compio::runtime::time::sleep(duration))
     }
 
     pub async fn yield_now() {
@@ -154,6 +495,8 @@ mod imp {
     use std::task::{Context, Poll};
     use std::time::Duration;
 
+    use super::{with_current_clock, BackendSleep, Clock, ManualClock};
+
     #[derive(Debug)]
     struct TaskCancelled;
 
@@ -165,6 +508,7 @@ mod imp {
     #[derive(Clone)]
     pub struct Runtime {
         inner: Rc<RuntimeState>,
+        clock: Clock,
     }
 
     #[derive(Debug)]
@@ -174,6 +518,16 @@ mod imp {
 
     impl Runtime {
         pub fn new() -> io::Result<Self> {
+            Self::with_clock(Clock::real())
+        }
+
+        pub fn manual() -> io::Result<(Self, ManualClock)> {
+            let (clock, manual_clock) = Clock::manual();
+            let runtime = Self::with_clock(clock)?;
+            Ok((runtime, manual_clock))
+        }
+
+        fn with_clock(clock: Clock) -> io::Result<Self> {
             let runtime = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()?;
@@ -181,6 +535,7 @@ mod imp {
 
             Ok(Self {
                 inner: Rc::new(RuntimeState { runtime, local_set }),
+                clock,
             })
         }
 
@@ -216,6 +571,11 @@ mod imp {
         }
 
         pub fn park(&self, duration: Duration) {
+            if self.clock.is_manual() {
+                self.drive_ready();
+                return;
+            }
+
             self.block_on(async move {
                 if duration.is_zero() {
                     tokio::task::yield_now().await;
@@ -229,7 +589,9 @@ mod imp {
         where
             F: Future,
         {
-            self.inner.local_set.block_on(&self.inner.runtime, future)
+            with_current_clock(&self.clock, || {
+                self.inner.local_set.block_on(&self.inner.runtime, future)
+            })
         }
     }
 
@@ -278,12 +640,14 @@ mod imp {
 
     impl std::fmt::Debug for Runtime {
         fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            f.debug_struct("Runtime").finish_non_exhaustive()
+            f.debug_struct("Runtime")
+                .field("clock", &self.clock)
+                .finish_non_exhaustive()
         }
     }
 
-    pub fn sleep(duration: Duration) -> impl Future<Output = ()> {
-        tokio::time::sleep(duration)
+    pub(crate) fn backend_sleep(duration: Duration) -> BackendSleep {
+        Box::pin(tokio::time::sleep(duration))
     }
 
     pub async fn yield_now() {
@@ -291,4 +655,4 @@ mod imp {
     }
 }
 
-pub use imp::*;
+pub use imp::{yield_now, JoinHandle, Runtime};

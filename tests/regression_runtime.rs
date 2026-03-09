@@ -608,6 +608,69 @@ fn run_until_progresses_async_effects() {
 }
 
 #[test]
+fn manual_clock_advances_async_effects_without_wall_time() {
+    #[derive(Debug, Clone)]
+    enum Event {
+        Start,
+        Done,
+    }
+
+    #[derive(Debug, Clone)]
+    enum Effect {
+        Wait,
+    }
+
+    #[derive(Debug, Default, Model)]
+    struct Model {
+        #[model(wrapper = Done)]
+        done: bool,
+    }
+
+    fn handle_event(event: Event, ctx: &EventContext<Model>) -> Command<Event, Effect> {
+        match event {
+            Event::Start => Command::effect(Effect::Wait),
+            Event::Done => {
+                let done = Done::extract_mut(ctx);
+                **done = true;
+                Command::none()
+            }
+        }
+    }
+
+    fn handle_effect(effect: Effect, _ctx: &EffectContext<'_>) -> Task<Event, Effect> {
+        match effect {
+            Effect::Wait => Task::once(async {
+                syzygy::runtime::sleep(Duration::from_secs(60)).await;
+                Command::event(Event::Done)
+            }),
+        }
+    }
+
+    let (runtime, clock) = syzygy::runtime::Runtime::manual().unwrap();
+    let mut runner = Syzygy::builder::<Event, Effect>()
+        .model(Model::default())
+        .with_runtime(runtime)
+        .event_handler(handle_event)
+        .effect_handler(handle_effect)
+        .build()
+        .unwrap();
+
+    runner.core().try_send(Event::Start).unwrap();
+    runner.step().unwrap();
+    assert!(!runner.model().done);
+
+    clock.advance(Duration::from_secs(59));
+    runner.step().unwrap();
+    runner.step().unwrap();
+    assert!(!runner.model().done);
+
+    clock.advance(Duration::from_secs(1));
+    runner.step().unwrap();
+    runner.step().unwrap();
+    assert!(runner.model().done);
+}
+
+#[test]
 fn spawning_async_effects_does_not_clone_registered_resources() {
     #[derive(Debug, Clone)]
     enum Event {

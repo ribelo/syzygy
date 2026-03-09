@@ -55,6 +55,24 @@ syzygy = { git = "https://github.com/ribelo/syzygy" }
 syzygy = { git = "https://github.com/ribelo/syzygy", default-features = false, features = ["shell", "rt-tokio"] }
 ```
 
+For deterministic time-based tests, build a runtime with a manual clock and inject it:
+
+```rust
+let (runtime, clock) = syzygy::runtime::Runtime::manual()?;
+
+let mut app = Syzygy::builder::<Event, Effect>()
+    .model(Model::default())
+    .with_runtime(runtime)
+    .event_handler(handle_event)
+    .effect_handler(handle_effect)
+    .build()?;
+
+clock.advance(Duration::from_secs(60));
+app.step()?;
+```
+
+`syzygy::runtime::sleep(...)` now binds to Syzygy's owned clock when the future is polled. Built-in timers like `Subscription::every(...)` and custom drivers that use `syzygy::runtime::sleep(...)` participate in manual time automatically. Manual clocks are intended for explicit `advance(...)` plus `step()` control, not for wall-clock waiting.
+
 ## Core Concepts
 
 | Concept | Purpose | Example |
@@ -277,7 +295,7 @@ let app = Syzygy::builder::<Event, Effect>()
 
 `Subscription::custom::<Driver, _, _>(...)` describes the source. The driver owns the impure runtime work. Event/effect handlers never receive sender channels or runtime handles.
 
-Custom drivers are constructed on Syzygy's owned runtime, so runtime-backed sources like `tokio::time::interval(...)` or compio primitives can be created safely inside `SubscriptionDriver::subscribe(...)`.
+Custom drivers are constructed on Syzygy's owned runtime, so runtime-backed sources can be created safely inside `SubscriptionDriver::subscribe(...)`. If a driver should participate in deterministic manual time, prefer `syzygy::runtime::sleep(...)` over backend-specific timers like `tokio::time::interval(...)`.
 
 ## Command Composition
 

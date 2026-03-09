@@ -87,6 +87,14 @@ Steady-state order after boot is:
 
 Shell progression is synchronous. There is no async `drain`/`step` API; async is confined to effect execution on Syzygy's owned runtime.
 
+### Runtime Clock
+
+- `syzygy::runtime::sleep(...)` binds to the clock owned by the active `Runtime` when the future is polled.
+- Default runtimes use wall time.
+- `Runtime::manual()` returns `(Runtime, ManualClock)` for deterministic tests.
+- Built-in timers like `Subscription::every(...)` and shell internal grace/backpressure waits use the same clock path.
+- Manual time is advanced explicitly by tests; it is not an app capability.
+
 ### Subscription Path (State-Derived)
 
 1. `Syzygy::step()` recomputes `Subscription` from the current model through a read-only `SubscriptionContext`
@@ -202,6 +210,7 @@ fn handle_subscriptions(ctx: &SubscriptionContext<Model>) -> Subscription<Event,
 - Shutdown cancels every active subscription.
 - `Shell` stays model-typed, so a shell carrying a subscription handler cannot be recombined with a different `Core<Model>`.
 - Custom `SubscriptionDriver::subscribe(...)` construction runs inside Syzygy's owned runtime task. Synchronous reconciliation only validates that the driver is registered.
+- Custom drivers that want deterministic time should use `syzygy::runtime::sleep(...)` instead of backend-specific timer APIs.
 - Built-in `Subscription::every` is always available. App-specific integrations use `Subscription::custom::<Driver, _, _>(...)` plus `builder.with_subscription_driver(driver)`.
 
 ## Boot
