@@ -1,6 +1,6 @@
 # Syzygy
 
-Zero-overhead TEA (The Elm Architecture) for Rust. Pure synchronous state transitions. Explicit async effects.
+TEA (The Elm Architecture) for Rust with explicit runtime costs and boundaries. Pure synchronous state transitions. Explicit async effects.
 
 ```rust
 use syzygy::prelude::*;
@@ -196,7 +196,7 @@ fn ensure_name(name: &mut MaybeName) {
 | Direct part | `#[model(part)]` | Unique complex field types | `&mut Settings` |
 | Whole model | none | Needs all fields | `&mut Model` |
 
-**Constraint:** 256 fields max per model. Runtime panic on aliasing violations (`&mut T` + `&T` overlap).
+**Constraint:** 256 opt-in extracted fields max per model. `#[derive(Model)]` rejects larger extracted sets during macro expansion. Aliasing violations (`&mut T` + `&T` overlap) are enforced at runtime and panic as programmer errors.
 
 ## Effects and Tasks
 
@@ -439,16 +439,24 @@ fn bad(ctx: &EventContext<Model>) {
 
 **Missing effect resources panic deliberately.** If an effect handler extracts an unregistered resource, Syzygy panics with the resource type, caller location, and a `.with_resource(...)` registration hint.
 
-**Resource cloning on every effect access.** Expensive resources should be wrapped in `Arc<T>`:
+**Signature-based resource extraction clones on every effect access.** Expensive resources should be wrapped in `Arc<T>`, or borrowed explicitly with `ctx.resource_ref::<T>()` when you need non-cloning access:
 
 ```rust
 #[derive(Clone)]
 struct DbPool(Arc<Pool>);  // Cheap clone
 
 // NOT: struct DbPool(Pool)  // Expensive clone every effect
+
+fn handle_effect(effect: Effect, ctx: &EffectContext<'_>) -> Task<Event, Effect> {
+    let pool = ctx.resource_ref::<DbPool>().expect("DbPool must be registered");
+    let _ = pool;
+    match effect {
+        Effect::Save => Task::none(),
+    }
+}
 ```
 
-**256 field limit.** Exceeding this panics at model construction.
+**256 field limit.** Exceeding 256 `#[model(...)]` fields fails during macro expansion.
 
 **Abortable work needs an owner.** `AbortSlot` is the convenient state wrapper for the common case, but the underlying owner is still a `TaskLease`. If you schedule an abortable effect and do not retain its owner in model state, the shell will cancel it on the next `step`/`drain` cycle.
 

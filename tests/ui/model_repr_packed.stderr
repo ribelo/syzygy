@@ -1,0 +1,5 @@
+error: Syzygy #[derive(Model)] prohibits #[repr(packed)] because creating references to packed fields can trigger unaligned-reference UB
+ --> tests/ui/model_repr_packed.rs:3:1
+  |
+3 | #[repr(packed)]
+  | ^^^^^^^^^^^^^^^

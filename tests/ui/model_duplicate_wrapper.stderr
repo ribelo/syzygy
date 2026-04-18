@@ -1,0 +1,5 @@
+error: duplicate #[model(wrapper = ...)] name in this model
+ --> tests/ui/model_duplicate_wrapper.rs:7:23
+  |
+7 |     #[model(wrapper = Count)]
+  |                       ^^^^^

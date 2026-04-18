@@ -9,18 +9,6 @@ pub enum ShellError {
     #[error("Event channel is closed")]
     EventChannelClosed,
 
-    /// Effect execution failed
-    #[error("Effect execution failed: {0}")]
-    EffectFailed(String),
-
-    /// Invalid state transition attempted
-    #[error("Invalid state transition: {0}")]
-    InvalidStateTransition(String),
-
-    /// Task spawn failed
-    #[error("Task spawn failed: {0}")]
-    TaskSpawnFailed(String),
-
     /// Runtime initialization failed
     #[error("Runtime initialization failed: {0}")]
     RuntimeInitializationFailed(String),
@@ -48,12 +36,6 @@ pub enum ShellError {
     /// Subscription driver type was referenced but never registered
     #[error("Missing subscription driver: {0}")]
     MissingSubscriptionDriver(String),
-
-    /// Effect queue reached its configured capacity
-    #[error(
-        "Effect queue is full (capacity {capacity}). Consider increasing the capacity or awaiting idle before queuing more effects"
-    )]
-    EffectQueueFull { capacity: usize },
 
     /// Timed out while waiting for work to complete
     #[error("Timed out after {duration:?} while draining work; use larger timeouts or inspect backpressure metrics")]

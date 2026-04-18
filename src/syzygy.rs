@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::command::{Command, CommandStep};
 use crate::core::Core;
@@ -93,6 +93,13 @@ where
 
 pub type Runner<Event, Effect, Model> = Syzygy<Event, Effect, Model>;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RunUntilExit {
+    ConditionMet,
+    Cancelled,
+    ShellClosed,
+}
+
 impl<Event, Effect, Model> Syzygy<Event, Effect, Model>
 where
     Event: 'static,
@@ -152,6 +159,77 @@ where
         Ok(())
     }
 
+    pub fn run_until_timeout<F>(
+        &mut self,
+        timeout: Duration,
+        condition: F,
+    ) -> Result<(), ShellError>
+    where
+        F: FnMut(&Core<Event, Effect, Model>, &Shell<Event, Effect, Model>) -> bool,
+    {
+        let start = Instant::now();
+        let Some(deadline) = start.checked_add(timeout) else {
+            return self.run_until(condition);
+        };
+
+        self.run_until_deadline(deadline, condition)
+            .map_err(|error| match error {
+                ShellError::Timeout { .. } => ShellError::Timeout { duration: timeout },
+                other => other,
+            })
+    }
+
+    pub fn run_until_deadline<F>(
+        &mut self,
+        deadline: Instant,
+        mut condition: F,
+    ) -> Result<(), ShellError>
+    where
+        F: FnMut(&Core<Event, Effect, Model>, &Shell<Event, Effect, Model>) -> bool,
+    {
+        let start = Instant::now();
+        while self.shell.has_pending_boot() || !condition(&self.core, &self.shell) {
+            Self::fail_if_deadline_elapsed(start, deadline)?;
+            let did_work = self.step()?;
+            if self.shell.is_closed() {
+                return Ok(());
+            }
+
+            if !did_work {
+                self.park_until_deadline(start, deadline)?;
+            }
+        }
+
+        Ok(())
+    }
+
+    pub fn run_until_or_cancelled<F, C>(
+        &mut self,
+        mut condition: F,
+        mut should_cancel: C,
+    ) -> Result<RunUntilExit, ShellError>
+    where
+        F: FnMut(&Core<Event, Effect, Model>, &Shell<Event, Effect, Model>) -> bool,
+        C: FnMut(&Core<Event, Effect, Model>, &Shell<Event, Effect, Model>) -> bool,
+    {
+        while self.shell.has_pending_boot() || !condition(&self.core, &self.shell) {
+            if should_cancel(&self.core, &self.shell) {
+                return Ok(RunUntilExit::Cancelled);
+            }
+
+            let did_work = self.step()?;
+            if self.shell.is_closed() {
+                return Ok(RunUntilExit::ShellClosed);
+            }
+
+            if !did_work {
+                self.shell.park_runtime(self.config.idle_sleep);
+            }
+        }
+
+        Ok(RunUntilExit::ConditionMet)
+    }
+
     #[must_use]
     pub fn model(&self) -> &Model {
         self.core.model()
@@ -195,6 +273,31 @@ where
 
     pub fn step(&mut self) -> Result<bool, ShellError> {
         step_core_shell(&mut self.core, &mut self.shell)
+    }
+
+    fn fail_if_deadline_elapsed(start: Instant, deadline: Instant) -> Result<(), ShellError> {
+        let now = Instant::now();
+        if now >= deadline {
+            return Err(ShellError::Timeout {
+                duration: now.saturating_duration_since(start),
+            });
+        }
+
+        Ok(())
+    }
+
+    fn park_until_deadline(&self, start: Instant, deadline: Instant) -> Result<(), ShellError> {
+        let now = Instant::now();
+        if now >= deadline {
+            return Err(ShellError::Timeout {
+                duration: now.saturating_duration_since(start),
+            });
+        }
+
+        let remaining = deadline.saturating_duration_since(now);
+        let park_duration = self.config.idle_sleep.min(remaining);
+        self.shell.park_runtime(park_duration);
+        Self::fail_if_deadline_elapsed(start, deadline)
     }
 
     pub fn split(self) -> (Core<Event, Effect, Model>, Shell<Event, Effect, Model>) {

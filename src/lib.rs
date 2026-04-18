@@ -67,7 +67,7 @@ pub mod prelude {
     };
     #[cfg(feature = "shell")]
     pub use crate::syzygy::{
-        DiagnosticsConfig, Runner, Syzygy, SyzygyConfig, UnhandledEffectPolicy,
+        DiagnosticsConfig, RunUntilExit, Runner, Syzygy, SyzygyConfig, UnhandledEffectPolicy,
     };
 
     #[cfg(feature = "shell")]

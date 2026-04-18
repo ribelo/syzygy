@@ -1,5 +1,21 @@
 # QA
 
+## 2026-04-18
+
+Q: How should Syzygy describe runtime cost and extraction safety guarantees?
+
+A: Do not claim "zero-overhead". Document runtime costs explicitly: effect resource injection clones by default, extractor aliasing is enforced at runtime, and violations panic as programmer errors.
+
+Reason: The runtime intentionally does real work (task scheduling, resource cloning, borrow tracking). Marketing or docs that imply compile-time-only guarantees are inaccurate and make failure modes harder to reason about.
+
+## 2026-04-18
+
+Q: How should production code bound `run_until` waits?
+
+A: Keep `run_until(...)` for unbounded behavior, and add explicit bounded/cancellable variants: `run_until_timeout(...)`, `run_until_deadline(...)`, and `run_until_or_cancelled(...)` returning `RunUntilExit`.
+
+Reason: Test-only timeout helpers are not enough for production loops. Bounded waits and cooperative cancellation keep liveness behavior explicit and reuse one timeout error surface (`ShellError::Timeout`).
+
 ## 2026-03-08
 
 Q: How should `syzygy::runtime::yield_now()` behave under `rt-compio`?

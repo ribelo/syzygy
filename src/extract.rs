@@ -28,6 +28,15 @@ impl<'a> EffectContext<'a> {
     pub fn resources(&self) -> &ResourceMap {
         self.resources
     }
+
+    /// Borrow a registered resource without cloning it.
+    ///
+    /// Signature-based resource extraction via [`FromEffectContext`] clones.
+    /// Use this helper for explicit non-cloning access to expensive resources.
+    #[must_use]
+    pub fn resource_ref<T: 'static>(&self) -> Option<&T> {
+        self.resources.get_ref::<T>()
+    }
 }
 
 pub trait FromEffectContext {
@@ -36,7 +45,8 @@ pub trait FromEffectContext {
     /// This operation clones the stored resource value from the [`ResourceMap`].
     /// Prefer storing expensive resources behind shared ownership pointers such
     /// as `Arc<T>` or `Rc<T>` via `.with_resource(...)` to avoid repeated deep
-    /// clones on effect dispatch.
+    /// clones on effect dispatch. Use [`EffectContext::resource_ref`] for
+    /// explicit borrow-only access.
     #[track_caller]
     fn from_context(ctx: &EffectContext<'_>) -> Self;
 }

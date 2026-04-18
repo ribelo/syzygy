@@ -1,0 +1,5 @@
+error: legacy #[extract] is removed; use #[model(part)] instead
+ --> tests/ui/model_legacy_extract.rs:5:5
+  |
+5 |     #[extract]
+  |     ^^^^^^^^^^

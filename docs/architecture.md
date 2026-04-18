@@ -15,10 +15,10 @@ System shape and invariants. For 3am incident response.
 ## Invariants (Non-Negotiable)
 
 1. **Single-threaded Core.** All state transitions happen on one thread. No `Send` bound on `Model`.
-2. **No aliasing.** `&mut Model` and `&Field` to overlapping memory is impossible. Runtime panic on violation.
+2. **Runtime-enforced aliasing safety.** Extractor overlap (`&mut` + overlapping `&`/`&mut`) is checked at runtime and panics as a programmer error on violation.
 3. **Explicit effects.** All finite I/O goes through `Effect -> Task`, and all long-lived external sources go through `Subscription`. Handlers are pure.
 4. **FIFO event ordering.** Events processed in arrival order. No prioritization.
-5. **Bounded resource growth.** 256 fields per model. Bounded event channel (configurable).
+5. **Bounded extraction tracking.** `#[derive(Model)]` tracks at most 256 opt-in extracted fields (`#[model(...)]`) and rejects larger sets during macro expansion. Event channel capacity is configurable.
 6. **Explicit extraction surface.** `#[derive(Model)]` does not expose field extractors unless the field opts in with `#[model(...)]`.
 
 ## Component Diagram
@@ -324,7 +324,7 @@ let app = Syzygy::builder::<Event, Effect>()
 
 **"already borrowed mutably" panic:** Handler tried to borrow same field twice, or mixed `&Model` with `&mut Field`. This is a deliberate programmer-error panic; messages include overlap guidance and caller location. Fix: Remove duplicate borrow or use scoped extraction.
 
-**"exceeds borrow tracker capacity (256)":** Model has >256 fields. Fix: Split into nested models with `#[model(part)]`.
+**"exceeds borrow tracker capacity (256)":** Model has >256 `#[model(...)]` fields. This is rejected during macro expansion. Fix: Split extraction into nested models with `#[model(part)]` or reduce extracted fields.
 
 **"Effect resource ... is not registered":** Effect handler extracted a resource that was not registered. This is a deliberate programmer-error panic with caller location and `.with_resource(...)` hint. Fix: Add `.with_resource()` during build.
 

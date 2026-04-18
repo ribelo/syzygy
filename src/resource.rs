@@ -76,6 +76,17 @@ impl ResourceMap {
         })
     }
 
+    /// Borrow the resource registered for `T` without cloning it.
+    #[must_use]
+    pub fn get_ref<T: 'static>(&self) -> Option<&T> {
+        self.inner.get(&TypeId::of::<T>()).map(|entry| {
+            entry
+                .value
+                .downcast_ref::<T>()
+                .unwrap_or_else(|| panic_resource_type_mismatch::<T>())
+        })
+    }
+
     #[must_use]
     pub fn contains<T: 'static>(&self) -> bool {
         self.inner.contains_key(&TypeId::of::<T>())

@@ -354,6 +354,82 @@ fn run_until_exits_when_shell_is_closed() {
 }
 
 #[test]
+fn run_until_timeout_returns_timeout_error() {
+    fn handle_event(_event: (), _ctx: &EventContext<()>) -> Command<(), ()> {
+        Command::none()
+    }
+
+    let mut runner = Syzygy::builder::<(), ()>()
+        .model(())
+        .event_handler(handle_event)
+        .build()
+        .unwrap();
+
+    let timeout = Duration::from_millis(10);
+    let error = runner
+        .run_until_timeout(timeout, |_, _| false)
+        .expect_err("expected timeout for unsatisfied condition");
+    assert_eq!(error, ShellError::Timeout { duration: timeout });
+}
+
+#[test]
+fn run_until_deadline_returns_timeout_error() {
+    fn handle_event(_event: (), _ctx: &EventContext<()>) -> Command<(), ()> {
+        Command::none()
+    }
+
+    let mut runner = Syzygy::builder::<(), ()>()
+        .model(())
+        .event_handler(handle_event)
+        .build()
+        .unwrap();
+
+    let timeout = Duration::from_millis(10);
+    let deadline = Instant::now().checked_add(timeout).unwrap();
+    let error = runner
+        .run_until_deadline(deadline, |_, _| false)
+        .expect_err("expected timeout for unsatisfied condition");
+    match error {
+        ShellError::Timeout { duration } => {
+            assert!(
+                duration >= timeout,
+                "timeout duration should be at least requested timeout"
+            );
+        }
+        other => panic!("expected timeout error, got {other:?}"),
+    }
+}
+
+#[test]
+fn run_until_or_cancelled_reports_exit_reason() {
+    fn handle_event(_event: (), _ctx: &EventContext<()>) -> Command<(), ()> {
+        Command::none()
+    }
+
+    let mut runner = Syzygy::builder::<(), ()>()
+        .model(())
+        .event_handler(handle_event)
+        .build()
+        .unwrap();
+
+    let condition_met = runner
+        .run_until_or_cancelled(|_, _| true, |_, _| false)
+        .unwrap();
+    assert_eq!(condition_met, RunUntilExit::ConditionMet);
+
+    let cancelled = runner
+        .run_until_or_cancelled(|_, _| false, |_, _| true)
+        .unwrap();
+    assert_eq!(cancelled, RunUntilExit::Cancelled);
+
+    runner.shutdown();
+    let shell_closed = runner
+        .run_until_or_cancelled(|_, _| false, |_, _| false)
+        .unwrap();
+    assert_eq!(shell_closed, RunUntilExit::ShellClosed);
+}
+
+#[test]
 fn boot_handler_runs_once_before_prequeued_events() {
     #[derive(Debug, Clone)]
     enum Event {
@@ -714,6 +790,66 @@ fn spawning_async_effects_does_not_clone_registered_resources() {
     runner.step().unwrap();
     runner.run().unwrap();
 
+    assert_eq!(clone_count.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn effect_context_resource_ref_borrows_without_cloning() {
+    #[derive(Debug, Clone)]
+    enum Event {
+        Start,
+    }
+
+    #[derive(Debug, Clone)]
+    enum Effect {
+        Work,
+    }
+
+    #[derive(Debug)]
+    struct CountedResource {
+        clones: Arc<std::sync::atomic::AtomicUsize>,
+        hits: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    impl Clone for CountedResource {
+        fn clone(&self) -> Self {
+            self.clones.fetch_add(1, Ordering::SeqCst);
+            Self {
+                clones: Arc::clone(&self.clones),
+                hits: Arc::clone(&self.hits),
+            }
+        }
+    }
+
+    let clone_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let hit_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+
+    let mut runner = Syzygy::builder::<Event, Effect>()
+        .model(())
+        .with_resource(CountedResource {
+            clones: Arc::clone(&clone_count),
+            hits: Arc::clone(&hit_count),
+        })
+        .event_handler(|event, _ctx| match event {
+            Event::Start => Command::batch((0..64).map(|_| Command::effect(Effect::Work))),
+        })
+        .effect_handler(|effect, ctx| match effect {
+            Effect::Work => {
+                let resource = ctx
+                    .resource_ref::<CountedResource>()
+                    .expect("resource should be present");
+                resource.hits.fetch_add(1, Ordering::SeqCst);
+                Task::none()
+            }
+        })
+        .build()
+        .unwrap();
+
+    runner.core().try_send(Event::Start).unwrap();
+    runner.step().unwrap();
+    runner.run().unwrap();
+
+    assert_eq!(hit_count.load(Ordering::SeqCst), 64);
     assert_eq!(clone_count.load(Ordering::SeqCst), 0);
 }
 
