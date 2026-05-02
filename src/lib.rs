@@ -35,18 +35,22 @@ pub mod prelude {
     pub use crate::resource::{Resource, ResourceMap};
 
     pub use crate::extract::{
-        EffectContext, EffectHandler, EventContext, EventHandler, FromEffectContext, FutureEffect,
-        Part, PartMut, StreamEffect,
+        EventContext, EventHandler, Part, PartMut, SubscriptionContext, SubscriptionPart,
     };
     pub use crate::test_store::{assert_panic, assert_panic_contains, Exhaustivity, TestStore};
     pub use syzygy_macros::Model;
+
+    #[cfg(feature = "shell")]
+    pub use crate::extract::{
+        EffectContext, EffectHandler, FromEffectContext, FutureEffect, StreamEffect,
+    };
 
     #[cfg(feature = "shell")]
     pub use crate::builder::SyzygyBuilder;
     #[cfg(feature = "shell")]
     pub use crate::executor::{BlockingCancelToken, Plan, Task};
     #[cfg(feature = "shell")]
-    pub use crate::extract::{SubscriptionContext, SubscriptionHandler, SubscriptionPart};
+    pub use crate::extract::SubscriptionHandler;
     #[cfg(feature = "shell")]
     pub use crate::process::{
         CapturedOutput, ProcessError, ProcessErrorKind, ProcessExit, ProcessFrame, ProcessFraming,
@@ -67,10 +71,11 @@ pub mod prelude {
     };
     #[cfg(feature = "shell")]
     pub use crate::syzygy::{
-        DiagnosticsConfig, RunUntilExit, Runner, Syzygy, SyzygyConfig, UnhandledEffectPolicy,
+        DeferredEventOverflowPolicy, DiagnosticsConfig, RunUntilExit, Runner, Syzygy, SyzygyConfig,
+        UnhandledEffectPolicy,
     };
 
+    pub use crate::error::CoreError;
     #[cfg(feature = "shell")]
     pub use crate::error::ShellError;
-    pub use crate::error::{CommandError, CoreError, EffectError};
 }

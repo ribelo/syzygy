@@ -1,0 +1,9 @@
+[package]
+name = "downstream-subscription"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+syzygy = { path = "../../.." }
+
+[workspace]

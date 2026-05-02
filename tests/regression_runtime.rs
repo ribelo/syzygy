@@ -1,4 +1,4 @@
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::fs;
 use std::path::Path;
 use std::rc::Rc;
@@ -122,6 +122,47 @@ fn unhandled_effect_without_handler_fails_fast() {
             effect_type: std::any::type_name::<Effect>(),
         }
     );
+}
+
+#[test]
+fn shell_dispatch_error_does_not_rollback_committed_model_mutation() {
+    #[derive(Debug, Clone)]
+    enum Event {
+        Start,
+    }
+
+    #[derive(Debug, Clone)]
+    enum Effect {
+        Work,
+    }
+
+    #[derive(Debug, Default, Model)]
+    struct Model {
+        #[model(wrapper = Counter)]
+        counter: usize,
+    }
+
+    fn handle_event(event: Event, ctx: &EventContext<Model>) -> Command<Event, Effect> {
+        match event {
+            Event::Start => {
+                let counter = Counter::extract_mut(ctx);
+                **counter += 1;
+                Command::effect(Effect::Work)
+            }
+        }
+    }
+
+    let mut runner = Syzygy::builder::<Event, Effect>()
+        .model(Model::default())
+        .event_handler(handle_event)
+        .build()
+        .unwrap();
+
+    runner.core().try_send(Event::Start).unwrap();
+
+    let error = runner.step().expect_err("unhandled effect must fail fast");
+    assert!(matches!(error, ShellError::UnhandledEffect { .. }));
+    assert_eq!(runner.model().counter, 1);
 }
 
 #[test]
@@ -316,6 +357,66 @@ fn deferred_events_preserve_fifo_when_new_commands_arrive() {
 }
 
 #[test]
+fn command_events_are_deferred_to_next_step_and_run_before_later_external_ingress() {
+    #[derive(Debug, Clone)]
+    enum Event {
+        Start,
+        A,
+        B,
+        External,
+    }
+
+    #[derive(Debug, Clone)]
+    enum Effect {}
+
+    #[derive(Debug, Default, Model)]
+    struct Model {
+        #[model(wrapper = Order)]
+        order: Vec<&'static str>,
+    }
+
+    fn handle_event(event: Event, ctx: &EventContext<Model>) -> Command<Event, Effect> {
+        match event {
+            Event::Start => Command::event(Event::A).and_event(Event::B),
+            Event::A => {
+                let order = Order::extract_mut(ctx);
+                order.push("a");
+                Command::none()
+            }
+            Event::B => {
+                let order = Order::extract_mut(ctx);
+                order.push("b");
+                Command::none()
+            }
+            Event::External => {
+                let order = Order::extract_mut(ctx);
+                order.push("x");
+                Command::none()
+            }
+        }
+    }
+
+    fn handle_effect(_effect: Effect, _ctx: &EffectContext<'_>) -> Task<Event, Effect> {
+        Task::none()
+    }
+
+    let mut runner = Syzygy::builder::<Event, Effect>()
+        .model(Model::default())
+        .event_handler(handle_event)
+        .effect_handler(handle_effect)
+        .build()
+        .unwrap();
+
+    runner.core().try_send(Event::Start).unwrap();
+    runner.step().unwrap();
+    assert!(runner.model().order.is_empty());
+
+    runner.core().try_send(Event::External).unwrap();
+    runner.step().unwrap();
+    assert_eq!(runner.model().order, ["a", "b", "x"]);
+}
+
+#[test]
 fn run_until_exits_when_shell_is_closed() {
     #[derive(Debug, Clone)]
     enum Event {
@@ -475,6 +576,61 @@ fn boot_handler_runs_once_before_prequeued_events() {
     runner.step().unwrap();
 
     assert_eq!(runner.model().order, ["boot", "external", "external"]);
+}
+
+#[test]
+fn mixed_boot_command_processes_boot_event_before_dispatching_boot_effects() {
+    #[derive(Debug, Clone)]
+    enum Event {
+        Boot,
+    }
+
+    #[derive(Debug, Clone)]
+    enum Effect {
+        VerifyBootApplied,
+    }
+
+    #[derive(Debug, Default, Model)]
+    struct Model {
+        #[model(wrapper = Booted)]
+        booted: bool,
+    }
+
+    let boot_applied = Rc::new(Cell::new(false));
+    let boot_applied_in_event = Rc::clone(&boot_applied);
+    let boot_applied_in_effect = Rc::clone(&boot_applied);
+
+    let mut runner = Syzygy::builder::<Event, Effect>()
+        .model(Model::default())
+        .event_handler(move |event: Event, ctx: &EventContext<Model>| {
+            match event {
+                Event::Boot => {
+                    let booted = Booted::extract_mut(ctx);
+                    **booted = true;
+                    boot_applied_in_event.set(true);
+                }
+            }
+            Command::none()
+        })
+        .effect_handler(move |effect: Effect, _ctx: &EffectContext<'_>| {
+            match effect {
+                Effect::VerifyBootApplied => {
+                    assert!(
+                        boot_applied_in_effect.get(),
+                        "boot effect dispatched before boot event updated model state"
+                    );
+                }
+            }
+            Task::none()
+        })
+        .boot_handler(|_model: &Model| {
+            Command::event(Event::Boot).and_effect(Effect::VerifyBootApplied)
+        })
+        .build()
+        .unwrap();
+
+    runner.step().unwrap();
+    assert!(runner.model().booted);
 }
 
 #[test]
@@ -2218,6 +2374,239 @@ fn cooperative_blocking_task_cancels_when_lease_owner_drops() {
 
     assert!(cancelled.load(Ordering::SeqCst));
     assert!(!runner.model().done);
+}
+
+#[test]
+fn deferred_event_overflow_errors_by_default_and_is_visible_in_snapshot() {
+    #[derive(Debug, Clone)]
+    enum Event {
+        Start,
+        Deferred,
+    }
+
+    #[derive(Debug, Clone)]
+    enum Effect {}
+
+    const OVERFLOW_EVENTS: usize = 70_000;
+
+    fn handle_event(event: Event, _ctx: &EventContext<()>) -> Command<Event, Effect> {
+        match event {
+            Event::Start => Command::events((0..OVERFLOW_EVENTS).map(|_| Event::Deferred)),
+            Event::Deferred => Command::none(),
+        }
+    }
+
+    let mut runner = Syzygy::builder::<Event, Effect>()
+        .model(())
+        .event_handler(handle_event)
+        .with_event_channel_capacity(Some(1))
+        .build()
+        .unwrap();
+
+    runner.core().try_send(Event::Start).unwrap();
+    let error = runner
+        .step()
+        .expect_err("overflow must surface as shell error");
+    assert!(matches!(
+        error,
+        ShellError::DeferredEventOverflow {
+            limit: 65_536,
+            dropped_events: _
+        }
+    ));
+
+    let snapshot = runner.shell().snapshot();
+    assert!(snapshot.deferred_event_overflow_count > 0);
+}
+
+#[test]
+fn deferred_event_overflow_drop_policy_keeps_running_and_records_trace() {
+    #[derive(Debug, Clone)]
+    enum Event {
+        Start,
+        Deferred,
+    }
+
+    #[derive(Debug, Clone)]
+    enum Effect {}
+
+    const OVERFLOW_EVENTS: usize = 70_000;
+
+    fn handle_event(event: Event, _ctx: &EventContext<()>) -> Command<Event, Effect> {
+        match event {
+            Event::Start => Command::events((0..OVERFLOW_EVENTS).map(|_| Event::Deferred)),
+            Event::Deferred => Command::none(),
+        }
+    }
+
+    let diagnostics = DiagnosticsConfig::default()
+        .deferred_event_overflow(DeferredEventOverflowPolicy::DropNewest)
+        .trace(ShellTraceConfig::default().enabled(true));
+
+    let mut runner = Syzygy::builder::<Event, Effect>()
+        .model(())
+        .event_handler(handle_event)
+        .with_event_channel_capacity(Some(1))
+        .with_syzygy_config(SyzygyConfig::default().diagnostics(diagnostics))
+        .build()
+        .unwrap();
+
+    runner.core().try_send(Event::Start).unwrap();
+    runner
+        .step()
+        .expect("drop policy must not surface overflow as shell error");
+
+    let snapshot = runner.shell().snapshot();
+    assert!(snapshot.deferred_event_overflow_count > 0);
+
+    let trace = runner.shell().trace_snapshot();
+    assert!(trace.iter().any(|entry| {
+        matches!(
+            entry.event,
+            ShellTraceEvent::DeferredEventOverflow {
+                policy: DeferredEventOverflowPolicy::DropNewest,
+                ..
+            }
+        )
+    }));
+}
+
+#[test]
+fn shell_is_not_idle_when_deferred_events_are_queued() {
+    #[derive(Debug, Clone)]
+    enum Event {
+        A,
+        B,
+    }
+
+    #[derive(Debug, Clone)]
+    enum Effect {}
+
+    fn handle_event(_event: Event, _ctx: &EventContext<()>) -> Command<Event, Effect> {
+        Command::none()
+    }
+
+    fn handle_effect(_effect: Effect, _ctx: &EffectContext<'_>) -> Task<Event, Effect> {
+        Task::none()
+    }
+
+    let mut runner = Syzygy::builder::<Event, Effect>()
+        .model(())
+        .event_handler(handle_event)
+        .effect_handler(handle_effect)
+        .with_event_channel_capacity(Some(1))
+        .build()
+        .unwrap();
+
+    runner
+        .shell_mut()
+        .dispatch_command(Command::event(Event::A).and_event(Event::B))
+        .unwrap();
+
+    assert_eq!(runner.shell().snapshot().deferred_event_count, 1);
+    assert!(
+        !runner.shell().is_idle(),
+        "shell with deferred events must not report idle"
+    );
+}
+
+#[test]
+fn shell_is_not_idle_when_pending_errors_exist() {
+    #[derive(Debug, Clone)]
+    enum Event {
+        Start,
+    }
+
+    #[derive(Debug, Clone)]
+    enum Effect {
+        TriggerInvalidControl,
+    }
+
+    fn handle_event(_event: Event, _ctx: &EventContext<()>) -> Command<Event, Effect> {
+        Command::effect(Effect::TriggerInvalidControl)
+    }
+
+    let resolve_invalid_command = Arc::new(AtomicBool::new(false));
+    let resolve_invalid_command_in_effect = Arc::clone(&resolve_invalid_command);
+
+    let handle_effect = move |effect: Effect, _ctx: &EffectContext<'_>| match effect {
+        Effect::TriggerInvalidControl => {
+            let resolve_invalid_command = Arc::clone(&resolve_invalid_command_in_effect);
+            Task::once(async move {
+                while !resolve_invalid_command.load(Ordering::SeqCst) {
+                    syzygy::runtime::yield_now().await;
+                }
+                Command::process_close_stdin(TaskLease::new())
+            })
+        }
+    };
+
+    let mut runner = Syzygy::builder::<Event, Effect>()
+        .model(())
+        .event_handler(handle_event)
+        .effect_handler(handle_effect)
+        .build()
+        .unwrap();
+
+    runner.core().try_send(Event::Start).unwrap();
+    runner.step().unwrap();
+
+    resolve_invalid_command.store(true, Ordering::SeqCst);
+    for _ in 0..32 {
+        if runner.shell().has_pending_errors() {
+            break;
+        }
+        runner.shell().runtime().drive_ready();
+    }
+
+    assert!(runner.shell().has_pending_errors());
+    assert_eq!(runner.shell().snapshot().pending_error_count, 1);
+    assert!(!runner.shell().is_idle());
+
+    let error = runner
+        .shell_mut()
+        .drain()
+        .expect_err("pending error must surface");
+    assert!(matches!(error, ShellError::InvalidProcessControl(_)));
+}
+
+#[test]
+fn run_until_returns_error_when_spawned_command_sets_pending_error() {
+    #[derive(Debug, Clone)]
+    enum Event {
+        Start,
+    }
+
+    #[derive(Debug, Clone)]
+    enum Effect {
+        TriggerInvalidControl,
+    }
+
+    fn handle_event(_event: Event, _ctx: &EventContext<()>) -> Command<Event, Effect> {
+        Command::effect(Effect::TriggerInvalidControl)
+    }
+
+    fn handle_effect(effect: Effect, _ctx: &EffectContext<'_>) -> Task<Event, Effect> {
+        match effect {
+            Effect::TriggerInvalidControl => {
+                Task::once(async { Command::process_close_stdin(TaskLease::new()) })
+            }
+        }
+    }
+
+    let mut runner = Syzygy::builder::<Event, Effect>()
+        .model(())
+        .event_handler(handle_event)
+        .effect_handler(handle_effect)
+        .build()
+        .unwrap();
+
+    runner.core().try_send(Event::Start).unwrap();
+    let error = runner
+        .run_until(|_, _| false)
+        .expect_err("run_until must propagate pending shell errors");
+
+    assert!(matches!(error, ShellError::InvalidProcessControl(_)));
 }
 
 #[test]

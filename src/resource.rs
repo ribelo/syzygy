@@ -55,7 +55,27 @@ impl ResourceMap {
         Self::default()
     }
 
+    /// Insert a new resource for type `T`.
+    ///
+    /// Panics if a resource for `T` is already registered. Use
+    /// [`replace`](Self::replace) when replacement is intentional.
     pub fn insert<T: Clone + 'static>(&mut self, value: T) {
+        self.try_insert(value).unwrap_or_else(|_value| {
+            panic!(
+                "resource `{}` already registered; use ResourceMap::replace when replacement is intentional",
+                std::any::type_name::<T>()
+            )
+        });
+    }
+
+    /// Insert a resource only if `T` is not already present.
+    ///
+    /// Returns `Err(value)` when a resource for `T` already exists.
+    pub fn try_insert<T: Clone + 'static>(&mut self, value: T) -> Result<(), T> {
+        if self.contains::<T>() {
+            return Err(value);
+        }
+
         self.inner.insert(
             TypeId::of::<T>(),
             Entry {
@@ -63,6 +83,28 @@ impl ResourceMap {
                 clone_fn: clone_fn_for::<T>,
             },
         );
+
+        Ok(())
+    }
+
+    /// Replace the resource for `T`, returning the previous value if present.
+    pub fn replace<T: Clone + 'static>(&mut self, value: T) -> Option<T> {
+        let replaced = self.inner.insert(
+            TypeId::of::<T>(),
+            Entry {
+                value: Box::new(value),
+                clone_fn: clone_fn_for::<T>,
+            },
+        );
+
+        replaced.map(|entry| {
+            entry
+                .value
+                .downcast::<T>()
+                .unwrap_or_else(|_| panic_resource_type_mismatch::<T>())
+                .as_ref()
+                .clone()
+        })
     }
 
     #[must_use]
@@ -113,3 +155,48 @@ impl std::fmt::Debug for ResourceMap {
 
 pub trait Resource: Clone + 'static {}
 impl<T: Clone + 'static> Resource for T {}
+
+#[cfg(test)]
+mod tests {
+    use super::ResourceMap;
+
+    #[test]
+    fn try_insert_rejects_duplicate_type() {
+        let mut resources = ResourceMap::new();
+        assert!(resources.try_insert::<u32>(7).is_ok());
+
+        let duplicate = resources.try_insert::<u32>(9);
+        assert_eq!(duplicate, Err(9));
+        assert_eq!(resources.get::<u32>(), Some(7));
+    }
+
+    #[test]
+    fn replace_returns_previous_value() {
+        let mut resources = ResourceMap::new();
+        assert_eq!(resources.replace::<u32>(1), None);
+        assert_eq!(resources.replace::<u32>(2), Some(1));
+        assert_eq!(resources.get::<u32>(), Some(2));
+    }
+
+    #[test]
+    fn insert_panics_on_duplicate_without_replace() {
+        let mut resources = ResourceMap::new();
+        resources.insert::<u32>(1);
+
+        let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            resources.insert::<u32>(2);
+        }))
+        .expect_err("duplicate insert must panic");
+
+        let message = if let Some(s) = panic.downcast_ref::<String>() {
+            s.clone()
+        } else if let Some(s) = panic.downcast_ref::<&str>() {
+            (*s).to_string()
+        } else {
+            String::new()
+        };
+
+        assert!(message.contains("already registered"));
+        assert!(message.contains("ResourceMap::replace"));
+    }
+}

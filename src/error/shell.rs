@@ -40,4 +40,10 @@ pub enum ShellError {
     /// Timed out while waiting for work to complete
     #[error("Timed out after {duration:?} while draining work; use larger timeouts or inspect backpressure metrics")]
     Timeout { duration: Duration },
+
+    /// Deferred event queue exceeded its bounded backlog.
+    #[error(
+        "Deferred event backlog overflowed at limit {limit}; dropped_events={dropped_events}. Adjust event flow or configure explicit overflow policy"
+    )]
+    DeferredEventOverflow { limit: usize, dropped_events: usize },
 }

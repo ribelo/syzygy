@@ -110,7 +110,11 @@ where
         self
     }
 
-    /// Send an event and process all synchronously chained events.
+    /// Send one external event step through the core.
+    ///
+    /// Events emitted by returned commands are enqueued and processed by the
+    /// next [`send`](Self::send)/`receive` cycle, mirroring runner step
+    /// semantics.
     ///
     /// Any emitted effects are buffered until asserted or drained with
     /// [`take_effects`](Self::take_effects).
@@ -128,9 +132,13 @@ where
 
         self.pending_events.push_back(event);
 
+        let step_budget = self.pending_events.len();
         let mut processed = 0usize;
         let mut touched_outputs = false;
-        while let Some(next) = self.pending_events.pop_front() {
+        for _ in 0..step_budget {
+            let Some(next) = self.pending_events.pop_front() else {
+                break;
+            };
             processed += 1;
             assert!(
                 processed <= self.max_event_steps,
@@ -326,8 +334,15 @@ where
         self.effects_asserted = self.pending_effects.is_empty() && self.cancelled_leases.is_empty();
     }
 
-    /// Async variant of [`receive`](Self::receive) that can safely run inside
-    /// an async runtime.
+    /// Async variant of [`receive`](Self::receive) for async test contexts.
+    ///
+    /// This method keeps TestStore's contract explicit:
+    /// - It is still a synchronous-style test helper for driving effect results.
+    /// - It does **not** integrate with the caller's runtime/executor scheduling.
+    /// - It evaluates returned tasks via TestStore's internal `Runtime::block_on`
+    ///   path, just like [`receive`](Self::receive).
+    /// - It intentionally rejects shell-owned process tasks (`Task::Process`);
+    ///   use [`RunnerTester`](crate::runner_tester::RunnerTester) for real shell/runtime lifecycle tests.
     #[cfg(feature = "shell")]
     pub async fn receive_async<H>(&mut self, effect_handler: H)
     where
@@ -697,13 +712,68 @@ mod tests {
     }
 
     #[test]
-    fn send_processes_synchronous_event_chains() {
+    fn command_events_defer_until_next_send_and_keep_fifo() {
         let mut store = TestStore::new(Model::default(), handle_event);
 
         store.send(Event::Start);
 
+        assert_eq!(store.state().counter, 0);
+        store.assert_no_effects();
+
+        store.send(Event::SaveDone);
+
         assert_eq!(store.state().counter, 2);
+        assert!(store.state().save_completed);
         store.assert_effects([Effect::Log(2)]);
+    }
+
+    #[test]
+    fn deferred_command_events_run_before_later_external_event() {
+        #[derive(Debug, Clone)]
+        enum Ev {
+            Start,
+            A,
+            B,
+            External,
+        }
+
+        #[derive(Debug, Clone)]
+        enum Fx {}
+
+        #[derive(Debug, Default, PartialEq, Eq, crate::Model)]
+        struct OrderModel {
+            #[model(wrapper = Order)]
+            order: Vec<&'static str>,
+        }
+
+        fn on_event(event: Ev, ctx: &EventContext<OrderModel>) -> Command<Ev, Fx> {
+            match event {
+                Ev::Start => Command::event(Ev::A).and_event(Ev::B),
+                Ev::A => {
+                    let order = <Order as crate::extract::PartMut<OrderModel>>::extract_mut(ctx);
+                    order.push("a");
+                    Command::none()
+                }
+                Ev::B => {
+                    let order = <Order as crate::extract::PartMut<OrderModel>>::extract_mut(ctx);
+                    order.push("b");
+                    Command::none()
+                }
+                Ev::External => {
+                    let order = <Order as crate::extract::PartMut<OrderModel>>::extract_mut(ctx);
+                    order.push("x");
+                    Command::none()
+                }
+            }
+        }
+
+        let mut store = TestStore::new(OrderModel::default(), on_event);
+
+        store.send(Ev::Start);
+        assert!(store.state().order.is_empty());
+
+        store.send(Ev::External);
+        assert_eq!(store.state().order, ["a", "b", "x"]);
     }
 
     #[test]
@@ -985,6 +1055,25 @@ mod tests {
                 .await;
 
             assert!(store.state().save_completed);
+        });
+    }
+
+    #[cfg(feature = "shell")]
+    #[test]
+    fn receive_async_panics_for_process_tasks() {
+        use crate::process::ProcessSpec;
+
+        let mut store = TestStore::new(Model::default(), handle_event);
+        store.send(Event::Increment(1));
+
+        assert_panic_contains("receive_async does not support process tasks", || {
+            futures::executor::block_on(async {
+                store
+                    .receive_async(|_effect, _ctx| {
+                        Task::process(ProcessSpec::new("echo"), |_result| Command::none())
+                    })
+                    .await;
+            });
         });
     }
 

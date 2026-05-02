@@ -1,10 +1,14 @@
 use std::cell::Cell;
+#[cfg(feature = "shell")]
 use std::future::Future;
 
+#[cfg(feature = "shell")]
 use futures::Stream;
 
 use crate::command::Command;
+#[cfg(feature = "shell")]
 use crate::executor::Task;
+#[cfg(feature = "shell")]
 use crate::resource::{Resource, ResourceMap};
 #[cfg(feature = "shell")]
 use crate::subscription::Subscription;
@@ -14,10 +18,12 @@ const EXTRACTION_PROGRAMMER_ERROR_HINT: &str =
 
 // ── Effect side ─────────────────────────────────────────────────────
 
+#[cfg(feature = "shell")]
 pub struct EffectContext<'a> {
     resources: &'a ResourceMap,
 }
 
+#[cfg(feature = "shell")]
 impl<'a> EffectContext<'a> {
     #[must_use]
     pub fn new(resources: &'a ResourceMap) -> Self {
@@ -39,6 +45,7 @@ impl<'a> EffectContext<'a> {
     }
 }
 
+#[cfg(feature = "shell")]
 pub trait FromEffectContext {
     /// Extracts a value from the [`EffectContext`].
     ///
@@ -51,6 +58,7 @@ pub trait FromEffectContext {
     fn from_context(ctx: &EffectContext<'_>) -> Self;
 }
 
+#[cfg(feature = "shell")]
 fn panic_missing_resource<T: Resource>(caller: &'static std::panic::Location<'static>) -> ! {
     panic!(
         "Effect resource `{}` is not registered. Register it with .with_resource() during builder setup. This is a programmer error (requested at {}:{})",
@@ -60,6 +68,7 @@ fn panic_missing_resource<T: Resource>(caller: &'static std::panic::Location<'st
     )
 }
 
+#[cfg(feature = "shell")]
 impl<T: Resource> FromEffectContext for T {
     #[track_caller]
     fn from_context(ctx: &EffectContext<'_>) -> Self {
@@ -71,16 +80,21 @@ impl<T: Resource> FromEffectContext for T {
     }
 }
 
+#[cfg(feature = "shell")]
 pub struct FutureEffect;
+#[cfg(feature = "shell")]
 pub struct StreamEffect;
 
 #[doc(hidden)]
+#[cfg(feature = "shell")]
 pub struct NP;
 
+#[cfg(feature = "shell")]
 pub trait EffectHandler<E: 'static, X: 'static, P, Marker>: 'static {
     fn handle(&self, payload: P, ctx: &EffectContext<'_>) -> Task<E, X>;
 }
 
+#[cfg(feature = "shell")]
 impl<E, X, P, F> EffectHandler<E, X, P, ()> for F
 where
     F: Fn(P) -> Task<E, X> + 'static,
@@ -92,6 +106,7 @@ where
     }
 }
 
+#[cfg(feature = "shell")]
 impl<E, X, F> EffectHandler<E, X, (), NP> for F
 where
     F: Fn() -> Task<E, X> + 'static,
@@ -103,6 +118,7 @@ where
     }
 }
 
+#[cfg(feature = "shell")]
 impl<E, X, P, F, Fut> EffectHandler<E, X, P, FutureEffect> for F
 where
     F: Fn(P) -> Fut + 'static,
@@ -115,6 +131,7 @@ where
     }
 }
 
+#[cfg(feature = "shell")]
 impl<E, X, F, Fut> EffectHandler<E, X, (), (FutureEffect, NP)> for F
 where
     F: Fn() -> Fut + 'static,
@@ -127,6 +144,7 @@ where
     }
 }
 
+#[cfg(feature = "shell")]
 impl<E, X, P, F, S> EffectHandler<E, X, P, StreamEffect> for F
 where
     F: Fn(P) -> S + 'static,
@@ -139,6 +157,7 @@ where
     }
 }
 
+#[cfg(feature = "shell")]
 impl<E, X, F, S> EffectHandler<E, X, (), (StreamEffect, NP)> for F
 where
     F: Fn() -> S + 'static,
@@ -151,6 +170,7 @@ where
     }
 }
 
+#[cfg(feature = "shell")]
 macro_rules! impl_effect_handler_task {
     ($($T:ident),+) => {
         #[allow(non_snake_case)]
@@ -168,6 +188,7 @@ macro_rules! impl_effect_handler_task {
     }
 }
 
+#[cfg(feature = "shell")]
 macro_rules! impl_effect_handler_future {
     ($($T:ident),+) => {
         #[allow(non_snake_case)]
@@ -186,6 +207,7 @@ macro_rules! impl_effect_handler_future {
     }
 }
 
+#[cfg(feature = "shell")]
 macro_rules! impl_effect_handler_stream {
     ($($T:ident),+) => {
         #[allow(non_snake_case)]
@@ -204,43 +226,79 @@ macro_rules! impl_effect_handler_stream {
     }
 }
 
+#[cfg(feature = "shell")]
 impl_effect_handler_task!(T1);
+#[cfg(feature = "shell")]
 impl_effect_handler_task!(T1, T2);
+#[cfg(feature = "shell")]
 impl_effect_handler_task!(T1, T2, T3);
+#[cfg(feature = "shell")]
 impl_effect_handler_task!(T1, T2, T3, T4);
+#[cfg(feature = "shell")]
 impl_effect_handler_task!(T1, T2, T3, T4, T5);
+#[cfg(feature = "shell")]
 impl_effect_handler_task!(T1, T2, T3, T4, T5, T6);
+#[cfg(feature = "shell")]
 impl_effect_handler_task!(T1, T2, T3, T4, T5, T6, T7);
+#[cfg(feature = "shell")]
 impl_effect_handler_task!(T1, T2, T3, T4, T5, T6, T7, T8);
+#[cfg(feature = "shell")]
 impl_effect_handler_task!(T1, T2, T3, T4, T5, T6, T7, T8, T9);
+#[cfg(feature = "shell")]
 impl_effect_handler_task!(T1, T2, T3, T4, T5, T6, T7, T8, T9, T10);
+#[cfg(feature = "shell")]
 impl_effect_handler_task!(T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11);
+#[cfg(feature = "shell")]
 impl_effect_handler_task!(T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12);
 
+#[cfg(feature = "shell")]
 impl_effect_handler_future!(T1);
+#[cfg(feature = "shell")]
 impl_effect_handler_future!(T1, T2);
+#[cfg(feature = "shell")]
 impl_effect_handler_future!(T1, T2, T3);
+#[cfg(feature = "shell")]
 impl_effect_handler_future!(T1, T2, T3, T4);
+#[cfg(feature = "shell")]
 impl_effect_handler_future!(T1, T2, T3, T4, T5);
+#[cfg(feature = "shell")]
 impl_effect_handler_future!(T1, T2, T3, T4, T5, T6);
+#[cfg(feature = "shell")]
 impl_effect_handler_future!(T1, T2, T3, T4, T5, T6, T7);
+#[cfg(feature = "shell")]
 impl_effect_handler_future!(T1, T2, T3, T4, T5, T6, T7, T8);
+#[cfg(feature = "shell")]
 impl_effect_handler_future!(T1, T2, T3, T4, T5, T6, T7, T8, T9);
+#[cfg(feature = "shell")]
 impl_effect_handler_future!(T1, T2, T3, T4, T5, T6, T7, T8, T9, T10);
+#[cfg(feature = "shell")]
 impl_effect_handler_future!(T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11);
+#[cfg(feature = "shell")]
 impl_effect_handler_future!(T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12);
 
+#[cfg(feature = "shell")]
 impl_effect_handler_stream!(T1);
+#[cfg(feature = "shell")]
 impl_effect_handler_stream!(T1, T2);
+#[cfg(feature = "shell")]
 impl_effect_handler_stream!(T1, T2, T3);
+#[cfg(feature = "shell")]
 impl_effect_handler_stream!(T1, T2, T3, T4);
+#[cfg(feature = "shell")]
 impl_effect_handler_stream!(T1, T2, T3, T4, T5);
+#[cfg(feature = "shell")]
 impl_effect_handler_stream!(T1, T2, T3, T4, T5, T6);
+#[cfg(feature = "shell")]
 impl_effect_handler_stream!(T1, T2, T3, T4, T5, T6, T7);
+#[cfg(feature = "shell")]
 impl_effect_handler_stream!(T1, T2, T3, T4, T5, T6, T7, T8);
+#[cfg(feature = "shell")]
 impl_effect_handler_stream!(T1, T2, T3, T4, T5, T6, T7, T8, T9);
+#[cfg(feature = "shell")]
 impl_effect_handler_stream!(T1, T2, T3, T4, T5, T6, T7, T8, T9, T10);
+#[cfg(feature = "shell")]
 impl_effect_handler_stream!(T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11);
+#[cfg(feature = "shell")]
 impl_effect_handler_stream!(T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12);
 
 // ── Event side ──────────────────────────────────────────────────────
@@ -384,12 +442,10 @@ impl<M> EventContext<M> {
     }
 }
 
-#[cfg(feature = "shell")]
 pub struct SubscriptionContext<M> {
     ptr: *const M,
 }
 
-#[cfg(feature = "shell")]
 impl<M> SubscriptionContext<M> {
     pub(crate) fn new(model: &M) -> Self {
         Self {
@@ -402,6 +458,7 @@ impl<M> SubscriptionContext<M> {
         self.ptr
     }
 
+    #[cfg(feature = "shell")]
     #[track_caller]
     pub fn handle<E, X, H, Marker>(&self, handler: H) -> Subscription<E, X>
     where
@@ -467,7 +524,6 @@ pub trait PartMut<M> {
     fn extract_mut(ctx: &EventContext<M>) -> &mut Self;
 }
 
-#[cfg(feature = "shell")]
 pub trait SubscriptionPart<M> {
     #[track_caller]
     fn extract(ctx: &SubscriptionContext<M>) -> &Self;
@@ -483,7 +539,6 @@ impl<M> Part<M> for M {
     }
 }
 
-#[cfg(feature = "shell")]
 impl<M> SubscriptionPart<M> for M {
     #[track_caller]
     fn extract(ctx: &SubscriptionContext<M>) -> &Self {

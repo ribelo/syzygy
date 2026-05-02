@@ -30,7 +30,7 @@ use crate::subscription::{
     ErasedSubscriptionMapper, Subscription, SubscriptionDrivers, SubscriptionEntry,
     SubscriptionKey, SubscriptionSpec,
 };
-use crate::syzygy::UnhandledEffectPolicy;
+use crate::syzygy::{DeferredEventOverflowPolicy, UnhandledEffectPolicy};
 
 pub(crate) type EffectHandlerFn<E, X> =
     Rc<dyn for<'a> Fn(X, &EffectContext<'a>) -> Result<Task<E, X>, ShellError>>;
@@ -142,6 +142,11 @@ struct ProcessController {
     stdin_open: bool,
 }
 
+struct SpawnProcessControl {
+    control_rx: Option<ProcessControlReceiver>,
+    process_controller: Option<ProcessController>,
+}
+
 impl ProcessController {
     #[must_use]
     fn new(sender: ProcessControlSender) -> Self {
@@ -191,6 +196,324 @@ type ProgressEpoch = Rc<Cell<u64>>;
 type LastTermination = Rc<RefCell<ShellDiagnosticsState>>;
 type ActiveSubscriptions<E, X> =
     Rc<RefCell<HashMap<SubscriptionKey, ActiveSubscriptionEntry<E, X>>>>;
+
+struct CommandRouter<E, X>
+where
+    E: 'static,
+    X: 'static,
+{
+    event_tx: EventSender<E>,
+    effect_handler: EffectHandlerFn<E, X>,
+    runtime: crate::runtime::Runtime,
+    resources: Rc<ResourceMap>,
+    activity: Activity,
+    tasks: TaskRegistry,
+    deferred_events: DeferredEvents<E>,
+    pending_errors: PendingErrors,
+    deferred_event_overflow_policy: Rc<Cell<DeferredEventOverflowPolicy>>,
+    deferred_event_overflow_count: Rc<Cell<usize>>,
+    closed: ClosedFlag,
+    progress_epoch: ProgressEpoch,
+    last_termination: LastTermination,
+}
+
+#[derive(Clone)]
+struct TaskRegistry {
+    active_tasks: ActiveTasks,
+    untracked_tasks: UntrackedTasks,
+    last_termination: LastTermination,
+}
+
+impl TaskRegistry {
+    fn new(
+        active_tasks: ActiveTasks,
+        untracked_tasks: UntrackedTasks,
+        last_termination: LastTermination,
+    ) -> Self {
+        Self {
+            active_tasks,
+            untracked_tasks,
+            last_termination,
+        }
+    }
+
+    fn push_untracked(&self, handle: TaskHandle) {
+        self.untracked_tasks.borrow_mut().push(handle);
+    }
+
+    fn cancel_active(&self, lease_id: u64, reason: ShellCancellationReason) {
+        cancel_active_task(
+            &self.active_tasks,
+            &self.untracked_tasks,
+            &self.last_termination,
+            lease_id,
+            reason,
+        );
+    }
+
+    fn insert_or_track_spawned(&self, spawned: SpawnedTask) {
+        if let (Some(lease_id), Some(owner), Some(token)) =
+            (spawned.lease_id, spawned.owner, spawned.token)
+        {
+            self.active_tasks.borrow_mut().insert(
+                lease_id,
+                ActiveTaskEntry {
+                    owner,
+                    token,
+                    handle: spawned.handle,
+                    process_controller: spawned.process_controller,
+                    is_process_task: spawned.is_process_task,
+                },
+            );
+        } else {
+            self.untracked_tasks.borrow_mut().push(spawned.handle);
+        }
+    }
+
+    fn write_process(&self, lease: TaskLease, bytes: Vec<u8>) -> Result<(), ShellError> {
+        write_to_active_process(&self.active_tasks, &self.last_termination, lease, bytes)
+    }
+
+    fn close_process_stdin(&self, lease: TaskLease) -> Result<(), ShellError> {
+        close_active_process_stdin(&self.active_tasks, &self.last_termination, lease)
+    }
+
+    fn active_tasks(&self) -> &ActiveTasks {
+        &self.active_tasks
+    }
+
+    fn untracked_tasks(&self) -> &UntrackedTasks {
+        &self.untracked_tasks
+    }
+}
+
+#[derive(Clone)]
+struct ProcessSupervisor<E, X>
+where
+    E: 'static,
+    X: 'static,
+{
+    router: CommandRouter<E, X>,
+    lease_id: Option<u64>,
+    token: Option<u64>,
+}
+
+#[derive(Clone)]
+struct SubscriptionRegistry<E, X>
+where
+    E: 'static,
+    X: 'static,
+{
+    active_subscriptions: ActiveSubscriptions<E, X>,
+    subscription_drivers: Rc<SubscriptionDrivers>,
+    untracked_tasks: UntrackedTasks,
+    last_termination: LastTermination,
+}
+
+impl<E, X> SubscriptionRegistry<E, X>
+where
+    E: 'static,
+    X: 'static,
+{
+    fn new(
+        active_subscriptions: ActiveSubscriptions<E, X>,
+        subscription_drivers: Rc<SubscriptionDrivers>,
+        untracked_tasks: UntrackedTasks,
+        last_termination: LastTermination,
+    ) -> Self {
+        Self {
+            active_subscriptions,
+            subscription_drivers,
+            untracked_tasks,
+            last_termination,
+        }
+    }
+
+    fn reconcile(
+        &self,
+        desired: Subscription<E, X>,
+        router: &CommandRouter<E, X>,
+    ) -> Result<usize, ShellError> {
+        let mut desired_by_key = HashMap::new();
+        for entry in desired.into_entries() {
+            let key = entry.key().clone();
+            if desired_by_key.insert(key.clone(), entry).is_some() {
+                return Err(ShellError::DuplicateSubscriptionKey(format!("{key:?}")));
+            }
+        }
+
+        let active_keys = self
+            .active_subscriptions
+            .borrow()
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>();
+
+        let mut changes = 0usize;
+        for key in active_keys {
+            let Some(entry) = desired_by_key.remove(&key) else {
+                cancel_active_subscription(
+                    &self.active_subscriptions,
+                    &self.untracked_tasks,
+                    &self.last_termination,
+                    &key,
+                    ShellCancellationReason::SubscriptionReconciled,
+                );
+                changes = changes.saturating_add(1);
+                continue;
+            };
+
+            if active_subscription_matches(
+                &self.active_subscriptions,
+                &key,
+                entry.driver_id(),
+                entry.spec(),
+            ) {
+                let (_, _, _, _, mapper) = entry.into_parts();
+                replace_active_subscription_mapper(&self.active_subscriptions, &key, mapper);
+                continue;
+            }
+
+            cancel_active_subscription(
+                &self.active_subscriptions,
+                &self.untracked_tasks,
+                &self.last_termination,
+                &key,
+                ShellCancellationReason::SubscriptionReconciled,
+            );
+            self.start(entry, router)?;
+            changes = changes.saturating_add(1);
+        }
+
+        for entry in desired_by_key.into_values() {
+            self.start(entry, router)?;
+            changes = changes.saturating_add(1);
+        }
+
+        record_trace(
+            &self.last_termination,
+            ShellTraceEvent::SubscriptionsReconciled { changes },
+        );
+
+        Ok(changes)
+    }
+
+    fn start(
+        &self,
+        entry: SubscriptionEntry<E, X>,
+        router: &CommandRouter<E, X>,
+    ) -> Result<(), ShellError> {
+        let (key, driver_id, driver_name, spec, mapper) = entry.into_parts();
+        if !self.subscription_drivers.contains(driver_id) {
+            return Err(ShellError::MissingSubscriptionDriver(driver_name.into()));
+        }
+
+        let mapper = Rc::new(RefCell::new(mapper));
+        let token = next_task_token();
+        record_trace(
+            &self.last_termination,
+            ShellTraceEvent::SubscriptionStarted {
+                key: format!("{key:?}"),
+                driver: driver_name,
+            },
+        );
+        let handle = spawn_subscription_runtime_task(
+            key.clone(),
+            Rc::clone(&mapper),
+            token,
+            Rc::clone(&self.subscription_drivers),
+            driver_id,
+            driver_name,
+            spec.clone(),
+            router,
+            &self.active_subscriptions,
+        );
+
+        self.active_subscriptions.borrow_mut().insert(
+            key,
+            ActiveSubscriptionEntry {
+                driver_id,
+                spec,
+                mapper,
+                token,
+                handle,
+            },
+        );
+        Ok(())
+    }
+
+    fn drain_for_shutdown(&self) -> bool {
+        drain_active_subscriptions_for_shutdown(
+            &self.active_subscriptions,
+            &self.untracked_tasks,
+            &self.last_termination,
+        )
+    }
+}
+
+impl<E, X> ProcessSupervisor<E, X>
+where
+    E: 'static,
+    X: 'static,
+{
+    fn new(router: &CommandRouter<E, X>, lease_id: Option<u64>, token: Option<u64>) -> Self {
+        Self {
+            router: router.clone(),
+            lease_id,
+            token,
+        }
+    }
+
+    fn route_update(
+        &self,
+        update: ProcessUpdate,
+        on_update: &mut dyn FnMut(ProcessUpdate) -> Option<Command<E, X>>,
+    ) {
+        if let ProcessUpdate::Exited(result) = &update {
+            if let (Some(lease_id), Some(token)) = (self.lease_id, self.token) {
+                let reason = match result {
+                    Ok(_) => ShellTerminationReason::Completed,
+                    Err(_) => ShellTerminationReason::Failed,
+                };
+                cleanup_active_process_if_current(
+                    self.router.tasks.active_tasks(),
+                    &self.router.last_termination,
+                    lease_id,
+                    token,
+                    reason,
+                );
+            }
+        }
+
+        if let Some(command) = on_update(update) {
+            self.router.route_spawned_command(command);
+        }
+    }
+}
+
+impl<E, X> Clone for CommandRouter<E, X>
+where
+    E: 'static,
+    X: 'static,
+{
+    fn clone(&self) -> Self {
+        Self {
+            event_tx: self.event_tx.clone(),
+            effect_handler: Rc::clone(&self.effect_handler),
+            runtime: self.runtime.clone(),
+            resources: Rc::clone(&self.resources),
+            activity: self.activity.clone(),
+            tasks: self.tasks.clone(),
+            deferred_events: Rc::clone(&self.deferred_events),
+            pending_errors: Rc::clone(&self.pending_errors),
+            deferred_event_overflow_policy: Rc::clone(&self.deferred_event_overflow_policy),
+            deferred_event_overflow_count: Rc::clone(&self.deferred_event_overflow_count),
+            closed: Rc::clone(&self.closed),
+            progress_epoch: Rc::clone(&self.progress_epoch),
+            last_termination: Rc::clone(&self.last_termination),
+        }
+    }
+}
 
 struct SpawnedTask {
     lease_id: Option<u64>,
@@ -414,6 +737,7 @@ pub struct ShellSnapshot {
     pub deferred_event_count: usize,
     pub queued_command_count: usize,
     pub pending_error_count: usize,
+    pub deferred_event_overflow_count: usize,
     pub last_termination: Option<ShellTerminationRecord>,
 }
 
@@ -503,6 +827,11 @@ pub enum ShellTraceEvent {
         made_progress: bool,
         deferred_events: usize,
         in_flight: usize,
+    },
+    DeferredEventOverflow {
+        limit: usize,
+        dropped_events: usize,
+        policy: DeferredEventOverflowPolicy,
     },
     CommandStep(ShellTraceCommandStep),
     TaskSpawned {
@@ -598,6 +927,45 @@ struct ShellDiagnosticsState {
     trace: TraceRecorder,
 }
 
+#[derive(Clone)]
+struct ShellDiagnostics {
+    state: LastTermination,
+}
+
+impl ShellDiagnostics {
+    fn new(state: LastTermination) -> Self {
+        Self { state }
+    }
+
+    fn trace_config(&self) -> ShellTraceConfig {
+        self.state.borrow().trace.config()
+    }
+
+    fn set_trace_config(&self, config: ShellTraceConfig) {
+        self.state.borrow_mut().trace.set_config(config);
+    }
+
+    fn trace_snapshot(&self) -> Vec<ShellTraceEntry> {
+        self.state.borrow().trace.snapshot()
+    }
+
+    fn take_trace(&self) -> Vec<ShellTraceEntry> {
+        self.state.borrow_mut().trace.take()
+    }
+
+    fn clear_trace(&self) {
+        self.state.borrow_mut().trace.clear();
+    }
+
+    fn record_trace(&self, event: ShellTraceEvent) {
+        record_trace(&self.state, event);
+    }
+
+    fn last_termination(&self) -> Option<ShellTerminationRecord> {
+        self.state.borrow().last_termination.clone()
+    }
+}
+
 pub struct Shell<E, X, M = ()>
 where
     E: 'static,
@@ -607,19 +975,22 @@ where
     effect_handler: EffectHandlerFn<E, X>,
     boot_handler: Option<BootHandlerFn<E, X, M>>,
     subscription_handler: Option<SubscriptionHandlerFn<E, X, M>>,
-    subscription_drivers: Rc<SubscriptionDrivers>,
     runtime: crate::runtime::Runtime,
     resources: Rc<ResourceMap>,
     activity: Activity,
     active_tasks: ActiveTasks,
     active_subscriptions: ActiveSubscriptions<E, X>,
+    subscriptions: SubscriptionRegistry<E, X>,
     untracked_tasks: UntrackedTasks,
     deferred_events: DeferredEvents<E>,
     pending_errors: PendingErrors,
     closed: ClosedFlag,
     progress_epoch: ProgressEpoch,
     last_termination: LastTermination,
+    diagnostics: ShellDiagnostics,
     unhandled_effects_policy: Rc<Cell<UnhandledEffectPolicy>>,
+    deferred_event_overflow_policy: Rc<Cell<DeferredEventOverflowPolicy>>,
+    deferred_event_overflow_count: Rc<Cell<usize>>,
     queue: VecDeque<Command<E, X>>,
 }
 
@@ -642,6 +1013,7 @@ where
             resources,
             runtime,
             Rc::new(Cell::new(UnhandledEffectPolicy::Error)),
+            Rc::new(Cell::new(DeferredEventOverflowPolicy::Error)),
         )
     }
 }
@@ -652,6 +1024,29 @@ where
     X: 'static,
     M: 'static,
 {
+    fn command_router(&self) -> CommandRouter<E, X> {
+        CommandRouter {
+            event_tx: self.event_tx.clone(),
+            effect_handler: Rc::clone(&self.effect_handler),
+            runtime: self.runtime.clone(),
+            resources: Rc::clone(&self.resources),
+            activity: self.activity.clone(),
+            tasks: TaskRegistry::new(
+                Rc::clone(&self.active_tasks),
+                Rc::clone(&self.untracked_tasks),
+                Rc::clone(&self.last_termination),
+            ),
+            deferred_events: Rc::clone(&self.deferred_events),
+            pending_errors: Rc::clone(&self.pending_errors),
+            deferred_event_overflow_policy: Rc::clone(&self.deferred_event_overflow_policy),
+            deferred_event_overflow_count: Rc::clone(&self.deferred_event_overflow_count),
+            closed: Rc::clone(&self.closed),
+            progress_epoch: Rc::clone(&self.progress_epoch),
+            last_termination: Rc::clone(&self.last_termination),
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn with_subscriptions(
         event_tx: EventSender<E>,
         effect_handler: EffectHandlerFn<E, X>,
@@ -660,28 +1055,43 @@ where
         resources: ResourceMap,
         runtime: crate::runtime::Runtime,
         unhandled_effects_policy: Rc<Cell<UnhandledEffectPolicy>>,
+        deferred_event_overflow_policy: Rc<Cell<DeferredEventOverflowPolicy>>,
     ) -> Self {
+        let subscription_drivers = Rc::new(subscription_drivers);
+        let active_subscriptions = Rc::new(RefCell::new(HashMap::new()));
+        let untracked_tasks = Rc::new(RefCell::new(Vec::new()));
+        let last_termination = Rc::new(RefCell::new(ShellDiagnosticsState {
+            last_termination: None,
+            trace: TraceRecorder::with_config(ShellTraceConfig::default()),
+        }));
+        let subscriptions = SubscriptionRegistry::new(
+            Rc::clone(&active_subscriptions),
+            Rc::clone(&subscription_drivers),
+            Rc::clone(&untracked_tasks),
+            Rc::clone(&last_termination),
+        );
+
         Self {
             event_tx,
             effect_handler,
             boot_handler: lifecycle_handlers.boot_handler,
             subscription_handler: lifecycle_handlers.subscription_handler,
-            subscription_drivers: Rc::new(subscription_drivers),
             runtime,
             resources: Rc::new(resources),
             activity: Activity::new(),
             active_tasks: Rc::new(RefCell::new(HashMap::new())),
-            active_subscriptions: Rc::new(RefCell::new(HashMap::new())),
-            untracked_tasks: Rc::new(RefCell::new(Vec::new())),
+            active_subscriptions,
+            subscriptions,
+            untracked_tasks,
             deferred_events: Rc::new(RefCell::new(VecDeque::new())),
             pending_errors: Rc::new(RefCell::new(VecDeque::new())),
             closed: Rc::new(Cell::new(false)),
             progress_epoch: Rc::new(Cell::new(0)),
-            last_termination: Rc::new(RefCell::new(ShellDiagnosticsState {
-                last_termination: None,
-                trace: TraceRecorder::with_config(ShellTraceConfig::default()),
-            })),
+            last_termination: Rc::clone(&last_termination),
+            diagnostics: ShellDiagnostics::new(last_termination),
             unhandled_effects_policy,
+            deferred_event_overflow_policy,
+            deferred_event_overflow_count: Rc::new(Cell::new(0)),
             queue: VecDeque::new(),
         }
     }
@@ -702,21 +1112,9 @@ where
         self.queue.clear();
         self.queue.push_back(command);
 
-        route_command_iterative(
-            &mut self.queue,
-            &self.event_tx,
-            &self.effect_handler,
-            &self.runtime,
-            &self.resources,
-            &self.activity,
-            &self.active_tasks,
-            &self.untracked_tasks,
-            &self.deferred_events,
-            &self.pending_errors,
-            &self.closed,
-            &self.progress_epoch,
-            &self.last_termination,
-        )?;
+        let router = self.command_router();
+
+        router.route_command_iterative(&mut self.queue)?;
 
         if let Some(err) = take_pending_error(&self.pending_errors) {
             return Err(err);
@@ -779,8 +1177,37 @@ where
     }
 
     #[must_use]
+    /// Returns true only when the shell is quiescent.
+    ///
+    /// Quiescent means no runtime activity, no deferred/queued routable work,
+    /// and no pending shell errors.
     pub fn is_idle(&self) -> bool {
-        self.activity.load() == 0
+        self.is_quiescent()
+    }
+
+    #[must_use]
+    /// Returns true when runtime-owned tasks/subscriptions are currently in flight.
+    pub fn has_runtime_activity(&self) -> bool {
+        self.activity.load() > 0
+    }
+
+    #[must_use]
+    /// Returns true when shell-routable work remains (queued commands or deferred events).
+    pub fn has_routable_work(&self) -> bool {
+        !self.queue.is_empty() || !self.deferred_events.borrow().is_empty()
+    }
+
+    #[must_use]
+    /// Returns true when shell errors have been recorded but not yet surfaced.
+    pub fn has_pending_errors(&self) -> bool {
+        !self.pending_errors.borrow().is_empty()
+    }
+
+    #[must_use]
+    /// Returns true when the shell has no runtime activity, no routable work,
+    /// and no pending errors.
+    pub fn is_quiescent(&self) -> bool {
+        !self.has_runtime_activity() && !self.has_routable_work() && !self.has_pending_errors()
     }
 
     #[must_use]
@@ -808,29 +1235,38 @@ where
     }
 
     #[must_use]
+    pub fn deferred_event_overflow_policy(&self) -> DeferredEventOverflowPolicy {
+        self.deferred_event_overflow_policy.get()
+    }
+
+    pub fn set_deferred_event_overflow_policy(&mut self, policy: DeferredEventOverflowPolicy) {
+        self.deferred_event_overflow_policy.set(policy);
+    }
+
+    #[must_use]
     pub fn trace_config(&self) -> ShellTraceConfig {
-        self.last_termination.borrow().trace.config()
+        self.diagnostics.trace_config()
     }
 
     pub fn set_trace_config(&mut self, config: ShellTraceConfig) {
-        self.last_termination.borrow_mut().trace.set_config(config);
+        self.diagnostics.set_trace_config(config);
     }
 
     #[must_use]
     pub fn trace_snapshot(&self) -> Vec<ShellTraceEntry> {
-        self.last_termination.borrow().trace.snapshot()
+        self.diagnostics.trace_snapshot()
     }
 
     pub fn take_trace(&mut self) -> Vec<ShellTraceEntry> {
-        self.last_termination.borrow_mut().trace.take()
+        self.diagnostics.take_trace()
     }
 
     pub fn clear_trace(&mut self) {
-        self.last_termination.borrow_mut().trace.clear();
+        self.diagnostics.clear_trace();
     }
 
     pub(crate) fn record_trace_event(&self, event: ShellTraceEvent) {
-        record_trace(&self.last_termination, event);
+        self.diagnostics.record_trace(event);
     }
 
     #[must_use]
@@ -866,7 +1302,8 @@ where
             deferred_event_count: self.deferred_events.borrow().len(),
             queued_command_count: self.queue.len(),
             pending_error_count: self.pending_errors.borrow().len(),
-            last_termination: self.last_termination.borrow().last_termination.clone(),
+            deferred_event_overflow_count: self.deferred_event_overflow_count.get(),
+            last_termination: self.diagnostics.last_termination(),
         }
     }
 
@@ -899,70 +1336,12 @@ where
             return Err(err);
         }
 
-        let mut desired_by_key = HashMap::new();
-        for entry in desired.into_entries() {
-            let key = entry.key().clone();
-            if desired_by_key.insert(key.clone(), entry).is_some() {
-                return Err(ShellError::DuplicateSubscriptionKey(format!("{key:?}")));
-            }
-        }
-
-        let active_keys = self
-            .active_subscriptions
-            .borrow()
-            .keys()
-            .cloned()
-            .collect::<Vec<_>>();
-
-        let mut changes = 0usize;
-        for key in active_keys {
-            let Some(entry) = desired_by_key.remove(&key) else {
-                cancel_active_subscription(
-                    &self.active_subscriptions,
-                    &self.untracked_tasks,
-                    &self.last_termination,
-                    &key,
-                    ShellCancellationReason::SubscriptionReconciled,
-                );
-                changes = changes.saturating_add(1);
-                continue;
-            };
-
-            if active_subscription_matches(
-                &self.active_subscriptions,
-                &key,
-                entry.driver_id(),
-                entry.spec(),
-            ) {
-                let (_, _, _, _, mapper) = entry.into_parts();
-                replace_active_subscription_mapper(&self.active_subscriptions, &key, mapper);
-                continue;
-            }
-
-            cancel_active_subscription(
-                &self.active_subscriptions,
-                &self.untracked_tasks,
-                &self.last_termination,
-                &key,
-                ShellCancellationReason::SubscriptionReconciled,
-            );
-            self.start_subscription(entry)?;
-            changes = changes.saturating_add(1);
-        }
-
-        for entry in desired_by_key.into_values() {
-            self.start_subscription(entry)?;
-            changes = changes.saturating_add(1);
-        }
+        let router = self.command_router();
+        let changes = self.subscriptions.reconcile(desired, &router)?;
 
         if let Some(err) = take_pending_error(&self.pending_errors) {
             return Err(err);
         }
-
-        record_trace(
-            &self.last_termination,
-            ShellTraceEvent::SubscriptionsReconciled { changes },
-        );
 
         Ok(changes)
     }
@@ -975,11 +1354,7 @@ where
             &self.untracked_tasks,
             &self.last_termination,
         );
-        let had_subscription_shutdown = drain_active_subscriptions_for_shutdown(
-            &self.active_subscriptions,
-            &self.untracked_tasks,
-            &self.last_termination,
-        );
+        let had_subscription_shutdown = self.subscriptions.drain_for_shutdown();
         request_shutdown_for_untracked_tasks(
             &self.untracked_tasks,
             &self.last_termination,
@@ -1019,57 +1394,6 @@ where
 
     pub(crate) fn park_runtime(&self, duration: Duration) {
         self.runtime.park(duration);
-    }
-
-    fn start_subscription(&mut self, entry: SubscriptionEntry<E, X>) -> Result<(), ShellError> {
-        let (key, driver_id, driver_name, spec, mapper) = entry.into_parts();
-        if !self.subscription_drivers.contains(driver_id) {
-            return Err(ShellError::MissingSubscriptionDriver(driver_name.into()));
-        }
-
-        let mapper = Rc::new(RefCell::new(mapper));
-        let token = next_task_token();
-        record_trace(
-            &self.last_termination,
-            ShellTraceEvent::SubscriptionStarted {
-                key: format!("{key:?}"),
-                driver: driver_name,
-            },
-        );
-        let handle = spawn_subscription_runtime_task(
-            key.clone(),
-            Rc::clone(&mapper),
-            token,
-            Rc::clone(&self.subscription_drivers),
-            driver_id,
-            driver_name,
-            spec.clone(),
-            &self.event_tx,
-            &self.effect_handler,
-            &self.runtime,
-            &self.resources,
-            &self.activity,
-            &self.active_tasks,
-            &self.active_subscriptions,
-            &self.untracked_tasks,
-            &self.deferred_events,
-            &self.pending_errors,
-            &self.closed,
-            &self.progress_epoch,
-            &self.last_termination,
-        );
-
-        self.active_subscriptions.borrow_mut().insert(
-            key,
-            ActiveSubscriptionEntry {
-                driver_id,
-                spec,
-                mapper,
-                token,
-                handle,
-            },
-        );
-        Ok(())
     }
 }
 
@@ -1495,213 +1819,186 @@ fn request_shutdown_for_untracked_tasks(
     untracked_tasks.borrow_mut().extend(kept);
 }
 
-fn push_deferred_event<E>(deferred_events: &DeferredEvents<E>, event: E) {
+fn push_deferred_event<E>(
+    deferred_events: &DeferredEvents<E>,
+    pending_errors: &PendingErrors,
+    deferred_event_overflow_policy: &Rc<Cell<DeferredEventOverflowPolicy>>,
+    deferred_event_overflow_count: &Rc<Cell<usize>>,
+    last_termination: &LastTermination,
+    event: E,
+) {
     let mut deferred_events = deferred_events.borrow_mut();
     if deferred_events.len() >= MAX_DEFERRED_EVENTS {
-        report_spawned_event_drop("dropping deferred event because backlog reached hard limit");
+        let dropped_events = deferred_event_overflow_count.get().saturating_add(1);
+        deferred_event_overflow_count.set(dropped_events);
+        let policy = deferred_event_overflow_policy.get();
+
+        record_trace(
+            last_termination,
+            ShellTraceEvent::DeferredEventOverflow {
+                limit: MAX_DEFERRED_EVENTS,
+                dropped_events,
+                policy,
+            },
+        );
+
+        match policy {
+            DeferredEventOverflowPolicy::Error => {
+                pending_errors
+                    .borrow_mut()
+                    .push_back(ShellError::DeferredEventOverflow {
+                        limit: MAX_DEFERRED_EVENTS,
+                        dropped_events,
+                    });
+            }
+            DeferredEventOverflowPolicy::DropNewest => {
+                report_spawned_event_drop(
+                    "dropping deferred event because backlog reached hard limit",
+                );
+            }
+        }
         return;
     }
 
     deferred_events.push_back(event);
 }
 
-#[allow(clippy::too_many_arguments)]
-fn route_command_iterative<E, X>(
-    queue: &mut VecDeque<Command<E, X>>,
-    event_tx: &EventSender<E>,
-    effect_handler: &EffectHandlerFn<E, X>,
-    runtime: &crate::runtime::Runtime,
-    resources: &Rc<ResourceMap>,
-    activity: &Activity,
-    active_tasks: &ActiveTasks,
-    untracked_tasks: &UntrackedTasks,
-    deferred_events: &DeferredEvents<E>,
-    pending_errors: &PendingErrors,
-    closed: &ClosedFlag,
-    progress_epoch: &ProgressEpoch,
-    last_termination: &LastTermination,
-) -> Result<(), ShellError>
+impl<E, X> CommandRouter<E, X>
 where
     E: 'static,
     X: 'static,
 {
-    while let Some(command) = queue.pop_front() {
-        if closed.get() {
-            return Ok(());
-        }
+    fn route_command_iterative(
+        &self,
+        queue: &mut VecDeque<Command<E, X>>,
+    ) -> Result<(), ShellError> {
+        while let Some(command) = queue.pop_front() {
+            if self.closed.get() {
+                return Ok(());
+            }
 
-        for step in command {
-            match step {
-                CommandStep::Event(event) => {
-                    record_trace(
-                        last_termination,
-                        ShellTraceEvent::CommandStep(ShellTraceCommandStep::Event),
-                    );
-                    route_event(event_tx, deferred_events, event)
-                        .map_err(|_| ShellError::EventChannelClosed)?;
-                }
-                CommandStep::Effect(effect) => {
-                    record_trace(
-                        last_termination,
-                        ShellTraceEvent::CommandStep(ShellTraceCommandStep::Effect {
-                            effect_type: std::any::type_name::<X>(),
-                        }),
-                    );
-                    if let Some(spawned) = run_effect_task(
-                        effect,
-                        None,
-                        event_tx,
-                        effect_handler,
-                        runtime,
-                        resources,
-                        activity,
-                        active_tasks,
-                        untracked_tasks,
-                        deferred_events,
-                        pending_errors,
-                        closed,
-                        progress_epoch,
-                        last_termination,
-                        queue,
-                    )? {
-                        untracked_tasks.borrow_mut().push(spawned.handle);
+            for step in command {
+                match step {
+                    CommandStep::Event(event) => {
+                        record_trace(
+                            &self.last_termination,
+                            ShellTraceEvent::CommandStep(ShellTraceCommandStep::Event),
+                        );
+                        self.route_event(event)
+                            .map_err(|_| ShellError::EventChannelClosed)?;
                     }
-                }
-                CommandStep::Abortable { lease, effect } => {
-                    record_trace(
-                        last_termination,
-                        ShellTraceEvent::CommandStep(ShellTraceCommandStep::Abortable {
-                            lease_id: lease.id(),
-                            effect_type: std::any::type_name::<X>(),
-                        }),
-                    );
-                    let ctx = EffectContext::new(resources.as_ref());
-                    let task = effect_handler(effect, &ctx)?;
-                    cancel_blocking_abortable_task(&task)?;
-                    cancel_active_task(
-                        active_tasks,
-                        untracked_tasks,
-                        last_termination,
-                        lease.id(),
-                        ShellCancellationReason::Replacement,
-                    );
-                    if let Some(spawned) = spawn_task(
-                        task,
-                        Some(lease),
-                        event_tx,
-                        effect_handler,
-                        runtime,
-                        resources,
-                        activity,
-                        active_tasks,
-                        untracked_tasks,
-                        deferred_events,
-                        pending_errors,
-                        closed,
-                        progress_epoch,
-                        last_termination,
-                        queue,
-                    )? {
-                        if let (Some(lease_id), Some(owner), Some(token)) =
-                            (spawned.lease_id, spawned.owner, spawned.token)
-                        {
-                            active_tasks.borrow_mut().insert(
-                                lease_id,
-                                ActiveTaskEntry {
-                                    owner,
-                                    token,
-                                    handle: spawned.handle,
-                                    process_controller: spawned.process_controller,
-                                    is_process_task: spawned.is_process_task,
-                                },
-                            );
-                        } else {
-                            untracked_tasks.borrow_mut().push(spawned.handle);
+                    CommandStep::Effect(effect) => {
+                        record_trace(
+                            &self.last_termination,
+                            ShellTraceEvent::CommandStep(ShellTraceCommandStep::Effect {
+                                effect_type: std::any::type_name::<X>(),
+                            }),
+                        );
+                        if let Some(spawned) = run_effect_task(effect, None, self, queue)? {
+                            self.tasks.push_untracked(spawned.handle);
                         }
                     }
-                }
-                CommandStep::Cancel { lease } => {
-                    record_trace(
-                        last_termination,
-                        ShellTraceEvent::CommandStep(ShellTraceCommandStep::Cancel {
-                            lease_id: lease.id(),
-                        }),
-                    );
-                    cancel_active_task(
-                        active_tasks,
-                        untracked_tasks,
-                        last_termination,
-                        lease.id(),
-                        ShellCancellationReason::ExplicitCommand,
-                    );
-                }
-                CommandStep::ProcessWrite { lease, bytes } => {
-                    record_trace(
-                        last_termination,
-                        ShellTraceEvent::CommandStep(ShellTraceCommandStep::ProcessWrite {
-                            lease_id: lease.id(),
-                            bytes: bytes.len(),
-                        }),
-                    );
-                    write_to_active_process(active_tasks, last_termination, lease, bytes)?;
-                }
-                CommandStep::ProcessCloseStdin { lease } => {
-                    record_trace(
-                        last_termination,
-                        ShellTraceEvent::CommandStep(ShellTraceCommandStep::ProcessCloseStdin {
-                            lease_id: lease.id(),
-                        }),
-                    );
-                    close_active_process_stdin(active_tasks, last_termination, lease)?;
+                    CommandStep::Abortable { lease, effect } => {
+                        record_trace(
+                            &self.last_termination,
+                            ShellTraceEvent::CommandStep(ShellTraceCommandStep::Abortable {
+                                lease_id: lease.id(),
+                                effect_type: std::any::type_name::<X>(),
+                            }),
+                        );
+                        let ctx = EffectContext::new(self.resources.as_ref());
+                        let task = (self.effect_handler)(effect, &ctx)?;
+                        cancel_blocking_abortable_task(&task)?;
+                        self.tasks
+                            .cancel_active(lease.id(), ShellCancellationReason::Replacement);
+                        if let Some(spawned) = spawn_task(task, Some(lease), self, queue)? {
+                            self.tasks.insert_or_track_spawned(spawned);
+                        }
+                    }
+                    CommandStep::Cancel { lease } => {
+                        record_trace(
+                            &self.last_termination,
+                            ShellTraceEvent::CommandStep(ShellTraceCommandStep::Cancel {
+                                lease_id: lease.id(),
+                            }),
+                        );
+                        self.tasks
+                            .cancel_active(lease.id(), ShellCancellationReason::ExplicitCommand);
+                    }
+                    CommandStep::ProcessWrite { lease, bytes } => {
+                        record_trace(
+                            &self.last_termination,
+                            ShellTraceEvent::CommandStep(ShellTraceCommandStep::ProcessWrite {
+                                lease_id: lease.id(),
+                                bytes: bytes.len(),
+                            }),
+                        );
+                        self.tasks.write_process(lease, bytes)?;
+                    }
+                    CommandStep::ProcessCloseStdin { lease } => {
+                        record_trace(
+                            &self.last_termination,
+                            ShellTraceEvent::CommandStep(
+                                ShellTraceCommandStep::ProcessCloseStdin {
+                                    lease_id: lease.id(),
+                                },
+                            ),
+                        );
+                        self.tasks.close_process_stdin(lease)?;
+                    }
                 }
             }
         }
+
+        Ok(())
     }
 
-    Ok(())
+    fn route_event(&self, event: E) -> Result<(), crossbeam_channel::TrySendError<E>> {
+        if !self.deferred_events.borrow().is_empty() {
+            push_deferred_event(
+                &self.deferred_events,
+                &self.pending_errors,
+                &self.deferred_event_overflow_policy,
+                &self.deferred_event_overflow_count,
+                &self.last_termination,
+                event,
+            );
+            return Ok(());
+        }
+
+        match self.event_tx.try_send_owned(event) {
+            Ok(()) => Ok(()),
+            Err(crossbeam_channel::TrySendError::Full(event)) => {
+                push_deferred_event(
+                    &self.deferred_events,
+                    &self.pending_errors,
+                    &self.deferred_event_overflow_policy,
+                    &self.deferred_event_overflow_count,
+                    &self.last_termination,
+                    event,
+                );
+                Ok(())
+            }
+            Err(crossbeam_channel::TrySendError::Disconnected(event)) => {
+                Err(crossbeam_channel::TrySendError::Disconnected(event))
+            }
+        }
+    }
 }
 
-#[allow(clippy::too_many_arguments)]
 fn run_effect_task<E, X>(
     effect: X,
     lease: Option<TaskLease>,
-    event_tx: &EventSender<E>,
-    effect_handler: &EffectHandlerFn<E, X>,
-    runtime: &crate::runtime::Runtime,
-    resources: &Rc<ResourceMap>,
-    activity: &Activity,
-    active_tasks: &ActiveTasks,
-    untracked_tasks: &UntrackedTasks,
-    deferred_events: &DeferredEvents<E>,
-    pending_errors: &PendingErrors,
-    closed: &ClosedFlag,
-    progress_epoch: &ProgressEpoch,
-    last_termination: &LastTermination,
+    router: &CommandRouter<E, X>,
     queue: &mut VecDeque<Command<E, X>>,
 ) -> Result<Option<SpawnedTask>, ShellError>
 where
     E: 'static,
     X: 'static,
 {
-    let ctx = EffectContext::new(resources.as_ref());
-    let task = effect_handler(effect, &ctx)?;
-    spawn_task(
-        task,
-        lease,
-        event_tx,
-        effect_handler,
-        runtime,
-        resources,
-        activity,
-        active_tasks,
-        untracked_tasks,
-        deferred_events,
-        pending_errors,
-        closed,
-        progress_epoch,
-        last_termination,
-        queue,
-    )
+    let ctx = EffectContext::new(router.resources.as_ref());
+    let task = (router.effect_handler)(effect, &ctx)?;
+    spawn_task(task, lease, router, queue)
 }
 
 fn promote_next_write(
@@ -1783,22 +2080,10 @@ fn build_process_terminal_update(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 fn route_subscription_update<E, X>(
     mapper: &Rc<RefCell<Box<dyn ErasedSubscriptionMapper<E, X>>>>,
     update: Box<dyn std::any::Any>,
-    event_tx: &EventSender<E>,
-    effect_handler: &EffectHandlerFn<E, X>,
-    runtime: &crate::runtime::Runtime,
-    resources: &Rc<ResourceMap>,
-    activity: &Activity,
-    active_tasks: &ActiveTasks,
-    untracked_tasks: &UntrackedTasks,
-    deferred_events: &DeferredEvents<E>,
-    pending_errors: &PendingErrors,
-    closed: &ClosedFlag,
-    progress_epoch: &ProgressEpoch,
-    last_termination: &LastTermination,
+    router: &CommandRouter<E, X>,
 ) where
     E: 'static,
     X: 'static,
@@ -1807,21 +2092,7 @@ fn route_subscription_update<E, X>(
         return;
     };
 
-    route_spawned_command(
-        command,
-        event_tx,
-        effect_handler,
-        runtime,
-        resources,
-        activity,
-        active_tasks,
-        untracked_tasks,
-        deferred_events,
-        pending_errors,
-        closed,
-        progress_epoch,
-        last_termination,
-    );
+    router.route_spawned_command(command);
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1833,41 +2104,23 @@ fn spawn_subscription_runtime_task<E, X>(
     driver_id: TypeId,
     driver_name: &'static str,
     spec: SubscriptionSpec,
-    event_tx: &EventSender<E>,
-    effect_handler: &EffectHandlerFn<E, X>,
-    runtime: &crate::runtime::Runtime,
-    resources: &Rc<ResourceMap>,
-    activity: &Activity,
-    active_tasks: &ActiveTasks,
+    router: &CommandRouter<E, X>,
     active_subscriptions: &ActiveSubscriptions<E, X>,
-    untracked_tasks: &UntrackedTasks,
-    deferred_events: &DeferredEvents<E>,
-    pending_errors: &PendingErrors,
-    closed: &ClosedFlag,
-    progress_epoch: &ProgressEpoch,
-    last_termination: &LastTermination,
 ) -> TaskHandle
 where
     E: 'static,
     X: 'static,
 {
-    let runtime = runtime.clone();
-    let event_tx = event_tx.clone();
-    let effect_handler = Rc::clone(effect_handler);
-    let resources = Rc::clone(resources);
-    let activity = activity.clone();
-    let active_tasks = Rc::clone(active_tasks);
+    let runtime = router.runtime.clone();
     let active_subscriptions = Rc::clone(active_subscriptions);
-    let untracked_tasks = Rc::clone(untracked_tasks);
-    let deferred_events = Rc::clone(deferred_events);
-    let pending_errors = Rc::clone(pending_errors);
-    let closed = Rc::clone(closed);
-    let progress_epoch = Rc::clone(progress_epoch);
-    let last_termination = Rc::clone(last_termination);
+    let router_for_task = (*router).clone();
+    let pending_errors = Rc::clone(&router.pending_errors);
+    let closed = Rc::clone(&router.closed);
+    let last_termination = Rc::clone(&router.last_termination);
     let mapper_for_task = Rc::clone(&mapper);
-    activity.inc();
+    router.activity.inc();
     let lifecycle_guard = SubscriptionLifecycleGuard::new(
-        activity.clone(),
+        router.activity.clone(),
         Rc::clone(&active_subscriptions),
         Rc::clone(&last_termination),
         key.clone(),
@@ -1878,7 +2131,6 @@ where
         let _ = cancel_rx.await;
     });
 
-    let runtime_for_task = runtime.clone();
     let handle = runtime.spawn(async move {
         let _lifecycle_guard = lifecycle_guard;
         let Some(mut stream) = subscription_drivers.subscribe(driver_id, spec) else {
@@ -1916,22 +2168,7 @@ where
                 },
             );
 
-            route_subscription_update(
-                &mapper_for_task,
-                update,
-                &event_tx,
-                &effect_handler,
-                &runtime_for_task,
-                &resources,
-                &activity,
-                &active_tasks,
-                &untracked_tasks,
-                &deferred_events,
-                &pending_errors,
-                &closed,
-                &progress_epoch,
-                &last_termination,
-            );
+            route_subscription_update(&mapper_for_task, update, &router_for_task);
         }
     });
 
@@ -1939,63 +2176,6 @@ where
         handle,
         Some(TaskCancelHandle::Subscription(Some(cancel_tx))),
     )
-}
-
-#[allow(clippy::too_many_arguments)]
-fn route_process_update<E, X>(
-    update: ProcessUpdate,
-    on_update: &mut dyn FnMut(ProcessUpdate) -> Option<Command<E, X>>,
-    active_tasks: &ActiveTasks,
-    lease_id: Option<u64>,
-    token: Option<u64>,
-    event_tx: &EventSender<E>,
-    effect_handler: &EffectHandlerFn<E, X>,
-    runtime: &crate::runtime::Runtime,
-    resources: &Rc<ResourceMap>,
-    activity: &Activity,
-    untracked_tasks: &UntrackedTasks,
-    deferred_events: &DeferredEvents<E>,
-    pending_errors: &PendingErrors,
-    closed: &ClosedFlag,
-    progress_epoch: &ProgressEpoch,
-    last_termination: &LastTermination,
-) where
-    E: 'static,
-    X: 'static,
-{
-    if let ProcessUpdate::Exited(result) = &update {
-        if let (Some(lease_id), Some(token)) = (lease_id, token) {
-            let reason = match result {
-                Ok(_) => ShellTerminationReason::Completed,
-                Err(_) => ShellTerminationReason::Failed,
-            };
-            cleanup_active_process_if_current(
-                active_tasks,
-                last_termination,
-                lease_id,
-                token,
-                reason,
-            );
-        }
-    }
-
-    if let Some(command) = on_update(update) {
-        route_spawned_command(
-            command,
-            event_tx,
-            effect_handler,
-            runtime,
-            resources,
-            activity,
-            active_tasks,
-            untracked_tasks,
-            deferred_events,
-            pending_errors,
-            closed,
-            progress_epoch,
-            last_termination,
-        );
-    }
 }
 
 async fn write_pending_process_bytes(
@@ -2080,51 +2260,33 @@ fn try_kill_process(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 fn spawn_process_runtime_task<E, X>(
     spec: ProcessSpec,
     mut on_update: Box<dyn FnMut(ProcessUpdate) -> Option<Command<E, X>> + 'static>,
     mut child: async_process::Child,
-    control_rx: Option<ProcessControlReceiver>,
-    process_controller: Option<ProcessController>,
+    control: SpawnProcessControl,
     lease_id: Option<u64>,
     owner: Option<TaskLeaseWeak>,
-    event_tx: &EventSender<E>,
-    effect_handler: &EffectHandlerFn<E, X>,
-    runtime: &crate::runtime::Runtime,
-    resources: &Rc<ResourceMap>,
-    activity: &Activity,
-    active_tasks: &ActiveTasks,
-    untracked_tasks: &UntrackedTasks,
-    deferred_events: &DeferredEvents<E>,
-    pending_errors: &PendingErrors,
-    closed: &ClosedFlag,
-    progress_epoch: &ProgressEpoch,
-    last_termination: &LastTermination,
+    router: &CommandRouter<E, X>,
 ) -> SpawnedTask
 where
     E: 'static,
     X: 'static,
 {
-    let runtime = runtime.clone();
-    let event_tx = event_tx.clone();
-    let effect_handler = Rc::clone(effect_handler);
-    let resources = Rc::clone(resources);
-    let activity = activity.clone();
-    let active_tasks = Rc::clone(active_tasks);
-    let untracked_tasks = Rc::clone(untracked_tasks);
-    let deferred_events = Rc::clone(deferred_events);
-    let pending_errors = Rc::clone(pending_errors);
-    let closed = Rc::clone(closed);
-    let progress_epoch = Rc::clone(progress_epoch);
-    let last_termination = Rc::clone(last_termination);
+    let runtime = router.runtime.clone();
+    let activity = router.activity.clone();
+    let active_tasks = Rc::clone(router.tasks.active_tasks());
+    let pending_errors = Rc::clone(&router.pending_errors);
+    let closed = Rc::clone(&router.closed);
+    let router_for_task = router.clone();
     let token = lease_id.map(|_| next_task_token());
     let owner_for_task = owner.clone();
+    let process_supervisor = ProcessSupervisor::new(&router_for_task, lease_id, token);
     activity.inc();
     let lifecycle_guard = TaskLifecycleGuard::new(
         activity.clone(),
         Rc::clone(&active_tasks),
-        Rc::clone(&last_termination),
+        Rc::clone(&router.last_termination),
         lease_id,
         token,
     );
@@ -2149,10 +2311,13 @@ where
         let _ = cancel_rx.await;
     });
 
-    let runtime_for_task = runtime.clone();
+    let SpawnProcessControl {
+        mut control_rx,
+        process_controller,
+    } = control;
+
     let handle = runtime.spawn(async move {
         let _lifecycle_guard = lifecycle_guard;
-        let mut control_rx = control_rx;
         let mut cancel_reason = None;
         let mut grace_timer: Option<LocalBoxFuture<'static, ()>> = None;
         let mut exit_status = None;
@@ -2188,24 +2353,7 @@ where
                     &mut stderr,
                 );
                 if let Some(update) = update {
-                    route_process_update(
-                        update,
-                        &mut on_update,
-                        &active_tasks,
-                        lease_id,
-                        token,
-                        &event_tx,
-                        &effect_handler,
-                        &runtime_for_task,
-                        &resources,
-                        &activity,
-                        &untracked_tasks,
-                        &deferred_events,
-                        &pending_errors,
-                        &closed,
-                        &progress_epoch,
-                        &last_termination,
-                    );
+                    process_supervisor.route_update(update, &mut on_update);
                 }
                 return;
             }
@@ -2320,24 +2468,8 @@ where
                             lease_id,
                             token,
                         ) {
-                            route_process_update(
-                                ProcessUpdate::Stdout(frame),
-                                &mut on_update,
-                                &active_tasks,
-                                lease_id,
-                                token,
-                                &event_tx,
-                                &effect_handler,
-                                &runtime_for_task,
-                                &resources,
-                                &activity,
-                                &untracked_tasks,
-                                &deferred_events,
-                                &pending_errors,
-                                &closed,
-                                &progress_epoch,
-                                &last_termination,
-                            );
+                            process_supervisor
+                                .route_update(ProcessUpdate::Stdout(frame), &mut on_update);
                         }
                     }
                     Ok(None) => {}
@@ -2364,24 +2496,8 @@ where
                             lease_id,
                             token,
                         ) {
-                            route_process_update(
-                                ProcessUpdate::Stderr(frame),
-                                &mut on_update,
-                                &active_tasks,
-                                lease_id,
-                                token,
-                                &event_tx,
-                                &effect_handler,
-                                &runtime_for_task,
-                                &resources,
-                                &activity,
-                                &untracked_tasks,
-                                &deferred_events,
-                                &pending_errors,
-                                &closed,
-                                &progress_epoch,
-                                &last_termination,
-                            );
+                            process_supervisor
+                                .route_update(ProcessUpdate::Stderr(frame), &mut on_update);
                         }
                     }
                     Ok(None) => {}
@@ -2421,24 +2537,28 @@ where
 fn spawn_task<E, X>(
     task: Task<E, X>,
     lease: Option<TaskLease>,
-    event_tx: &EventSender<E>,
-    effect_handler: &EffectHandlerFn<E, X>,
-    runtime: &crate::runtime::Runtime,
-    resources: &Rc<ResourceMap>,
-    activity: &Activity,
-    active_tasks: &ActiveTasks,
-    untracked_tasks: &UntrackedTasks,
-    deferred_events: &DeferredEvents<E>,
-    pending_errors: &PendingErrors,
-    closed: &ClosedFlag,
-    progress_epoch: &ProgressEpoch,
-    last_termination: &LastTermination,
+    router: &CommandRouter<E, X>,
     queue: &mut VecDeque<Command<E, X>>,
 ) -> Result<Option<SpawnedTask>, ShellError>
 where
     E: 'static,
     X: 'static,
 {
+    let event_tx = &router.event_tx;
+    let effect_handler = &router.effect_handler;
+    let runtime = &router.runtime;
+    let resources = &router.resources;
+    let activity = &router.activity;
+    let active_tasks = router.tasks.active_tasks();
+    let untracked_tasks = router.tasks.untracked_tasks();
+    let deferred_events = &router.deferred_events;
+    let pending_errors = &router.pending_errors;
+    let deferred_event_overflow_policy = &router.deferred_event_overflow_policy;
+    let deferred_event_overflow_count = &router.deferred_event_overflow_count;
+    let closed = &router.closed;
+    let progress_epoch = &router.progress_epoch;
+    let last_termination = &router.last_termination;
+
     let lease_id = lease.as_ref().map(TaskLease::id);
     let owner = lease.as_ref().map(TaskLease::downgrade);
     drop(lease);
@@ -2471,6 +2591,8 @@ where
             let untracked_tasks = Rc::clone(untracked_tasks);
             let deferred_events = Rc::clone(deferred_events);
             let pending_errors = Rc::clone(pending_errors);
+            let deferred_event_overflow_policy = Rc::clone(deferred_event_overflow_policy);
+            let deferred_event_overflow_count = Rc::clone(deferred_event_overflow_count);
             let closed = Rc::clone(closed);
             let progress_epoch = Rc::clone(progress_epoch);
             let last_termination = Rc::clone(last_termination);
@@ -2485,7 +2607,25 @@ where
                 token,
             );
 
-            let runtime_for_task = runtime.clone();
+            let router_for_task = CommandRouter {
+                event_tx: event_tx.clone(),
+                effect_handler: Rc::clone(&effect_handler),
+                runtime: runtime.clone(),
+                resources: Rc::clone(&resources),
+                activity: activity.clone(),
+                tasks: TaskRegistry::new(
+                    Rc::clone(&active_tasks),
+                    Rc::clone(&untracked_tasks),
+                    Rc::clone(&last_termination),
+                ),
+                deferred_events: Rc::clone(&deferred_events),
+                pending_errors: Rc::clone(&pending_errors),
+                deferred_event_overflow_policy: Rc::clone(&deferred_event_overflow_policy),
+                deferred_event_overflow_count: Rc::clone(&deferred_event_overflow_count),
+                closed: Rc::clone(&closed),
+                progress_epoch: Rc::clone(&progress_epoch),
+                last_termination: Rc::clone(&last_termination),
+            };
             let handle = runtime.spawn(async move {
                 let _lifecycle_guard = lifecycle_guard;
                 let command = future.await;
@@ -2498,21 +2638,7 @@ where
                     return;
                 }
 
-                route_spawned_command(
-                    command,
-                    &event_tx,
-                    &effect_handler,
-                    &runtime_for_task,
-                    &resources,
-                    &activity,
-                    &active_tasks,
-                    &untracked_tasks,
-                    &deferred_events,
-                    &pending_errors,
-                    &closed,
-                    &progress_epoch,
-                    &last_termination,
-                );
+                router_for_task.route_spawned_command(command);
             });
 
             Ok(Some(SpawnedTask {
@@ -2546,6 +2672,8 @@ where
             let untracked_tasks = Rc::clone(untracked_tasks);
             let deferred_events = Rc::clone(deferred_events);
             let pending_errors = Rc::clone(pending_errors);
+            let deferred_event_overflow_policy = Rc::clone(deferred_event_overflow_policy);
+            let deferred_event_overflow_count = Rc::clone(deferred_event_overflow_count);
             let closed = Rc::clone(closed);
             let progress_epoch = Rc::clone(progress_epoch);
             let last_termination = Rc::clone(last_termination);
@@ -2560,7 +2688,25 @@ where
                 token,
             );
 
-            let runtime_for_task = runtime.clone();
+            let router_for_task = CommandRouter {
+                event_tx: event_tx.clone(),
+                effect_handler: Rc::clone(&effect_handler),
+                runtime: runtime.clone(),
+                resources: Rc::clone(&resources),
+                activity: activity.clone(),
+                tasks: TaskRegistry::new(
+                    Rc::clone(&active_tasks),
+                    Rc::clone(&untracked_tasks),
+                    Rc::clone(&last_termination),
+                ),
+                deferred_events: Rc::clone(&deferred_events),
+                pending_errors: Rc::clone(&pending_errors),
+                deferred_event_overflow_policy: Rc::clone(&deferred_event_overflow_policy),
+                deferred_event_overflow_count: Rc::clone(&deferred_event_overflow_count),
+                closed: Rc::clone(&closed),
+                progress_epoch: Rc::clone(&progress_epoch),
+                last_termination: Rc::clone(&last_termination),
+            };
             let handle = runtime.spawn(async move {
                 let _lifecycle_guard = lifecycle_guard;
                 futures::pin_mut!(stream);
@@ -2587,21 +2733,7 @@ where
                         break;
                     }
 
-                    route_spawned_command(
-                        command,
-                        &event_tx,
-                        &effect_handler,
-                        &runtime_for_task,
-                        &resources,
-                        &activity,
-                        &active_tasks,
-                        &untracked_tasks,
-                        &deferred_events,
-                        &pending_errors,
-                        &closed,
-                        &progress_epoch,
-                        &last_termination,
-                    );
+                    router_for_task.route_spawned_command(command);
 
                     if closed.get() {
                         break;
@@ -2666,26 +2798,13 @@ where
                     (None, None)
                 };
 
-            Ok(Some(spawn_process_runtime_task(
-                spec,
-                on_update,
-                child,
+            let control = SpawnProcessControl {
                 control_rx,
                 process_controller,
-                lease_id,
-                owner,
-                event_tx,
-                effect_handler,
-                runtime,
-                resources,
-                activity,
-                active_tasks,
-                untracked_tasks,
-                deferred_events,
-                pending_errors,
-                closed,
-                progress_epoch,
-                last_termination,
+            };
+
+            Ok(Some(spawn_process_runtime_task(
+                spec, on_update, child, control, lease_id, owner, router,
             )))
         }
         Task::Blocking(task) => {
@@ -2711,6 +2830,8 @@ where
             let untracked_tasks = Rc::clone(untracked_tasks);
             let deferred_events = Rc::clone(deferred_events);
             let pending_errors = Rc::clone(pending_errors);
+            let deferred_event_overflow_policy = Rc::clone(deferred_event_overflow_policy);
+            let deferred_event_overflow_count = Rc::clone(deferred_event_overflow_count);
             let closed = Rc::clone(closed);
             let progress_epoch = Rc::clone(progress_epoch);
             let last_termination = Rc::clone(last_termination);
@@ -2723,7 +2844,25 @@ where
                 None,
             );
 
-            let runtime_for_task = runtime.clone();
+            let router_for_task = CommandRouter {
+                event_tx: event_tx.clone(),
+                effect_handler: Rc::clone(&effect_handler),
+                runtime: runtime.clone(),
+                resources: Rc::clone(&resources),
+                activity: activity.clone(),
+                tasks: TaskRegistry::new(
+                    Rc::clone(&active_tasks),
+                    Rc::clone(&untracked_tasks),
+                    Rc::clone(&last_termination),
+                ),
+                deferred_events: Rc::clone(&deferred_events),
+                pending_errors: Rc::clone(&pending_errors),
+                deferred_event_overflow_policy: Rc::clone(&deferred_event_overflow_policy),
+                deferred_event_overflow_count: Rc::clone(&deferred_event_overflow_count),
+                closed: Rc::clone(&closed),
+                progress_epoch: Rc::clone(&progress_epoch),
+                last_termination: Rc::clone(&last_termination),
+            };
             let handle = runtime.spawn(async move {
                 let _lifecycle_guard = lifecycle_guard;
                 let command = future.await;
@@ -2731,21 +2870,7 @@ where
                     return;
                 }
 
-                route_spawned_command(
-                    command,
-                    &event_tx,
-                    &effect_handler,
-                    &runtime_for_task,
-                    &resources,
-                    &activity,
-                    &active_tasks,
-                    &untracked_tasks,
-                    &deferred_events,
-                    &pending_errors,
-                    &closed,
-                    &progress_epoch,
-                    &last_termination,
-                );
+                router_for_task.route_spawned_command(command);
             });
 
             Ok(Some(SpawnedTask {
@@ -2781,6 +2906,8 @@ where
             let untracked_tasks = Rc::clone(untracked_tasks);
             let deferred_events = Rc::clone(deferred_events);
             let pending_errors = Rc::clone(pending_errors);
+            let deferred_event_overflow_policy = Rc::clone(deferred_event_overflow_policy);
+            let deferred_event_overflow_count = Rc::clone(deferred_event_overflow_count);
             let closed = Rc::clone(closed);
             let progress_epoch = Rc::clone(progress_epoch);
             let last_termination = Rc::clone(last_termination);
@@ -2795,7 +2922,25 @@ where
                 token,
             );
 
-            let runtime_for_task = runtime.clone();
+            let router_for_task = CommandRouter {
+                event_tx: event_tx.clone(),
+                effect_handler: Rc::clone(&effect_handler),
+                runtime: runtime.clone(),
+                resources: Rc::clone(&resources),
+                activity: activity.clone(),
+                tasks: TaskRegistry::new(
+                    Rc::clone(&active_tasks),
+                    Rc::clone(&untracked_tasks),
+                    Rc::clone(&last_termination),
+                ),
+                deferred_events: Rc::clone(&deferred_events),
+                pending_errors: Rc::clone(&pending_errors),
+                deferred_event_overflow_policy: Rc::clone(&deferred_event_overflow_policy),
+                deferred_event_overflow_count: Rc::clone(&deferred_event_overflow_count),
+                closed: Rc::clone(&closed),
+                progress_epoch: Rc::clone(&progress_epoch),
+                last_termination: Rc::clone(&last_termination),
+            };
             let handle = runtime.spawn(async move {
                 let _lifecycle_guard = lifecycle_guard;
                 let command = future.await;
@@ -2812,21 +2957,7 @@ where
                     return;
                 };
 
-                route_spawned_command(
-                    command,
-                    &event_tx,
-                    &effect_handler,
-                    &runtime_for_task,
-                    &resources,
-                    &activity,
-                    &active_tasks,
-                    &untracked_tasks,
-                    &deferred_events,
-                    &pending_errors,
-                    &closed,
-                    &progress_epoch,
-                    &last_termination,
-                );
+                router_for_task.route_spawned_command(command);
             });
 
             Ok(Some(SpawnedTask {
@@ -2851,74 +2982,26 @@ fn cancel_blocking_abortable_task<E, X>(task: &Task<E, X>) -> Result<(), ShellEr
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-fn route_spawned_command<E, X>(
-    command: Command<E, X>,
-    event_tx: &EventSender<E>,
-    effect_handler: &EffectHandlerFn<E, X>,
-    runtime: &crate::runtime::Runtime,
-    resources: &Rc<ResourceMap>,
-    activity: &Activity,
-    active_tasks: &ActiveTasks,
-    untracked_tasks: &UntrackedTasks,
-    deferred_events: &DeferredEvents<E>,
-    pending_errors: &PendingErrors,
-    closed: &ClosedFlag,
-    progress_epoch: &ProgressEpoch,
-    last_termination: &LastTermination,
-) where
+impl<E, X> CommandRouter<E, X>
+where
     E: 'static,
     X: 'static,
 {
-    if closed.get() {
-        return;
-    }
-
-    mark_progress(progress_epoch);
-
-    let mut queue = VecDeque::new();
-    queue.push_back(command);
-
-    match route_command_iterative(
-        &mut queue,
-        event_tx,
-        effect_handler,
-        runtime,
-        resources,
-        activity,
-        active_tasks,
-        untracked_tasks,
-        deferred_events,
-        pending_errors,
-        closed,
-        progress_epoch,
-        last_termination,
-    ) {
-        Ok(()) => {}
-        Err(err) => {
-            pending_errors.borrow_mut().push_back(err);
+    fn route_spawned_command(&self, command: Command<E, X>) {
+        if self.closed.get() {
+            return;
         }
-    }
-}
 
-fn route_event<E>(
-    event_tx: &EventSender<E>,
-    deferred_events: &DeferredEvents<E>,
-    event: E,
-) -> Result<(), crossbeam_channel::TrySendError<E>> {
-    if !deferred_events.borrow().is_empty() {
-        push_deferred_event(deferred_events, event);
-        return Ok(());
-    }
+        mark_progress(&self.progress_epoch);
 
-    match event_tx.try_send_owned(event) {
-        Ok(()) => Ok(()),
-        Err(crossbeam_channel::TrySendError::Full(event)) => {
-            push_deferred_event(deferred_events, event);
-            Ok(())
-        }
-        Err(crossbeam_channel::TrySendError::Disconnected(event)) => {
-            Err(crossbeam_channel::TrySendError::Disconnected(event))
+        let mut queue = VecDeque::new();
+        queue.push_back(command);
+
+        match self.route_command_iterative(&mut queue) {
+            Ok(()) => {}
+            Err(err) => {
+                self.pending_errors.borrow_mut().push_back(err);
+            }
         }
     }
 }

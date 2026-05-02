@@ -277,6 +277,9 @@ where
             .unwrap_or_else(|| Rc::new(|_effect, _ctx: &EffectContext<'_>| EffectRoute::Unhandled));
         let unhandled_effects_policy =
             Rc::new(Cell::new(self.syzygy_config.diagnostics.unhandled_effects));
+        let deferred_event_overflow_policy = Rc::new(Cell::new(
+            self.syzygy_config.diagnostics.deferred_event_overflow,
+        ));
         let unhandled_effects_for_handler = Rc::clone(&unhandled_effects_policy);
 
         let effect_handler: EffectHandlerFn<Event, Effect> =
@@ -307,6 +310,7 @@ where
             self.resources,
             runtime,
             unhandled_effects_policy,
+            deferred_event_overflow_policy,
         );
         Ok(Syzygy::with_config(core, shell, self.syzygy_config))
     }

@@ -207,6 +207,58 @@ fn runner_tester_wait_for_honors_explicit_timeout() {
     assert!(!completed);
 }
 
+#[test]
+fn runner_tester_matches_deferred_command_event_ordering() {
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    enum Event {
+        Start,
+        A,
+        B,
+        External,
+    }
+
+    #[derive(Default, Model)]
+    struct Model {
+        #[model(wrapper = Order)]
+        order: Vec<&'static str>,
+    }
+
+    fn handle_event(event: Event, ctx: &EventContext<Model>) -> Command<Event, ()> {
+        match event {
+            Event::Start => Command::event(Event::A).and_event(Event::B),
+            Event::A => {
+                let order = Order::extract_mut(ctx);
+                order.push("a");
+                Command::none()
+            }
+            Event::B => {
+                let order = Order::extract_mut(ctx);
+                order.push("b");
+                Command::none()
+            }
+            Event::External => {
+                let order = Order::extract_mut(ctx);
+                order.push("x");
+                Command::none()
+            }
+        }
+    }
+
+    let mut tester = Syzygy::builder::<Event, ()>()
+        .model(Model::default())
+        .event_handler(handle_event)
+        .build_tester()
+        .unwrap();
+
+    tester.send(Event::Start);
+    tester.step().unwrap();
+    assert!(tester.state().order.is_empty());
+
+    tester.send(Event::External);
+    tester.step().unwrap();
+    assert_eq!(tester.state().order, ["a", "b", "x"]);
+}
+
 fn capture_process_spec(stdout_limit: usize, stderr_limit: usize) -> ProcessSpec {
     #[cfg(windows)]
     {

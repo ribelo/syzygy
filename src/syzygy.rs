@@ -18,8 +18,21 @@ impl Default for UnhandledEffectPolicy {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DeferredEventOverflowPolicy {
+    Error,
+    DropNewest,
+}
+
+impl Default for DeferredEventOverflowPolicy {
+    fn default() -> Self {
+        Self::Error
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DiagnosticsConfig {
     pub unhandled_effects: UnhandledEffectPolicy,
+    pub deferred_event_overflow: DeferredEventOverflowPolicy,
     pub trace: ShellTraceConfig,
 }
 
@@ -27,6 +40,7 @@ impl Default for DiagnosticsConfig {
     fn default() -> Self {
         Self {
             unhandled_effects: UnhandledEffectPolicy::Error,
+            deferred_event_overflow: DeferredEventOverflowPolicy::Error,
             trace: ShellTraceConfig::default(),
         }
     }
@@ -36,6 +50,12 @@ impl DiagnosticsConfig {
     #[must_use]
     pub fn unhandled_effects(mut self, policy: UnhandledEffectPolicy) -> Self {
         self.unhandled_effects = policy;
+        self
+    }
+
+    #[must_use]
+    pub fn deferred_event_overflow(mut self, policy: DeferredEventOverflowPolicy) -> Self {
+        self.deferred_event_overflow = policy;
         self
     }
 
@@ -79,6 +99,12 @@ impl SyzygyConfig {
         self.diagnostics = self.diagnostics.unhandled_effects(policy);
         self
     }
+
+    #[must_use]
+    pub fn deferred_event_overflow(mut self, policy: DeferredEventOverflowPolicy) -> Self {
+        self.diagnostics = self.diagnostics.deferred_event_overflow(policy);
+        self
+    }
 }
 
 pub struct Syzygy<Event, Effect, Model>
@@ -116,6 +142,7 @@ where
         config: SyzygyConfig,
     ) -> Self {
         shell.set_unhandled_effects_policy(config.diagnostics.unhandled_effects);
+        shell.set_deferred_event_overflow_policy(config.diagnostics.deferred_event_overflow);
         shell.set_trace_config(config.diagnostics.trace);
         Self {
             core,
@@ -235,6 +262,13 @@ where
         self.core.model()
     }
 
+    /// Advanced escape hatch.
+    ///
+    /// Prefer driving state transitions through events (`core().try_send(...)` + `step`/`run`)
+    /// in normal application code. Direct mutable access can bypass handler invariants and
+    /// make traces/snapshots harder to interpret.
+    ///
+    /// Valid use cases: focused tests, migration code, or controlled integration shims.
     pub fn model_mut(&mut self) -> &mut Model {
         self.core.model_mut()
     }
@@ -243,6 +277,11 @@ where
         &self.core
     }
 
+    /// Advanced escape hatch.
+    ///
+    /// Mutating `Core` directly can bypass the usual event-processing boundary. Callers must
+    /// preserve FIFO/event ordering assumptions and avoid mixing direct mutations with in-flight
+    /// shell work in ways that violate app expectations.
     pub fn core_mut(&mut self) -> &mut Core<Event, Effect, Model> {
         &mut self.core
     }
@@ -251,6 +290,12 @@ where
         &self.shell
     }
 
+    /// Advanced escape hatch.
+    ///
+    /// Direct shell mutation can change runtime/diagnostic state outside the `step` loop.
+    /// Prefer `run`, `run_until`, `snapshot`, and trace APIs for normal operation.
+    ///
+    /// Valid use cases: runtime integration boundaries and specialized tests.
     pub fn shell_mut(&mut self) -> &mut Shell<Event, Effect, Model> {
         &mut self.shell
     }
@@ -262,6 +307,8 @@ where
     pub fn set_config(&mut self, config: SyzygyConfig) {
         self.shell
             .set_unhandled_effects_policy(config.diagnostics.unhandled_effects);
+        self.shell
+            .set_deferred_event_overflow_policy(config.diagnostics.deferred_event_overflow);
         self.shell.set_trace_config(config.diagnostics.trace);
         self.config = config;
     }
@@ -300,6 +347,11 @@ where
         Self::fail_if_deadline_elapsed(start, deadline)
     }
 
+    /// Advanced escape hatch.
+    ///
+    /// Splitting transfers orchestration responsibility to the caller. If you drive `Core` and
+    /// `Shell` separately, preserve the usual progression (`process events` -> `dispatch` ->
+    /// `reconcile subscriptions` -> `drain shell`) to avoid semantic drift.
     pub fn split(self) -> (Core<Event, Effect, Model>, Shell<Event, Effect, Model>) {
         (self.core, self.shell)
     }
@@ -319,6 +371,7 @@ where
     }
 
     let mut boot_work = 0usize;
+    let mut deferred_boot_command = None;
     if let Some(boot_command) = shell.take_boot_command_for_model(core.model()) {
         shell.record_trace_event(ShellTraceEvent::BootCommandDispatched);
         let mut non_event_steps = Vec::new();
@@ -326,21 +379,27 @@ where
             match step {
                 CommandStep::Event(event) => {
                     core.enqueue_event(event);
-                    boot_work = 1;
                 }
                 other => non_event_steps.push(other),
             }
         }
 
         if !non_event_steps.is_empty() {
-            shell.dispatch_command(non_event_steps.into_iter().collect::<Command<_, _>>())?;
-            boot_work = 1;
+            deferred_boot_command = Some(non_event_steps.into_iter().collect::<Command<_, _>>());
         }
+
+        boot_work = 1;
     }
+
     let core_work = core.process_events_try_into(|command| {
         shell.record_trace_event(ShellTraceEvent::CoreEventCommandDispatched);
         shell.dispatch_command(command)
     })?;
+
+    if let Some(command) = deferred_boot_command {
+        shell.dispatch_command(command)?;
+    }
+
     shell.record_trace_event(ShellTraceEvent::CoreEventsProcessed { count: core_work });
     let subscription_work = shell.reconcile_subscriptions_for_model(core.model())?;
     let shell_work = shell.drain()?;
@@ -354,6 +413,10 @@ where
     Effect: 'static,
     Model: 'static,
 {
+    /// Advanced reconstruction helper for integration/test code.
+    ///
+    /// The caller is responsible for passing matching `Core`/`Shell` parts that uphold Syzygy's
+    /// boundary assumptions.
     fn from(parts: (Core<Event, Effect, Model>, Shell<Event, Effect, Model>)) -> Self {
         Self::new(parts.0, parts.1)
     }

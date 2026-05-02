@@ -1,5 +1,93 @@
 # QA
 
+## 2026-05-02
+
+Q: How should Syzygy verify public feature/package shapes after boundary repairs?
+
+A: Keep the normal quality gate, and add a dedicated matrix command `./scripts/check-feature-matrix.sh` that checks `--no-default-features`, shell+runtime combinations, and a downstream derive/subscription fixture compile.
+
+Reason: The quality gate validates default behavior, but boundary regressions frequently appear in non-default package shapes and downstream macro consumption.
+
+## 2026-05-02
+
+Q: How should mixed boot commands order event and non-event steps?
+
+A: In the boot step, process boot `Command::event(...)` steps through Core before dispatching boot non-event steps.
+
+Reason: Dispatching boot effects before boot event state updates created surprising startup ordering. This keeps boot deterministic and aligned with the chosen deferred command-event contract while preserving boot-before-external-event behavior.
+
+## 2026-05-02
+
+Q: What should shell "idle" mean for run/drain completion?
+
+A: Treat idle as quiescent: no runtime activity, no routable deferred/queued work, and no pending shell errors. Expose this explicitly via `has_runtime_activity`, `has_routable_work`, `has_pending_errors`, and `is_quiescent`; `is_idle` delegates to `is_quiescent`.
+
+Reason: Activity-only idle checks can report completion while deferred events or pending errors still exist.
+
+## 2026-05-02
+
+Q: How should deferred event backlog overflow behave?
+
+A: Default to `DeferredEventOverflowPolicy::Error` and surface `ShellError::DeferredEventOverflow`. Allow lossy behavior only through explicit opt-in `DeferredEventOverflowPolicy::DropNewest`.
+
+Reason: command-emitted events are part of state progression. Silent drop must not be the default policy.
+
+## 2026-05-02
+
+Q: What happens to model state when shell command dispatch fails?
+
+A: Model mutations from the event handler remain committed. Syzygy does not roll back state on `ShellError`; errors are surfaced for recovery.
+
+Reason: core event handling and model updates occur before shell command routing.
+
+## 2026-05-02
+
+Q: Are shell traces a deterministic replay input?
+
+A: No. `ShellTraceEntry` is diagnostics-only in this epic: ordered, payload-light observability for debugging and regressions, not a replay log contract.
+
+Reason: keep diagnostics useful without implying deterministic reconstruction guarantees. Deterministic replay/time-travel remains separate follow-up work in `syzygy-b7e.3`.
+
+## 2026-05-02
+
+Q: How should mutable core/shell/model access APIs be framed?
+
+A: Keep them as explicit advanced escape hatches for integration/tests, and document invariants callers must preserve. Normal app flow remains event-driven (`try_send` + `step`/`run`) with shell observation via snapshot/trace APIs.
+
+Reason: preserve power-user integration paths without weakening the default boundary contract.
+
+## 2026-05-02
+
+Q: What runtime contract does `TestStore::receive_async` provide?
+
+A: `receive_async` is async-callable convenience for tests already in async contexts, but it is still TestStore-driven effect resolution (internal runtime/block_on path), not caller-runtime orchestration. It intentionally rejects shell-owned process tasks; use `RunnerTester` for shell/runtime lifecycle behavior.
+
+Reason: keep TestStore focused on effect-result/state assertions and avoid implying full runtime/process modeling.
+
+## 2026-05-02
+
+Q: Which public error types should Syzygy expose after boundary cleanup?
+
+A: Keep the public error surface focused on `CoreError` and `ShellError`; remove stale standalone `CommandError` / `EffectError` types that are not owned by any active runtime path.
+
+Reason: fewer error types with clear ownership make boundary contracts easier to understand and maintain.
+
+## 2026-05-02
+
+Q: How should ResourceMap handle duplicate registrations for the same concrete type?
+
+A: Reject accidental duplicates by default (`insert`), and require explicit replacement via `replace`. For multiple resources with the same underlying type, use distinct newtypes.
+
+Reason: silent overwrite hides wiring mistakes and weakens resource ownership clarity.
+
+## 2026-05-02
+
+Q: How should we teach "generic core / specific shell" without adding new framework traits?
+
+A: Prefer docs + runnable examples first. Keep reusable feature cores as plain model/event/effect modules and show explicit parent mapping into app-specific shell behavior.
+
+Reason: reinforces the boundary contract without reintroducing heavyweight abstractions.
+
 ## 2026-04-18
 
 Q: How should Syzygy describe runtime cost and extraction safety guarantees?
@@ -204,9 +292,9 @@ Reason: The explicit extraction boundary is correct, but common wrapper usage sh
 
 Q: How should `#[derive(Model)]` avoid downstream `unexpected_cfgs` noise for subscription impls?
 
-A: Keep the generated `#[cfg(feature = "shell")]` gating for `SubscriptionPart` impls, but annotate those generated impl blocks with `#[allow(unexpected_cfgs)]`.
+A: Do not emit downstream-local `#[cfg(feature = "shell")]` around generated `SubscriptionPart` impls. Keep `SubscriptionPart`/`SubscriptionContext` available in the extraction layer, and gate shell-owned runtime subscription behavior separately.
 
-Reason: Macro expansions land in downstream crates where `feature = "shell"` is not a local feature name, which can trigger noisy warning output under strict check-cfg setups. The allowance is localized to the generated cfg item and keeps warning output clean without changing extraction semantics.
+Reason: Downstream `cfg(feature = "shell")` is evaluated against the downstream crate, not Syzygy's dependency feature graph, so it can silently remove required impls. Making extraction traits always available preserves derive correctness and avoids both warning-noise and missing-impl bugs.
 
 ## 2026-03-09
 

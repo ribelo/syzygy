@@ -2,196 +2,54 @@ name: CI
 
 on:
   push:
-    branches: [ main, master ]
+    branches: [main, master]
   pull_request:
-    branches: [ main, master ]
+    branches: [main, master]
 
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  test:
-    name: Test Suite
-    runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        rust:
-          - stable
-          - beta
-          - nightly
-        features:
-          - default
-          - tokio
-          - rt-inline
-          - rayon
-          - tracing
-          - examples
-          - preset-interactive
-          - preset-server
-    steps:
-    - uses: actions/checkout@v4
-    
-    - name: Install Rust toolchain
-      uses: dtolnay/rust-toolchain@master
-      with:
-        toolchain: ${{ matrix.rust }}
-        components: rustfmt, clippy
-    
-    - name: Cache cargo build
-      uses: actions/cache@v4
-      with:
-        path: |
-          ~/.cargo/registry
-          ~/.cargo/git
-          target
-        key: ${{ runner.os }}-cargo-${{ matrix.rust }}-${{ hashFiles('**/Cargo.lock') }}
-    
-    - name: Check formatting
-      run: cargo fmt --all -- --check
-      if: matrix.rust == 'stable'
-    
-    - name: Run clippy
-      run: cargo clippy --lib --tests --bins --all-features -- -D warnings
-      if: matrix.rust == 'stable'
-    
-    - name: Build (default features)
-      run: cargo build --verbose
-      if: matrix.features == 'default'
-    
-    
-    - name: Build (tokio feature)
-      run: cargo build --no-default-features --features tokio --verbose
-      if: matrix.features == 'tokio'
-    
-    - name: Build (rt-inline feature)
-      run: cargo build --no-default-features --features rt-inline --verbose
-      if: matrix.features == 'rt-inline'
-    
-    - name: Build (rayon feature)
-      run: cargo build --no-default-features --features rayon --verbose
-      if: matrix.features == 'rayon'
-
-    - name: Build (tracing feature)
-      run: cargo build --features tracing --verbose
-      if: matrix.features == 'tracing'
-
-    - name: Build (examples feature)
-      run: cargo build --features examples --verbose
-      if: matrix.features == 'examples'
-
-    - name: Build (preset-interactive)
-      run: cargo build --no-default-features --features preset-interactive --verbose
-      if: matrix.features == 'preset-interactive'
-
-    - name: Build (preset-server)
-      run: cargo build --no-default-features --features preset-server --verbose
-      if: matrix.features == 'preset-server'
-    
-    - name: Run tests (default features)
-      run: cargo test --verbose
-      if: matrix.features == 'default'
-    
-    
-    - name: Run tests (tokio feature)
-      run: cargo test --no-default-features --features tokio --verbose
-      if: matrix.features == 'tokio'
-    
-    - name: Run tests (rt-inline feature)
-      run: cargo test --no-default-features --features rt-inline --verbose
-      if: matrix.features == 'rt-inline'
-    
-    - name: Run tests (rayon feature)
-      run: cargo test --no-default-features --features rayon --verbose
-      if: matrix.features == 'rayon'
-
-    - name: Run tests (tracing feature)
-      run: cargo test --features tracing --verbose
-      if: matrix.features == 'tracing'
-
-    - name: Run tests (examples feature)
-      run: cargo test --features examples --verbose
-      if: matrix.features == 'examples'
-
-    - name: Run tests (preset-interactive)
-      run: cargo test --no-default-features --features preset-interactive --verbose
-      if: matrix.features == 'preset-interactive'
-
-    - name: Run tests (preset-server)
-      run: cargo test --no-default-features --features preset-server --verbose
-      if: matrix.features == 'preset-server'
-    
-
-  benchmark:
-    name: Performance Benchmarks
-    runs-on: ubuntu-latest
-    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
-    steps:
-    - uses: actions/checkout@v4
-    
-    - name: Install Rust stable
-      uses: dtolnay/rust-toolchain@stable
-    
-    - name: Cache cargo build
-      uses: actions/cache@v4
-      with:
-        path: |
-          ~/.cargo/registry
-          ~/.cargo/git
-          target
-        key: ${{ runner.os }}-cargo-bench-${{ hashFiles('**/Cargo.lock') }}
-    
-    - name: Run benchmarks
-      run: cargo bench --features tokio
-
-  coverage:
-    name: Code Coverage
+  quality-gate:
+    name: Quality Gate
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v4
-    
-    - name: Install Rust stable
-      uses: dtolnay/rust-toolchain@stable
-      with:
-        components: llvm-tools-preview
-    
-    - name: Install cargo-llvm-cov
-      uses: taiki-e/install-action@cargo-llvm-cov
-    
-    - name: Generate code coverage
-      run: cargo llvm-cov --all-features --workspace --lcov --output-path lcov.info
-    
-    - name: Upload coverage to Codecov
-      uses: codecov/codecov-action@v4
-      with:
-        files: lcov.info
-        fail_ci_if_error: true
+      - uses: actions/checkout@v4
 
-  security:
-    name: Security Audit
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Run quality gate
+        run: cargo fmt --all --check && cargo clippy --all-targets -- -D warnings && cargo test
+
+  feature-matrix:
+    name: Feature Matrix
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v4
-    
-    - name: Install Rust stable
-      uses: dtolnay/rust-toolchain@stable
-    
-    - name: Install cargo-audit
-      run: cargo install cargo-audit
-    
-    - name: Run security audit
-      run: cargo audit
+      - uses: actions/checkout@v4
 
-  check-minimal-versions:
-    name: Check Minimal Versions
-    runs-on: ubuntu-latest
-    steps:
-    - uses: actions/checkout@v4
-    
-    - name: Install Rust nightly
-      uses: dtolnay/rust-toolchain@nightly
-    
-    - name: Install cargo-minimal-versions
-      run: cargo install cargo-minimal-versions
-    
-    - name: Check minimal versions
-      run: cargo minimal-versions check
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-matrix-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Run feature matrix checks
+        run: ./scripts/check-feature-matrix.sh

@@ -261,11 +261,16 @@ impl AbortSlot {
     }
 }
 
-/// One atomic operation in the Core→Shell pipeline.
+/// One atomic operation in Syzygy's runtime command vocabulary.
 ///
-/// This is what actually happens when your event handler returns a Command.
-/// Events go back to Core for immediate processing. Effects get queued for
-/// async execution.
+/// This is what actually happens when your event handler returns a `Command`.
+/// It is intentionally runtime-facing (Core + Shell orchestration), not a
+/// purely abstract event/effect container.
+///
+/// - `Event` and `Effect` steps encode boundary-safe app intent.
+/// - `Abortable` / `Cancel` steps encode lease-owned shell cancellation.
+/// - `ProcessWrite` / `ProcessCloseStdin` steps encode explicit shell-owned
+///   interactive process capabilities (no raw process handles in model state).
 #[derive(Clone)]
 pub enum CommandStep<Event, Effect> {
     Event(Event),
@@ -411,12 +416,12 @@ impl<Event, Effect> Command<Event, Effect> {
         Self { outputs }
     }
 
-    /// Creates a command that immediately triggers another event.
+    /// Creates a command step that emits another event back into Core.
     ///
-    /// The event gets processed synchronously in the same tick. No async
-    /// boundary, no delay, and no chance for external interference between
-    /// the chained events. Use this for breaking complex flows into smaller,
-    /// testable pieces.
+    /// Runtime processing is step-based: emitted events are queued and handled
+    /// on the next Core drain cycle, not inline in the current handler call.
+    /// Use this for explicit follow-up transitions while keeping event flow
+    /// deterministic and observable.
     pub fn event(event: impl Into<Event>) -> Self {
         Self::from_step(CommandStep::Event(event.into()))
     }
@@ -445,7 +450,10 @@ impl<Event, Effect> Command<Event, Effect> {
         })
     }
 
-    /// Creates a command that writes bytes to a running interactive process.
+    /// Creates a command that writes bytes to a shell-owned interactive process.
+    ///
+    /// The process is addressed by `TaskLease`; this does not expose raw child
+    /// handles to application code.
     pub fn process_write(lease: impl Into<TaskLease>, bytes: impl Into<Vec<u8>>) -> Self {
         Self::from_step(CommandStep::ProcessWrite {
             lease: lease.into(),
@@ -453,7 +461,9 @@ impl<Event, Effect> Command<Event, Effect> {
         })
     }
 
-    /// Creates a command that closes stdin for a running interactive process.
+    /// Creates a command that closes stdin for a shell-owned interactive process.
+    ///
+    /// Like [`Self::process_write`], this is lease-addressed capability control.
     pub fn process_close_stdin(lease: impl Into<TaskLease>) -> Self {
         Self::from_step(CommandStep::ProcessCloseStdin {
             lease: lease.into(),
@@ -736,7 +746,7 @@ pub mod builders {
         Command::none()
     }
 
-    /// Emit an immediate event back into Core.
+    /// Emit an event back into Core for the next drain cycle.
     #[inline]
     #[must_use]
     pub fn event<Event, Effect>(event: impl Into<Event>) -> Command<Event, Effect> {
@@ -776,7 +786,7 @@ pub mod builders {
         Command::cancel(lease)
     }
 
-    /// Write bytes to an interactive process owned by a lease.
+    /// Write bytes to a shell-owned interactive process addressed by a lease.
     #[inline]
     #[must_use]
     pub fn process_write<Event, Effect>(
@@ -786,7 +796,7 @@ pub mod builders {
         Command::process_write(lease, bytes)
     }
 
-    /// Close stdin for an interactive process owned by a lease.
+    /// Close stdin for a shell-owned interactive process addressed by a lease.
     #[inline]
     #[must_use]
     pub fn process_close_stdin<Event, Effect>(

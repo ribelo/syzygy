@@ -166,22 +166,23 @@ Note: `--all-features` is currently broken (see known issues). Do not use until 
 ---
 
 ## Project Structure & Module Organization
-`src/lib.rs` exposes the library surface; sibling modules (`core.rs`, `shell.rs`, `builder.rs`, `executor/`, etc.) hold the Elm-inspired runtime pieces. Integration tests sit under `tests/`, Criterion benchmarks under `benches/`, and runnable reference apps in `examples/` (gated by the `examples` feature). High-level design notes live in `docs/`.
+`src/lib.rs` exposes the library surface; sibling modules (`core.rs`, `shell.rs`, `builder.rs`, `executor/`, etc.) hold the Elm-inspired runtime pieces. Integration tests sit under `tests/`, Criterion benchmarks under `benches/`, and runnable reference apps in `examples/`. High-level design notes live in `docs/`.
 
 ## Build, Test, and Development Commands
 - `cargo check` - quick compilation guard while iterating.
 - `cargo build --all-targets` - compiles library, examples, benches, and tests together.
 - `cargo fmt --all --check` - verify formatting without writing.
 - `cargo clippy --all-targets -- -D warnings` - enforce clippy pedantic + custom warn set from `Cargo.toml`.
-- `cargo test` - runs unit and integration suites with default (`shell`, `rt-inline`) features.
-- `cargo run --example basic_counter --features examples` - smoke test the async workflow; swap the example name as needed.
+- `cargo test` - runs unit and integration suites with default (`shell`, `rt-compio`) features.
+- `cargo run --example 01_basic_counter` - smoke test the async workflow; swap the example name as needed.
+- `./scripts/check-feature-matrix.sh` - compile/check supported feature combinations and downstream fixture expectations.
 - **Gate** (run before every commit): `cargo fmt --all --check && cargo clippy --all-targets -- -D warnings && cargo test`
 
 ## Coding Style & Naming Conventions
 Use Rust 2021 defaults: 4-space indentation, `snake_case` for functions and modules, `UpperCamelCase` types, and `SCREAMING_SNAKE_CASE` constants. Avoid `dbg!`, `todo!`, and unchecked `.unwrap()` calls, which clippy flags at `warn`. Prefer explicit clones over implicit copies, keep modules cohesive, and follow the existing `mod.rs` entry-point pattern when splitting subsystems.
 
 ## Testing Guidelines
-Keep scenario-driven checks in `tests/` and target property-heavy logic with `proptest`. Name files after the behaviour under scrutiny (e.g., `tests/core_shutdown.rs`). Run `cargo test` (or add `--all-features` when verifying optional executors) when touching shell behaviour, and document any new required features. Doctest snippets belong in `docs/` only when they compile against the public API.
+Keep scenario-driven checks in `tests/` and target property-heavy logic with `proptest`. Name files after the behaviour under scrutiny (e.g., `tests/core_shutdown.rs`). Run `cargo test` plus `./scripts/check-feature-matrix.sh` when touching feature/runtime boundaries. Doctest snippets belong in `docs/` only when they compile against the public API.
 
 ## Commit Guidelines
 

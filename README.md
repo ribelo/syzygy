@@ -87,6 +87,23 @@ app.step()?;
 | `handle!` | Call handler with context | `handle!(increment, ctx, amount)` |
 | `emit` | Send event to Core | `core.emit(Event::Tick)` |
 
+## Two Orthogonal Boundaries
+
+Syzygy keeps two boundaries explicit:
+
+1. **Functional core / imperative shell**
+   - Core: pure event handlers over model state returning `Command`
+   - Shell: runtime tasks/processes/subscriptions that interpret effects
+
+2. **Generic core / specific shell**
+   - Reusable feature cores define their own `Model/Event/Effect` semantics
+   - Parent applications map child events/effects into app-specific shell behavior
+
+See:
+
+- `03_child_models` for child model/event/effect mapping
+- `15_generic_core_specific_shell` for a reusable feature core interpreted by a specific app shell
+
 ## The `handle!` Macro
 
 The `handle!` macro connects event data to handler functions:
@@ -154,6 +171,7 @@ Boot semantics are explicit:
 - runs exactly once
 - receives `&Model` and returns a normal `Command<Event, Effect>`
 - boot-generated events are enqueued before prequeued external channel events
+- when boot returns mixed steps, boot `Command::event(...)` steps are processed before boot non-event steps are dispatched
 - first-step order is: boot command, core event processing, subscription reconciliation, shell drain
 - steady-state order after boot is: core event processing, subscription reconciliation, shell drain
 
@@ -197,6 +215,8 @@ fn ensure_name(name: &mut MaybeName) {
 | Whole model | none | Needs all fields | `&mut Model` |
 
 **Constraint:** 256 opt-in extracted fields max per model. `#[derive(Model)]` rejects larger extracted sets during macro expansion. Aliasing violations (`&mut T` + `&T` overlap) are enforced at runtime and panic as programmer errors.
+
+`#[derive(Model)]` also generates subscription extractors for opted-in fields without requiring a downstream crate to define its own `shell` feature flag.
 
 ## Effects and Tasks
 
@@ -394,6 +414,8 @@ tester.drain()?;
 | Do subscriptions, shell errors, process tasks, or manual time behave correctly? | `RunnerTester` | `advance_time(...)` + `drain()` + assert runtime outcome |
 | Does full wiring (resources + drivers + config) work end-to-end? | Integration test with `Syzygy::builder()` | Build app like production and drive it with real events |
 
+`TestStore::receive_async(...)` is an async-friendly test API, not caller-runtime integration. It still drives tasks through TestStore's internal runtime path and intentionally rejects process tasks; use `RunnerTester` when shell-owned runtime/process behavior matters.
+
 Live shell diagnostics are available without traces:
 
 ```rust
@@ -404,6 +426,10 @@ assert!(snapshot.last_termination.is_none());
 ```
 
 `snapshot()` reports active tasks/subscriptions, deferred and queued work counts, and the latest explicit termination reason (`Completed`, `Failed`, or `Cancelled(...)` with a cancellation cause).
+
+Liveness predicates are explicit: `shell.is_idle()` means the shell is fully quiescent (no runtime activity, no deferred/queued routable work, and no pending shell errors). For finer checks use `has_runtime_activity()`, `has_routable_work()`, and `has_pending_errors()`.
+
+Deferred-event overflow is explicit and configurable. By default, overflowing the bounded deferred backlog surfaces `ShellError::DeferredEventOverflow`. If you intentionally want lossy behavior, opt in with `DiagnosticsConfig::deferred_event_overflow(DeferredEventOverflowPolicy::DropNewest)`.
 
 Structured traces are opt-in through diagnostics config:
 
@@ -423,6 +449,25 @@ let trace = app.shell().trace_snapshot();
 ```
 
 Trace entries are ordered and payload-light: they capture core/shell phases, command routing, task/subscription lifecycle, process control, and termination outcomes without requiring `Event`/`Effect` `Debug` bounds.
+
+Traces are diagnostics, not a replay contract: use them to inspect behavior and regressions, not to deterministically reconstruct runtime execution.
+
+Replay/time-travel work is tracked separately (see backlog epic `syzygy-b7e.3`).
+
+### Advanced Escape Hatches
+
+`model_mut`, `core_mut`, `shell_mut`, `split`, and `From<(Core, Shell)>` are intentionally available for advanced integration and tests. Normal application code should prefer event-driven progression (`try_send` + `step`/`run`) and shell observation (`snapshot`, `trace_snapshot`, `shutdown`).
+
+If you use escape hatches, preserve the same sequencing invariants Syzygy enforces in `step_core_shell` so runtime semantics do not drift.
+
+### Public Error Surface
+
+Syzygy's public runtime errors are intentionally small:
+
+- `CoreError` for core event-channel ingress/state-machine boundaries
+- `ShellError` (when `shell` feature is enabled) for shell/runtime dispatch, lifecycle, and capability failures
+
+Legacy standalone `CommandError` / `EffectError` types are removed from the public surface.
 
 ## Footguns
 
@@ -456,6 +501,16 @@ fn handle_effect(effect: Effect, ctx: &EffectContext<'_>) -> Task<Event, Effect>
 }
 ```
 
+**Duplicate resource registration is explicit.** `ResourceMap::insert` now rejects duplicate registrations for the same concrete type and points to `ResourceMap::replace` when replacement is intentional. If you need two values of the same underlying type, wrap them in distinct newtypes.
+
+```rust
+#[derive(Clone)]
+struct ReadDb(Arc<Pool>);
+
+#[derive(Clone)]
+struct WriteDb(Arc<Pool>);
+```
+
 **256 field limit.** Exceeding 256 `#[model(...)]` fields fails during macro expansion.
 
 **Abortable work needs an owner.** `AbortSlot` is the convenient state wrapper for the common case, but the underlying owner is still a `TaskLease`. If you schedule an abortable effect and do not retain its owner in model state, the shell will cancel it on the next `step`/`drain` cycle.
@@ -469,6 +524,8 @@ fn handle_effect(effect: Effect, ctx: &EffectContext<'_>) -> Task<Event, Effect>
 **Interactive process cancel is explicit and bounded.** The default process termination policy is `CloseStdinThenKill { grace: 500ms }`. If stdin is not piped, Syzygy skips straight to hard kill.
 
 **Unmanaged subprocesses are outside Syzygy.** If you need shell-owned child-process cancellation on abort/shutdown, use `Task::process` or `Task::process_interactive` instead of spawning a child manually inside `Task::once` or `Task::blocking`.
+
+**Shell dispatch errors do not roll back committed model changes.** Event handlers run and mutate model state before command routing reaches the shell. If shell dispatch fails (for example `UnhandledEffect` or invalid process control), the state mutation from that event remains committed; `ShellError` is a recovery signal, not an automatic transaction rollback.
 
 ## Owned Runtime
 
@@ -493,6 +550,12 @@ Quality gate (run before commit):
 cargo fmt --all --check && cargo clippy --all-targets -- -D warnings && cargo test
 ```
 
+Feature matrix check (core-only + runtime combos + downstream derive fixture):
+
+```bash
+./scripts/check-feature-matrix.sh
+```
+
 Run specific example:
 
 ```bash
@@ -515,6 +578,9 @@ cargo run --example 10_todo_app
 | `10_todo_app` | Full application |
 | `11_process_tasks` | `Task::process_interactive`, `AbortSlot`, runtime injection |
 | `12_subscriptions` | Pure subscription handler, `Subscription::every`, `SubscriptionDriver::poll`, custom drivers |
+| `13_perf_core` | Core-step performance baseline |
+| `14_perf_async_effects` | Async effect throughput baseline |
+| `15_generic_core_specific_shell` | Reusable feature core mapped into app-specific shell behavior |
 
 ## License
 

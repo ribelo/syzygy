@@ -85,8 +85,6 @@ fn expand_model(input: DeriveInput) -> syn::Result<TokenStream2> {
                         }
                     }
 
-                    #[allow(unexpected_cfgs)]
-                    #[cfg(feature = "shell")]
                     impl #impl_generics syzygy::extract::SubscriptionPart<#model_ident #ty_generics> for #field_ty #where_clause {
                         #[track_caller]
                         fn extract(ctx: &syzygy::extract::SubscriptionContext<#model_ident #ty_generics>) -> &Self {
@@ -214,8 +212,6 @@ fn expand_model(input: DeriveInput) -> syn::Result<TokenStream2> {
                         }
                     }
 
-                    #[allow(unexpected_cfgs)]
-                    #[cfg(feature = "shell")]
                     impl #impl_generics syzygy::extract::SubscriptionPart<#model_ident #ty_generics> for #wrapper_ident #ty_generics #where_clause {
                         #[track_caller]
                         fn extract(ctx: &syzygy::extract::SubscriptionContext<#model_ident #ty_generics>) -> &Self {
@@ -415,4 +411,25 @@ fn is_std_option_path(path: &syn::Path) -> bool {
     (first.ident == "std" || first.ident == "core")
         && second.ident == "option"
         && third.ident == "Option"
+}
+
+#[cfg(test)]
+mod tests {
+    use super::expand_model;
+
+    #[test]
+    fn generated_subscription_part_impls_are_not_gated_by_downstream_shell_cfg() {
+        let input: syn::DeriveInput = syn::parse_quote! {
+            struct AppModel {
+                #[model(wrapper = Counter)]
+                counter: i32,
+            }
+        };
+
+        let expanded = expand_model(input).expect("derive should expand");
+        let expanded_text = expanded.to_string();
+
+        assert!(expanded_text.contains("SubscriptionPart"));
+        assert!(!expanded_text.contains("cfg ( feature = \"shell\" )"));
+    }
 }

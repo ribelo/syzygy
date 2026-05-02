@@ -7,3 +7,9 @@ fn core_and_shell_model_types_must_match() {
     cases.compile_fail("tests/ui/model_legacy_extract.rs");
     cases.compile_fail("tests/ui/model_repr_packed.rs");
 }
+
+#[test]
+fn derive_model_subscription_parts_compile_in_downstream_crate() {
+    let cases = trybuild::TestCases::new();
+    cases.pass("tests/ui/subscription_part_downstream.rs");
+}
