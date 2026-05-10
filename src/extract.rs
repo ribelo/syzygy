@@ -576,6 +576,16 @@ where
     }
 }
 
+impl<E, X, M, F> EventHandler<E, X, (), M, EventNP<()>> for F
+where
+    F: Fn() -> Command<E, X> + 'static,
+{
+    #[track_caller]
+    fn handle(&self, _payload: (), _ctx: &EventContext<M>) -> Command<E, X> {
+        (self)()
+    }
+}
+
 #[doc(hidden)]
 pub struct Owned<T>(::core::marker::PhantomData<fn() -> T>);
 
@@ -1005,6 +1015,22 @@ mod tests {
         };
         let ctx = EventContext::new(&mut model);
         let _cmd = pure.handle((), &ctx);
+    }
+
+    #[test]
+    fn event_no_payload_handler_can_omit_unit_parameter() {
+        fn pure() -> Command<Event, Effect> {
+            Command::event(Event::Saved)
+        }
+
+        let mut model = AppModel {
+            counter: 0,
+            name: String::new(),
+        };
+        let ctx = EventContext::new(&mut model);
+        let cmd = pure.handle((), &ctx);
+
+        assert_eq!(cmd.into_iter().count(), 1);
     }
 
     #[test]

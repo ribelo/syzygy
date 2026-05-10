@@ -39,7 +39,7 @@ enum ChildEffect {
 /// `Command::and` allows merging two distinct commands into one. This is
 /// useful when you receive a command from a helper function and want to
 /// append more steps.
-fn start_sequence(_: ()) -> Command<Event, Effect> {
+fn start_sequence() -> Command<Event, Effect> {
     let cmd1 = Command::event(Event::LogA).and_effect(Effect::TriggerA);
     let cmd2 = Command::event(Event::LogB).and_effect(Effect::TriggerB);
 
@@ -62,14 +62,14 @@ fn create_generic_command() -> Command<ChildEvent, ChildEffect> {
     Command::event(ChildEvent::DidThing).and_effect(ChildEffect::Alert)
 }
 
-fn log_a(_: (), log: &mut Log) -> Command<Event, Effect> {
+fn log_a(log: &mut Log) -> Command<Event, Effect> {
     log.push("A".into());
     // ## Why `Command::none()`?
     // Represents a command that does nothing.
     Command::none()
 }
 
-fn log_b(_: (), log: &mut Log) -> Command<Event, Effect> {
+fn log_b(log: &mut Log) -> Command<Event, Effect> {
     log.push("B".into());
     Command::none()
 }

@@ -18,7 +18,6 @@ enum CounterFeatureEffect {
 }
 
 fn counter_feature_increment(
-    _: (),
     feature: &mut CounterFeatureModel,
 ) -> Command<CounterFeatureEvent, CounterFeatureEffect> {
     feature.count += 1;

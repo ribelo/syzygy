@@ -18,7 +18,7 @@ enum AppEffect {
     CheckServices,
 }
 
-fn start(_: ()) -> Command<AppEvent, AppEffect> {
+fn start() -> Command<AppEvent, AppEffect> {
     Command::effect(AppEffect::CheckServices)
 }
 
@@ -63,12 +63,11 @@ impl DatabasePool {
     }
 }
 
-/// ## Why request resources in the handler signature?
+/// ## Why keep resource work separate?
 ///
-/// Effect handlers automatically inject any requested types that are registered
-/// in the `ResourceMap`. Notice `_: ()`: we declare a blank payload because
-/// this effect has no data payload, followed by the resources we want.
-fn check_services(_payload: (), url: ServerUrl, pool: DatabasePool) -> Task<AppEvent, AppEffect> {
+/// `check_services` only needs the resources themselves. The surrounding effect
+/// handler decides how to extract them from the `EffectContext`.
+fn check_services(url: ServerUrl, pool: DatabasePool) -> Task<AppEvent, AppEffect> {
     // We have full access to injected resources!
     let status_msg = format!(
         "Checked {} with {} connections",
@@ -81,9 +80,11 @@ fn check_services(_payload: (), url: ServerUrl, pool: DatabasePool) -> Task<AppE
 
 fn handle_effect(effect: AppEffect, ctx: &EffectContext<'_>) -> Task<AppEvent, AppEffect> {
     match effect {
-        // `handle!(check_services, ctx)` extracts the resources from the `EffectContext`
-        // and injects them to `check_services`.
-        AppEffect::CheckServices => handle!(check_services, ctx),
+        AppEffect::CheckServices => {
+            let url = ServerUrl::from_context(ctx);
+            let pool = DatabasePool::from_context(ctx);
+            check_services(url, pool)
+        }
     }
 }
 

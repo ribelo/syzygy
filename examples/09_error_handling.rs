@@ -23,12 +23,12 @@ enum Effect {
     PerformRiskyWork,
 }
 
-fn do_risky_work(_: (), status: &mut Status) -> Command<Event, Effect> {
+fn do_risky_work(status: &mut Status) -> Command<Event, Effect> {
     **status = "Working...".into();
     Command::effect(Effect::PerformRiskyWork)
 }
 
-fn work_success(_: (), status: &mut Status) -> Command<Event, Effect> {
+fn work_success(status: &mut Status) -> Command<Event, Effect> {
     **status = "Success!".into();
     Command::none()
 }

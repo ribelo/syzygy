@@ -22,17 +22,17 @@ enum AppEffect {
     SaveToServer(i32),
 }
 
-fn increment(_: (), counter: &mut Counter) -> Command<AppEvent, AppEffect> {
+fn increment(counter: &mut Counter) -> Command<AppEvent, AppEffect> {
     **counter += 1;
     Command::none()
 }
 
-fn save(_: (), counter: &mut Counter, loading: &mut Loading) -> Command<AppEvent, AppEffect> {
+fn save(counter: &mut Counter, loading: &mut Loading) -> Command<AppEvent, AppEffect> {
     **loading = true;
     Command::effect(AppEffect::SaveToServer(**counter))
 }
 
-fn save_completed(_: (), loading: &mut Loading) -> Command<AppEvent, AppEffect> {
+fn save_completed(loading: &mut Loading) -> Command<AppEvent, AppEffect> {
     **loading = false;
     Command::none()
 }

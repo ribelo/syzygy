@@ -78,7 +78,7 @@ fn stop_timer(
     }
 }
 
-fn tick(_: (), ticks: &mut Ticks) -> Command<AppEvent, AppEffect> {
+fn tick(ticks: &mut Ticks) -> Command<AppEvent, AppEffect> {
     **ticks += 1;
     Command::none()
 }

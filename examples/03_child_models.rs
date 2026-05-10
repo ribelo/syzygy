@@ -24,7 +24,7 @@ pub enum CounterEffect {
 }
 
 /// The child operates purely on its own model.
-fn increment(_: (), counter: &mut CounterModel) -> Command<CounterEvent, CounterEffect> {
+fn increment(counter: &mut CounterModel) -> Command<CounterEvent, CounterEffect> {
     counter.count += 1;
     Command::effect(CounterEffect::PlaySound)
 }
