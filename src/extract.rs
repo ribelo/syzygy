@@ -11,7 +11,7 @@ use crate::command::Command;
 #[cfg(feature = "shell")]
 use crate::executor::Task;
 #[cfg(feature = "shell")]
-use crate::resource::{DynamicEnv, Resource, ResourceMap, Selector};
+use crate::resource::{DynamicEnv, EnvNil, Resource, ResourceMap, Selector};
 #[cfg(feature = "shell")]
 use crate::subscription::Subscription;
 
@@ -21,7 +21,7 @@ const EXTRACTION_PROGRAMMER_ERROR_HINT: &str =
 // ── Effect side ─────────────────────────────────────────────────────
 
 #[cfg(feature = "shell")]
-pub struct EffectContext<'a, Env = DynamicEnv> {
+pub struct EffectContext<'a, Env = EnvNil> {
     resources: &'a ResourceMap,
     _env: PhantomData<fn() -> Env>,
 }
@@ -59,6 +59,16 @@ impl<'a, Env> EffectContext<'a, Env> {
     pub fn resource_ref<T: 'static>(&self) -> Option<&T> {
         self.resources.get_ref::<T>()
     }
+
+    #[track_caller]
+    pub fn handle<E, X, H, Marker>(&self, handler: H) -> Task<E, X>
+    where
+        H: EffectHandlerNoPayload<E, X, Marker, Env>,
+        E: 'static,
+        X: 'static,
+    {
+        handler.handle_no_payload(self)
+    }
 }
 
 #[cfg(feature = "shell")]
@@ -71,7 +81,7 @@ pub trait FromEffectContext {
     /// clones on effect dispatch. Use [`EffectContext::resource_ref`] for
     /// explicit borrow-only access.
     #[track_caller]
-    fn from_context(ctx: &EffectContext<'_>) -> Self;
+    fn from_context(ctx: &EffectContext<'_, DynamicEnv>) -> Self;
 }
 
 #[cfg(feature = "shell")]
@@ -87,7 +97,7 @@ fn panic_missing_resource<T: Resource>(caller: &'static std::panic::Location<'st
 #[cfg(feature = "shell")]
 impl<T: Resource> FromEffectContext for T {
     #[track_caller]
-    fn from_context(ctx: &EffectContext<'_>) -> Self {
+    fn from_context(ctx: &EffectContext<'_, DynamicEnv>) -> Self {
         let caller = std::panic::Location::caller();
         match ctx.resources().get::<T>() {
             Some(resource) => resource,
@@ -133,8 +143,13 @@ pub struct NP;
 pub struct TypedResource<T, Index>(PhantomData<fn() -> (T, Index)>);
 
 #[cfg(feature = "shell")]
-pub trait EffectHandler<E: 'static, X: 'static, P, Marker, Env = DynamicEnv>: 'static {
+pub trait EffectHandler<E: 'static, X: 'static, P, Marker, Env = EnvNil>: 'static {
     fn handle(&self, payload: P, ctx: &EffectContext<'_, Env>) -> Task<E, X>;
+}
+
+#[cfg(feature = "shell")]
+pub trait EffectHandlerNoPayload<E: 'static, X: 'static, Marker, Env = EnvNil>: 'static {
+    fn handle_no_payload(&self, ctx: &EffectContext<'_, Env>) -> Task<E, X>;
 }
 
 #[cfg(feature = "shell")]
@@ -157,6 +172,18 @@ where
     X: 'static,
 {
     fn handle(&self, _payload: (), _ctx: &EffectContext<'_, Env>) -> Task<E, X> {
+        (self)()
+    }
+}
+
+#[cfg(feature = "shell")]
+impl<E, X, F, Env> EffectHandlerNoPayload<E, X, NP, Env> for F
+where
+    F: Fn() -> Task<E, X> + 'static,
+    E: 'static,
+    X: 'static,
+{
+    fn handle_no_payload(&self, _ctx: &EffectContext<'_, Env>) -> Task<E, X> {
         (self)()
     }
 }
@@ -188,6 +215,19 @@ where
 }
 
 #[cfg(feature = "shell")]
+impl<E, X, F, Fut, Env> EffectHandlerNoPayload<E, X, (FutureEffect, NP), Env> for F
+where
+    F: Fn() -> Fut + 'static,
+    Fut: Future<Output = Command<E, X>> + 'static,
+    E: 'static,
+    X: 'static,
+{
+    fn handle_no_payload(&self, _ctx: &EffectContext<'_, Env>) -> Task<E, X> {
+        Task::future((self)())
+    }
+}
+
+#[cfg(feature = "shell")]
 impl<E, X, P, F, S, Env> EffectHandler<E, X, P, StreamEffect, Env> for F
 where
     F: Fn(P) -> S + 'static,
@@ -214,18 +254,44 @@ where
 }
 
 #[cfg(feature = "shell")]
+impl<E, X, F, S, Env> EffectHandlerNoPayload<E, X, (StreamEffect, NP), Env> for F
+where
+    F: Fn() -> S + 'static,
+    S: Stream<Item = Command<E, X>> + 'static,
+    E: 'static,
+    X: 'static,
+{
+    fn handle_no_payload(&self, _ctx: &EffectContext<'_, Env>) -> Task<E, X> {
+        Task::stream((self)())
+    }
+}
+
+#[cfg(feature = "shell")]
 macro_rules! impl_effect_handler_task {
     ($($T:ident),+) => {
         #[allow(non_snake_case)]
-        impl<E, X, P, F, $($T),+> EffectHandler<E, X, P, ($($T,)+)> for F
+        impl<E, X, P, F, $($T),+> EffectHandler<E, X, P, ($($T,)+), DynamicEnv> for F
         where
             F: Fn(P, $($T),+) -> Task<E, X> + 'static,
             $($T: FromEffectContext,)+
             E: 'static,
             X: 'static,
         {
-            fn handle(&self, payload: P, ctx: &EffectContext<'_>) -> Task<E, X> {
+            fn handle(&self, payload: P, ctx: &EffectContext<'_, DynamicEnv>) -> Task<E, X> {
                 (self)(payload, $($T::from_context(ctx)),+)
+            }
+        }
+
+        #[allow(non_snake_case)]
+        impl<E, X, F, $($T),+> EffectHandlerNoPayload<E, X, ($($T,)+), DynamicEnv> for F
+        where
+            F: Fn($($T),+) -> Task<E, X> + 'static,
+            $($T: FromEffectContext,)+
+            E: 'static,
+            X: 'static,
+        {
+            fn handle_no_payload(&self, ctx: &EffectContext<'_, DynamicEnv>) -> Task<E, X> {
+                (self)($($T::from_context(ctx)),+)
             }
         }
     }
@@ -235,7 +301,7 @@ macro_rules! impl_effect_handler_task {
 macro_rules! impl_effect_handler_future {
     ($($T:ident),+) => {
         #[allow(non_snake_case)]
-        impl<E, X, P, F, Fut, $($T),+> EffectHandler<E, X, P, (FutureEffect, $($T,)+)> for F
+        impl<E, X, P, F, Fut, $($T),+> EffectHandler<E, X, P, (FutureEffect, $($T,)+), DynamicEnv> for F
         where
             F: Fn(P, $($T),+) -> Fut + 'static,
             Fut: Future<Output = Command<E, X>> + 'static,
@@ -243,8 +309,22 @@ macro_rules! impl_effect_handler_future {
             E: 'static,
             X: 'static,
         {
-            fn handle(&self, payload: P, ctx: &EffectContext<'_>) -> Task<E, X> {
+            fn handle(&self, payload: P, ctx: &EffectContext<'_, DynamicEnv>) -> Task<E, X> {
                 Task::future((self)(payload, $($T::from_context(ctx)),+))
+            }
+        }
+
+        #[allow(non_snake_case)]
+        impl<E, X, F, Fut, $($T),+> EffectHandlerNoPayload<E, X, (FutureEffect, $($T,)+), DynamicEnv> for F
+        where
+            F: Fn($($T),+) -> Fut + 'static,
+            Fut: Future<Output = Command<E, X>> + 'static,
+            $($T: FromEffectContext,)+
+            E: 'static,
+            X: 'static,
+        {
+            fn handle_no_payload(&self, ctx: &EffectContext<'_, DynamicEnv>) -> Task<E, X> {
+                Task::future((self)($($T::from_context(ctx)),+))
             }
         }
     }
@@ -254,7 +334,7 @@ macro_rules! impl_effect_handler_future {
 macro_rules! impl_effect_handler_stream {
     ($($T:ident),+) => {
         #[allow(non_snake_case)]
-        impl<E, X, P, F, S, $($T),+> EffectHandler<E, X, P, (StreamEffect, $($T,)+)> for F
+        impl<E, X, P, F, S, $($T),+> EffectHandler<E, X, P, (StreamEffect, $($T,)+), DynamicEnv> for F
         where
             F: Fn(P, $($T),+) -> S + 'static,
             S: Stream<Item = Command<E, X>> + 'static,
@@ -262,8 +342,22 @@ macro_rules! impl_effect_handler_stream {
             E: 'static,
             X: 'static,
         {
-            fn handle(&self, payload: P, ctx: &EffectContext<'_>) -> Task<E, X> {
+            fn handle(&self, payload: P, ctx: &EffectContext<'_, DynamicEnv>) -> Task<E, X> {
                 Task::stream((self)(payload, $($T::from_context(ctx)),+))
+            }
+        }
+
+        #[allow(non_snake_case)]
+        impl<E, X, F, S, $($T),+> EffectHandlerNoPayload<E, X, (StreamEffect, $($T,)+), DynamicEnv> for F
+        where
+            F: Fn($($T),+) -> S + 'static,
+            S: Stream<Item = Command<E, X>> + 'static,
+            $($T: FromEffectContext,)+
+            E: 'static,
+            X: 'static,
+        {
+            fn handle_no_payload(&self, ctx: &EffectContext<'_, DynamicEnv>) -> Task<E, X> {
+                Task::stream((self)($($T::from_context(ctx)),+))
             }
         }
     }
@@ -283,6 +377,20 @@ macro_rules! impl_typed_effect_handler_task {
         {
             fn handle(&self, payload: P, ctx: &EffectContext<'_, Env>) -> Task<E, X> {
                 (self)(payload, $($T::from_typed_context(ctx)),+)
+            }
+        }
+
+        #[allow(non_snake_case)]
+        impl<E, X, F, Env, $($T, $I),+> EffectHandlerNoPayload<E, X, ($(TypedResource<$T, $I>,)+), Env> for F
+        where
+            F: Fn($($T),+) -> Task<E, X> + 'static,
+            $($T: FromTypedEffectContext<Env, $I>,)+
+            Env: 'static,
+            E: 'static,
+            X: 'static,
+        {
+            fn handle_no_payload(&self, ctx: &EffectContext<'_, Env>) -> Task<E, X> {
+                (self)($($T::from_typed_context(ctx)),+)
             }
         }
     }
@@ -305,6 +413,21 @@ macro_rules! impl_typed_effect_handler_future {
                 Task::future((self)(payload, $($T::from_typed_context(ctx)),+))
             }
         }
+
+        #[allow(non_snake_case)]
+        impl<E, X, F, Fut, Env, $($T, $I),+> EffectHandlerNoPayload<E, X, (FutureEffect, $(TypedResource<$T, $I>,)+), Env> for F
+        where
+            F: Fn($($T),+) -> Fut + 'static,
+            Fut: Future<Output = Command<E, X>> + 'static,
+            $($T: FromTypedEffectContext<Env, $I>,)+
+            Env: 'static,
+            E: 'static,
+            X: 'static,
+        {
+            fn handle_no_payload(&self, ctx: &EffectContext<'_, Env>) -> Task<E, X> {
+                Task::future((self)($($T::from_typed_context(ctx)),+))
+            }
+        }
     }
 }
 
@@ -323,6 +446,21 @@ macro_rules! impl_typed_effect_handler_stream {
         {
             fn handle(&self, payload: P, ctx: &EffectContext<'_, Env>) -> Task<E, X> {
                 Task::stream((self)(payload, $($T::from_typed_context(ctx)),+))
+            }
+        }
+
+        #[allow(non_snake_case)]
+        impl<E, X, F, S, Env, $($T, $I),+> EffectHandlerNoPayload<E, X, (StreamEffect, $(TypedResource<$T, $I>,)+), Env> for F
+        where
+            F: Fn($($T),+) -> S + 'static,
+            S: Stream<Item = Command<E, X>> + 'static,
+            $($T: FromTypedEffectContext<Env, $I>,)+
+            Env: 'static,
+            E: 'static,
+            X: 'static,
+        {
+            fn handle_no_payload(&self, ctx: &EffectContext<'_, Env>) -> Task<E, X> {
+                Task::stream((self)($($T::from_typed_context(ctx)),+))
             }
         }
     }
@@ -1933,9 +2071,10 @@ mod tests {
         let mut resources = ResourceMap::new();
         resources.insert(DbUrl("pg://test".into()));
         let ctx = EffectContext::new(&resources);
-        let handle_effect = |effect: Effect, ctx: &EffectContext<'_>| match effect {
-            Effect::Log(msg) => log.handle(msg, ctx),
-        };
+        let handle_effect =
+            |effect: Effect, ctx: &EffectContext<'_, crate::resource::DynamicEnv>| match effect {
+                Effect::Log(msg) => log.handle(msg, ctx),
+            };
         let _ = save.handle("x".into(), &ctx);
         let _ = handle_effect(Effect::Log("hi".into()), &ctx);
     }
@@ -1963,7 +2102,7 @@ mod tests {
 
     #[test]
     fn effect_stream_handler_infers_stream_marker() {
-        fn watch(_: (), db: DbUrl) -> impl Stream<Item = Command<Event, Effect>> {
+        fn watch(db: DbUrl) -> impl Stream<Item = Command<Event, Effect>> {
             let first = db.as_str().to_string();
             futures::stream::iter([
                 Command::event(Event::Saved),
@@ -1975,7 +2114,7 @@ mod tests {
         resources.insert(DbUrl("pg://test".into()));
         let ctx = EffectContext::new(&resources);
 
-        match watch.handle((), &ctx) {
+        match ctx.handle(watch) {
             Task::Stream(stream) => {
                 let commands = futures::executor::block_on(stream.collect::<Vec<_>>());
                 assert_eq!(commands.len(), 2);
@@ -2263,7 +2402,7 @@ mod tests {
         }
     }
 
-    fn scoped_save(_: (), db_url: ScopedDbUrl) -> Task<ScopedCounterEvent, ScopedCounterEffect> {
+    fn scoped_save(db_url: ScopedDbUrl) -> Task<ScopedCounterEvent, ScopedCounterEffect> {
         assert_eq!(db_url.as_str(), "pg://scope");
         Task::none()
     }
@@ -2363,7 +2502,7 @@ mod tests {
         resources.insert(ScopedDbUrl("pg://scope".to_string()));
         let ctx = EffectContext::new(&resources);
 
-        let _ = scoped_save.handle((), &ctx);
+        let _ = ctx.handle(scoped_save);
     }
 
     #[test]

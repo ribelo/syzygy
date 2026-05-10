@@ -326,6 +326,8 @@ let app = Syzygy::builder::<Event, Effect>()
 
 **"exceeds borrow tracker capacity (256)":** Model has >256 `#[model(...)]` fields. This is rejected during macro expansion. Fix: Split extraction into nested models with `#[model(part)]` or reduce extracted fields.
 
-**"Effect resource ... is not registered":** Effect handler extracted a resource that was not registered. This is a deliberate programmer-error panic with caller location and `.with_resource(...)` hint. Fix: Add `.with_resource()` during build.
+**Effect handler does not compile:** A signature-injected resource is missing from the builder environment. Fix: add `.with_resource(...)` before `.effect_handler(...)`, or wrap same-shaped resources in distinct newtypes.
+
+**"Effect resource ... is not registered":** Dynamic/manual resource extraction requested a resource that was not registered. This is a deliberate programmer-error panic with caller location and `.with_resource(...)` hint. Fix: Add `.with_resource()` during build or prefer signature injection through `handle!(...)` for compile-time checking.
 
 **Channel full:** Bounded channel overflow. Fix: Increase capacity or add backpressure.

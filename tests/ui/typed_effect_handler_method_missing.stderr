@@ -1,5 +1,5 @@
 error[E0277]: the trait bound `fn(DbPool) -> syzygy::executor::Task<Event, Effect> {save}: EffectHandlerNoPayload<_, _, _>` is not satisfied
-  --> tests/ui/typed_effect_resource_missing.rs:31:37
+  --> tests/ui/typed_effect_handler_method_missing.rs:31:37
    |
 31 |             Effect::Save => handle!(save, ctx),
    |                             --------^^^^------

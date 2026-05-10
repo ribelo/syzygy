@@ -482,7 +482,27 @@ fn bad(ctx: &EventContext<Model>) {
 
 **Extraction panics are deliberate programmer errors.** Borrow overlap failures include the caller location and a hint to fix handler extractor overlap.
 
-**Missing effect resources panic deliberately.** If an effect handler extracts an unregistered resource, Syzygy panics with the resource type, caller location, and a `.with_resource(...)` registration hint.
+**Signature-injected effect resources are checked at compile time.** When a builder `.effect_handler(...)` routes through `handle!(...)`, every resource requested by the effect function must have been registered with `.with_resource(...)` before the handler is configured.
+
+```rust
+#[derive(Clone)]
+struct DbPool(Arc<()>);
+
+fn save(db: DbPool) -> Task<Event, Effect> {
+    Task::none()
+}
+
+let app = Syzygy::builder::<Event, Effect>()
+    .model(Model::default())
+    .with_resource(DbPool(Arc::new(())))
+    .event_handler(handle_event)
+    .effect_handler(|effect, ctx| match effect {
+        Effect::Save => handle!(save, ctx),
+    })
+    .build()?;
+```
+
+**Manual effect resource extraction still fails at runtime.** Direct `FromEffectContext::from_context(...)` calls and `TestStore::receive(...)` use the dynamic resource map. Missing resources there panic with the resource type, caller location, and a `.with_resource(...)` registration hint.
 
 **Signature-based resource extraction clones on every effect access.** Expensive resources should be wrapped in `Arc<T>`, or borrowed explicitly with `ctx.resource_ref::<T>()` when you need non-cloning access:
 

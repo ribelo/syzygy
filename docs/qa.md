@@ -327,3 +327,17 @@ Q: How should Syzygy avoid false-positive Option helper generation and shutdown 
 A: Restrict derive-time option-helper detection to known std/core `Option` paths (`Option<T>`, `std::option::Option<T>`, `core::option::Option<T>`), and only emit generic untracked-task shutdown termination records when no specific active-task/subscription shutdown record was emitted earlier in the same shutdown pass.
 
 Reason: Path-suffix matching on `...::Option<T>` is too broad and breaks custom types named `Option`. Separately, generic untracked shutdown records were overwriting more precise `Subscription`/`Process` targets in `last_termination`, making snapshot diagnostics lie about what was actually shut down.
+
+## 2026-05-10
+
+Q: How should Syzygy make shell resources more Effect-like without introducing a Layer abstraction?
+
+A: Track builder resources in a type-level HList and make `.effect_handler(...)` receive a typed `EffectContext`. Resource functions routed through `handle!(...)` compile only when each requested resource type is present in the builder environment. Keep `.with_resource(...)` as the public API; keep the HList proof types internal to the builder/extractor machinery.
+
+Reason: Syzygy needs typed service availability at the shell boundary, not an Effect-TS `Layer` clone. Rust constructors, `Drop`, traits, and explicit `.with_resource(...)` cover resource construction. The HList proof catches missing service wiring at compile time while preserving the existing functional-core/specific-shell boundary.
+
+Q: How should no-payload effect resource handlers be expressed?
+
+A: Let `handle!(handler, ctx)` dispatch through the context for no-payload handlers, so resource-only functions can be written directly as `fn save(db: DbPool) -> Task<_, _>` instead of taking a dummy `(_: ())` payload.
+
+Reason: Dummy unit payloads make the resource API feel worse and create avoidable ceremony. A separate no-payload effect-handler path avoids ambiguity with real payload handlers while keeping the call site unchanged.

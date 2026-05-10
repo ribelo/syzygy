@@ -1,7 +1,7 @@
 #[macro_export]
 macro_rules! handle {
     ($handler:expr, $ctx:expr $(,)?) => {
-        $handler.handle((), $ctx)
+        $ctx.handle($handler)
     };
     ($handler:expr, $ctx:expr, $arg1:expr $(,)?) => {
         $handler.handle($arg1, $ctx)

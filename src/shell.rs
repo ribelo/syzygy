@@ -25,7 +25,7 @@ use crate::process::{
     ProcessError, ProcessFrame, ProcessInput, ProcessOutputDriver, ProcessSpec,
     ProcessTerminationPolicy, ProcessUpdate,
 };
-use crate::resource::ResourceMap;
+use crate::resource::{DynamicEnv, ResourceMap};
 use crate::subscription::{
     ErasedSubscriptionMapper, Subscription, SubscriptionDrivers, SubscriptionEntry,
     SubscriptionKey, SubscriptionSpec,
@@ -33,7 +33,7 @@ use crate::subscription::{
 use crate::syzygy::{DeferredEventOverflowPolicy, UnhandledEffectPolicy};
 
 pub(crate) type EffectHandlerFn<E, X> =
-    Rc<dyn for<'a> Fn(X, &EffectContext<'a>) -> Result<Task<E, X>, ShellError>>;
+    Rc<dyn for<'a> Fn(X, &EffectContext<'a, DynamicEnv>) -> Result<Task<E, X>, ShellError>>;
 pub(crate) type BootHandlerFn<E, X, M> = Box<dyn Fn(&M) -> Command<E, X>>;
 pub(crate) type SubscriptionHandlerFn<E, X, M> =
     Rc<dyn Fn(&crate::extract::SubscriptionContext<M>) -> Subscription<E, X>>;

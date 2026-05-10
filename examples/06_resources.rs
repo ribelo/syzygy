@@ -78,16 +78,6 @@ fn check_services(url: ServerUrl, pool: DatabasePool) -> Task<AppEvent, AppEffec
     Task::send(AppEvent::StatusUpdated(status_msg))
 }
 
-fn handle_effect(effect: AppEffect, ctx: &EffectContext<'_>) -> Task<AppEvent, AppEffect> {
-    match effect {
-        AppEffect::CheckServices => {
-            let url = ServerUrl::from_context(ctx);
-            let pool = DatabasePool::from_context(ctx);
-            check_services(url, pool)
-        }
-    }
-}
-
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // ## Why `.with_resource`?
     // We register our resources during the builder phase.
@@ -96,7 +86,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_resource(ServerUrl("https://api.example.com".into()))
         .with_resource(DatabasePool::new())
         .event_handler(handle_event)
-        .effect_handler(handle_effect)
+        .effect_handler(|effect, ctx| match effect {
+            AppEffect::CheckServices => handle!(check_services, ctx),
+        })
         .build()?;
 
     app.core().emit(AppEvent::Start);

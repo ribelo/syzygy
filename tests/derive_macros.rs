@@ -58,7 +58,7 @@ fn double_borrow(_: (), _first: &mut Counter, _second: &mut Counter) -> Command<
     unreachable!()
 }
 
-fn persist(_: (), db_url: DbUrl, save_completed: SaveCompleted) -> Task<Event, Effect> {
+fn persist(db_url: DbUrl, save_completed: SaveCompleted) -> Task<Event, Effect> {
     assert_eq!(db_url.as_str(), "pg://test");
     assert!(!save_completed.is_done());
     Task::none()
@@ -79,8 +79,8 @@ fn derive_model_works_in_runtime() {
             Event::TriggerSave => trigger_save.handle((), ctx),
             Event::DoubleBorrow => double_borrow.handle((), ctx),
         })
-        .effect_handler(|effect: Effect, ctx: &EffectContext<'_>| match effect {
-            Effect::Save => persist.handle((), ctx),
+        .effect_handler(|effect: Effect, ctx| match effect {
+            Effect::Save => handle!(persist, ctx),
         })
         .build()
         .unwrap();
@@ -115,8 +115,8 @@ fn derive_model_tracks_runtime_borrows() {
             Event::TriggerSave => trigger_save.handle((), ctx),
             Event::DoubleBorrow => double_borrow.handle((), ctx),
         })
-        .effect_handler(|effect: Effect, ctx: &EffectContext<'_>| match effect {
-            Effect::Save => persist.handle((), ctx),
+        .effect_handler(|effect: Effect, ctx| match effect {
+            Effect::Save => handle!(persist, ctx),
         })
         .build()
         .unwrap();

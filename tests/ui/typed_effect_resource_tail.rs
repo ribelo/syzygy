@@ -22,7 +22,7 @@ fn handle_event(event: Event, _ctx: &EventContext<()>) -> Command<Event, Effect>
     }
 }
 
-fn sync(_: (), db: DbPool, http: HttpClient) -> Task<Event, Effect> {
+fn sync(db: DbPool, http: HttpClient) -> Task<Event, Effect> {
     assert_eq!(db.0, "primary");
     assert_eq!(http.0, "api");
     Task::none()
@@ -34,7 +34,7 @@ fn main() {
         .with_resource(HttpClient("api"))
         .with_resource(DbPool("primary"))
         .event_handler(handle_event)
-        .typed_effect_handler(|effect, ctx| match effect {
+        .effect_handler(|effect, ctx| match effect {
             Effect::Sync => handle!(sync, ctx),
         })
         .build()

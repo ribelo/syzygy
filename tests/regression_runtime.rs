@@ -1010,7 +1010,7 @@ fn effect_context_resource_ref_borrows_without_cloning() {
 }
 
 #[test]
-fn typed_effect_handler_injects_registered_resource() {
+fn typed_effect_resources_inject_registered_resource() {
     #[derive(Debug, Default, Model)]
     struct Model {
         #[model(wrapper = Status)]
@@ -1031,7 +1031,7 @@ fn typed_effect_handler_injects_registered_resource() {
     #[derive(Clone)]
     struct Prefix(&'static str);
 
-    fn save(_: (), prefix: Prefix) -> Task<Event, Effect> {
+    fn save(prefix: Prefix) -> Task<Event, Effect> {
         Task::send(Event::Saved(format!("{} saved", prefix.0)))
     }
 
@@ -1049,7 +1049,7 @@ fn typed_effect_handler_injects_registered_resource() {
         .model(Model::default())
         .with_resource(Prefix("typed"))
         .event_handler(handle_event)
-        .typed_effect_handler(|effect, ctx| match effect {
+        .effect_handler(|effect, ctx| match effect {
             Effect::Save => handle!(save, ctx),
         })
         .build()

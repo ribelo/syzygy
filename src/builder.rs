@@ -7,7 +7,7 @@ use crate::core::{Core, EventHandlerFn};
 use crate::error::ShellError;
 use crate::executor::Task;
 use crate::extract::{EffectContext, EventContext, SubscriptionContext};
-use crate::resource::{EnvCons, EnvNil, ResourceMap};
+use crate::resource::{DynamicEnv, EnvCons, EnvNil, ResourceMap};
 use crate::runner_tester::RunnerTester;
 use crate::shell::{BootHandlerFn, EffectHandlerFn, LifecycleHandlers, Shell};
 use crate::subscription::{Subscription, SubscriptionDriver, SubscriptionDrivers};
@@ -42,7 +42,8 @@ impl<E, X> IntoEffectRoute<E, X> for Option<Task<E, X>> {
     }
 }
 
-type RoutedEffectHandlerFn<E, X> = Rc<dyn for<'a> Fn(X, &EffectContext<'a>) -> EffectRoute<E, X>>;
+type RoutedEffectHandlerFn<E, X> =
+    Rc<dyn for<'a> Fn(X, &EffectContext<'a, DynamicEnv>) -> EffectRoute<E, X>>;
 type BuilderBootHandlerFn<E, X, M> = BootHandlerFn<E, X, M>;
 type SubscriptionHandlerFn<E, X, M> = Box<dyn Fn(&SubscriptionContext<M>) -> Subscription<E, X>>;
 
@@ -182,22 +183,6 @@ where
     #[must_use]
     pub fn effect_handler<H, R>(mut self, handler: H) -> Self
     where
-        H: for<'a> Fn(Effect, &EffectContext<'a>) -> R + 'static,
-        R: IntoEffectRoute<Event, Effect> + 'static,
-    {
-        assert!(
-            self.effect_handler.is_none(),
-            "effect handler is already configured; use .chain_effect_handler() to compose handlers"
-        );
-        self.effect_handler = Some(Rc::new(move |effect, ctx| {
-            handler(effect, ctx).into_effect_route()
-        }));
-        self
-    }
-
-    #[must_use]
-    pub fn typed_effect_handler<H, R>(mut self, handler: H) -> Self
-    where
         H: for<'a> Fn(Effect, &EffectContext<'a, Env>) -> R + 'static,
         R: IntoEffectRoute<Event, Effect> + 'static,
     {
@@ -215,12 +200,14 @@ where
     #[must_use]
     pub fn chain_effect_handler<H, R>(mut self, handler: H) -> Self
     where
-        H: for<'a> Fn(Effect, &EffectContext<'a>) -> R + 'static,
+        H: for<'a> Fn(Effect, &EffectContext<'a, Env>) -> R + 'static,
         R: IntoEffectRoute<Event, Effect> + 'static,
         Effect: Clone,
     {
-        let chained: RoutedEffectHandlerFn<Event, Effect> =
-            Rc::new(move |effect, ctx| handler(effect, ctx).into_effect_route());
+        let chained: RoutedEffectHandlerFn<Event, Effect> = Rc::new(move |effect, ctx| {
+            let typed_ctx = EffectContext::<Env>::typed(ctx.resources());
+            handler(effect, &typed_ctx).into_effect_route()
+        });
         self.effect_handler = Some(match self.effect_handler.take() {
             Some(existing) => {
                 let chained = Rc::clone(&chained);
@@ -315,9 +302,9 @@ where
             self.event_channel_capacity,
         );
 
-        let routed_effect_handler = self
-            .effect_handler
-            .unwrap_or_else(|| Rc::new(|_effect, _ctx: &EffectContext<'_>| EffectRoute::Unhandled));
+        let routed_effect_handler = self.effect_handler.unwrap_or_else(|| {
+            Rc::new(|_effect, _ctx: &EffectContext<'_, DynamicEnv>| EffectRoute::Unhandled)
+        });
         let unhandled_effects_policy =
             Rc::new(Cell::new(self.syzygy_config.diagnostics.unhandled_effects));
         let deferred_event_overflow_policy = Rc::new(Cell::new(

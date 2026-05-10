@@ -18,6 +18,7 @@ use crate::executor::{BlockingCancelToken, Task};
 #[cfg(feature = "shell")]
 use crate::extract::EffectContext;
 use crate::extract::EventContext;
+use crate::resource::DynamicEnv;
 use crate::resource::ResourceMap;
 
 /// Default upper bound for event handler steps executed by [`TestStore::send`].
@@ -323,7 +324,7 @@ where
     #[cfg(feature = "shell")]
     pub fn receive<H>(&mut self, effect_handler: H)
     where
-        H: Fn(X, &EffectContext<'_>) -> Task<E, X>,
+        H: Fn(X, &EffectContext<'_, DynamicEnv>) -> Task<E, X>,
     {
         for effect in self.take_effects() {
             let ctx = EffectContext::new(&self.resources);
@@ -346,7 +347,7 @@ where
     #[cfg(feature = "shell")]
     pub async fn receive_async<H>(&mut self, effect_handler: H)
     where
-        H: Fn(X, &EffectContext<'_>) -> Task<E, X>,
+        H: Fn(X, &EffectContext<'_, DynamicEnv>) -> Task<E, X>,
     {
         // Preserve the async API for callers already running inside an async test context.
         futures::future::ready(()).await;

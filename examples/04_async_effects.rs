@@ -65,7 +65,7 @@ fn handle_event(event: AppEvent, ctx: &EventContext<AppModel>) -> Command<AppEve
 ///
 /// Handlers must return a `Command` containing the events to trigger after the
 /// async operation completes.
-async fn make_http_request((): ()) -> Command<AppEvent, AppEffect> {
+async fn make_http_request() -> Command<AppEvent, AppEffect> {
     // Simulate a network delay using the configured async runtime
     syzygy::runtime::sleep(Duration::from_millis(10)).await;
 
