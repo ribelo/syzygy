@@ -13,3 +13,11 @@ fn derive_model_subscription_parts_compile_in_downstream_crate() {
     let cases = trybuild::TestCases::new();
     cases.pass("tests/ui/subscription_part_downstream.rs");
 }
+
+#[test]
+fn typed_effect_resources_are_checked_at_compile_time() {
+    let cases = trybuild::TestCases::new();
+    cases.pass("tests/ui/typed_effect_resource_present.rs");
+    cases.pass("tests/ui/typed_effect_resource_tail.rs");
+    cases.compile_fail("tests/ui/typed_effect_resource_missing.rs");
+}

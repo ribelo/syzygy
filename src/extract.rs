@@ -1,6 +1,8 @@
 use std::cell::Cell;
 #[cfg(feature = "shell")]
 use std::future::Future;
+#[cfg(feature = "shell")]
+use std::marker::PhantomData;
 
 #[cfg(feature = "shell")]
 use futures::Stream;
@@ -9,7 +11,7 @@ use crate::command::Command;
 #[cfg(feature = "shell")]
 use crate::executor::Task;
 #[cfg(feature = "shell")]
-use crate::resource::{Resource, ResourceMap};
+use crate::resource::{DynamicEnv, Resource, ResourceMap, Selector};
 #[cfg(feature = "shell")]
 use crate::subscription::Subscription;
 
@@ -19,15 +21,29 @@ const EXTRACTION_PROGRAMMER_ERROR_HINT: &str =
 // ── Effect side ─────────────────────────────────────────────────────
 
 #[cfg(feature = "shell")]
-pub struct EffectContext<'a> {
+pub struct EffectContext<'a, Env = DynamicEnv> {
     resources: &'a ResourceMap,
+    _env: PhantomData<fn() -> Env>,
 }
 
 #[cfg(feature = "shell")]
-impl<'a> EffectContext<'a> {
+impl<'a> EffectContext<'a, DynamicEnv> {
     #[must_use]
     pub fn new(resources: &'a ResourceMap) -> Self {
-        Self { resources }
+        Self {
+            resources,
+            _env: PhantomData,
+        }
+    }
+}
+
+#[cfg(feature = "shell")]
+impl<'a, Env> EffectContext<'a, Env> {
+    pub(crate) fn typed(resources: &'a ResourceMap) -> Self {
+        Self {
+            resources,
+            _env: PhantomData,
+        }
     }
 
     #[must_use]
@@ -81,6 +97,29 @@ impl<T: Resource> FromEffectContext for T {
 }
 
 #[cfg(feature = "shell")]
+pub trait FromTypedEffectContext<Env, Index> {
+    /// Extracts a compile-time-proven resource from the [`EffectContext`].
+    #[track_caller]
+    fn from_typed_context(ctx: &EffectContext<'_, Env>) -> Self;
+}
+
+#[cfg(feature = "shell")]
+impl<T, Env, Index> FromTypedEffectContext<Env, Index> for T
+where
+    T: Resource,
+    Env: Selector<T, Index>,
+{
+    #[track_caller]
+    fn from_typed_context(ctx: &EffectContext<'_, Env>) -> Self {
+        let caller = std::panic::Location::caller();
+        match ctx.resources().get::<T>() {
+            Some(resource) => resource,
+            None => panic_missing_resource::<T>(caller),
+        }
+    }
+}
+
+#[cfg(feature = "shell")]
 pub struct FutureEffect;
 #[cfg(feature = "shell")]
 pub struct StreamEffect;
@@ -89,83 +128,87 @@ pub struct StreamEffect;
 #[cfg(feature = "shell")]
 pub struct NP;
 
+#[doc(hidden)]
 #[cfg(feature = "shell")]
-pub trait EffectHandler<E: 'static, X: 'static, P, Marker>: 'static {
-    fn handle(&self, payload: P, ctx: &EffectContext<'_>) -> Task<E, X>;
+pub struct TypedResource<T, Index>(PhantomData<fn() -> (T, Index)>);
+
+#[cfg(feature = "shell")]
+pub trait EffectHandler<E: 'static, X: 'static, P, Marker, Env = DynamicEnv>: 'static {
+    fn handle(&self, payload: P, ctx: &EffectContext<'_, Env>) -> Task<E, X>;
 }
 
 #[cfg(feature = "shell")]
-impl<E, X, P, F> EffectHandler<E, X, P, ()> for F
+impl<E, X, P, F, Env> EffectHandler<E, X, P, (), Env> for F
 where
     F: Fn(P) -> Task<E, X> + 'static,
     E: 'static,
     X: 'static,
 {
-    fn handle(&self, payload: P, _ctx: &EffectContext<'_>) -> Task<E, X> {
+    fn handle(&self, payload: P, _ctx: &EffectContext<'_, Env>) -> Task<E, X> {
         (self)(payload)
     }
 }
 
 #[cfg(feature = "shell")]
-impl<E, X, F> EffectHandler<E, X, (), NP> for F
+impl<E, X, F, Env> EffectHandler<E, X, (), NP, Env> for F
 where
     F: Fn() -> Task<E, X> + 'static,
     E: 'static,
     X: 'static,
 {
-    fn handle(&self, _payload: (), _ctx: &EffectContext<'_>) -> Task<E, X> {
+    fn handle(&self, _payload: (), _ctx: &EffectContext<'_, Env>) -> Task<E, X> {
         (self)()
     }
 }
 
 #[cfg(feature = "shell")]
-impl<E, X, P, F, Fut> EffectHandler<E, X, P, FutureEffect> for F
+impl<E, X, P, F, Fut, Env> EffectHandler<E, X, P, FutureEffect, Env> for F
 where
     F: Fn(P) -> Fut + 'static,
     Fut: Future<Output = Command<E, X>> + 'static,
     E: 'static,
     X: 'static,
 {
-    fn handle(&self, payload: P, _ctx: &EffectContext<'_>) -> Task<E, X> {
+    fn handle(&self, payload: P, _ctx: &EffectContext<'_, Env>) -> Task<E, X> {
         Task::future((self)(payload))
     }
 }
 
 #[cfg(feature = "shell")]
-impl<E, X, F, Fut> EffectHandler<E, X, (), (FutureEffect, NP)> for F
+impl<E, X, F, Fut, Env> EffectHandler<E, X, (), (FutureEffect, NP), Env> for F
 where
     F: Fn() -> Fut + 'static,
     Fut: Future<Output = Command<E, X>> + 'static,
     E: 'static,
     X: 'static,
 {
-    fn handle(&self, _payload: (), _ctx: &EffectContext<'_>) -> Task<E, X> {
+    fn handle(&self, _payload: (), _ctx: &EffectContext<'_, Env>) -> Task<E, X> {
         Task::future((self)())
     }
 }
 
 #[cfg(feature = "shell")]
-impl<E, X, P, F, S> EffectHandler<E, X, P, StreamEffect> for F
+impl<E, X, P, F, S, Env> EffectHandler<E, X, P, StreamEffect, Env> for F
 where
     F: Fn(P) -> S + 'static,
     S: Stream<Item = Command<E, X>> + 'static,
     E: 'static,
     X: 'static,
 {
-    fn handle(&self, payload: P, _ctx: &EffectContext<'_>) -> Task<E, X> {
+    fn handle(&self, payload: P, _ctx: &EffectContext<'_, Env>) -> Task<E, X> {
         Task::stream((self)(payload))
     }
 }
 
 #[cfg(feature = "shell")]
-impl<E, X, F, S> EffectHandler<E, X, (), (StreamEffect, NP)> for F
+impl<E, X, F, S, Env> EffectHandler<E, X, (), (StreamEffect, NP), Env> for F
 where
     F: Fn() -> S + 'static,
     S: Stream<Item = Command<E, X>> + 'static,
     E: 'static,
     X: 'static,
 {
-    fn handle(&self, _payload: (), _ctx: &EffectContext<'_>) -> Task<E, X> {
+    fn handle(&self, _payload: (), _ctx: &EffectContext<'_, Env>) -> Task<E, X> {
         Task::stream((self)())
     }
 }
@@ -221,6 +264,65 @@ macro_rules! impl_effect_handler_stream {
         {
             fn handle(&self, payload: P, ctx: &EffectContext<'_>) -> Task<E, X> {
                 Task::stream((self)(payload, $($T::from_context(ctx)),+))
+            }
+        }
+    }
+}
+
+#[cfg(feature = "shell")]
+macro_rules! impl_typed_effect_handler_task {
+    ($($T:ident : $I:ident),+) => {
+        #[allow(non_snake_case)]
+        impl<E, X, P, F, Env, $($T, $I),+> EffectHandler<E, X, P, ($(TypedResource<$T, $I>,)+), Env> for F
+        where
+            F: Fn(P, $($T),+) -> Task<E, X> + 'static,
+            $($T: FromTypedEffectContext<Env, $I>,)+
+            Env: 'static,
+            E: 'static,
+            X: 'static,
+        {
+            fn handle(&self, payload: P, ctx: &EffectContext<'_, Env>) -> Task<E, X> {
+                (self)(payload, $($T::from_typed_context(ctx)),+)
+            }
+        }
+    }
+}
+
+#[cfg(feature = "shell")]
+macro_rules! impl_typed_effect_handler_future {
+    ($($T:ident : $I:ident),+) => {
+        #[allow(non_snake_case)]
+        impl<E, X, P, F, Fut, Env, $($T, $I),+> EffectHandler<E, X, P, (FutureEffect, $(TypedResource<$T, $I>,)+), Env> for F
+        where
+            F: Fn(P, $($T),+) -> Fut + 'static,
+            Fut: Future<Output = Command<E, X>> + 'static,
+            $($T: FromTypedEffectContext<Env, $I>,)+
+            Env: 'static,
+            E: 'static,
+            X: 'static,
+        {
+            fn handle(&self, payload: P, ctx: &EffectContext<'_, Env>) -> Task<E, X> {
+                Task::future((self)(payload, $($T::from_typed_context(ctx)),+))
+            }
+        }
+    }
+}
+
+#[cfg(feature = "shell")]
+macro_rules! impl_typed_effect_handler_stream {
+    ($($T:ident : $I:ident),+) => {
+        #[allow(non_snake_case)]
+        impl<E, X, P, F, S, Env, $($T, $I),+> EffectHandler<E, X, P, (StreamEffect, $(TypedResource<$T, $I>,)+), Env> for F
+        where
+            F: Fn(P, $($T),+) -> S + 'static,
+            S: Stream<Item = Command<E, X>> + 'static,
+            $($T: FromTypedEffectContext<Env, $I>,)+
+            Env: 'static,
+            E: 'static,
+            X: 'static,
+        {
+            fn handle(&self, payload: P, ctx: &EffectContext<'_, Env>) -> Task<E, X> {
+                Task::stream((self)(payload, $($T::from_typed_context(ctx)),+))
             }
         }
     }
@@ -300,6 +402,81 @@ impl_effect_handler_stream!(T1, T2, T3, T4, T5, T6, T7, T8, T9, T10);
 impl_effect_handler_stream!(T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11);
 #[cfg(feature = "shell")]
 impl_effect_handler_stream!(T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12);
+
+#[cfg(feature = "shell")]
+impl_typed_effect_handler_task!(T1: I1);
+#[cfg(feature = "shell")]
+impl_typed_effect_handler_task!(T1: I1, T2: I2);
+#[cfg(feature = "shell")]
+impl_typed_effect_handler_task!(T1: I1, T2: I2, T3: I3);
+#[cfg(feature = "shell")]
+impl_typed_effect_handler_task!(T1: I1, T2: I2, T3: I3, T4: I4);
+#[cfg(feature = "shell")]
+impl_typed_effect_handler_task!(T1: I1, T2: I2, T3: I3, T4: I4, T5: I5);
+#[cfg(feature = "shell")]
+impl_typed_effect_handler_task!(T1: I1, T2: I2, T3: I3, T4: I4, T5: I5, T6: I6);
+#[cfg(feature = "shell")]
+impl_typed_effect_handler_task!(T1: I1, T2: I2, T3: I3, T4: I4, T5: I5, T6: I6, T7: I7);
+#[cfg(feature = "shell")]
+impl_typed_effect_handler_task!(T1: I1, T2: I2, T3: I3, T4: I4, T5: I5, T6: I6, T7: I7, T8: I8);
+#[cfg(feature = "shell")]
+impl_typed_effect_handler_task!(T1: I1, T2: I2, T3: I3, T4: I4, T5: I5, T6: I6, T7: I7, T8: I8, T9: I9);
+#[cfg(feature = "shell")]
+impl_typed_effect_handler_task!(T1: I1, T2: I2, T3: I3, T4: I4, T5: I5, T6: I6, T7: I7, T8: I8, T9: I9, T10: I10);
+#[cfg(feature = "shell")]
+impl_typed_effect_handler_task!(T1: I1, T2: I2, T3: I3, T4: I4, T5: I5, T6: I6, T7: I7, T8: I8, T9: I9, T10: I10, T11: I11);
+#[cfg(feature = "shell")]
+impl_typed_effect_handler_task!(T1: I1, T2: I2, T3: I3, T4: I4, T5: I5, T6: I6, T7: I7, T8: I8, T9: I9, T10: I10, T11: I11, T12: I12);
+
+#[cfg(feature = "shell")]
+impl_typed_effect_handler_future!(T1: I1);
+#[cfg(feature = "shell")]
+impl_typed_effect_handler_future!(T1: I1, T2: I2);
+#[cfg(feature = "shell")]
+impl_typed_effect_handler_future!(T1: I1, T2: I2, T3: I3);
+#[cfg(feature = "shell")]
+impl_typed_effect_handler_future!(T1: I1, T2: I2, T3: I3, T4: I4);
+#[cfg(feature = "shell")]
+impl_typed_effect_handler_future!(T1: I1, T2: I2, T3: I3, T4: I4, T5: I5);
+#[cfg(feature = "shell")]
+impl_typed_effect_handler_future!(T1: I1, T2: I2, T3: I3, T4: I4, T5: I5, T6: I6);
+#[cfg(feature = "shell")]
+impl_typed_effect_handler_future!(T1: I1, T2: I2, T3: I3, T4: I4, T5: I5, T6: I6, T7: I7);
+#[cfg(feature = "shell")]
+impl_typed_effect_handler_future!(T1: I1, T2: I2, T3: I3, T4: I4, T5: I5, T6: I6, T7: I7, T8: I8);
+#[cfg(feature = "shell")]
+impl_typed_effect_handler_future!(T1: I1, T2: I2, T3: I3, T4: I4, T5: I5, T6: I6, T7: I7, T8: I8, T9: I9);
+#[cfg(feature = "shell")]
+impl_typed_effect_handler_future!(T1: I1, T2: I2, T3: I3, T4: I4, T5: I5, T6: I6, T7: I7, T8: I8, T9: I9, T10: I10);
+#[cfg(feature = "shell")]
+impl_typed_effect_handler_future!(T1: I1, T2: I2, T3: I3, T4: I4, T5: I5, T6: I6, T7: I7, T8: I8, T9: I9, T10: I10, T11: I11);
+#[cfg(feature = "shell")]
+impl_typed_effect_handler_future!(T1: I1, T2: I2, T3: I3, T4: I4, T5: I5, T6: I6, T7: I7, T8: I8, T9: I9, T10: I10, T11: I11, T12: I12);
+
+#[cfg(feature = "shell")]
+impl_typed_effect_handler_stream!(T1: I1);
+#[cfg(feature = "shell")]
+impl_typed_effect_handler_stream!(T1: I1, T2: I2);
+#[cfg(feature = "shell")]
+impl_typed_effect_handler_stream!(T1: I1, T2: I2, T3: I3);
+#[cfg(feature = "shell")]
+impl_typed_effect_handler_stream!(T1: I1, T2: I2, T3: I3, T4: I4);
+#[cfg(feature = "shell")]
+impl_typed_effect_handler_stream!(T1: I1, T2: I2, T3: I3, T4: I4, T5: I5);
+#[cfg(feature = "shell")]
+impl_typed_effect_handler_stream!(T1: I1, T2: I2, T3: I3, T4: I4, T5: I5, T6: I6);
+#[cfg(feature = "shell")]
+impl_typed_effect_handler_stream!(T1: I1, T2: I2, T3: I3, T4: I4, T5: I5, T6: I6, T7: I7);
+#[cfg(feature = "shell")]
+impl_typed_effect_handler_stream!(T1: I1, T2: I2, T3: I3, T4: I4, T5: I5, T6: I6, T7: I7, T8: I8);
+#[cfg(feature = "shell")]
+impl_typed_effect_handler_stream!(T1: I1, T2: I2, T3: I3, T4: I4, T5: I5, T6: I6, T7: I7, T8: I8, T9: I9);
+#[cfg(feature = "shell")]
+impl_typed_effect_handler_stream!(T1: I1, T2: I2, T3: I3, T4: I4, T5: I5, T6: I6, T7: I7, T8: I8, T9: I9, T10: I10);
+#[cfg(feature = "shell")]
+impl_typed_effect_handler_stream!(T1: I1, T2: I2, T3: I3, T4: I4, T5: I5, T6: I6, T7: I7, T8: I8, T9: I9, T10: I10, T11: I11);
+#[cfg(feature = "shell")]
+impl_typed_effect_handler_stream!(T1: I1, T2: I2, T3: I3, T4: I4, T5: I5, T6: I6, T7: I7, T8: I8, T9: I9, T10: I10, T11: I11, T12: I12);
 
 // ── Event side ──────────────────────────────────────────────────────
 

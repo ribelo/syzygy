@@ -7,7 +7,7 @@ use crate::core::{Core, EventHandlerFn};
 use crate::error::ShellError;
 use crate::executor::Task;
 use crate::extract::{EffectContext, EventContext, SubscriptionContext};
-use crate::resource::ResourceMap;
+use crate::resource::{EnvCons, EnvNil, ResourceMap};
 use crate::runner_tester::RunnerTester;
 use crate::shell::{BootHandlerFn, EffectHandlerFn, LifecycleHandlers, Shell};
 use crate::subscription::{Subscription, SubscriptionDriver, SubscriptionDrivers};
@@ -46,7 +46,7 @@ type RoutedEffectHandlerFn<E, X> = Rc<dyn for<'a> Fn(X, &EffectContext<'a>) -> E
 type BuilderBootHandlerFn<E, X, M> = BootHandlerFn<E, X, M>;
 type SubscriptionHandlerFn<E, X, M> = Box<dyn Fn(&SubscriptionContext<M>) -> Subscription<E, X>>;
 
-pub struct SyzygyBuilder<E, X, M = ()>
+pub struct SyzygyBuilder<E, X, M = (), Env = EnvNil>
 where
     E: 'static,
     X: 'static,
@@ -55,10 +55,10 @@ where
     resources: ResourceMap,
     runtime: Option<crate::runtime::Runtime>,
     subscription_drivers: SubscriptionDrivers,
-    _marker: PhantomData<(E, X)>,
+    _marker: PhantomData<(E, X, Env)>,
 }
 
-impl<E, X> Default for SyzygyBuilder<E, X, ()>
+impl<E, X> Default for SyzygyBuilder<E, X, (), EnvNil>
 where
     E: 'static,
     X: 'static,
@@ -68,7 +68,7 @@ where
     }
 }
 
-impl<E, X> SyzygyBuilder<E, X, ()>
+impl<E, X> SyzygyBuilder<E, X, (), EnvNil>
 where
     E: 'static,
     X: 'static,
@@ -85,14 +85,15 @@ where
     }
 }
 
-impl<Event, Effect, Model> SyzygyBuilder<Event, Effect, Model>
+impl<Event, Effect, Model, Env> SyzygyBuilder<Event, Effect, Model, Env>
 where
     Event: 'static,
     Effect: 'static,
     Model: 'static,
+    Env: 'static,
 {
     #[must_use]
-    pub fn model<M: 'static>(self, model: M) -> SyzygyBuilder<Event, Effect, M> {
+    pub fn model<M: 'static>(self, model: M) -> SyzygyBuilder<Event, Effect, M, Env> {
         SyzygyBuilder {
             model,
             resources: self.resources,
@@ -103,9 +104,18 @@ where
     }
 
     #[must_use]
-    pub fn with_resource<T: Clone + 'static>(mut self, resource: T) -> Self {
+    pub fn with_resource<T: Clone + 'static>(
+        mut self,
+        resource: T,
+    ) -> SyzygyBuilder<Event, Effect, Model, EnvCons<T, Env>> {
         self.resources.insert(resource);
-        self
+        SyzygyBuilder {
+            model: self.model,
+            resources: self.resources,
+            runtime: self.runtime,
+            subscription_drivers: self.subscription_drivers,
+            _marker: PhantomData,
+        }
     }
 
     #[must_use]
@@ -124,7 +134,7 @@ where
     }
 
     #[must_use]
-    pub fn event_handler<H>(self, handler: H) -> ConfiguredBuilder<Event, Effect, Model>
+    pub fn event_handler<H>(self, handler: H) -> ConfiguredBuilder<Event, Effect, Model, Env>
     where
         H: Fn(Event, &EventContext<Model>) -> Command<Event, Effect> + 'static,
     {
@@ -144,7 +154,7 @@ where
     }
 }
 
-pub struct ConfiguredBuilder<Event, Effect, Model>
+pub struct ConfiguredBuilder<Event, Effect, Model, Env = EnvNil>
 where
     Event: 'static,
     Effect: 'static,
@@ -159,14 +169,15 @@ where
     subscription_drivers: SubscriptionDrivers,
     event_channel_capacity: Option<usize>,
     syzygy_config: SyzygyConfig,
-    _marker: PhantomData<Effect>,
+    _marker: PhantomData<(Effect, Env)>,
 }
 
-impl<Event, Effect, Model> ConfiguredBuilder<Event, Effect, Model>
+impl<Event, Effect, Model, Env> ConfiguredBuilder<Event, Effect, Model, Env>
 where
     Event: 'static,
     Effect: 'static,
     Model: 'static,
+    Env: 'static,
 {
     #[must_use]
     pub fn effect_handler<H, R>(mut self, handler: H) -> Self
@@ -180,6 +191,23 @@ where
         );
         self.effect_handler = Some(Rc::new(move |effect, ctx| {
             handler(effect, ctx).into_effect_route()
+        }));
+        self
+    }
+
+    #[must_use]
+    pub fn typed_effect_handler<H, R>(mut self, handler: H) -> Self
+    where
+        H: for<'a> Fn(Effect, &EffectContext<'a, Env>) -> R + 'static,
+        R: IntoEffectRoute<Event, Effect> + 'static,
+    {
+        assert!(
+            self.effect_handler.is_none(),
+            "effect handler is already configured; use .chain_effect_handler() to compose handlers"
+        );
+        self.effect_handler = Some(Rc::new(move |effect, ctx| {
+            let typed_ctx = EffectContext::<Env>::typed(ctx.resources());
+            handler(effect, &typed_ctx).into_effect_route()
         }));
         self
     }
@@ -207,9 +235,24 @@ where
     }
 
     #[must_use]
-    pub fn with_resource<T: Clone + 'static>(mut self, resource: T) -> Self {
+    pub fn with_resource<T: Clone + 'static>(
+        mut self,
+        resource: T,
+    ) -> ConfiguredBuilder<Event, Effect, Model, EnvCons<T, Env>> {
         self.resources.insert(resource);
-        self
+        ConfiguredBuilder {
+            event_handler: self.event_handler,
+            effect_handler: self.effect_handler,
+            boot_handler: self.boot_handler,
+            subscription_handler: self.subscription_handler,
+            model: self.model,
+            resources: self.resources,
+            runtime: self.runtime,
+            subscription_drivers: self.subscription_drivers,
+            event_channel_capacity: self.event_channel_capacity,
+            syzygy_config: self.syzygy_config,
+            _marker: PhantomData,
+        }
     }
 
     #[must_use]

@@ -1,0 +1,8 @@
+error[E0277]: the trait bound `fn((), DbPool) -> syzygy::executor::Task<Event, Effect> {save}: syzygy::extract::EffectHandler<_, _, (), _, EnvNil>` is not satisfied
+  --> tests/ui/typed_effect_resource_missing.rs:31:29
+   |
+31 |             Effect::Save => handle!(save, ctx),
+   |                             ^^^^^^^^^^^^^^^^^^ unsatisfied trait bound
+   |
+   = help: the trait `syzygy::extract::EffectHandler<_, _, (), _, EnvNil>` is not implemented for fn item `fn((), DbPool) -> syzygy::executor::Task<Event, Effect> {save}`
+   = note: this error originates in the macro `handle` (in Nightly builds, run with -Z macro-backtrace for more info)

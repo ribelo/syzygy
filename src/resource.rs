@@ -1,6 +1,5 @@
-use std::any::{Any, TypeId};
-
 use rustc_hash::FxHashMap;
+use std::any::{Any, TypeId};
 
 type CloneFn = fn(&dyn Any) -> Box<dyn Any>;
 
@@ -156,9 +155,68 @@ impl std::fmt::Debug for ResourceMap {
 pub trait Resource: Clone + 'static {}
 impl<T: Clone + 'static> Resource for T {}
 
+/// Untyped resource environment used by the existing runtime-checked API.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct DynamicEnv;
+
+/// Empty typed resource environment.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct EnvNil;
+
+/// Type-level resource environment node.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct EnvCons<Head, Tail> {
+    head: Head,
+    tail: Tail,
+}
+
+impl<Head, Tail> EnvCons<Head, Tail> {
+    #[must_use]
+    pub fn new(head: Head, tail: Tail) -> Self {
+        Self { head, tail }
+    }
+}
+
+/// Proof that a type is at the current environment position.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Here;
+
+/// Proof that a type is in the tail environment.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct There<Index>(std::marker::PhantomData<fn() -> Index>);
+
+/// Compile-time proof that `Self` contains resource `T` at `Index`.
+pub trait Selector<T, Index> {
+    fn get(&self) -> &T;
+    fn get_mut(&mut self) -> &mut T;
+}
+
+impl<T, Tail> Selector<T, Here> for EnvCons<T, Tail> {
+    fn get(&self) -> &T {
+        &self.head
+    }
+
+    fn get_mut(&mut self) -> &mut T {
+        &mut self.head
+    }
+}
+
+impl<Head, Tail, T, Index> Selector<T, There<Index>> for EnvCons<Head, Tail>
+where
+    Tail: Selector<T, Index>,
+{
+    fn get(&self) -> &T {
+        self.tail.get()
+    }
+
+    fn get_mut(&mut self) -> &mut T {
+        self.tail.get_mut()
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::ResourceMap;
+    use super::{EnvCons, EnvNil, Here, ResourceMap, Selector, There};
 
     #[test]
     fn try_insert_rejects_duplicate_type() {
@@ -198,5 +256,25 @@ mod tests {
 
         assert!(message.contains("already registered"));
         assert!(message.contains("ResourceMap::replace"));
+    }
+
+    #[test]
+    fn selector_gets_head_and_tail_resources() {
+        let mut env = EnvCons::new(7u32, EnvCons::new("db", EnvNil));
+
+        assert_eq!(
+            *<EnvCons<u32, EnvCons<&str, EnvNil>> as Selector<u32, Here>>::get(&env),
+            7
+        );
+        assert_eq!(
+            *<EnvCons<u32, EnvCons<&str, EnvNil>> as Selector<&str, There<Here>>>::get(&env),
+            "db"
+        );
+
+        *<EnvCons<u32, EnvCons<&str, EnvNil>> as Selector<u32, Here>>::get_mut(&mut env) = 9;
+        assert_eq!(
+            *<EnvCons<u32, EnvCons<&str, EnvNil>> as Selector<u32, Here>>::get(&env),
+            9
+        );
     }
 }

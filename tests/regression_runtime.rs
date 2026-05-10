@@ -1010,6 +1010,59 @@ fn effect_context_resource_ref_borrows_without_cloning() {
 }
 
 #[test]
+fn typed_effect_handler_injects_registered_resource() {
+    #[derive(Debug, Default, Model)]
+    struct Model {
+        #[model(wrapper = Status)]
+        status: String,
+    }
+
+    #[derive(Debug, Clone)]
+    enum Event {
+        Start,
+        Saved(String),
+    }
+
+    #[derive(Debug, Clone)]
+    enum Effect {
+        Save,
+    }
+
+    #[derive(Clone)]
+    struct Prefix(&'static str);
+
+    fn save(_: (), prefix: Prefix) -> Task<Event, Effect> {
+        Task::send(Event::Saved(format!("{} saved", prefix.0)))
+    }
+
+    fn handle_event(event: Event, ctx: &EventContext<Model>) -> Command<Event, Effect> {
+        match event {
+            Event::Start => Command::effect(Effect::Save),
+            Event::Saved(status) => {
+                **Status::extract_mut(ctx) = status;
+                Command::none()
+            }
+        }
+    }
+
+    let mut runner = Syzygy::builder::<Event, Effect>()
+        .model(Model::default())
+        .with_resource(Prefix("typed"))
+        .event_handler(handle_event)
+        .typed_effect_handler(|effect, ctx| match effect {
+            Effect::Save => handle!(save, ctx),
+        })
+        .build()
+        .unwrap();
+
+    runner.core().try_send(Event::Start).unwrap();
+    runner.step().unwrap();
+    runner.step().unwrap();
+
+    assert_eq!(runner.model().status, "typed saved");
+}
+
+#[test]
 fn cancelling_abortable_future_returns_shell_to_idle() {
     #[derive(Debug, Clone)]
     enum Event {
