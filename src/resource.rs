@@ -177,6 +177,13 @@ impl<Head, Tail> EnvCons<Head, Tail> {
     }
 }
 
+#[doc(hidden)]
+pub trait TypedResourceEnv {}
+
+impl TypedResourceEnv for EnvNil {}
+
+impl<Head, Tail> TypedResourceEnv for EnvCons<Head, Tail> where Tail: TypedResourceEnv {}
+
 /// Proof that a type is at the current environment position.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Here;
@@ -186,12 +193,12 @@ pub struct Here;
 pub struct There<Index>(std::marker::PhantomData<fn() -> Index>);
 
 /// Compile-time proof that `Self` contains resource `T` at `Index`.
-pub trait Selector<T, Index> {
+pub trait HasResource<T, Index> {
     fn get(&self) -> &T;
     fn get_mut(&mut self) -> &mut T;
 }
 
-impl<T, Tail> Selector<T, Here> for EnvCons<T, Tail> {
+impl<T, Tail> HasResource<T, Here> for EnvCons<T, Tail> {
     fn get(&self) -> &T {
         &self.head
     }
@@ -201,9 +208,9 @@ impl<T, Tail> Selector<T, Here> for EnvCons<T, Tail> {
     }
 }
 
-impl<Head, Tail, T, Index> Selector<T, There<Index>> for EnvCons<Head, Tail>
+impl<Head, Tail, T, Index> HasResource<T, There<Index>> for EnvCons<Head, Tail>
 where
-    Tail: Selector<T, Index>,
+    Tail: HasResource<T, Index>,
 {
     fn get(&self) -> &T {
         self.tail.get()
@@ -216,7 +223,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::{EnvCons, EnvNil, Here, ResourceMap, Selector, There};
+    use super::{EnvCons, EnvNil, HasResource, Here, ResourceMap, There};
 
     #[test]
     fn try_insert_rejects_duplicate_type() {
@@ -259,21 +266,21 @@ mod tests {
     }
 
     #[test]
-    fn selector_gets_head_and_tail_resources() {
+    fn has_resource_gets_head_and_tail_resources() {
         let mut env = EnvCons::new(7u32, EnvCons::new("db", EnvNil));
 
         assert_eq!(
-            *<EnvCons<u32, EnvCons<&str, EnvNil>> as Selector<u32, Here>>::get(&env),
+            *<EnvCons<u32, EnvCons<&str, EnvNil>> as HasResource<u32, Here>>::get(&env),
             7
         );
         assert_eq!(
-            *<EnvCons<u32, EnvCons<&str, EnvNil>> as Selector<&str, There<Here>>>::get(&env),
+            *<EnvCons<u32, EnvCons<&str, EnvNil>> as HasResource<&str, There<Here>>>::get(&env),
             "db"
         );
 
-        *<EnvCons<u32, EnvCons<&str, EnvNil>> as Selector<u32, Here>>::get_mut(&mut env) = 9;
+        *<EnvCons<u32, EnvCons<&str, EnvNil>> as HasResource<u32, Here>>::get_mut(&mut env) = 9;
         assert_eq!(
-            *<EnvCons<u32, EnvCons<&str, EnvNil>> as Selector<u32, Here>>::get(&env),
+            *<EnvCons<u32, EnvCons<&str, EnvNil>> as HasResource<u32, Here>>::get(&env),
             9
         );
     }

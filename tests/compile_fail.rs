@@ -22,4 +22,5 @@ fn typed_effect_resources_are_checked_at_compile_time() {
     cases.pass("tests/ui/typed_effect_resource_tail.rs");
     cases.compile_fail("tests/ui/typed_effect_handler_method_missing.rs");
     cases.compile_fail("tests/ui/typed_effect_resource_missing.rs");
+    cases.compile_fail("tests/ui/typed_effect_resource_missing_future.rs");
 }

@@ -1,5 +1,5 @@
 error[E0277]: the trait bound `EnvNil: HasResource<DbPool, _>` is not satisfied
-  --> tests/ui/typed_effect_resource_missing.rs:31:29
+  --> tests/ui/typed_effect_resource_missing_future.rs:31:29
    |
 31 |             Effect::Save => handle!(save, ctx),
    |                             ^^^^^^^^^^^^^^^^^^ the trait `HasResource<DbPool, _>` is not implemented for `EnvNil`
@@ -8,8 +8,8 @@ error[E0277]: the trait bound `EnvNil: HasResource<DbPool, _>` is not satisfied
              `EnvCons<Head, Tail>` implements `HasResource<T, There<Index>>`
              `EnvCons<T, Tail>` implements `HasResource<T, Here>`
    = note: required for `TypedResource<DbPool, _>` to implement `EffectResources<EnvNil, (DbPool,)>`
-   = note: 1 redundant requirement hidden
-   = note: required for `(TypedResource<DbPool, _>,)` to implement `EffectResources<EnvNil, (DbPool,)>`
+   = note: 2 redundant requirements hidden
+   = note: required for `(FutureEffect, TypedResource<DbPool, _>)` to implement `EffectResources<EnvNil, (DbPool,)>`
 note: required by a bound in `EffectContext::<'a, Env>::handle`
   --> src/extract.rs
    |

@@ -1,17 +1,21 @@
-error[E0277]: the trait bound `fn(DbPool) -> syzygy::executor::Task<Event, Effect> {save}: EffectHandlerNoPayload<_, _, _>` is not satisfied
-  --> tests/ui/typed_effect_handler_method_missing.rs:31:37
+error[E0277]: the trait bound `EnvNil: HasResource<DbPool, _>` is not satisfied
+  --> tests/ui/typed_effect_handler_method_missing.rs:31:29
    |
 31 |             Effect::Save => handle!(save, ctx),
-   |                             --------^^^^------
-   |                             |       |
-   |                             |       the trait `EffectHandlerNoPayload<_, _, _>` is not implemented for fn item `fn(DbPool) -> syzygy::executor::Task<Event, Effect> {save}`
-   |                             required by a bound introduced by this call
+   |                             ^^^^^^^^^^^^^^^^^^ the trait `HasResource<DbPool, _>` is not implemented for `EnvNil`
    |
+   = help: the following other types implement trait `HasResource<T, Index>`:
+             `EnvCons<Head, Tail>` implements `HasResource<T, There<Index>>`
+             `EnvCons<T, Tail>` implements `HasResource<T, Here>`
+   = note: required for `TypedResource<DbPool, _>` to implement `EffectResources<EnvNil, (DbPool,)>`
+   = note: 1 redundant requirement hidden
+   = note: required for `(TypedResource<DbPool, _>,)` to implement `EffectResources<EnvNil, (DbPool,)>`
 note: required by a bound in `EffectContext::<'a, Env>::handle`
   --> src/extract.rs
    |
-   |     pub fn handle<E, X, H, Marker>(&self, handler: H) -> Task<E, X>
+   |     pub fn handle<E, X, H, Marker, Values>(&self, handler: H) -> Task<E, X>
    |            ------ required by a bound in this associated function
-   |     where
-   |         H: EffectHandlerNoPayload<E, X, Marker, Env>,
-   |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `EffectContext::<'a, Env>::handle`
+...
+   |         Marker: EffectResources<Env, Values>,
+   |                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `EffectContext::<'a, Env>::handle`
+   = note: this error originates in the macro `handle` (in Nightly builds, run with -Z macro-backtrace for more info)

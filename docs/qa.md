@@ -341,3 +341,9 @@ Q: How should no-payload effect resource handlers be expressed?
 A: Let `handle!(handler, ctx)` dispatch through the context for no-payload handlers, so resource-only functions can be written directly as `fn save(db: DbPool) -> Task<_, _>` instead of taking a dummy `(_: ())` payload.
 
 Reason: Dummy unit payloads make the resource API feel worse and create avoidable ceremony. A separate no-payload effect-handler path avoids ambiguity with real payload handlers while keeping the call site unchanged.
+
+Q: How should missing typed effect resources fail at compile time?
+
+A: Surface the resource proof bound directly from `EffectContext::handle`, so rustc reports that the typed environment does not implement `HasResource<MissingResource, _>` instead of failing at the generic no-payload handler trait.
+
+Reason: Stable Rust trait-resolution errors cannot provide a custom “add `.with_resource(...)`” message. Naming and positioning the failing proof keeps the diagnostic actionable while preserving the normal `.with_resource(...)` and `.effect_handler(...)` API.

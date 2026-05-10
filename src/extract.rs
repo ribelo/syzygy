@@ -11,7 +11,7 @@ use crate::command::Command;
 #[cfg(feature = "shell")]
 use crate::executor::Task;
 #[cfg(feature = "shell")]
-use crate::resource::{DynamicEnv, EnvNil, Resource, ResourceMap, Selector};
+use crate::resource::{DynamicEnv, EnvNil, HasResource, Resource, ResourceMap, TypedResourceEnv};
 #[cfg(feature = "shell")]
 use crate::subscription::Subscription;
 
@@ -61,9 +61,10 @@ impl<'a, Env> EffectContext<'a, Env> {
     }
 
     #[track_caller]
-    pub fn handle<E, X, H, Marker>(&self, handler: H) -> Task<E, X>
+    pub fn handle<E, X, H, Marker, Values>(&self, handler: H) -> Task<E, X>
     where
-        H: EffectHandlerNoPayload<E, X, Marker, Env>,
+        H: EffectHandlerNoPayload<E, X, Marker, Values, Env>,
+        Marker: EffectResources<Env, Values>,
         E: 'static,
         X: 'static,
     {
@@ -117,7 +118,7 @@ pub trait FromTypedEffectContext<Env, Index> {
 impl<T, Env, Index> FromTypedEffectContext<Env, Index> for T
 where
     T: Resource,
-    Env: Selector<T, Index>,
+    Env: HasResource<T, Index>,
 {
     #[track_caller]
     fn from_typed_context(ctx: &EffectContext<'_, Env>) -> Self {
@@ -126,6 +127,24 @@ where
             Some(resource) => resource,
             None => panic_missing_resource::<T>(caller),
         }
+    }
+}
+
+#[doc(hidden)]
+#[cfg(feature = "shell")]
+pub trait EffectResources<Env, Values> {
+    fn extract_resources(ctx: &EffectContext<'_, Env>) -> Values;
+}
+
+#[doc(hidden)]
+#[cfg(feature = "shell")]
+impl<T, Env, Index> EffectResources<Env, (T,)> for TypedResource<T, Index>
+where
+    T: Resource,
+    Env: HasResource<T, Index>,
+{
+    fn extract_resources(ctx: &EffectContext<'_, Env>) -> (T,) {
+        (T::from_typed_context(ctx),)
     }
 }
 
@@ -148,8 +167,17 @@ pub trait EffectHandler<E: 'static, X: 'static, P, Marker, Env = EnvNil>: 'stati
 }
 
 #[cfg(feature = "shell")]
-pub trait EffectHandlerNoPayload<E: 'static, X: 'static, Marker, Env = EnvNil>: 'static {
-    fn handle_no_payload(&self, ctx: &EffectContext<'_, Env>) -> Task<E, X>;
+pub trait EffectHandlerNoPayload<E: 'static, X: 'static, Marker, Values, Env = EnvNil>:
+    'static
+{
+    fn handle_no_payload(&self, ctx: &EffectContext<'_, Env>) -> Task<E, X>
+    where
+        Marker: EffectResources<Env, Values>;
+}
+
+#[cfg(feature = "shell")]
+impl<Env> EffectResources<Env, ()> for NP {
+    fn extract_resources(_ctx: &EffectContext<'_, Env>) {}
 }
 
 #[cfg(feature = "shell")]
@@ -177,13 +205,16 @@ where
 }
 
 #[cfg(feature = "shell")]
-impl<E, X, F, Env> EffectHandlerNoPayload<E, X, NP, Env> for F
+impl<E, X, F, Env> EffectHandlerNoPayload<E, X, NP, (), Env> for F
 where
     F: Fn() -> Task<E, X> + 'static,
     E: 'static,
     X: 'static,
 {
-    fn handle_no_payload(&self, _ctx: &EffectContext<'_, Env>) -> Task<E, X> {
+    fn handle_no_payload(&self, _ctx: &EffectContext<'_, Env>) -> Task<E, X>
+    where
+        NP: EffectResources<Env, ()>,
+    {
         (self)()
     }
 }
@@ -215,14 +246,22 @@ where
 }
 
 #[cfg(feature = "shell")]
-impl<E, X, F, Fut, Env> EffectHandlerNoPayload<E, X, (FutureEffect, NP), Env> for F
+impl<Env> EffectResources<Env, ()> for (FutureEffect, NP) {
+    fn extract_resources(_ctx: &EffectContext<'_, Env>) {}
+}
+
+#[cfg(feature = "shell")]
+impl<E, X, F, Fut, Env> EffectHandlerNoPayload<E, X, (FutureEffect, NP), (), Env> for F
 where
     F: Fn() -> Fut + 'static,
     Fut: Future<Output = Command<E, X>> + 'static,
     E: 'static,
     X: 'static,
 {
-    fn handle_no_payload(&self, _ctx: &EffectContext<'_, Env>) -> Task<E, X> {
+    fn handle_no_payload(&self, _ctx: &EffectContext<'_, Env>) -> Task<E, X>
+    where
+        (FutureEffect, NP): EffectResources<Env, ()>,
+    {
         Task::future((self)())
     }
 }
@@ -254,14 +293,22 @@ where
 }
 
 #[cfg(feature = "shell")]
-impl<E, X, F, S, Env> EffectHandlerNoPayload<E, X, (StreamEffect, NP), Env> for F
+impl<Env> EffectResources<Env, ()> for (StreamEffect, NP) {
+    fn extract_resources(_ctx: &EffectContext<'_, Env>) {}
+}
+
+#[cfg(feature = "shell")]
+impl<E, X, F, S, Env> EffectHandlerNoPayload<E, X, (StreamEffect, NP), (), Env> for F
 where
     F: Fn() -> S + 'static,
     S: Stream<Item = Command<E, X>> + 'static,
     E: 'static,
     X: 'static,
 {
-    fn handle_no_payload(&self, _ctx: &EffectContext<'_, Env>) -> Task<E, X> {
+    fn handle_no_payload(&self, _ctx: &EffectContext<'_, Env>) -> Task<E, X>
+    where
+        (StreamEffect, NP): EffectResources<Env, ()>,
+    {
         Task::stream((self)())
     }
 }
@@ -269,6 +316,16 @@ where
 #[cfg(feature = "shell")]
 macro_rules! impl_effect_handler_task {
     ($($T:ident),+) => {
+        #[allow(non_snake_case)]
+        impl<$($T),+> EffectResources<DynamicEnv, ($($T,)+)> for ($($T,)+)
+        where
+            $($T: FromEffectContext,)+
+        {
+            fn extract_resources(ctx: &EffectContext<'_, DynamicEnv>) -> ($($T,)+) {
+                ($($T::from_context(ctx),)+)
+            }
+        }
+
         #[allow(non_snake_case)]
         impl<E, X, P, F, $($T),+> EffectHandler<E, X, P, ($($T,)+), DynamicEnv> for F
         where
@@ -283,15 +340,18 @@ macro_rules! impl_effect_handler_task {
         }
 
         #[allow(non_snake_case)]
-        impl<E, X, F, $($T),+> EffectHandlerNoPayload<E, X, ($($T,)+), DynamicEnv> for F
+        impl<E, X, F, $($T),+> EffectHandlerNoPayload<E, X, ($($T,)+), ($($T,)+), DynamicEnv> for F
         where
             F: Fn($($T),+) -> Task<E, X> + 'static,
-            $($T: FromEffectContext,)+
             E: 'static,
             X: 'static,
         {
-            fn handle_no_payload(&self, ctx: &EffectContext<'_, DynamicEnv>) -> Task<E, X> {
-                (self)($($T::from_context(ctx)),+)
+            fn handle_no_payload(&self, ctx: &EffectContext<'_, DynamicEnv>) -> Task<E, X>
+            where
+                ($($T,)+): EffectResources<DynamicEnv, ($($T,)+)>,
+            {
+                let ($($T,)+) = <($($T,)+) as EffectResources<DynamicEnv, ($($T,)+)>>::extract_resources(ctx);
+                (self)($($T),+)
             }
         }
     }
@@ -300,6 +360,16 @@ macro_rules! impl_effect_handler_task {
 #[cfg(feature = "shell")]
 macro_rules! impl_effect_handler_future {
     ($($T:ident),+) => {
+        #[allow(non_snake_case)]
+        impl<$($T),+> EffectResources<DynamicEnv, ($($T,)+)> for (FutureEffect, $($T,)+)
+        where
+            ($($T,)+): EffectResources<DynamicEnv, ($($T,)+)>,
+        {
+            fn extract_resources(ctx: &EffectContext<'_, DynamicEnv>) -> ($($T,)+) {
+                <($($T,)+) as EffectResources<DynamicEnv, ($($T,)+)>>::extract_resources(ctx)
+            }
+        }
+
         #[allow(non_snake_case)]
         impl<E, X, P, F, Fut, $($T),+> EffectHandler<E, X, P, (FutureEffect, $($T,)+), DynamicEnv> for F
         where
@@ -315,16 +385,19 @@ macro_rules! impl_effect_handler_future {
         }
 
         #[allow(non_snake_case)]
-        impl<E, X, F, Fut, $($T),+> EffectHandlerNoPayload<E, X, (FutureEffect, $($T,)+), DynamicEnv> for F
+        impl<E, X, F, Fut, $($T),+> EffectHandlerNoPayload<E, X, (FutureEffect, $($T,)+), ($($T,)+), DynamicEnv> for F
         where
             F: Fn($($T),+) -> Fut + 'static,
             Fut: Future<Output = Command<E, X>> + 'static,
-            $($T: FromEffectContext,)+
             E: 'static,
             X: 'static,
         {
-            fn handle_no_payload(&self, ctx: &EffectContext<'_, DynamicEnv>) -> Task<E, X> {
-                Task::future((self)($($T::from_context(ctx)),+))
+            fn handle_no_payload(&self, ctx: &EffectContext<'_, DynamicEnv>) -> Task<E, X>
+            where
+                (FutureEffect, $($T,)+): EffectResources<DynamicEnv, ($($T,)+)>,
+            {
+                let ($($T,)+) = <(FutureEffect, $($T,)+) as EffectResources<DynamicEnv, ($($T,)+)>>::extract_resources(ctx);
+                Task::future((self)($($T),+))
             }
         }
     }
@@ -333,6 +406,16 @@ macro_rules! impl_effect_handler_future {
 #[cfg(feature = "shell")]
 macro_rules! impl_effect_handler_stream {
     ($($T:ident),+) => {
+        #[allow(non_snake_case)]
+        impl<$($T),+> EffectResources<DynamicEnv, ($($T,)+)> for (StreamEffect, $($T,)+)
+        where
+            ($($T,)+): EffectResources<DynamicEnv, ($($T,)+)>,
+        {
+            fn extract_resources(ctx: &EffectContext<'_, DynamicEnv>) -> ($($T,)+) {
+                <($($T,)+) as EffectResources<DynamicEnv, ($($T,)+)>>::extract_resources(ctx)
+            }
+        }
+
         #[allow(non_snake_case)]
         impl<E, X, P, F, S, $($T),+> EffectHandler<E, X, P, (StreamEffect, $($T,)+), DynamicEnv> for F
         where
@@ -348,16 +431,19 @@ macro_rules! impl_effect_handler_stream {
         }
 
         #[allow(non_snake_case)]
-        impl<E, X, F, S, $($T),+> EffectHandlerNoPayload<E, X, (StreamEffect, $($T,)+), DynamicEnv> for F
+        impl<E, X, F, S, $($T),+> EffectHandlerNoPayload<E, X, (StreamEffect, $($T,)+), ($($T,)+), DynamicEnv> for F
         where
             F: Fn($($T),+) -> S + 'static,
             S: Stream<Item = Command<E, X>> + 'static,
-            $($T: FromEffectContext,)+
             E: 'static,
             X: 'static,
         {
-            fn handle_no_payload(&self, ctx: &EffectContext<'_, DynamicEnv>) -> Task<E, X> {
-                Task::stream((self)($($T::from_context(ctx)),+))
+            fn handle_no_payload(&self, ctx: &EffectContext<'_, DynamicEnv>) -> Task<E, X>
+            where
+                (StreamEffect, $($T,)+): EffectResources<DynamicEnv, ($($T,)+)>,
+            {
+                let ($($T,)+) = <(StreamEffect, $($T,)+) as EffectResources<DynamicEnv, ($($T,)+)>>::extract_resources(ctx);
+                Task::stream((self)($($T),+))
             }
         }
     }
@@ -367,11 +453,24 @@ macro_rules! impl_effect_handler_stream {
 macro_rules! impl_typed_effect_handler_task {
     ($($T:ident : $I:ident),+) => {
         #[allow(non_snake_case)]
+        impl<Env, $($T, $I),+> EffectResources<Env, ($($T,)+)> for ($(TypedResource<$T, $I>,)+)
+        where
+            $(TypedResource<$T, $I>: EffectResources<Env, ($T,)>,)+
+            Env: 'static,
+        {
+            fn extract_resources(ctx: &EffectContext<'_, Env>) -> ($($T,)+) {
+                ($(
+                    <TypedResource<$T, $I> as EffectResources<Env, ($T,)>>::extract_resources(ctx).0,
+                )+)
+            }
+        }
+
+        #[allow(non_snake_case)]
         impl<E, X, P, F, Env, $($T, $I),+> EffectHandler<E, X, P, ($(TypedResource<$T, $I>,)+), Env> for F
         where
             F: Fn(P, $($T),+) -> Task<E, X> + 'static,
             $($T: FromTypedEffectContext<Env, $I>,)+
-            Env: 'static,
+            Env: TypedResourceEnv + 'static,
             E: 'static,
             X: 'static,
         {
@@ -381,16 +480,19 @@ macro_rules! impl_typed_effect_handler_task {
         }
 
         #[allow(non_snake_case)]
-        impl<E, X, F, Env, $($T, $I),+> EffectHandlerNoPayload<E, X, ($(TypedResource<$T, $I>,)+), Env> for F
+        impl<E, X, F, Env, $($T, $I),+> EffectHandlerNoPayload<E, X, ($(TypedResource<$T, $I>,)+), ($($T,)+), Env> for F
         where
             F: Fn($($T),+) -> Task<E, X> + 'static,
-            $($T: FromTypedEffectContext<Env, $I>,)+
-            Env: 'static,
+            Env: TypedResourceEnv + 'static,
             E: 'static,
             X: 'static,
         {
-            fn handle_no_payload(&self, ctx: &EffectContext<'_, Env>) -> Task<E, X> {
-                (self)($($T::from_typed_context(ctx)),+)
+            fn handle_no_payload(&self, ctx: &EffectContext<'_, Env>) -> Task<E, X>
+            where
+                ($(TypedResource<$T, $I>,)+): EffectResources<Env, ($($T,)+)>,
+            {
+                let ($($T,)+) = <($(TypedResource<$T, $I>,)+) as EffectResources<Env, ($($T,)+)>>::extract_resources(ctx);
+                (self)($($T),+)
             }
         }
     }
@@ -400,12 +502,23 @@ macro_rules! impl_typed_effect_handler_task {
 macro_rules! impl_typed_effect_handler_future {
     ($($T:ident : $I:ident),+) => {
         #[allow(non_snake_case)]
+        impl<Env, $($T, $I),+> EffectResources<Env, ($($T,)+)> for (FutureEffect, $(TypedResource<$T, $I>,)+)
+        where
+            ($(TypedResource<$T, $I>,)+): EffectResources<Env, ($($T,)+)>,
+            Env: 'static,
+        {
+            fn extract_resources(ctx: &EffectContext<'_, Env>) -> ($($T,)+) {
+                <($(TypedResource<$T, $I>,)+) as EffectResources<Env, ($($T,)+)>>::extract_resources(ctx)
+            }
+        }
+
+        #[allow(non_snake_case)]
         impl<E, X, P, F, Fut, Env, $($T, $I),+> EffectHandler<E, X, P, (FutureEffect, $(TypedResource<$T, $I>,)+), Env> for F
         where
             F: Fn(P, $($T),+) -> Fut + 'static,
             Fut: Future<Output = Command<E, X>> + 'static,
             $($T: FromTypedEffectContext<Env, $I>,)+
-            Env: 'static,
+            Env: TypedResourceEnv + 'static,
             E: 'static,
             X: 'static,
         {
@@ -415,17 +528,20 @@ macro_rules! impl_typed_effect_handler_future {
         }
 
         #[allow(non_snake_case)]
-        impl<E, X, F, Fut, Env, $($T, $I),+> EffectHandlerNoPayload<E, X, (FutureEffect, $(TypedResource<$T, $I>,)+), Env> for F
+        impl<E, X, F, Fut, Env, $($T, $I),+> EffectHandlerNoPayload<E, X, (FutureEffect, $(TypedResource<$T, $I>,)+), ($($T,)+), Env> for F
         where
             F: Fn($($T),+) -> Fut + 'static,
             Fut: Future<Output = Command<E, X>> + 'static,
-            $($T: FromTypedEffectContext<Env, $I>,)+
-            Env: 'static,
+            Env: TypedResourceEnv + 'static,
             E: 'static,
             X: 'static,
         {
-            fn handle_no_payload(&self, ctx: &EffectContext<'_, Env>) -> Task<E, X> {
-                Task::future((self)($($T::from_typed_context(ctx)),+))
+            fn handle_no_payload(&self, ctx: &EffectContext<'_, Env>) -> Task<E, X>
+            where
+                (FutureEffect, $(TypedResource<$T, $I>,)+): EffectResources<Env, ($($T,)+)>,
+            {
+                let ($($T,)+) = <(FutureEffect, $(TypedResource<$T, $I>,)+) as EffectResources<Env, ($($T,)+)>>::extract_resources(ctx);
+                Task::future((self)($($T),+))
             }
         }
     }
@@ -435,12 +551,23 @@ macro_rules! impl_typed_effect_handler_future {
 macro_rules! impl_typed_effect_handler_stream {
     ($($T:ident : $I:ident),+) => {
         #[allow(non_snake_case)]
+        impl<Env, $($T, $I),+> EffectResources<Env, ($($T,)+)> for (StreamEffect, $(TypedResource<$T, $I>,)+)
+        where
+            ($(TypedResource<$T, $I>,)+): EffectResources<Env, ($($T,)+)>,
+            Env: 'static,
+        {
+            fn extract_resources(ctx: &EffectContext<'_, Env>) -> ($($T,)+) {
+                <($(TypedResource<$T, $I>,)+) as EffectResources<Env, ($($T,)+)>>::extract_resources(ctx)
+            }
+        }
+
+        #[allow(non_snake_case)]
         impl<E, X, P, F, S, Env, $($T, $I),+> EffectHandler<E, X, P, (StreamEffect, $(TypedResource<$T, $I>,)+), Env> for F
         where
             F: Fn(P, $($T),+) -> S + 'static,
             S: Stream<Item = Command<E, X>> + 'static,
             $($T: FromTypedEffectContext<Env, $I>,)+
-            Env: 'static,
+            Env: TypedResourceEnv + 'static,
             E: 'static,
             X: 'static,
         {
@@ -450,17 +577,20 @@ macro_rules! impl_typed_effect_handler_stream {
         }
 
         #[allow(non_snake_case)]
-        impl<E, X, F, S, Env, $($T, $I),+> EffectHandlerNoPayload<E, X, (StreamEffect, $(TypedResource<$T, $I>,)+), Env> for F
+        impl<E, X, F, S, Env, $($T, $I),+> EffectHandlerNoPayload<E, X, (StreamEffect, $(TypedResource<$T, $I>,)+), ($($T,)+), Env> for F
         where
             F: Fn($($T),+) -> S + 'static,
             S: Stream<Item = Command<E, X>> + 'static,
-            $($T: FromTypedEffectContext<Env, $I>,)+
-            Env: 'static,
+            Env: TypedResourceEnv + 'static,
             E: 'static,
             X: 'static,
         {
-            fn handle_no_payload(&self, ctx: &EffectContext<'_, Env>) -> Task<E, X> {
-                Task::stream((self)($($T::from_typed_context(ctx)),+))
+            fn handle_no_payload(&self, ctx: &EffectContext<'_, Env>) -> Task<E, X>
+            where
+                (StreamEffect, $(TypedResource<$T, $I>,)+): EffectResources<Env, ($($T,)+)>,
+            {
+                let ($($T,)+) = <(StreamEffect, $(TypedResource<$T, $I>,)+) as EffectResources<Env, ($($T,)+)>>::extract_resources(ctx);
+                Task::stream((self)($($T),+))
             }
         }
     }
