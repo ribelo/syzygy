@@ -4,7 +4,6 @@ pub mod core;
 pub mod error;
 pub mod extract;
 pub mod macros;
-pub mod resource;
 pub mod test_store;
 
 pub use syzygy_macros::Model;
@@ -31,12 +30,10 @@ pub mod prelude {
     pub use crate::command::{AbortSlot, Command, CommandStep, TaskLease, TaskLeaseScope};
 
     pub use crate::core::{Core, EventSender};
-    pub use crate::handle;
-    pub use crate::resource::{Resource, ResourceMap};
-
     pub use crate::extract::{
         EventContext, EventHandler, Part, PartMut, SubscriptionContext, SubscriptionPart,
     };
+    pub use crate::handle;
     pub use crate::test_store::{assert_panic, assert_panic_contains, Exhaustivity, TestStore};
     pub use syzygy_macros::Model;
 

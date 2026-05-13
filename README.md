@@ -482,18 +482,25 @@ fn bad(ctx: &EventContext<Model>) {
 
 **Extraction panics are deliberate programmer errors.** Borrow overlap failures include the caller location and a hint to fix handler extractor overlap.
 
-**Missing effect resources panic deliberately.** If an effect handler extracts an unregistered resource, Syzygy panics with the resource type, caller location, and a `.with_resource(...)` registration hint.
-
-**Signature-based resource extraction clones on every effect access.** Expensive resources should be wrapped in `Arc<T>`, or borrowed explicitly with `ctx.resource_ref::<T>()` when you need non-cloning access:
+**Effect resources are user-owned state.** Build one concrete resources struct and pass it with `.resources(...)`. Handlers either borrow the whole state through `ctx.state()` or extract owned values through `FromEffectContext<AppResources>`.
 
 ```rust
 #[derive(Clone)]
-struct DbPool(Arc<Pool>);  // Cheap clone
+struct AppResources {
+    db: DbPool,
+}
 
-// NOT: struct DbPool(Pool)  // Expensive clone every effect
+#[derive(Clone)]
+struct DbPool(Arc<Pool>);
 
-fn handle_effect(effect: Effect, ctx: &EffectContext<'_>) -> Task<Event, Effect> {
-    let pool = ctx.resource_ref::<DbPool>().expect("DbPool must be registered");
+impl FromEffectContext<AppResources> for DbPool {
+    fn from_context(ctx: &EffectContext<'_, AppResources>) -> Self {
+        ctx.state().db.clone()
+    }
+}
+
+fn handle_effect(effect: Effect, ctx: &EffectContext<'_, AppResources>) -> Task<Event, Effect> {
+    let pool = DbPool::from_context(ctx);
     let _ = pool;
     match effect {
         Effect::Save => Task::none(),
@@ -501,15 +508,9 @@ fn handle_effect(effect: Effect, ctx: &EffectContext<'_>) -> Task<Event, Effect>
 }
 ```
 
-**Duplicate resource registration is explicit.** `ResourceMap::insert` now rejects duplicate registrations for the same concrete type and points to `ResourceMap::replace` when replacement is intentional. If you need two values of the same underlying type, wrap them in distinct newtypes.
+**Missing resources are ordinary Rust mistakes.** There is no dynamic registration table. If a handler needs a field that is not in your resources struct, the compiler points at your struct or your missing `FromEffectContext<AppResources>` impl.
 
-```rust
-#[derive(Clone)]
-struct ReadDb(Arc<Pool>);
-
-#[derive(Clone)]
-struct WriteDb(Arc<Pool>);
-```
+**Use distinct fields for distinct capabilities.** If you need read/write pools or two clients with the same underlying type, name them as separate fields or wrap them in newtypes.
 
 **256 field limit.** Exceeding 256 `#[model(...)]` fields fails during macro expansion.
 

@@ -1,9 +1,9 @@
-error[E0277]: the trait bound `syzygy::syzygy::Syzygy<_, _, _>: From<(Core<Event, (), ModelB>, Shell<Event, (), ModelA>)>` is not satisfied
+error[E0277]: the trait bound `syzygy::syzygy::Syzygy<_, _, _, _>: From<(Core<Event, (), ModelB>, Shell<Event, (), ModelA>)>` is not satisfied
   --> tests/ui/shell_model_mismatch.rs:51:16
    |
 51 |     let _bad = Syzygy::from((core_b, shell_a));
-   |                ^^^^^^ the trait `From<(Core<Event, (), ModelB>, Shell<Event, (), ModelA>)>` is not implemented for `syzygy::syzygy::Syzygy<_, _, _>`
+   |                ^^^^^^ the trait `From<(Core<Event, (), ModelB>, Shell<Event, (), ModelA>)>` is not implemented for `syzygy::syzygy::Syzygy<_, _, _, _>`
    |
-   = help: the trait `From<(Core<Event, (), ModelB>, Shell<Event, (), ModelA>)>` is not implemented for `syzygy::syzygy::Syzygy<_, _, _>`
-           but trait `From<(Core<Event, (), ModelB>, Shell<Event, (), ModelB>)>` is implemented for `syzygy::syzygy::Syzygy<Event, (), ModelB>`
+   = help: the trait `From<(Core<Event, (), ModelB>, Shell<Event, (), ModelA, ()>)>` is not implemented for `syzygy::syzygy::Syzygy<_, _, _, _>`
+           but trait `From<(Core<Event, (), ModelB>, Shell<Event, (), ModelB, _>)>` is implemented for `syzygy::syzygy::Syzygy<Event, (), ModelB, _>`
    = help: for that trait implementation, expected `ModelB`, found `ModelA`

@@ -9,8 +9,6 @@ use crate::command::Command;
 #[cfg(feature = "shell")]
 use crate::executor::Task;
 #[cfg(feature = "shell")]
-use crate::resource::{Resource, ResourceMap};
-#[cfg(feature = "shell")]
 use crate::subscription::Subscription;
 
 const EXTRACTION_PROGRAMMER_ERROR_HINT: &str =
@@ -19,64 +17,33 @@ const EXTRACTION_PROGRAMMER_ERROR_HINT: &str =
 // ── Effect side ─────────────────────────────────────────────────────
 
 #[cfg(feature = "shell")]
-pub struct EffectContext<'a> {
-    resources: &'a ResourceMap,
+pub struct EffectContext<'a, S = ()> {
+    state: &'a S,
 }
 
 #[cfg(feature = "shell")]
-impl<'a> EffectContext<'a> {
+impl<'a, S> EffectContext<'a, S> {
     #[must_use]
-    pub fn new(resources: &'a ResourceMap) -> Self {
-        Self { resources }
+    pub fn new(state: &'a S) -> Self {
+        Self { state }
     }
 
     #[must_use]
-    pub fn resources(&self) -> &ResourceMap {
-        self.resources
-    }
-
-    /// Borrow a registered resource without cloning it.
-    ///
-    /// Signature-based resource extraction via [`FromEffectContext`] clones.
-    /// Use this helper for explicit non-cloning access to expensive resources.
-    #[must_use]
-    pub fn resource_ref<T: 'static>(&self) -> Option<&T> {
-        self.resources.get_ref::<T>()
+    pub fn state(&self) -> &S {
+        self.state
     }
 }
 
 #[cfg(feature = "shell")]
-pub trait FromEffectContext {
+pub trait FromEffectContext<S> {
     /// Extracts a value from the [`EffectContext`].
-    ///
-    /// This operation clones the stored resource value from the [`ResourceMap`].
-    /// Prefer storing expensive resources behind shared ownership pointers such
-    /// as `Arc<T>` or `Rc<T>` via `.with_resource(...)` to avoid repeated deep
-    /// clones on effect dispatch. Use [`EffectContext::resource_ref`] for
-    /// explicit borrow-only access.
-    #[track_caller]
-    fn from_context(ctx: &EffectContext<'_>) -> Self;
+    fn from_context(ctx: &EffectContext<'_, S>) -> Self;
 }
 
 #[cfg(feature = "shell")]
-fn panic_missing_resource<T: Resource>(caller: &'static std::panic::Location<'static>) -> ! {
-    panic!(
-        "Effect resource `{}` is not registered. Register it with .with_resource() during builder setup. This is a programmer error (requested at {}:{})",
-        std::any::type_name::<T>(),
-        caller.file(),
-        caller.line()
-    )
-}
-
-#[cfg(feature = "shell")]
-impl<T: Resource> FromEffectContext for T {
-    #[track_caller]
-    fn from_context(ctx: &EffectContext<'_>) -> Self {
-        let caller = std::panic::Location::caller();
-        match ctx.resources().get::<T>() {
-            Some(resource) => resource,
-            None => panic_missing_resource::<T>(caller),
-        }
+impl<S: Clone + 'static> FromEffectContext<S> for S {
+    fn from_context(ctx: &EffectContext<'_, S>) -> Self {
+        ctx.state().clone()
     }
 }
 
@@ -89,83 +56,91 @@ pub struct StreamEffect;
 #[cfg(feature = "shell")]
 pub struct NP;
 
+#[doc(hidden)]
 #[cfg(feature = "shell")]
-pub trait EffectHandler<E: 'static, X: 'static, P, Marker>: 'static {
-    fn handle(&self, payload: P, ctx: &EffectContext<'_>) -> Task<E, X>;
+pub struct Extractors<T>(std::marker::PhantomData<fn() -> T>);
+
+#[doc(hidden)]
+#[cfg(feature = "shell")]
+pub struct TaskEffect;
+
+#[cfg(feature = "shell")]
+pub trait EffectHandler<E: 'static, X: 'static, P, Marker, S = ()>: 'static {
+    fn handle(&self, payload: P, ctx: &EffectContext<'_, S>) -> Task<E, X>;
 }
 
 #[cfg(feature = "shell")]
-impl<E, X, P, F> EffectHandler<E, X, P, ()> for F
+impl<E, X, P, F, S> EffectHandler<E, X, P, (), S> for F
 where
     F: Fn(P) -> Task<E, X> + 'static,
     E: 'static,
     X: 'static,
 {
-    fn handle(&self, payload: P, _ctx: &EffectContext<'_>) -> Task<E, X> {
+    fn handle(&self, payload: P, _ctx: &EffectContext<'_, S>) -> Task<E, X> {
         (self)(payload)
     }
 }
 
 #[cfg(feature = "shell")]
-impl<E, X, F> EffectHandler<E, X, (), NP> for F
+impl<E, X, F, S> EffectHandler<E, X, (), NP, S> for F
 where
     F: Fn() -> Task<E, X> + 'static,
     E: 'static,
     X: 'static,
 {
-    fn handle(&self, _payload: (), _ctx: &EffectContext<'_>) -> Task<E, X> {
+    fn handle(&self, _payload: (), _ctx: &EffectContext<'_, S>) -> Task<E, X> {
         (self)()
     }
 }
 
 #[cfg(feature = "shell")]
-impl<E, X, P, F, Fut> EffectHandler<E, X, P, FutureEffect> for F
+impl<E, X, P, F, Fut, S> EffectHandler<E, X, P, FutureEffect, S> for F
 where
     F: Fn(P) -> Fut + 'static,
     Fut: Future<Output = Command<E, X>> + 'static,
     E: 'static,
     X: 'static,
 {
-    fn handle(&self, payload: P, _ctx: &EffectContext<'_>) -> Task<E, X> {
+    fn handle(&self, payload: P, _ctx: &EffectContext<'_, S>) -> Task<E, X> {
         Task::future((self)(payload))
     }
 }
 
 #[cfg(feature = "shell")]
-impl<E, X, F, Fut> EffectHandler<E, X, (), (FutureEffect, NP)> for F
+impl<E, X, F, Fut, S> EffectHandler<E, X, (), (FutureEffect, NP), S> for F
 where
     F: Fn() -> Fut + 'static,
     Fut: Future<Output = Command<E, X>> + 'static,
     E: 'static,
     X: 'static,
 {
-    fn handle(&self, _payload: (), _ctx: &EffectContext<'_>) -> Task<E, X> {
+    fn handle(&self, _payload: (), _ctx: &EffectContext<'_, S>) -> Task<E, X> {
         Task::future((self)())
     }
 }
 
 #[cfg(feature = "shell")]
-impl<E, X, P, F, S> EffectHandler<E, X, P, StreamEffect> for F
+impl<E, X, P, F, St, S> EffectHandler<E, X, P, StreamEffect, S> for F
 where
-    F: Fn(P) -> S + 'static,
-    S: Stream<Item = Command<E, X>> + 'static,
+    F: Fn(P) -> St + 'static,
+    St: Stream<Item = Command<E, X>> + 'static,
     E: 'static,
     X: 'static,
 {
-    fn handle(&self, payload: P, _ctx: &EffectContext<'_>) -> Task<E, X> {
+    fn handle(&self, payload: P, _ctx: &EffectContext<'_, S>) -> Task<E, X> {
         Task::stream((self)(payload))
     }
 }
 
 #[cfg(feature = "shell")]
-impl<E, X, F, S> EffectHandler<E, X, (), (StreamEffect, NP)> for F
+impl<E, X, F, St, S> EffectHandler<E, X, (), (StreamEffect, NP), S> for F
 where
-    F: Fn() -> S + 'static,
-    S: Stream<Item = Command<E, X>> + 'static,
+    F: Fn() -> St + 'static,
+    St: Stream<Item = Command<E, X>> + 'static,
     E: 'static,
     X: 'static,
 {
-    fn handle(&self, _payload: (), _ctx: &EffectContext<'_>) -> Task<E, X> {
+    fn handle(&self, _payload: (), _ctx: &EffectContext<'_, S>) -> Task<E, X> {
         Task::stream((self)())
     }
 }
@@ -174,14 +149,15 @@ where
 macro_rules! impl_effect_handler_task {
     ($($T:ident),+) => {
         #[allow(non_snake_case)]
-        impl<E, X, P, F, $($T),+> EffectHandler<E, X, P, ($($T,)+)> for F
+        impl<E, X, P, F, S, $($T),+> EffectHandler<E, X, P, (TaskEffect, Extractors<($($T,)+)>), S> for F
         where
             F: Fn(P, $($T),+) -> Task<E, X> + 'static,
-            $($T: FromEffectContext,)+
+            $($T: FromEffectContext<S>,)+
             E: 'static,
             X: 'static,
+            S: 'static,
         {
-            fn handle(&self, payload: P, ctx: &EffectContext<'_>) -> Task<E, X> {
+            fn handle(&self, payload: P, ctx: &EffectContext<'_, S>) -> Task<E, X> {
                 (self)(payload, $($T::from_context(ctx)),+)
             }
         }
@@ -192,15 +168,16 @@ macro_rules! impl_effect_handler_task {
 macro_rules! impl_effect_handler_future {
     ($($T:ident),+) => {
         #[allow(non_snake_case)]
-        impl<E, X, P, F, Fut, $($T),+> EffectHandler<E, X, P, (FutureEffect, $($T,)+)> for F
+        impl<E, X, P, F, Fut, S, $($T),+> EffectHandler<E, X, P, (FutureEffect, Extractors<($($T,)+)>), S> for F
         where
             F: Fn(P, $($T),+) -> Fut + 'static,
             Fut: Future<Output = Command<E, X>> + 'static,
-            $($T: FromEffectContext,)+
+            $($T: FromEffectContext<S>,)+
             E: 'static,
             X: 'static,
+            S: 'static,
         {
-            fn handle(&self, payload: P, ctx: &EffectContext<'_>) -> Task<E, X> {
+            fn handle(&self, payload: P, ctx: &EffectContext<'_, S>) -> Task<E, X> {
                 Task::future((self)(payload, $($T::from_context(ctx)),+))
             }
         }
@@ -211,15 +188,16 @@ macro_rules! impl_effect_handler_future {
 macro_rules! impl_effect_handler_stream {
     ($($T:ident),+) => {
         #[allow(non_snake_case)]
-        impl<E, X, P, F, S, $($T),+> EffectHandler<E, X, P, (StreamEffect, $($T,)+)> for F
+        impl<E, X, P, F, St, S, $($T),+> EffectHandler<E, X, P, (StreamEffect, Extractors<($($T,)+)>), S> for F
         where
-            F: Fn(P, $($T),+) -> S + 'static,
-            S: Stream<Item = Command<E, X>> + 'static,
-            $($T: FromEffectContext,)+
+            F: Fn(P, $($T),+) -> St + 'static,
+            St: Stream<Item = Command<E, X>> + 'static,
+            $($T: FromEffectContext<S>,)+
             E: 'static,
             X: 'static,
+            S: 'static,
         {
-            fn handle(&self, payload: P, ctx: &EffectContext<'_>) -> Task<E, X> {
+            fn handle(&self, payload: P, ctx: &EffectContext<'_, S>) -> Task<E, X> {
                 Task::stream((self)(payload, $($T::from_context(ctx)),+))
             }
         }
@@ -854,7 +832,7 @@ mod tests {
 
     // ── Resources (for effect tests) ────────────────────────────────
 
-    #[derive(Clone)]
+    #[derive(Clone, Debug, PartialEq, Eq)]
     struct DbUrl(String);
 
     impl DbUrl {
@@ -863,21 +841,84 @@ mod tests {
         }
     }
 
-    fn arity_resources() -> ResourceMap {
-        let mut resources = ResourceMap::new();
-        resources.insert(R1(1));
-        resources.insert(R2(2));
-        resources.insert(R3(3));
-        resources.insert(R4(4));
-        resources.insert(R5(5));
-        resources.insert(R6(6));
-        resources.insert(R7(7));
-        resources.insert(R8(8));
-        resources.insert(R9(9));
-        resources.insert(R10(10));
-        resources.insert(R11(11));
-        resources.insert(R12(12));
-        resources
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    struct TestResources {
+        db_url: DbUrl,
+    }
+
+    impl FromEffectContext<TestResources> for DbUrl {
+        fn from_context(ctx: &EffectContext<'_, TestResources>) -> Self {
+            ctx.state().db_url.clone()
+        }
+    }
+
+    #[test]
+    fn effect_context_exposes_state_and_clones_it_via_blanket_extractor() {
+        let resources = TestResources {
+            db_url: DbUrl("pg://test".to_string()),
+        };
+        let ctx = EffectContext::new(&resources);
+
+        assert_eq!(ctx.state().db_url.as_str(), "pg://test");
+
+        let cloned = TestResources::from_context(&ctx);
+        assert_eq!(cloned, resources);
+    }
+
+    #[derive(Clone)]
+    struct ArityResources {
+        r1: R1,
+        r2: R2,
+        r3: R3,
+        r4: R4,
+        r5: R5,
+        r6: R6,
+        r7: R7,
+        r8: R8,
+        r9: R9,
+        r10: R10,
+        r11: R11,
+        r12: R12,
+    }
+
+    macro_rules! impl_arity_extractor {
+        ($resource:ident, $field:ident) => {
+            impl FromEffectContext<ArityResources> for $resource {
+                fn from_context(ctx: &EffectContext<'_, ArityResources>) -> Self {
+                    ctx.state().$field.clone()
+                }
+            }
+        };
+    }
+
+    impl_arity_extractor!(R1, r1);
+    impl_arity_extractor!(R2, r2);
+    impl_arity_extractor!(R3, r3);
+    impl_arity_extractor!(R4, r4);
+    impl_arity_extractor!(R5, r5);
+    impl_arity_extractor!(R6, r6);
+    impl_arity_extractor!(R7, r7);
+    impl_arity_extractor!(R8, r8);
+    impl_arity_extractor!(R9, r9);
+    impl_arity_extractor!(R10, r10);
+    impl_arity_extractor!(R11, r11);
+    impl_arity_extractor!(R12, r12);
+
+    fn arity_resources() -> ArityResources {
+        ArityResources {
+            r1: R1(1),
+            r2: R2(2),
+            r3: R3(3),
+            r4: R4(4),
+            r5: R5(5),
+            r6: R6(6),
+            r7: R7(7),
+            r8: R8(8),
+            r9: R9(9),
+            r10: R10(10),
+            r11: R11(11),
+            r12: R12(12),
+        }
     }
 
     fn capture_panic_location(f: impl FnOnce()) -> (String, u32) {
@@ -1753,10 +1794,11 @@ mod tests {
             Task::none()
         }
 
-        let mut resources = ResourceMap::new();
-        resources.insert(DbUrl("pg://test".into()));
+        let resources = TestResources {
+            db_url: DbUrl("pg://test".into()),
+        };
         let ctx = EffectContext::new(&resources);
-        let handle_effect = |effect: Effect, ctx: &EffectContext<'_>| match effect {
+        let handle_effect = |effect: Effect, ctx: &EffectContext<'_, TestResources>| match effect {
             Effect::Log(msg) => log.handle(msg, ctx),
         };
         let _ = save.handle("x".into(), &ctx);
@@ -1771,8 +1813,9 @@ mod tests {
             Command::event(Event::Saved)
         }
 
-        let mut resources = ResourceMap::new();
-        resources.insert(DbUrl("pg://test".into()));
+        let resources = TestResources {
+            db_url: DbUrl("pg://test".into()),
+        };
         let ctx = EffectContext::new(&resources);
 
         match save.handle("x".to_string(), &ctx) {
@@ -1794,8 +1837,9 @@ mod tests {
             ])
         }
 
-        let mut resources = ResourceMap::new();
-        resources.insert(DbUrl("pg://test".into()));
+        let resources = TestResources {
+            db_url: DbUrl("pg://test".into()),
+        };
         let ctx = EffectContext::new(&resources);
 
         match watch.handle((), &ctx) {
@@ -2086,6 +2130,17 @@ mod tests {
         }
     }
 
+    #[derive(Clone)]
+    struct ScopedResources {
+        db_url: ScopedDbUrl,
+    }
+
+    impl FromEffectContext<ScopedResources> for ScopedDbUrl {
+        fn from_context(ctx: &EffectContext<'_, ScopedResources>) -> Self {
+            ctx.state().db_url.clone()
+        }
+    }
+
     fn scoped_save(_: (), db_url: ScopedDbUrl) -> Task<ScopedCounterEvent, ScopedCounterEffect> {
         assert_eq!(db_url.as_str(), "pg://scope");
         Task::none()
@@ -2181,34 +2236,13 @@ mod tests {
     }
 
     #[test]
-    fn effect_context_extracts_registered_resources() {
-        let mut resources = ResourceMap::new();
-        resources.insert(ScopedDbUrl("pg://scope".to_string()));
+    fn effect_context_extracts_from_user_owned_state() {
+        let resources = ScopedResources {
+            db_url: ScopedDbUrl("pg://scope".to_string()),
+        };
         let ctx = EffectContext::new(&resources);
 
         let _ = scoped_save.handle((), &ctx);
-    }
-
-    #[test]
-    fn missing_effect_resource_panics_with_type_hint_and_callsite() {
-        #[derive(Clone)]
-        struct MissingResource;
-
-        let resources = ResourceMap::new();
-        let ctx = EffectContext::new(&resources);
-        let expected_line = Cell::new(0_u32);
-        let (file, line, message) = capture_panic_message_and_location(|| {
-            expected_line.set(line!() + 1);
-            let _: MissingResource = MissingResource::from_context(&ctx);
-        });
-
-        assert!(file.ends_with("src/extract.rs"));
-        assert!(line > 0);
-        assert!(message.contains("MissingResource"));
-        assert!(message.contains("Register it with .with_resource()"));
-        assert!(message.contains("programmer error"));
-        assert!(message.contains("src/extract.rs"));
-        assert!(message.contains(&expected_line.get().to_string()));
     }
 
     // ── End-to-end with builder ─────────────────────────────────────
@@ -2247,7 +2281,7 @@ mod tests {
                 Ev::Increment(n) => increment.handle(n, ctx),
                 Ev::Rename(s) => rename.handle(s, ctx),
             })
-            .effect_handler(|_effect: Fx, _ctx: &EffectContext<'_>| Task::<Ev, Fx>::none())
+            .effect_handler(|_effect: Fx, _ctx| Task::<Ev, Fx>::none())
             .build()
             .unwrap();
 

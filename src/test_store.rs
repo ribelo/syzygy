@@ -6,6 +6,7 @@
 
 use std::any::Any;
 use std::collections::VecDeque;
+use std::mem::ManuallyDrop;
 use std::panic::{self, AssertUnwindSafe};
 
 #[cfg(feature = "shell")]
@@ -18,7 +19,6 @@ use crate::executor::{BlockingCancelToken, Task};
 #[cfg(feature = "shell")]
 use crate::extract::EffectContext;
 use crate::extract::EventContext;
-use crate::resource::ResourceMap;
 
 /// Default upper bound for event handler steps executed by [`TestStore::send`].
 ///
@@ -48,10 +48,11 @@ struct BufferedEffect<X> {
 ///
 /// The store processes events synchronously, mutates model state through your
 /// event handler, and buffers emitted effects for assertions.
-pub struct TestStore<E, X, M>
+pub struct TestStore<E, X, M, Resources = ()>
 where
     E: 'static,
     X: 'static,
+    Resources: 'static,
 {
     core: Core<E, X, M>,
     pending_events: VecDeque<E>,
@@ -60,10 +61,10 @@ where
     max_event_steps: usize,
     exhaustivity: Exhaustivity,
     effects_asserted: bool,
-    resources: ResourceMap,
+    resources: Resources,
 }
 
-impl<E, X, M> TestStore<E, X, M>
+impl<E, X, M> TestStore<E, X, M, ()>
 where
     E: 'static,
     X: 'static,
@@ -82,10 +83,17 @@ where
             max_event_steps: DEFAULT_MAX_EVENT_STEPS,
             exhaustivity: Exhaustivity::Off,
             effects_asserted: true,
-            resources: ResourceMap::new(),
+            resources: (),
         }
     }
+}
 
+impl<E, X, M, Resources> TestStore<E, X, M, Resources>
+where
+    E: 'static,
+    X: 'static,
+    Resources: 'static,
+{
     /// Override the event-step safety bound used by [`send`](Self::send).
     #[must_use]
     pub fn with_max_event_steps(mut self, max_event_steps: usize) -> Self {
@@ -105,9 +113,28 @@ where
     }
 
     #[must_use]
-    pub fn with_resource<T: Clone + 'static>(mut self, resource: T) -> Self {
-        self.resources.insert(resource);
-        self
+    pub fn with_resources<R2: 'static>(self, resources: R2) -> TestStore<E, X, M, R2> {
+        let this = ManuallyDrop::new(self);
+        // SAFETY: `this` is wrapped in `ManuallyDrop`, so its `Drop` impl will not run.
+        // Each non-Copy field is moved out exactly once, and the old `resources` value is
+        // intentionally dropped after extraction because it is replaced by `resources`.
+        unsafe {
+            let core = std::ptr::read(&this.core);
+            let pending_events = std::ptr::read(&this.pending_events);
+            let pending_effects = std::ptr::read(&this.pending_effects);
+            let cancelled_leases = std::ptr::read(&this.cancelled_leases);
+            std::ptr::drop_in_place(std::ptr::addr_of!(this.resources).cast_mut());
+            TestStore {
+                core,
+                pending_events,
+                pending_effects,
+                cancelled_leases,
+                max_event_steps: this.max_event_steps,
+                exhaustivity: this.exhaustivity,
+                effects_asserted: this.effects_asserted,
+                resources,
+            }
+        }
     }
 
     /// Send one external event step through the core.
@@ -323,7 +350,7 @@ where
     #[cfg(feature = "shell")]
     pub fn receive<H>(&mut self, effect_handler: H)
     where
-        H: Fn(X, &EffectContext<'_>) -> Task<E, X>,
+        H: Fn(X, &EffectContext<'_, Resources>) -> Task<E, X>,
     {
         for effect in self.take_effects() {
             let ctx = EffectContext::new(&self.resources);
@@ -346,7 +373,7 @@ where
     #[cfg(feature = "shell")]
     pub async fn receive_async<H>(&mut self, effect_handler: H)
     where
-        H: Fn(X, &EffectContext<'_>) -> Task<E, X>,
+        H: Fn(X, &EffectContext<'_, Resources>) -> Task<E, X>,
     {
         // Preserve the async API for callers already running inside an async test context.
         futures::future::ready(()).await;
@@ -556,10 +583,11 @@ where
     }
 }
 
-impl<E, X, M> Drop for TestStore<E, X, M>
+impl<E, X, M, Resources> Drop for TestStore<E, X, M, Resources>
 where
     E: 'static,
     X: 'static,
+    Resources: 'static,
 {
     fn drop(&mut self) {
         if self.exhaustivity == Exhaustivity::Off {
@@ -967,6 +995,25 @@ mod tests {
     }
 
     #[cfg(feature = "shell")]
+    #[test]
+    fn receive_reads_typed_resources_state() {
+        struct TestResources {
+            offset: i32,
+        }
+
+        let mut store = TestStore::new(Model::default(), handle_event)
+            .with_resources(TestResources { offset: 40 });
+
+        store.send(Event::Increment(2));
+        store.receive(|effect, ctx| match effect {
+            Effect::Log(value) => {
+                assert_eq!(value + ctx.state().offset, 42);
+                Task::none()
+            }
+            other => panic!("unexpected effect: {other:?}"),
+        });
+    }
+
     #[test]
     fn receive_handles_task_none() {
         let mut store = TestStore::new(Model::default(), handle_event);

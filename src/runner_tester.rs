@@ -18,24 +18,26 @@ const DEFAULT_MAX_DRAIN_STEPS: usize = 10_000;
 /// runtime clock. Use it when a test must exercise subscriptions, processes,
 /// runtime-owned tasks, or shell errors that [`TestStore`](crate::test_store::TestStore)
 /// cannot model honestly.
-pub struct RunnerTester<E, X, M>
+pub struct RunnerTester<E, X, M, Resources = ()>
 where
     E: 'static,
     X: 'static,
     M: 'static,
+    Resources: 'static,
 {
-    runner: Syzygy<E, X, M>,
+    runner: Syzygy<E, X, M, Resources>,
     clock: ManualClock,
     max_drain_steps: usize,
 }
 
-impl<E, X, M> RunnerTester<E, X, M>
+impl<E, X, M, Resources> RunnerTester<E, X, M, Resources>
 where
     E: 'static,
     X: 'static,
     M: 'static,
+    Resources: 'static,
 {
-    pub(crate) fn new(runner: Syzygy<E, X, M>, clock: ManualClock) -> Self {
+    pub(crate) fn new(runner: Syzygy<E, X, M, Resources>, clock: ManualClock) -> Self {
         Self {
             runner,
             clock,
@@ -87,7 +89,7 @@ where
 
     pub fn wait_for<F>(&mut self, timeout: Duration, mut condition: F) -> Result<bool, ShellError>
     where
-        F: FnMut(&Syzygy<E, X, M>) -> bool,
+        F: FnMut(&Syzygy<E, X, M, Resources>) -> bool,
     {
         if condition(&self.runner) {
             return Ok(true);
@@ -163,15 +165,15 @@ where
     }
 
     #[must_use]
-    pub fn runner(&self) -> &Syzygy<E, X, M> {
+    pub fn runner(&self) -> &Syzygy<E, X, M, Resources> {
         &self.runner
     }
 
-    pub fn runner_mut(&mut self) -> &mut Syzygy<E, X, M> {
+    pub fn runner_mut(&mut self) -> &mut Syzygy<E, X, M, Resources> {
         &mut self.runner
     }
 
-    pub fn into_runner(self) -> Syzygy<E, X, M> {
+    pub fn into_runner(self) -> Syzygy<E, X, M, Resources> {
         self.runner
     }
 }

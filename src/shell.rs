@@ -25,15 +25,14 @@ use crate::process::{
     ProcessError, ProcessFrame, ProcessInput, ProcessOutputDriver, ProcessSpec,
     ProcessTerminationPolicy, ProcessUpdate,
 };
-use crate::resource::ResourceMap;
 use crate::subscription::{
     ErasedSubscriptionMapper, Subscription, SubscriptionDrivers, SubscriptionEntry,
     SubscriptionKey, SubscriptionSpec,
 };
 use crate::syzygy::{DeferredEventOverflowPolicy, UnhandledEffectPolicy};
 
-pub(crate) type EffectHandlerFn<E, X> =
-    Rc<dyn for<'a> Fn(X, &EffectContext<'a>) -> Result<Task<E, X>, ShellError>>;
+pub(crate) type EffectHandlerFn<E, X, Resources> =
+    Rc<dyn for<'a> Fn(X, &EffectContext<'a, Resources>) -> Result<Task<E, X>, ShellError>>;
 pub(crate) type BootHandlerFn<E, X, M> = Box<dyn Fn(&M) -> Command<E, X>>;
 pub(crate) type SubscriptionHandlerFn<E, X, M> =
     Rc<dyn Fn(&crate::extract::SubscriptionContext<M>) -> Subscription<E, X>>;
@@ -197,15 +196,16 @@ type LastTermination = Rc<RefCell<ShellDiagnosticsState>>;
 type ActiveSubscriptions<E, X> =
     Rc<RefCell<HashMap<SubscriptionKey, ActiveSubscriptionEntry<E, X>>>>;
 
-struct CommandRouter<E, X>
+struct CommandRouter<E, X, Resources>
 where
     E: 'static,
     X: 'static,
+    Resources: 'static,
 {
     event_tx: EventSender<E>,
-    effect_handler: EffectHandlerFn<E, X>,
+    effect_handler: EffectHandlerFn<E, X, Resources>,
     runtime: crate::runtime::Runtime,
-    resources: Rc<ResourceMap>,
+    resources: Rc<Resources>,
     activity: Activity,
     tasks: TaskRegistry,
     deferred_events: DeferredEvents<E>,
@@ -288,12 +288,13 @@ impl TaskRegistry {
 }
 
 #[derive(Clone)]
-struct ProcessSupervisor<E, X>
+struct ProcessSupervisor<E, X, Resources>
 where
     E: 'static,
     X: 'static,
+    Resources: 'static,
 {
-    router: CommandRouter<E, X>,
+    router: CommandRouter<E, X, Resources>,
     lease_id: Option<u64>,
     token: Option<u64>,
 }
@@ -329,10 +330,10 @@ where
         }
     }
 
-    fn reconcile(
+    fn reconcile<Resources: 'static>(
         &self,
         desired: Subscription<E, X>,
-        router: &CommandRouter<E, X>,
+        router: &CommandRouter<E, X, Resources>,
     ) -> Result<usize, ShellError> {
         let mut desired_by_key = HashMap::new();
         for entry in desired.into_entries() {
@@ -398,10 +399,10 @@ where
         Ok(changes)
     }
 
-    fn start(
+    fn start<Resources: 'static>(
         &self,
         entry: SubscriptionEntry<E, X>,
-        router: &CommandRouter<E, X>,
+        router: &CommandRouter<E, X, Resources>,
     ) -> Result<(), ShellError> {
         let (key, driver_id, driver_name, spec, mapper) = entry.into_parts();
         if !self.subscription_drivers.contains(driver_id) {
@@ -451,12 +452,17 @@ where
     }
 }
 
-impl<E, X> ProcessSupervisor<E, X>
+impl<E, X, Resources> ProcessSupervisor<E, X, Resources>
 where
     E: 'static,
     X: 'static,
+    Resources: 'static,
 {
-    fn new(router: &CommandRouter<E, X>, lease_id: Option<u64>, token: Option<u64>) -> Self {
+    fn new(
+        router: &CommandRouter<E, X, Resources>,
+        lease_id: Option<u64>,
+        token: Option<u64>,
+    ) -> Self {
         Self {
             router: router.clone(),
             lease_id,
@@ -491,10 +497,11 @@ where
     }
 }
 
-impl<E, X> Clone for CommandRouter<E, X>
+impl<E, X, Resources> Clone for CommandRouter<E, X, Resources>
 where
     E: 'static,
     X: 'static,
+    Resources: 'static,
 {
     fn clone(&self) -> Self {
         Self {
@@ -966,17 +973,18 @@ impl ShellDiagnostics {
     }
 }
 
-pub struct Shell<E, X, M = ()>
+pub struct Shell<E, X, M = (), Resources = ()>
 where
     E: 'static,
     X: 'static,
+    Resources: 'static,
 {
     event_tx: EventSender<E>,
-    effect_handler: EffectHandlerFn<E, X>,
+    effect_handler: EffectHandlerFn<E, X, Resources>,
     boot_handler: Option<BootHandlerFn<E, X, M>>,
     subscription_handler: Option<SubscriptionHandlerFn<E, X, M>>,
     runtime: crate::runtime::Runtime,
-    resources: Rc<ResourceMap>,
+    resources: Rc<Resources>,
     activity: Activity,
     active_tasks: ActiveTasks,
     active_subscriptions: ActiveSubscriptions<E, X>,
@@ -994,15 +1002,14 @@ where
     queue: VecDeque<Command<E, X>>,
 }
 
-impl<E, X> Shell<E, X, ()>
+impl<E, X> Shell<E, X, (), ()>
 where
     E: 'static,
     X: 'static,
 {
     pub fn new(
         event_tx: EventSender<E>,
-        effect_handler: EffectHandlerFn<E, X>,
-        resources: ResourceMap,
+        effect_handler: EffectHandlerFn<E, X, ()>,
         runtime: crate::runtime::Runtime,
     ) -> Self {
         Self::with_subscriptions(
@@ -1010,7 +1017,7 @@ where
             effect_handler,
             LifecycleHandlers::none(),
             SubscriptionDrivers::new(),
-            resources,
+            (),
             runtime,
             Rc::new(Cell::new(UnhandledEffectPolicy::Error)),
             Rc::new(Cell::new(DeferredEventOverflowPolicy::Error)),
@@ -1018,13 +1025,14 @@ where
     }
 }
 
-impl<E, X, M> Shell<E, X, M>
+impl<E, X, M, Resources> Shell<E, X, M, Resources>
 where
     E: 'static,
     X: 'static,
     M: 'static,
+    Resources: 'static,
 {
-    fn command_router(&self) -> CommandRouter<E, X> {
+    fn command_router(&self) -> CommandRouter<E, X, Resources> {
         CommandRouter {
             event_tx: self.event_tx.clone(),
             effect_handler: Rc::clone(&self.effect_handler),
@@ -1049,10 +1057,10 @@ where
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn with_subscriptions(
         event_tx: EventSender<E>,
-        effect_handler: EffectHandlerFn<E, X>,
+        effect_handler: EffectHandlerFn<E, X, Resources>,
         lifecycle_handlers: LifecycleHandlers<E, X, M>,
         subscription_drivers: SubscriptionDrivers,
-        resources: ResourceMap,
+        resources: Resources,
         runtime: crate::runtime::Runtime,
         unhandled_effects_policy: Rc<Cell<UnhandledEffectPolicy>>,
         deferred_event_overflow_policy: Rc<Cell<DeferredEventOverflowPolicy>>,
@@ -1863,10 +1871,11 @@ fn push_deferred_event<E>(
     deferred_events.push_back(event);
 }
 
-impl<E, X> CommandRouter<E, X>
+impl<E, X, Resources> CommandRouter<E, X, Resources>
 where
     E: 'static,
     X: 'static,
+    Resources: 'static,
 {
     fn route_command_iterative(
         &self,
@@ -1986,15 +1995,16 @@ where
     }
 }
 
-fn run_effect_task<E, X>(
+fn run_effect_task<E, X, Resources>(
     effect: X,
     lease: Option<TaskLease>,
-    router: &CommandRouter<E, X>,
+    router: &CommandRouter<E, X, Resources>,
     queue: &mut VecDeque<Command<E, X>>,
 ) -> Result<Option<SpawnedTask>, ShellError>
 where
     E: 'static,
     X: 'static,
+    Resources: 'static,
 {
     let ctx = EffectContext::new(router.resources.as_ref());
     let task = (router.effect_handler)(effect, &ctx)?;
@@ -2080,13 +2090,14 @@ fn build_process_terminal_update(
     }
 }
 
-fn route_subscription_update<E, X>(
+fn route_subscription_update<E, X, Resources>(
     mapper: &Rc<RefCell<Box<dyn ErasedSubscriptionMapper<E, X>>>>,
     update: Box<dyn std::any::Any>,
-    router: &CommandRouter<E, X>,
+    router: &CommandRouter<E, X, Resources>,
 ) where
     E: 'static,
     X: 'static,
+    Resources: 'static,
 {
     let Some(command) = mapper.borrow_mut().map(update) else {
         return;
@@ -2096,7 +2107,7 @@ fn route_subscription_update<E, X>(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn spawn_subscription_runtime_task<E, X>(
+fn spawn_subscription_runtime_task<E, X, Resources>(
     key: SubscriptionKey,
     mapper: Rc<RefCell<Box<dyn ErasedSubscriptionMapper<E, X>>>>,
     token: u64,
@@ -2104,12 +2115,13 @@ fn spawn_subscription_runtime_task<E, X>(
     driver_id: TypeId,
     driver_name: &'static str,
     spec: SubscriptionSpec,
-    router: &CommandRouter<E, X>,
+    router: &CommandRouter<E, X, Resources>,
     active_subscriptions: &ActiveSubscriptions<E, X>,
 ) -> TaskHandle
 where
     E: 'static,
     X: 'static,
+    Resources: 'static,
 {
     let runtime = router.runtime.clone();
     let active_subscriptions = Rc::clone(active_subscriptions);
@@ -2260,18 +2272,19 @@ fn try_kill_process(
     }
 }
 
-fn spawn_process_runtime_task<E, X>(
+fn spawn_process_runtime_task<E, X, Resources>(
     spec: ProcessSpec,
     mut on_update: Box<dyn FnMut(ProcessUpdate) -> Option<Command<E, X>> + 'static>,
     mut child: async_process::Child,
     control: SpawnProcessControl,
     lease_id: Option<u64>,
     owner: Option<TaskLeaseWeak>,
-    router: &CommandRouter<E, X>,
+    router: &CommandRouter<E, X, Resources>,
 ) -> SpawnedTask
 where
     E: 'static,
     X: 'static,
+    Resources: 'static,
 {
     let runtime = router.runtime.clone();
     let activity = router.activity.clone();
@@ -2534,15 +2547,16 @@ where
 }
 
 #[allow(clippy::too_many_arguments)]
-fn spawn_task<E, X>(
+fn spawn_task<E, X, Resources>(
     task: Task<E, X>,
     lease: Option<TaskLease>,
-    router: &CommandRouter<E, X>,
+    router: &CommandRouter<E, X, Resources>,
     queue: &mut VecDeque<Command<E, X>>,
 ) -> Result<Option<SpawnedTask>, ShellError>
 where
     E: 'static,
     X: 'static,
+    Resources: 'static,
 {
     let event_tx = &router.event_tx;
     let effect_handler = &router.effect_handler;
@@ -2982,10 +2996,11 @@ fn cancel_blocking_abortable_task<E, X>(task: &Task<E, X>) -> Result<(), ShellEr
     }
 }
 
-impl<E, X> CommandRouter<E, X>
+impl<E, X, Resources> CommandRouter<E, X, Resources>
 where
     E: 'static,
     X: 'static,
+    Resources: 'static,
 {
     fn route_spawned_command(&self, command: Command<E, X>) {
         if self.closed.get() {

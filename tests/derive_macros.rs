@@ -39,6 +39,24 @@ impl SaveCompleted {
     }
 }
 
+#[derive(Clone)]
+struct AppResources {
+    db_url: DbUrl,
+    save_completed: SaveCompleted,
+}
+
+impl FromEffectContext<AppResources> for DbUrl {
+    fn from_context(ctx: &EffectContext<'_, AppResources>) -> Self {
+        ctx.state().db_url.clone()
+    }
+}
+
+impl FromEffectContext<AppResources> for SaveCompleted {
+    fn from_context(ctx: &EffectContext<'_, AppResources>) -> Self {
+        ctx.state().save_completed.clone()
+    }
+}
+
 fn increment(amount: u32, counter: &mut Counter) -> Command<Event, Effect> {
     let amount = i32::try_from(amount).expect("u32 amount must fit in i32");
     *counter.get_mut() += amount;
@@ -71,17 +89,21 @@ fn derive_model_works_in_runtime() {
             counter: 0,
             display_name: "init".into(),
         })
-        .with_resource(DbUrl("pg://test".into()))
-        .with_resource(SaveCompleted(false))
+        .resources(AppResources {
+            db_url: DbUrl("pg://test".into()),
+            save_completed: SaveCompleted(false),
+        })
         .event_handler(|event: Event, ctx: &EventContext<AppModel>| match event {
             Event::Increment(amount) => increment.handle(amount, ctx),
             Event::Rename(name) => rename.handle(name, ctx),
             Event::TriggerSave => trigger_save.handle((), ctx),
             Event::DoubleBorrow => double_borrow.handle((), ctx),
         })
-        .effect_handler(|effect: Effect, ctx: &EffectContext<'_>| match effect {
-            Effect::Save => persist.handle((), ctx),
-        })
+        .effect_handler(
+            |effect: Effect, ctx: &EffectContext<'_, AppResources>| match effect {
+                Effect::Save => persist.handle((), ctx),
+            },
+        )
         .build()
         .unwrap();
 
@@ -107,17 +129,21 @@ fn derive_model_tracks_runtime_borrows() {
             counter: 0,
             display_name: "init".into(),
         })
-        .with_resource(DbUrl("pg://test".into()))
-        .with_resource(SaveCompleted(false))
+        .resources(AppResources {
+            db_url: DbUrl("pg://test".into()),
+            save_completed: SaveCompleted(false),
+        })
         .event_handler(|event: Event, ctx: &EventContext<AppModel>| match event {
             Event::Increment(amount) => increment.handle(amount, ctx),
             Event::Rename(name) => rename.handle(name, ctx),
             Event::TriggerSave => trigger_save.handle((), ctx),
             Event::DoubleBorrow => double_borrow.handle((), ctx),
         })
-        .effect_handler(|effect: Effect, ctx: &EffectContext<'_>| match effect {
-            Effect::Save => persist.handle((), ctx),
-        })
+        .effect_handler(
+            |effect: Effect, ctx: &EffectContext<'_, AppResources>| match effect {
+                Effect::Save => persist.handle((), ctx),
+            },
+        )
         .build()
         .unwrap();
 

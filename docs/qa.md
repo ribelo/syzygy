@@ -1,5 +1,18 @@
 # QA
 
+## 2026-05-13
+
+Q: How should effect resources be represented after rejecting typed HLists and dynamic lookup?
+
+A: Use one user-owned resources state type and pass it to the builder with `.resources(value)`. `EffectContext<'_, S>` borrows that state and exposes `ctx.state()`. Signature-based extraction stays available through explicit `FromEffectContext<S>` impls, plus the blanket `FromEffectContext<S> for S where S: Clone + 'static` for whole-state extraction.
+
+Rejected alternatives:
+- Dynamic type lookup: too much runtime machinery for wiring mistakes that should be visible in the app's own state type.
+- Internal typed HLists: worse diagnostics, leaked framework marker types, and too much trait/macro surface.
+- A derive macro in this slice: convenient, but not needed until hand-written extractors prove painful in real examples.
+
+Reason: resources are a shell concern, not a model concern. A concrete state struct keeps ownership obvious and keeps missing resources as normal Rust type errors.
+
 ## 2026-05-02
 
 Q: How should Syzygy verify public feature/package shapes after boundary repairs?
@@ -71,14 +84,6 @@ Q: Which public error types should Syzygy expose after boundary cleanup?
 A: Keep the public error surface focused on `CoreError` and `ShellError`; remove stale standalone `CommandError` / `EffectError` types that are not owned by any active runtime path.
 
 Reason: fewer error types with clear ownership make boundary contracts easier to understand and maintain.
-
-## 2026-05-02
-
-Q: How should ResourceMap handle duplicate registrations for the same concrete type?
-
-A: Reject accidental duplicates by default (`insert`), and require explicit replacement via `replace`. For multiple resources with the same underlying type, use distinct newtypes.
-
-Reason: silent overwrite hides wiring mistakes and weakens resource ownership clarity.
 
 ## 2026-05-02
 
@@ -314,11 +319,11 @@ Reason: The friction is repetitive stream plumbing, not a missing abstraction. T
 
 ## 2026-03-09
 
-Q: How should Syzygy handle extraction/resource failures that are still programmer errors while improving diagnostics?
+Q: How should Syzygy handle extraction failures that are still programmer errors while improving diagnostics?
 
-A: Keep them as deliberate panics, but normalize the messages. Extraction overlap/capacity panics now include a consistent programmer-error hint, and missing effect resources keep explicit type + caller location + `.with_resource(...)` registration guidance.
+A: Keep model extraction overlap/capacity failures as deliberate panics with consistent programmer-error hints. Effect resource wiring no longer uses dynamic lookup; missing effect resources should be represented by ordinary compile errors on the user-owned resources state type or missing `FromEffectContext<AppResources>` impls.
 
-Reason: These failures indicate invalid handler wiring, not runtime recoverable conditions, so converting all of them to shell errors would hide bugs. The right improvement is consistent, actionable panic diagnostics and explicit docs stating that these paths are programmer errors.
+Reason: Model borrow violations are runtime aliasing bugs. Effect resource wiring is static app state and should not need a runtime registration table.
 
 ## 2026-03-09
 

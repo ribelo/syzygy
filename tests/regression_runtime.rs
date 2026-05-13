@@ -907,6 +907,47 @@ fn manual_clock_advances_async_effects_without_wall_time() {
 }
 
 #[test]
+fn builder_resources_dispatches_effect_with_owned_state() {
+    #[derive(Debug, Clone)]
+    enum Event {
+        Start,
+    }
+
+    #[derive(Debug, Clone)]
+    enum Effect {
+        Work,
+    }
+
+    struct AppResources {
+        hits: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    let hits = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let mut runner = Syzygy::builder::<Event, Effect>()
+        .model(())
+        .resources(AppResources {
+            hits: Arc::clone(&hits),
+        })
+        .event_handler(|event, _ctx| match event {
+            Event::Start => Command::effect(Effect::Work),
+        })
+        .effect_handler(
+            |effect, ctx: &EffectContext<'_, AppResources>| match effect {
+                Effect::Work => {
+                    ctx.state().hits.fetch_add(1, Ordering::SeqCst);
+                    Task::none()
+                }
+            },
+        )
+        .build()
+        .unwrap();
+
+    runner.core().try_send(Event::Start).unwrap();
+    runner.step().unwrap();
+    assert_eq!(hits.load(Ordering::SeqCst), 1);
+}
+
+#[test]
 fn spawning_async_effects_does_not_clone_registered_resources() {
     #[derive(Debug, Clone)]
     enum Event {
@@ -932,7 +973,7 @@ fn spawning_async_effects_does_not_clone_registered_resources() {
 
     let mut runner = Syzygy::builder::<Event, Effect>()
         .model(())
-        .with_resource(CloneCounter(Arc::clone(&clone_count)))
+        .resources(CloneCounter(Arc::clone(&clone_count)))
         .event_handler(|event, _ctx| match event {
             Event::Start => Command::batch((0..128).map(|_| Command::effect(Effect::Work))),
         })
@@ -950,7 +991,7 @@ fn spawning_async_effects_does_not_clone_registered_resources() {
 }
 
 #[test]
-fn effect_context_resource_ref_borrows_without_cloning() {
+fn effect_context_state_borrows_without_cloning() {
     #[derive(Debug, Clone)]
     enum Event {
         Start,
@@ -982,7 +1023,7 @@ fn effect_context_resource_ref_borrows_without_cloning() {
 
     let mut runner = Syzygy::builder::<Event, Effect>()
         .model(())
-        .with_resource(CountedResource {
+        .resources(CountedResource {
             clones: Arc::clone(&clone_count),
             hits: Arc::clone(&hit_count),
         })
@@ -991,10 +1032,7 @@ fn effect_context_resource_ref_borrows_without_cloning() {
         })
         .effect_handler(|effect, ctx| match effect {
             Effect::Work => {
-                let resource = ctx
-                    .resource_ref::<CountedResource>()
-                    .expect("resource should be present");
-                resource.hits.fetch_add(1, Ordering::SeqCst);
+                ctx.state().hits.fetch_add(1, Ordering::SeqCst);
                 Task::none()
             }
         })

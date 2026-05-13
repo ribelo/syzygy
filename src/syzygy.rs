@@ -107,17 +107,22 @@ impl SyzygyConfig {
     }
 }
 
-pub struct Syzygy<Event, Effect, Model>
+pub struct Syzygy<Event, Effect, Model, Resources = ()>
 where
     Event: 'static,
     Effect: 'static,
+    Resources: 'static,
 {
     core: Core<Event, Effect, Model>,
-    shell: Shell<Event, Effect, Model>,
+    shell: Shell<Event, Effect, Model, Resources>,
     config: SyzygyConfig,
 }
 
-pub type Runner<Event, Effect, Model> = Syzygy<Event, Effect, Model>;
+pub type Runner<Event, Effect, Model, Resources = ()> = Syzygy<Event, Effect, Model, Resources>;
+pub type SyzygyParts<Event, Effect, Model, Resources = ()> = (
+    Core<Event, Effect, Model>,
+    Shell<Event, Effect, Model, Resources>,
+);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RunUntilExit {
@@ -126,19 +131,23 @@ pub enum RunUntilExit {
     ShellClosed,
 }
 
-impl<Event, Effect, Model> Syzygy<Event, Effect, Model>
+impl<Event, Effect, Model, Resources> Syzygy<Event, Effect, Model, Resources>
 where
     Event: 'static,
     Effect: 'static,
     Model: 'static,
+    Resources: 'static,
 {
-    pub fn new(core: Core<Event, Effect, Model>, shell: Shell<Event, Effect, Model>) -> Self {
+    pub fn new(
+        core: Core<Event, Effect, Model>,
+        shell: Shell<Event, Effect, Model, Resources>,
+    ) -> Self {
         Self::with_config(core, shell, SyzygyConfig::default())
     }
 
     pub fn with_config(
         core: Core<Event, Effect, Model>,
-        mut shell: Shell<Event, Effect, Model>,
+        mut shell: Shell<Event, Effect, Model, Resources>,
         config: SyzygyConfig,
     ) -> Self {
         shell.set_unhandled_effects_policy(config.diagnostics.unhandled_effects);
@@ -170,7 +179,7 @@ where
 
     pub fn run_until<F>(&mut self, mut condition: F) -> Result<(), ShellError>
     where
-        F: FnMut(&Core<Event, Effect, Model>, &Shell<Event, Effect, Model>) -> bool,
+        F: FnMut(&Core<Event, Effect, Model>, &Shell<Event, Effect, Model, Resources>) -> bool,
     {
         while self.shell.has_pending_boot() || !condition(&self.core, &self.shell) {
             let did_work = self.step()?;
@@ -192,7 +201,7 @@ where
         condition: F,
     ) -> Result<(), ShellError>
     where
-        F: FnMut(&Core<Event, Effect, Model>, &Shell<Event, Effect, Model>) -> bool,
+        F: FnMut(&Core<Event, Effect, Model>, &Shell<Event, Effect, Model, Resources>) -> bool,
     {
         let start = Instant::now();
         let Some(deadline) = start.checked_add(timeout) else {
@@ -212,7 +221,7 @@ where
         mut condition: F,
     ) -> Result<(), ShellError>
     where
-        F: FnMut(&Core<Event, Effect, Model>, &Shell<Event, Effect, Model>) -> bool,
+        F: FnMut(&Core<Event, Effect, Model>, &Shell<Event, Effect, Model, Resources>) -> bool,
     {
         let start = Instant::now();
         while self.shell.has_pending_boot() || !condition(&self.core, &self.shell) {
@@ -236,8 +245,8 @@ where
         mut should_cancel: C,
     ) -> Result<RunUntilExit, ShellError>
     where
-        F: FnMut(&Core<Event, Effect, Model>, &Shell<Event, Effect, Model>) -> bool,
-        C: FnMut(&Core<Event, Effect, Model>, &Shell<Event, Effect, Model>) -> bool,
+        F: FnMut(&Core<Event, Effect, Model>, &Shell<Event, Effect, Model, Resources>) -> bool,
+        C: FnMut(&Core<Event, Effect, Model>, &Shell<Event, Effect, Model, Resources>) -> bool,
     {
         while self.shell.has_pending_boot() || !condition(&self.core, &self.shell) {
             if should_cancel(&self.core, &self.shell) {
@@ -286,7 +295,7 @@ where
         &mut self.core
     }
 
-    pub fn shell(&self) -> &Shell<Event, Effect, Model> {
+    pub fn shell(&self) -> &Shell<Event, Effect, Model, Resources> {
         &self.shell
     }
 
@@ -296,7 +305,7 @@ where
     /// Prefer `run`, `run_until`, `snapshot`, and trace APIs for normal operation.
     ///
     /// Valid use cases: runtime integration boundaries and specialized tests.
-    pub fn shell_mut(&mut self) -> &mut Shell<Event, Effect, Model> {
+    pub fn shell_mut(&mut self) -> &mut Shell<Event, Effect, Model, Resources> {
         &mut self.shell
     }
 
@@ -352,19 +361,20 @@ where
     /// Splitting transfers orchestration responsibility to the caller. If you drive `Core` and
     /// `Shell` separately, preserve the usual progression (`process events` -> `dispatch` ->
     /// `reconcile subscriptions` -> `drain shell`) to avoid semantic drift.
-    pub fn split(self) -> (Core<Event, Effect, Model>, Shell<Event, Effect, Model>) {
+    pub fn split(self) -> SyzygyParts<Event, Effect, Model, Resources> {
         (self.core, self.shell)
     }
 }
 
-pub fn step_core_shell<Event, Effect, Model>(
+pub fn step_core_shell<Event, Effect, Model, Resources>(
     core: &mut Core<Event, Effect, Model>,
-    shell: &mut Shell<Event, Effect, Model>,
+    shell: &mut Shell<Event, Effect, Model, Resources>,
 ) -> Result<bool, ShellError>
 where
     Event: 'static,
     Effect: 'static,
     Model: 'static,
+    Resources: 'static,
 {
     if shell.is_closed() {
         return Ok(false);
@@ -406,27 +416,37 @@ where
     Ok(boot_work > 0 || core_work > 0 || subscription_work > 0 || shell_work > 0)
 }
 
-impl<Event, Effect, Model> From<(Core<Event, Effect, Model>, Shell<Event, Effect, Model>)>
-    for Syzygy<Event, Effect, Model>
+impl<Event, Effect, Model, Resources>
+    From<(
+        Core<Event, Effect, Model>,
+        Shell<Event, Effect, Model, Resources>,
+    )> for Syzygy<Event, Effect, Model, Resources>
 where
     Event: 'static,
     Effect: 'static,
     Model: 'static,
+    Resources: 'static,
 {
     /// Advanced reconstruction helper for integration/test code.
     ///
     /// The caller is responsible for passing matching `Core`/`Shell` parts that uphold Syzygy's
     /// boundary assumptions.
-    fn from(parts: (Core<Event, Effect, Model>, Shell<Event, Effect, Model>)) -> Self {
+    fn from(
+        parts: (
+            Core<Event, Effect, Model>,
+            Shell<Event, Effect, Model, Resources>,
+        ),
+    ) -> Self {
         Self::new(parts.0, parts.1)
     }
 }
 
-impl<Event, Effect, Model> std::fmt::Debug for Syzygy<Event, Effect, Model>
+impl<Event, Effect, Model, Resources> std::fmt::Debug for Syzygy<Event, Effect, Model, Resources>
 where
     Event: 'static,
     Effect: 'static,
     Model: 'static,
+    Resources: 'static,
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Syzygy")

@@ -63,6 +63,24 @@ impl DatabasePool {
     }
 }
 
+#[derive(Clone)]
+struct AppResources {
+    server_url: ServerUrl,
+    database_pool: DatabasePool,
+}
+
+impl FromEffectContext<AppResources> for ServerUrl {
+    fn from_context(ctx: &EffectContext<'_, AppResources>) -> Self {
+        ctx.state().server_url.clone()
+    }
+}
+
+impl FromEffectContext<AppResources> for DatabasePool {
+    fn from_context(ctx: &EffectContext<'_, AppResources>) -> Self {
+        ctx.state().database_pool.clone()
+    }
+}
+
 /// ## Why keep resource work separate?
 ///
 /// `check_services` only needs the resources themselves. The surrounding effect
@@ -78,7 +96,10 @@ fn check_services(url: ServerUrl, pool: DatabasePool) -> Task<AppEvent, AppEffec
     Task::send(AppEvent::StatusUpdated(status_msg))
 }
 
-fn handle_effect(effect: AppEffect, ctx: &EffectContext<'_>) -> Task<AppEvent, AppEffect> {
+fn handle_effect(
+    effect: AppEffect,
+    ctx: &EffectContext<'_, AppResources>,
+) -> Task<AppEvent, AppEffect> {
     match effect {
         AppEffect::CheckServices => {
             let url = ServerUrl::from_context(ctx);
@@ -89,12 +110,14 @@ fn handle_effect(effect: AppEffect, ctx: &EffectContext<'_>) -> Task<AppEvent, A
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // ## Why `.with_resource`?
-    // We register our resources during the builder phase.
+    // ## Why `.resources`?
+    // We pass one user-owned resources struct during the builder phase.
     let mut app = Syzygy::builder::<AppEvent, AppEffect>()
         .model(AppModel::default())
-        .with_resource(ServerUrl("https://api.example.com".into()))
-        .with_resource(DatabasePool::new())
+        .resources(AppResources {
+            server_url: ServerUrl("https://api.example.com".into()),
+            database_pool: DatabasePool::new(),
+        })
         .event_handler(handle_event)
         .effect_handler(handle_effect)
         .build()?;
